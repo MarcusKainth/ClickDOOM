@@ -7,7 +7,7 @@
 #
 # PINNED VERSIONS (keep in sync with docker-compose.yml; bumps are `ci:` PRs
 # with nightly deep-diff evidence — see SPEC §8):
-#   ClickHouse: 26.8  (placeholder pin — Phase 0 ratifies the final version)
+#   ClickHouse: 26.3  (placeholder pin — Phase 0 ratifies the final version)
 
 name: ci
 
@@ -18,7 +18,7 @@ on:
     branches: [main]
 
 env:
-  CLICKHOUSE_VERSION: "26.8"
+  CLICKHOUSE_VERSION: "26.3"
 
 jobs:
   pr-title:
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.8   # keep literal in sync with env.CLICKHOUSE_VERSION
+        image: clickhouse/clickhouse-server:26.3   # keep literal in sync with env.CLICKHOUSE_VERSION
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.8   # keep in sync
+        image: clickhouse/clickhouse-server:26.3   # keep in sync
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"

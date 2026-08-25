@@ -11,11 +11,11 @@
 static volatile unsigned int bss_counter;
 
 int main(void) {
-    bss_counter++;
+  bss_counter++;
 
-    for (;;) {
-        /* no OS to return to */
-    }
+  for (;;) {
+    /* no OS to return to */
+  }
 
-    return 0;
+  return 0;
 }

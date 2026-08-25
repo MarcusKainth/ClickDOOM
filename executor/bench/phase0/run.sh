@@ -17,11 +17,13 @@ REPEATS="${CLICKDOOM_BENCH_REPEATS:-2}"
 ch() { docker exec -i "$CONTAINER" clickhouse-client "$@"; }
 
 # Time one query read from stdin; echo elapsed seconds. clickhouse-client
-# --time writes elapsed seconds as the last line of its output.
-time_query() { ch --time --multiquery | tail -1; }
+# --time writes elapsed seconds to STDERR, so discard stdout (the query result)
+# and keep the last stderr line.
+time_query() { ch --time --multiquery 2>&1 >/dev/null | tail -1; }
 
-emit() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" \
-         "$(python3 -c "import sys; print(int(int(sys.argv[1]) / float(sys.argv[2])))" "$3" "$4")"; }
+# emit <variant> <mode> <K> <instructions> <seconds>
+emit() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$5" \
+         "$(python3 -c "import sys; print(int(int(sys.argv[1]) / float(sys.argv[2])))" "$4" "$5")"; }
 
 echo "# setting up fixtures (24 MiB RAM, 2 MiB pre-decoded text)..." >&2
 ch --multiquery < setup.sql
@@ -31,13 +33,13 @@ printf 'variant\tmode\tK\tseconds\tinstr_per_sec\n'
 # --- fold in isolation -------------------------------------------------------
 for K in $KS; do
   for _ in $(seq 1 "$REPEATS"); do
-    emit predecoded fold "$K" "$(python3 fold_predecoded.py "$K" | time_query)"
+    emit predecoded fold "$K" "$K" "$(python3 fold_predecoded.py "$K" | time_query)"
   done
 done
 
 # The naive variant is ~8x slower, so only sample it at the middle K.
 for _ in $(seq 1 "$REPEATS"); do
-  emit naive fold 10000 "$(python3 fold_naive.py 10000 splice | time_query)"
+  emit naive fold 10000 10000 "$(python3 fold_naive.py 10000 splice | time_query)"
 done
 
 # --- accumulator copy behaviour (SPEC §9, second bullet) ---------------------
@@ -50,7 +52,7 @@ for N in 1024 65536 1048576 6291456; do
        arrayMap(j -> toUInt32(if(j = 5, acc.2[j] + RAM[toUInt32((acc.1 % $N) + 1)], acc.2[j])), range(1,32))),
        range(100000), tuple(toUInt32(2147483648), arrayResize(emptyArrayUInt32(), 31, toUInt32(0)))).1
      SETTINGS max_threads = 1"
-  emit "ramsize_$N" fold 100000 "$(printf '%s' "$Q" | time_query)"
+  emit "ramsize_$N" fold 100000 100000 "$(printf '%s' "$Q" | time_query)"
 done
 
 # --- end to end: state reload + fold + write-log commit ----------------------
@@ -74,5 +76,5 @@ for K in $KS; do
                 WHERE batch_id = (SELECT max(batch_id) FROM clickdoom_bench.batch_out)"
   done
   END=$(date +%s.%N)
-  emit predecoded e2e "$(( K * BATCHES ))" "$(python3 -c "print(f'{$END-$START:.3f}')")"
+  emit predecoded e2e "$K" "$(( K * BATCHES ))" "$(python3 -c "print(f'{$END-$START:.3f}')")"
 done

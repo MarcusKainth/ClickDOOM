@@ -1,0 +1,182 @@
+-- sqlcpu/schema.sql — authoritative DDL for ClickDOOM emulator state.
+--
+-- SPEC §5 defines the shape of cpu_state, ram, input_queue, frames_out and
+-- console_out; this file is where that shape becomes real DDL. It also adds
+-- the pre-decoded instruction table ADR-0002 calls for — decode is a table,
+-- not an expression, because arrayFold costs ~0.8us per expression node
+-- almost independent of the data touched (docs/adr/0002-predecoded-instruction-table.md).
+--
+-- This is CI's marker file: `.github/workflows/ci.yml`'s test-sqlcpu job runs
+-- `sqlcpu/run_tests.sh` unconditionally the moment this file exists on a PR
+-- branch, with no guard of its own on run_tests.sh's presence. That script
+-- lands in the same PR as this one so no PR — from any workstream — sees a
+-- broken test-sqlcpu job in between.
+--
+-- Idempotent: safe to re-run against an already-provisioned database.
+
+CREATE DATABASE IF NOT EXISTS clickdoom;
+
+-- ---------------------------------------------------------------------------
+-- Register file convention (binds #18 decode, #19 execute, and executor's
+-- accumulator design — settle deviations with `executor` before relying on
+-- them, not after).
+--
+-- `regs` holds x1..x31 only (31 elements, 1-indexed: regs[1] = x1's value,
+-- regs[31] = x31's value). x0 is NEVER stored. Reading register r: if r = 0
+-- the value is the UInt32 literal 0; otherwise regs[r]. Writing register r:
+-- if r = 0 the write is discarded entirely (SPEC §1 — "the SQL register
+-- file must enforce writes to x0 being discarded"). Both branches are
+-- execute-expression responsibilities (#19), not something this schema can
+-- enforce by itself — a 31-element array has no slot for x0 to be enforced
+-- against.
+-- ---------------------------------------------------------------------------
+
+-- One row per committed batch (SPEC §5, SPEC §6). Append-only log of CPU
+-- snapshots; the row with max(batch_id) is the current state, reloaded at
+-- the start of the next batch.
+CREATE TABLE IF NOT EXISTS clickdoom.cpu_state
+(
+    spec_version String DEFAULT '0.1.0',
+    batch_id     UInt64,
+    icount       UInt64,
+    pc           UInt32,
+    regs         Array(UInt32),  -- len 31: x1..x31, see convention above
+    halted       UInt8,
+    halt_reason  LowCardinality(String),
+    exit_code    UInt32
+)
+ENGINE = MergeTree
+ORDER BY batch_id;
+
+-- RAM, word-addressed (byte address >> 2), SPEC §2's 24 MiB region.
+-- ReplacingMergeTree so a store amends the previous value at that word;
+-- `version` = icount of the store, so the last writer always wins under
+-- FINAL. Read once per batch as a captured constant array — materialize
+-- with FINAL, not `argMax(...) GROUP BY word_addr`: Phase 0 measured
+-- 0.022-0.030s against 0.245-0.256s for the argMax form, and FINAL stayed
+-- flat with 1.2M accumulated deltas (docs/adr/0001-batch-execution-with-arrayfold.md).
+CREATE TABLE IF NOT EXISTS clickdoom.ram
+(
+    spec_version String DEFAULT '0.1.0',
+    word_addr    UInt32,
+    value        UInt32,
+    version      UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+ORDER BY word_addr;
+
+-- Key events. The driver INSERTs raw events here (PURITY.md action 2, the
+-- only computation-free way input reaches the CPU). KEYQ (SPEC §3.2) pops
+-- the oldest row with consumed = 0, ordered by event_seq — that ordering is
+-- load-bearing (SPEC §8.2): never rely on block order to find "the next"
+-- event.
+CREATE TABLE IF NOT EXISTS clickdoom.input_queue
+(
+    spec_version String DEFAULT '0.1.0',
+    event_seq    UInt64,
+    key_event    UInt16,
+    consumed     UInt8
+)
+ENGINE = MergeTree
+ORDER BY event_seq;
+
+-- Frames, written by the render query on FRAME_COMMIT (SPEC §3, §5). One row
+-- per committed frame; frame_no is the value the ROM wrote to FRAME_COMMIT.
+CREATE TABLE IF NOT EXISTS clickdoom.frames_out
+(
+    spec_version     String DEFAULT '0.1.0',
+    frame_no         UInt32,
+    committed_icount UInt64,
+    fb               String,  -- 64,000 bytes: 320x200, 8bpp palette-indexed, row-major
+    palette          String   -- 768 bytes: 256 x RGB (3 bytes each)
+)
+ENGINE = MergeTree
+ORDER BY frame_no;
+
+-- Debug console bytes (PUTCHAR, SPEC §3). One row per byte written; seq
+-- gives the emission order for readout.
+CREATE TABLE IF NOT EXISTS clickdoom.console_out
+(
+    spec_version String DEFAULT '0.1.0',
+    seq          UInt64,
+    byte         UInt8
+)
+ENGINE = MergeTree
+ORDER BY seq;
+
+-- ---------------------------------------------------------------------------
+-- Pre-decoded instruction table (ADR-0002). Built by a single SQL statement
+-- over clickdoom.ram's text region (#18) — decoding happens INSIDE
+-- ClickHouse, which PURITY.md explicitly allows ("Decoding the ROM inside
+-- ClickHouse into a decoded-instruction table is fine — that's SQL doing the
+-- work. Doing it in Python and inserting the result is not."). Keyed by
+-- word_addr so pc>>2 looks a row up directly — same key domain as `ram`,
+-- deliberately, so no separate index translation is needed at execute time.
+--
+-- Column semantics:
+--   id   dense collapsed opcode (dispatch key for the execute multiIf, see
+--        below). PROPOSED numbering, carried forward from the Phase 0 bench
+--        (executor/bench/phase0/fold_predecoded.py) — confirm with executor
+--        before either side depends on the exact values.
+--   rd   destination register number, 0..31 (0 = no write; RD!=0 is checked
+--        at execute time regardless, since a real encoded rd of x0, e.g.
+--        `addi x0,x0,0` as nop, must also discard its write)
+--   rs1  first source register number, 0..31
+--   rs2  second source register number, 0..31; the decoder sets this to 0
+--        for I-type instructions (see the ALU-arm collapse note below)
+--   imm  sign-extended immediate for I/S/B/J-type instructions; for the
+--        instructions that collapse onto the `add` arm with rs1=rs2=0
+--        (lui, auipc — see below) this holds the fully-precomputed constant
+--        each of those instructions writes to rd, computed at decode time
+--        from word_addr since pc is static per decoded row
+--   tgt  absolute target word index for branches and jal — precomputed at
+--        decode time since both are pc-relative and pc is static per row.
+--        NOT used for jalr (register-relative, computed live) and NOT a
+--        link value: the link value jal/jalr write to rd is pc+4, which the
+--        execute expression computes directly from the accumulator's live
+--        pc (word_addr*4 + 4) rather than storing it here. (The Phase 0
+--        bench's placeholder `tgt` column conflated "jump target" and "link
+--        value" into one field for the same id — harmless there since the
+--        bench's decode table is synthetic and never executed, see
+--        executor/bench/phase0/RESULTS.md §6, but it would have been a
+--        real bug in a table meant to produce correct results, so this
+--        schema splits the concern by not storing the link value at all.)
+--   mk   load/store width mask (0xFF / 0xFFFF / 0xFFFFFFFF); meaningful
+--        only for id = 18 (load) and id = 19 (store)
+--   sg   sign-extend flag for loads (1 = sign-extend, 0 = zero-extend);
+--        meaningful only for id = 18 (load) — stores never sign-extend
+--
+-- Two collapses fold most of the opcode space onto fewer arms (ADR-0002):
+--   * I-type and R-type share one arm each: the decoder sets rs2 = 0 and
+--     imm = 0 respectively (whichever the encoding doesn't carry), so
+--     `b = regs[rs2] + imm` is the right second operand either way with no
+--     branch in the execute expression. addi/add become the same arm, etc.
+--   * lui, auipc collapse onto the same `add` arm (id = 0) with rs1 = rs2 = 0
+--     and the constant each writes to rd precomputed into `imm` (auipc's
+--     constant is pc-relative, computable at decode time from word_addr).
+--
+-- id assignment (proposed, pending executor sign-off):
+--   0 add   1 sub   2 sll   3 slt   4 sltu  5 xor   6 srl   7 sra
+--   8 or    9 and   10 mul  11 mulh 12 mulhsu 13 mulhu
+--   14 div  15 divu 16 rem  17 remu
+--   18 load 19 store
+--   20 beq  21 bne  22 blt  23 bge  24 bltu 25 bgeu
+--   26 jal  27 jalr
+-- lui/auipc carry no id of their own — they decode as id = 0 (add), per the
+-- collapse above.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS clickdoom.decoded
+(
+    spec_version String DEFAULT '0.1.0',
+    word_addr    UInt32,
+    id           UInt8,
+    rd           UInt8,
+    rs1          UInt8,
+    rs2          UInt8,
+    imm          UInt32,
+    tgt          UInt32,
+    mk           UInt32,
+    sg           UInt8
+)
+ENGINE = MergeTree
+ORDER BY word_addr;

@@ -1,6 +1,6 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.1.0-draft** — DRAFT until ratified at the end of Phase 0.
+**SPEC_VERSION: 0.1.0** — ratified at the end of Phase 0 (see `docs/adr/`).
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
@@ -22,6 +22,11 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   `-mstrict-align`). Keeps the SQL load/store path branch-free.
 - Unimplemented/illegal opcode: fatal halt, reason = `ILLEGAL_INSN`, with pc
   and raw instruction word in the halt record.
+- Store into the text region (§2): fatal halt, reason = `SELF_MODIFY`, with pc
+  and target address in the halt record. The executor pre-decodes text into a
+  table (ADR-0002) because decoding inside the fold costs 7.4× the throughput;
+  a write to text would silently invalidate that table. DOOM does not
+  self-modify — if it appears to, that is a bug worth halting on.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).
@@ -36,6 +41,11 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
 | PALETTE      | `0x1101_0000`| 768 B         | 256 × RGB (3 bytes), written on palette change |
 
 Anything outside these regions: fatal halt, reason = `BAD_ADDR`.
+
+Within RAM, the **text region** `[text_start, text_end)` is declared by the ROM
+manifest (§4) and is **read-only**: it is the region the executor pre-decodes,
+and a store into it is `SELF_MODIFY` (§1). The linker script places code and
+nothing writable there.
 
 Rationale for 8bpp + palette (not doomgeneric's default 32bpp buffer): 4×
 fewer store instructions per frame on the emulated CPU. Frame conversion to
@@ -75,7 +85,9 @@ image, no timestamps):
   markers. **Note:** shareware `doom1.wad` is freely redistributable; the
   DOOM source is GPL. Do not embed commercial WADs in the repo.
 - `manifest.json` — `{"spec_version", "entry": 2147483648, "load_addr",
-  "size", "sha256"}`.
+  "size", "sha256", "text_start", "text_end"}`. The text bounds are absolute
+  addresses delimiting the read-only region of §2; the build emits them from
+  the linker script rather than having them written by hand.
 
 CI pins the expected `sha256` in `rom/PINNED_HASH`; a mismatch on an
 unrelated PR means the build went nondeterministic — treat as `P0`.
@@ -97,11 +109,27 @@ shape. All tables carry `spec_version String`.
   64,000 bytes */, palette String /* 768 bytes */)`; written by the render
   query on `FRAME_COMMIT`.
 - `console_out` — `(seq UInt64, byte UInt8)`.
+- `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
+  `ram` at ROM load and covering `[text_start, text_end)` only:
+  `(word_addr UInt32, op_id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32,
+  target UInt32, width_mask UInt32, sign_bit UInt32)`. `op_id` is the collapsed
+  opcode space; `imm` is already sign-extended; `target` holds the absolute
+  branch/jump target word index, or the link value for `jal`/`jalr`. Decoding
+  must happen **inside** ClickHouse — decoding externally and inserting the
+  result is a PURITY.md violation, not an optimization.
+
+Materialize `ram` into the batch's constant array with `FINAL`, **not**
+`argMax(value, version) ... GROUP BY word_addr`: measured 0.022–0.030 s against
+0.245–0.256 s, and `FINAL` stayed flat with 1.2 M accumulated store deltas.
 
 ## 6. Batch execution contract
 
 The driver invokes one batch = one `INSERT ... SELECT` executing up to `K`
-instructions (`K` default 50,000; tunable). A batch ends early on: halt,
+instructions (`K` default **50,000**; tunable). 50,000 is the measured optimum,
+not a guess: below it the ~0.30 s per-batch fixed cost dominates, above it the
+write-log's superlinear growth cancels the remaining amortization (8,721 /
+11,894 / 11,628 instructions/sec end-to-end at K = 10,000 / 50,000 / 200,000 —
+`executor/bench/phase0/RESULTS.md`). A batch ends early on: halt,
 `FRAME_COMMIT` write, or write-log high-water mark. Batch commit is atomic:
 either all effects (ram deltas, cpu_state row, MMIO side effects) land or
 none do. The driver's only logic: loop batches, insert key events, blit
@@ -132,12 +160,37 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
    nightly deep-diff evidence.
 4. The ROM build must be byte-reproducible (§4).
 
-## 9. Open questions (Phase 0 must resolve)
+## 9. Phase 0 resolutions and remaining open questions
 
-- [ ] arrayFold throughput benchmark: instructions/sec at K=10k/50k/200k;
-      accumulator copy behavior with large captured constant arrays.
-- [ ] Fallback decision recorded as ADR if arrayFold underperforms
-      (recursive CTE? smaller K? paged accumulator?).
-- [ ] Final `IPMS` and `K` defaults from measured throughput.
-- [ ] Ratify MMIO addresses & framebuffer format after ROM bring-up in QEMU.
-- [ ] ClickHouse version final pin.
+Resolved by the Phase 0 benchmark (evidence:
+`executor/bench/phase0/RESULTS.md`; decisions: ADR-0001, ADR-0002):
+
+- [x] **arrayFold throughput.** 8,721 / 11,894 / 11,628 instructions per second
+      end-to-end at K = 10,000 / 50,000 / 200,000, against ADR-0001's ≥10,000
+      threshold. ADR-0001 **accepted**.
+- [x] **Accumulator copy with large captured constant arrays.** Does not
+      happen. Fold throughput is flat across a 6,144× range in captured-array
+      size (4 KiB → 24 MiB: 113,895 vs 106,951 instructions/sec). Holding all
+      24 MiB of RAM as a query-level constant is sound.
+- [x] **Fallback decision.** Not needed — no fallback in ADR-0001's list was
+      used. The decisive change was moving decode out of the fold lambda into a
+      table (ADR-0002, 7.4× on the same fold), which the ADR did not anticipate
+      because it assumed the cost model was about data movement rather than
+      expression-node count.
+- [x] **`K` default.** 50,000, fixed in §6 above.
+- [x] **ClickHouse version pin.** 26.3 (tested against 26.3.17.4). Note the
+      image restricts the `default` user to container-local addresses; the pin
+      ships `CLICKHOUSE_PASSWORD` in `docker-compose.yml` and in every CI
+      service container so host and runner connections work (see issue #3).
+
+Deferred, with the milestone that closes them:
+
+- [ ] **`IPMS` final value** (§3.1). Deliberately *not* derived from measured
+      throughput — elastic time exists precisely so that emulator speed cannot
+      affect emulated behaviour. It is a game-speed parameter: `IPMS` = 10,000
+      means DOOM believes one millisecond passes per 10,000 retired
+      instructions. Validated at ROM bring-up, when `refemu` can report how many
+      instructions a real DOOM tic actually costs. Owner: `refemu`, Phase 1.
+- [ ] **MMIO addresses and framebuffer format** (§2, §3). Cannot be ratified
+      before the ROM boots; doomgeneric's platform layer may want a register
+      this table does not have. Owner: `rom`, at the Phase 1 milestone.

@@ -5,14 +5,15 @@ instruction, so clarity beats cleverness beats speed. Every opcode arm is a
 direct transcription of the RISC-V base ISA's instruction formats — if it
 doesn't look obviously correct on read, it isn't done.
 
-Two things this file deliberately leaves to sibling issues, with the seam
-marked at the point where they plug in:
-- The M-extension (mul/div/rem, opcode 0x33 funct7=0x01) is issue #12.
-  Until it lands, those encodings decode as ILLEGAL_INSN like any other
-  unimplemented opcode — correct behavior for an RV32I-only test, and not a
-  divergence once #12 fills the arm in.
-- MMIO register semantics (TICKS_MS, KEYQ, EXIT, PUTCHAR, FRAME_COMMIT) are
-  issue #13's; see `memory.NullMmio`.
+The M-extension (mul/mulh/mulhsu/mulhu/div/divu/rem/remu, opcode 0x33
+funct7=0x01) is implemented here too (issue #12) — the edge cases (division
+by zero, `INT_MIN` overflow, `mulhsu`'s mixed signedness) are the whole job
+for that instruction class, since they are exactly where refemu and sqlcpu
+would silently disagree if either got sloppy.
+
+One thing this file deliberately leaves to a sibling issue, with the seam
+marked at the point it plugs in: MMIO register semantics (TICKS_MS, KEYQ,
+EXIT, PUTCHAR, FRAME_COMMIT) are issue #13's; see `memory.NullMmio`.
 """
 
 from __future__ import annotations
@@ -69,6 +70,18 @@ def _u32(value: int) -> int:
 def _s32(value: int) -> int:
     value &= 0xFFFF_FFFF
     return value - 0x1_0000_0000 if value & 0x8000_0000 else value
+
+
+def _trunc_div(a: int, b: int) -> int:
+    """C-style division truncated toward zero (Python's `//` floors, which
+    disagrees with RISC-V `div`/`divu` on negative operands)."""
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def _trunc_rem(a: int, b: int) -> int:
+    """Remainder consistent with `_trunc_div`: `a == _trunc_div(a, b) * b + _trunc_rem(a, b)`."""
+    return a - _trunc_div(a, b) * b
 
 
 # Opcodes (instruction bits [6:0]).
@@ -271,11 +284,10 @@ class CPU:
             self.write_reg(rd, result)
             return pc + 4
 
+        if opcode == OP_REG and funct7 == 0x01:
+            return self._execute_m_ext(pc, insn, rd, funct3, rs1, rs2)
+
         if opcode == OP_REG:
-            if funct7 == 0x01:
-                # M-extension (mul/mulh/mulhsu/mulhu/div/divu/rem/remu):
-                # issue #12 fills this arm in.
-                raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
             a, b = self.read_reg(rs1), self.read_reg(rs2)
             shamt = b & 0x1F
             ops = {
@@ -316,3 +328,49 @@ class CPU:
             raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
 
         raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
+
+    def _execute_m_ext(self, pc: int, insn: int, rd: int, funct3: int, rs1: int, rs2: int) -> int:
+        """M-extension: mul/mulh/mulhsu/mulhu/div/divu/rem/remu (issue #12).
+
+        `a`/`b` are the raw unsigned 32-bit register bit patterns; `sa`/`sb`
+        are their signed reinterpretation. Each op picks whichever pair its
+        RISC-V semantics call for -- getting `mulhsu`'s signed/unsigned
+        operand order backwards, or missing the div-by-zero/INT_MIN special
+        cases, is exactly the kind of bug that would only show up as a
+        silent divergence against sqlcpu later, not a crash here.
+        """
+        a, b = self.read_reg(rs1), self.read_reg(rs2)
+        sa, sb = _s32(a), _s32(b)
+        int_min = 0x8000_0000
+
+        if funct3 == 0b000:  # mul: low 32 bits, sign-independent
+            result = _u32(a * b)
+        elif funct3 == 0b001:  # mulh: high 32 bits of signed x signed
+            result = _u32((sa * sb) >> 32)
+        elif funct3 == 0b010:  # mulhsu: high 32 bits of signed rs1 x unsigned rs2
+            result = _u32((sa * b) >> 32)
+        elif funct3 == 0b011:  # mulhu: high 32 bits of unsigned x unsigned
+            result = _u32((a * b) >> 32)
+        elif funct3 == 0b100:  # div: signed, truncating toward zero
+            if b == 0:
+                result = 0xFFFF_FFFF  # no trap: all-ones
+            elif sa == -int_min and sb == -1:
+                result = int_min  # no trap: overflow saturates to INT_MIN
+            else:
+                result = _u32(_trunc_div(sa, sb))
+        elif funct3 == 0b101:  # divu: unsigned
+            result = 0xFFFF_FFFF if b == 0 else a // b
+        elif funct3 == 0b110:  # rem: signed, sign of dividend
+            if b == 0:
+                result = a  # no trap: the dividend, unchanged
+            elif sa == -int_min and sb == -1:
+                result = 0  # no trap: overflow case remainder is 0
+            else:
+                result = _u32(_trunc_rem(sa, sb))
+        elif funct3 == 0b111:  # remu: unsigned
+            result = a if b == 0 else a % b
+        else:
+            raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
+
+        self.write_reg(rd, result)
+        return pc + 4

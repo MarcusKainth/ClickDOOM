@@ -1,0 +1,37 @@
+name: Spec change proposal
+description: Propose a change to a SPEC.md contract. Requires human-owner ratification.
+title: "spec: <summary>"
+labels: ["spec-change"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What broke or what became impossible/ugly under the current contract?
+    validations:
+      required: true
+  - type: textarea
+    id: diff
+    attributes:
+      label: Proposed contract diff
+      description: The exact SPEC.md sections and their new text
+      render: diff
+    validations:
+      required: true
+  - type: checkboxes
+    id: affected
+    attributes:
+      label: Affected workstreams (their owners must be requested as PR reviewers)
+      options:
+        - label: rom
+        - label: refemu
+        - label: sqlcpu
+        - label: executor
+        - label: driver/render
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration
+      description: Breaking (`spec!:`)? What must change in each affected workstream, and in what order?
+    validations:
+      required: true

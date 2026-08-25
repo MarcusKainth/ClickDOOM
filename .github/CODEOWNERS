@@ -1,0 +1,9 @@
+# CODEOWNERS — the human control plane.
+# Agents may PROPOSE changes to these files; only the human owner may approve them.
+# Everything not listed here is owned end-to-end by the agent team.
+#
+
+/SPEC.md              @MarcusKainth
+/PURITY.md            @MarcusKainth
+/.github/workflows/   @MarcusKainth
+/.github/CODEOWNERS   @MarcusKainth

@@ -1,0 +1,141 @@
+# ClickDOOM CI
+#
+# Design: every workstream-specific step is guarded with hashFiles() on a
+# marker file, so this pipeline is GREEN on the empty skeleton and activates
+# job-by-job as agents land code. Do not delete guards to "enable" a job —
+# land the marker file (Makefile / test entrypoint) instead.
+#
+# PINNED VERSIONS (keep in sync with docker-compose.yml; bumps are `ci:` PRs
+# with nightly deep-diff evidence — see SPEC §8):
+#   ClickHouse: 25.8  (placeholder pin — Phase 0 ratifies the final version)
+
+name: ci
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  push:
+    branches: [main]
+
+env:
+  CLICKHOUSE_VERSION: "25.8"
+
+jobs:
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint PR title against commit convention
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: ./scripts/lint_pr_title.sh "$TITLE"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Purity check (always on)
+        run: ./scripts/check_purity.sh
+      - name: shellcheck
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          find scripts driver -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
+      - name: "ruff (Python: refemu, driver)"
+        if: hashFiles('refemu/pyproject.toml', 'driver/pyproject.toml') != ''
+        run: |
+          pipx install ruff
+          ruff check refemu driver
+      - name: clang-format (rom C sources)
+        if: hashFiles('rom/**/*.c', 'rom/**/*.h') != ''
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q clang-format
+          find rom -name '*.c' -o -name '*.h' | xargs -r clang-format --dry-run --Werror
+
+  build-rom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ROM (dockerized rv32 toolchain)
+        if: hashFiles('rom/Makefile') != ''
+        run: make -C rom
+      - name: Verify reproducible-build hash pin
+        if: hashFiles('rom/Makefile') != '' && hashFiles('rom/PINNED_HASH') != ''
+        run: |
+          built=$(sha256sum rom/build/doom-rv32im.bin | cut -d' ' -f1)
+          pinned=$(cat rom/PINNED_HASH)
+          if [ "$built" != "$pinned" ]; then
+            echo "::error::ROM hash mismatch: built=$built pinned=$pinned."
+            echo "::error::Either the build went nondeterministic (P0) or you changed the ROM without updating rom/PINNED_HASH in the same PR."
+            exit 1
+          fi
+      - name: Upload ROM artifact
+        if: hashFiles('rom/Makefile') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rom
+          path: |
+            rom/build/doom-rv32im.bin
+            rom/build/manifest.json
+      - name: Skipped (rom/ not landed yet)
+        if: hashFiles('rom/Makefile') == ''
+        run: echo "rom workstream not landed — step group skipped by design"
+
+  test-refemu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: riscv-tests against reference emulator
+        if: hashFiles('refemu/pyproject.toml') != ''
+        run: |
+          pipx install uv
+          cd refemu && uv sync --frozen && uv run pytest -q
+      - name: Skipped (refemu/ not landed yet)
+        if: hashFiles('refemu/pyproject.toml') == ''
+        run: echo "refemu workstream not landed — skipped by design"
+
+  test-sqlcpu:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8   # keep literal in sync with env.CLICKHOUSE_VERSION
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: riscv-tests inside ClickHouse
+        if: hashFiles('sqlcpu/schema.sql') != ''
+        run: ./sqlcpu/run_tests.sh --host localhost --port 9000
+      - name: Skipped (sqlcpu/ not landed yet)
+        if: hashFiles('sqlcpu/schema.sql') == ''
+        run: echo "sqlcpu workstream not landed — skipped by design"
+
+  differential-smoke:
+    # Highest-value check in the repo: first 1M instructions of the DOOM ROM
+    # on refemu vs sqlcpu, checkpoint hashes compared per SPEC §7.
+    # Budget: keep under ~5 minutes; the deep run lives in nightly.yml.
+    needs: [build-rom, test-refemu, test-sqlcpu]
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8   # keep in sync
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download ROM artifact
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: rom
+          path: rom/build
+      - name: Run smoke diff (1M instructions)
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        run: ./scripts/diff_run.sh 1000000
+      - name: Skipped (needs rom + refemu + sqlcpu all landed)
+        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == ''
+        run: echo "differential smoke activates when rom, refemu and sqlcpu have all landed"

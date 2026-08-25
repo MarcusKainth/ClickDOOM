@@ -1,0 +1,29 @@
+name: Task
+description: A self-contained work item for the shared backlog. Self-assignment = claim.
+labels: ["task"]
+body:
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options: [spec, rom, refemu, sqlcpu, executor, driver, render, test, bench, ci, docs]
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to exist that doesn't. Link SPEC sections it implements.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Objectively checkable. Prefer "just <cmd> exits 0 with X" over prose.
+    validations:
+      required: true
+  - type: input
+    id: blocked-by
+    attributes:
+      label: Blocked by (issue #s, optional)

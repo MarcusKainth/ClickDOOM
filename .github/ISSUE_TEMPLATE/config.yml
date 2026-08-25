@@ -1,0 +1,2 @@
+# Force structured issue forms — freeform issues are hard for agents to triage.
+blank_issues_enabled: false

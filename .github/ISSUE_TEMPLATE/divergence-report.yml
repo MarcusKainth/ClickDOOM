@@ -1,0 +1,51 @@
+name: Divergence report
+description: sqlcpu diverged from refemu on identical input. The project's most important issue type.
+title: "sqlcpu: divergence at icount <N>"
+labels: ["divergence", "sqlcpu"]
+body:
+  - type: input
+    id: rom-sha
+    attributes:
+      label: ROM sha256
+      description: From rom/build/manifest.json (must match rom/PINNED_HASH unless testing a WIP ROM)
+    validations:
+      required: true
+  - type: input
+    id: ch-version
+    attributes:
+      label: ClickHouse version
+      placeholder: e.g. 25.8.x (must be the repo pin unless the issue is about a version bump)
+    validations:
+      required: true
+  - type: input
+    id: icount
+    attributes:
+      label: First divergent instruction (icount)
+    validations:
+      required: true
+  - type: input
+    id: pc
+    attributes:
+      label: PC at divergence (hex, from refemu)
+    validations:
+      required: true
+  - type: textarea
+    id: state-diff
+    attributes:
+      label: State diff
+      description: Register diff (refemu vs sqlcpu) and, if a ram-hash checkpoint diverged, the word_addr diff
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: repro
+    attributes:
+      label: One-line repro
+      placeholder: just diff 48211008
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Analysis notes (optional)
+      description: Suspected instruction/class, disassembly around PC, anything the claimer should know

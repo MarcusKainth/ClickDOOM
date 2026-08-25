@@ -1,0 +1,58 @@
+# Nightly, non-PR-blocking: the long differential run and the throughput
+# benchmark. Failures here open issues (deep-diff failures use the
+# divergence-report form) rather than blocking merges.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      deep_diff_instructions:
+        description: "Instruction count for the deep differential run"
+        default: "200000000"
+
+jobs:
+  deep-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8   # keep in sync with ci.yml
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deep differential run
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        run: |
+          make -C rom
+          ./scripts/diff_run.sh "${{ github.event.inputs.deep_diff_instructions || '200000000' }}"
+      - name: Skipped (workstreams not landed)
+        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == ''
+        run: echo "deep diff activates when rom, refemu and sqlcpu have all landed"
+
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8   # keep in sync with ci.yml
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Executor throughput benchmark
+        if: hashFiles('executor/bench.sh') != ''
+        # bench.sh prints instructions/sec, appends a row to the bench history
+        # table (dogfooding: history lives in ClickHouse), and exits non-zero
+        # on a >10% regression vs the trailing-7-run median.
+        run: ./executor/bench.sh --host localhost --port 9000 --gate 0.10
+      - name: Skipped (executor/ not landed yet)
+        if: hashFiles('executor/bench.sh') == ''
+        run: echo "bench activates when executor lands bench.sh"

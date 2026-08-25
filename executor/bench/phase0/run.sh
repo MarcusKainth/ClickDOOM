@@ -16,10 +16,20 @@ REPEATS="${CLICKDOOM_BENCH_REPEATS:-2}"
 
 ch() { docker exec -i "$CONTAINER" clickhouse-client "$@"; }
 
-# Time one query read from stdin; echo elapsed seconds. clickhouse-client
-# --time writes elapsed seconds to STDERR, so discard stdout (the query result)
-# and keep the last stderr line.
-time_query() { ch --time --multiquery 2>&1 >/dev/null | tail -1; }
+# Time one query read from stdin; echo elapsed seconds.
+#
+# Deliberately NOT clickhouse-client --time: over `docker exec` the timing line
+# and the result line interleave unpredictably, so parsing it silently yields
+# the query result instead of a duration. Wall clock around the call is both
+# robust and the number we actually care about, since it includes the client
+# round trip the driver will pay too.
+time_query() {
+  local start end
+  start=$(date +%s.%N)
+  ch --multiquery > /dev/null
+  end=$(date +%s.%N)
+  python3 -c "print(f'{$end - $start:.3f}')"
+}
 
 # emit <variant> <mode> <K> <instructions> <seconds>
 emit() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$5" \
@@ -57,7 +67,10 @@ done
 
 # --- end to end: state reload + fold + write-log commit ----------------------
 for K in $KS; do
-  BATCHES=$(( 600000 / K )); [ "$BATCHES" -lt 3 ] && BATCHES=3
+  BATCHES=$(( 600000 / K ))
+  # `[ ... ] && x=y` as a bare statement returns 1 when the test is false, which
+  # under `set -e` aborts the script. Spell it out.
+  if [ "$BATCHES" -lt 3 ]; then BATCHES=3; fi
   ch --query "TRUNCATE TABLE clickdoom_bench.state"
   ch --query "TRUNCATE TABLE clickdoom_bench.batch_out"
   ch --query "INSERT INTO clickdoom_bench.state

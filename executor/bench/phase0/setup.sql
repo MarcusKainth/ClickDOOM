@@ -4,7 +4,8 @@
 -- fast ClickHouse can turn the arrayFold crank on an RV32IM-shaped lambda.
 -- The "ROM" is therefore pseudo-random words and the decode table is a
 -- synthetic instruction mix, both generated deterministically from a
--- multiplicative hash of `number` (SPEC §8: no rand(), no now()).
+-- multiplicative hash of `number`, so nothing here touches wall clock or
+-- randomness (SPEC §8).
 --
 -- Correctness is riscv-tests' job (sqlcpu workstream), not this file's.
 

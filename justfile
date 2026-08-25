@@ -35,6 +35,11 @@ diff N: up
 # CI-sized differential smoke
 smoke: (diff "1000000")
 
+# Phase 0 arrayFold characterisation benchmark (ADR-0001/0002 evidence).
+# One-off harness, not the nightly regression gate — that is `just bench`.
+bench-phase0: up
+    ./executor/bench/phase0/run.sh
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

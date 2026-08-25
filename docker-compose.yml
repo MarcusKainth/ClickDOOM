@@ -1,0 +1,17 @@
+# Local dev ClickHouse — the SAME pinned version as CI (see .github/workflows/*.yml).
+# Bumping the pin: `ci:` PR + nightly deep-diff evidence (SPEC §8).
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    container_name: clickdoom-ch
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # native
+    ulimits:
+      nofile: 262144
+    environment:
+      CLICKHOUSE_DB: clickdoom
+    volumes:
+      - ch-data:/var/lib/clickhouse
+volumes:
+  ch-data:

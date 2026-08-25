@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+*.o
+*.elf
+*.bin
+!rom/prebuilt/*.bin
+# Traces & benchmark output (regenerate via `just`; do not commit)
+traces/
+*.trace
+bench-results/
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

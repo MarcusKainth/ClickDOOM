@@ -2,7 +2,7 @@
 # Bumping the pin: `ci:` PR + nightly deep-diff evidence (SPEC §8).
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8
+    image: clickhouse/clickhouse-server:26.3
     container_name: clickdoom-ch
     ports:
       - "8123:8123"   # HTTP

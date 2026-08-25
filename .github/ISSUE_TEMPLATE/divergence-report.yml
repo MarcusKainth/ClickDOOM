@@ -14,7 +14,7 @@ body:
     id: ch-version
     attributes:
       label: ClickHouse version
-      placeholder: e.g. 26.8.x (must be the repo pin unless the issue is about a version bump)
+      placeholder: e.g. 26.3.x (must be the repo pin unless the issue is about a version bump)
     validations:
       required: true
   - type: input

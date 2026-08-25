@@ -99,11 +99,34 @@ shape. All tables carry `spec_version String`.
 
 - `cpu_state` — one row per committed batch: `(batch_id UInt64, icount
   UInt64, pc UInt32, regs Array(UInt32) /* len 31, x1..x31 */, halted UInt8,
-  halt_reason LowCardinality(String), exit_code UInt32)`.
+  halt_reason LowCardinality(String), exit_code UInt32)`. Implemented as a
+  `VIEW` projecting exactly this shape from `batch_commit` (below) — this
+  shape is a read contract, not a physical-table requirement.
+- `batch_commit` — the batch's single atomic write (§6). One row per batch,
+  superset of `cpu_state`'s columns plus the per-batch bulky data recovery
+  needs to safely re-derive `ram` and `console_out`: `keyq_pos UInt64`
+  (cumulative KEYQ pops through this batch), `has_frame UInt8` / `frame_no
+  UInt32` (FRAME_COMMIT, if any, this batch), `wl_addr Array(UInt32)`,
+  `wl_val Array(UInt32)`, `wl_icount Array(UInt64)` (per-store version — see
+  the versioning note below), `console_bytes Array(UInt8)`. The bulky
+  columns (`wl_*`, `console_bytes`) are bounded by a TTL rather than
+  retained forever: in normal operation only the latest row's bulky columns
+  are ever read (everything else has already been flushed into `ram` /
+  `console_out`), so a generous TTL (executor/config, default 1 day) is
+  sound. This is a documented tradeoff, not a solved one: a driver outage
+  longer than the TTL window before restart can lose the last committed
+  batch's write-log before recovery replays it. Acceptable for this
+  project's supervised-run operating model; would need revisiting for an
+  unattended-service deployment.
 - `ram` — `ReplacingMergeTree(version)` keyed by `word_addr UInt32` (byte
   addr >> 2), `value UInt32`, `version UInt64` (= icount of the store).
   Loaded once per batch as a constant array; stores inside a batch live in
-  the fold's write-log and are flushed here on batch commit.
+  the fold's write-log and are flushed here on batch commit. The version for
+  each delta must be the individual store's own `icount`
+  (`batch_commit.wl_icount[i]`), not the batch's final `icount` — two
+  same-address stores in one batch sharing a version is a
+  `ReplacingMergeTree` tie with an unspecified winner, which violates §8's
+  explicit-ordering rule.
 - `input_queue` — `(event_seq UInt64, key_event UInt16, consumed UInt8)`.
 - `frames_out` — `(frame_no UInt32, committed_icount UInt64, fb String /*
   64,000 bytes */, palette String /* 768 bytes */)`; written by the render
@@ -132,8 +155,15 @@ write-log's superlinear growth cancels the remaining amortization (8,721 /
 `executor/bench/phase0/RESULTS.md`). A batch ends early on: halt,
 `FRAME_COMMIT` write, or write-log high-water mark. Batch commit is atomic:
 either all effects (ram deltas, cpu_state row, MMIO side effects) land or
-none do. The driver's only logic: loop batches, insert key events, blit
-committed frames. See PURITY.md.
+none do. "Atomic" is a statement about externally observable state, not a
+requirement for a single cross-table transaction — ClickHouse has none. A
+design satisfies this contract if the batch's committed facts are captured
+in one atomic single-row write (`batch_commit`, §5), and every other effect
+converges to match that row through derivation that is safe to redo any
+number of times, such that no observer — including a SPEC §7 differential
+trace, before or after a crash and restart — can ever witness a
+half-applied batch. The driver's only logic: loop batches, insert key
+events, blit committed frames. See PURITY.md.
 
 ## 7. Differential trace & checkpoint format
 

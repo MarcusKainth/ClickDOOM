@@ -18,18 +18,30 @@ BUILD      := build
 BIN := $(BUILD)/doom-rv32im.bin
 ELF := $(BUILD)/doom-rv32im.elf
 
-# Sources for the current milestone. src/placeholder.S and
-# toolchain/placeholder.ld stand in for the real crt0/linker script landing
-# in issue #6 (see the header comments in those files) — they exist only so
-# this Makefile and the pinned toolchain have something real to build, which
-# is what switches on CI's build-rom job.
-SRC := src/placeholder.S
-LD  := toolchain/placeholder.ld
+# Sources for the current milestone. main_stub.c stands in for doomgeneric's
+# main (issues #7-#9 supply libc and the real DG_* hooks; see the header
+# comment in that file) — it exists so crt0's `call main` has a real symbol
+# and the build keeps producing something real to run.
+SRC := src/crt0.S src/main_stub.c
+LD  := toolchain/link.ld
 
 # SPEC §1: RV32IM, no compressed extension, strict alignment (keeps the SQL
-# load/store path branch-free). -ffile-prefix-map normalizes the in-container
-# mount path so debug/diagnostic strings never vary by host checkout path.
-CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -ffreestanding -fno-pic \
+# load/store path branch-free). -mno-relax: never emit gp-relative linker
+# relaxation (see src/crt0.S — this is why crt0 sets no gp).
+# -msmall-data-limit=0: gcc's RISC-V backend routes small globals into
+# .sdata/.sbss/.srodata below a size threshold *regardless* of -mno-relax
+# (that flag only suppresses the gp-relative addressing transform, not the
+# section split) — found the hard way when a .sbss orphan landed outside
+# toolchain/link.ld's .bss output section and crt0's zero loop silently
+# skipped it. Zeroing the threshold means everything lands in the plain
+# .data/.bss/.rodata this linker script actually accounts for.
+# -fno-builtin: freestanding means no libc, so gcc must never substitute a
+# builtin call (memset/memcpy/...) for a recognized loop pattern — there is
+# nothing behind that symbol yet. -ffile-prefix-map normalizes the
+# in-container mount path so debug/diagnostic strings never vary by host
+# checkout path.
+CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -mno-relax \
+           -msmall-data-limit=0 -ffreestanding -fno-pic -fno-builtin \
            -O2 -g0 -fno-ident -ffile-prefix-map=/work=.
 # -nostdlib: no crt/libc/libgcc linked in. There is no OS here (rom/
 # charter); crt0 and libc shims are ours (issues #6, #7).

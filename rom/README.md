@@ -27,10 +27,42 @@ tag.
 Both are content-pinned, so a bump is a deliberate `ci:`/`rom:` PR that
 changes the pin, never something that happens by re-pulling `latest`.
 
-## Placeholder entry point
+## crt0 and memory map (issue #6)
 
-`src/placeholder.S` and `toolchain/placeholder.ld` are **not** the real ROM.
-They exist only so this Makefile has something real to compile, activating
-CI's `build-rom` job before crt0 and the real linker script/memory map land
-in #6. Both files say so in their header comments and are meant to be
-deleted/replaced there, not extended.
+`toolchain/link.ld` implements SPEC §2's memory map inside the 24 MiB RAM
+window at `0x8000_0000`: `.text` (crt0 + all compiled code) first and its
+own contiguous, word-aligned region so `[__text_start, __text_end)` is
+exactly what CI later pins as `text_start`/`text_end` in `manifest.json`
+(#10) and what the executor pre-decodes (ADR-0002) — a store anywhere in
+there is `SELF_MODIFY`. `.rodata`, `.data`, then `.bss` (`NOLOAD`, so it
+costs no file bytes and `objcopy -O binary` correctly stops emitting bytes
+at end of `.data`) follow. The heap is everything between end-of-bss and a
+1 MiB stack reserved at the top of RAM (`STACK_SIZE` in the linker script —
+a rom/-local choice, not SPEC-mandated). Three `PHDRS` (R+E / R / R+W) keep
+the ELF's segment permissions honest; the SQL CPU has no MMU so this has no
+effect on the flat binary, it's purely so `readelf -l` doesn't lie.
+
+`src/crt0.S` does exactly the three things SPEC §1 asks of it: set `sp`,
+zero `.bss`, call `main`. No `gp` setup — `rom/Makefile` passes `-mno-relax`
+so gp-relative addressing is never emitted, and `-msmall-data-limit=0` so
+gcc never routes small globals into `.sdata`/`.sbss` in the first place
+(found by inspecting a build: with only `-mno-relax`, a small `.bss` global
+still landed in an orphan `.sbss` section outside `[__text_start,
+__text_end)`'s zero range and was silently never zeroed — `link.ld`'s
+`.bss`/`.data`/`.rodata` output sections now also fold in the `.s*` names
+directly, as defense in depth against the same class of bug from an object
+built with different flags).
+
+`src/main_stub.c` is **not** doomgeneric's `main` — it's a placeholder that
+gives `crt0`'s `call main` a real symbol until #7-#9 land libc and the real
+`DG_*` hooks. Verified via `readelf`/`objdump`/`nm` inside the toolchain
+container: entry point `0x8000_0000`, `.text` contains exactly `_start` +
+`main` with no orphan sections, `__bss_start`/`__bss_end` bound exactly the
+one `.bss` global that exists, and the build is still byte-reproducible
+(same sha256 across a rebuild and after evicting the local toolchain image).
+
+One thing this issue's "done when" can't fully close yet: "reaches `main`
+in refemu without faulting" needs refemu's RV32I interpreter core (#11),
+which hasn't landed. Verified everything checkable without it (ELF
+structure, disassembly, reproducibility); asked refemu to confirm the boot
+once #11 lands.

@@ -11,16 +11,22 @@ by zero, `INT_MIN` overflow, `mulhsu`'s mixed signedness) are the whole job
 for that instruction class, since they are exactly where refemu and sqlcpu
 would silently disagree if either got sloppy.
 
-One thing this file deliberately leaves to a sibling issue, with the seam
-marked at the point it plugs in: MMIO register semantics (TICKS_MS, KEYQ,
-EXIT, PUTCHAR, FRAME_COMMIT) are issue #13's; see `memory.NullMmio`.
+MMIO register semantics (TICKS_MS, KEYQ, EXIT, PUTCHAR, FRAME_COMMIT, issue
+#13) live in `mmio.py`; this file only translates the one exception that
+crosses the store path (`MmioExit`) into the same `Halted` shape every
+other stop condition uses. `new_cpu()` at the bottom of this file is the
+one function that wires a `CPU` to a real `Mmio` instead of the inert
+`memory.NullMmio` -- use it instead of constructing `CPU(memory=Memory())`
+directly whenever MMIO behavior (not just memory-map bounds checking)
+matters.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .memory import RAM_BASE, BadAddr, Memory, Misaligned, SelfModify
+from .memory import RAM_BASE, RAM_SIZE, BadAddr, Memory, Misaligned, SelfModify
+from .mmio import DEFAULT_IPMS, Mmio, MmioExit
 
 
 class HaltReason:
@@ -32,6 +38,11 @@ class HaltReason:
     names below are refemu's choice. They matter beyond this file only if
     `sqlcpu` wants byte-identical `cpu_state.halt_reason` values (SPEC §5)
     — coordinate before relying on the exact spelling.
+
+    EXIT is not a SPEC §1 *fault* -- it is the ROM's own clean stop signal
+    (SPEC §3's `EXIT` register) -- but SPEC §5's `cpu_state` schema tracks
+    it through the same `halted`/`halt_reason`/`exit_code` columns as every
+    fault, so `Halted` is the mechanism for it here too.
     """
 
     ILLEGAL_INSN = "ILLEGAL_INSN"
@@ -41,19 +52,29 @@ class HaltReason:
     ECALL = "ECALL"
     EBREAK = "EBREAK"
     CSR = "CSR"
+    EXIT = "EXIT"
 
 
 class Halted(Exception):
-    """Raised by `CPU.step()` on any fatal halt (SPEC §1). Carries
-    everything the halt record needs: reason, pc, and, when applicable,
-    the raw instruction word (ILLEGAL_INSN, SELF_MODIFY) or the faulting
-    address (BAD_ADDR, MISALIGNED, SELF_MODIFY)."""
+    """Raised by `CPU.step()` on any halt, fatal or clean (SPEC §1, §3).
+    Carries everything the halt record needs: reason, pc, and, when
+    applicable, the raw instruction word (ILLEGAL_INSN, SELF_MODIFY), the
+    faulting address (BAD_ADDR, MISALIGNED, SELF_MODIFY), or the exit code
+    (EXIT)."""
 
-    def __init__(self, reason: str, pc: int, insn: int | None = None, addr: int | None = None):
+    def __init__(
+        self,
+        reason: str,
+        pc: int,
+        insn: int | None = None,
+        addr: int | None = None,
+        exit_code: int | None = None,
+    ):
         self.reason = reason
         self.pc = pc
         self.insn = insn
         self.addr = addr
+        self.exit_code = exit_code
         super().__init__(f"{reason} at pc=0x{pc:08x}")
 
 
@@ -255,6 +276,8 @@ class CPU:
                 raise Halted(HaltReason.MISALIGNED, pc, insn=insn, addr=e.addr) from None
             except SelfModify as e:
                 raise Halted(HaltReason.SELF_MODIFY, pc, insn=insn, addr=e.addr) from None
+            except MmioExit as e:
+                raise Halted(HaltReason.EXIT, pc, insn=insn, exit_code=e.code) from None
             return pc + 4
 
         if opcode == OP_IMM:
@@ -374,3 +397,23 @@ class CPU:
 
         self.write_reg(rd, result)
         return pc + 4
+
+
+def new_cpu(
+    ram_size: int = RAM_SIZE,
+    ipms: int = DEFAULT_IPMS,
+    text_start: int | None = None,
+    text_end: int | None = None,
+) -> CPU:
+    """Construct a `CPU` with real MMIO semantics (SPEC §3) wired up.
+
+    `Mmio.icount_fn` has to be set after both objects exist -- `Mmio` can't
+    hold a `CPU` reference (that would make `CPU` -> `Memory` -> `Mmio` ->
+    `CPU` a cycle), so this function does the two-step wiring once instead
+    of every caller repeating it.
+    """
+    mmio = Mmio(ipms=ipms)
+    memory = Memory(ram_size=ram_size, mmio=mmio, text_start=text_start, text_end=text_end)
+    cpu = CPU(memory=memory)
+    mmio.icount_fn = lambda: cpu.icount
+    return cpu

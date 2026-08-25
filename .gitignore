@@ -16,3 +16,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Per-teammate git worktrees (Phase 1+)
+worktrees/

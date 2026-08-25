@@ -4,6 +4,13 @@
 
 name: nightly
 
+env:
+  # Credentials for the service containers below. Local-dev only: this database
+  # holds an emulator's RAM, never a secret. docker-compose.yml must match.
+  CLICKHOUSE_USER: default
+  CLICKHOUSE_PASSWORD: clickdoom
+  CLICKHOUSE_DATABASE: clickdoom
+
 on:
   schedule:
     - cron: "0 3 * * *"
@@ -20,6 +27,9 @@ jobs:
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.3   # keep in sync with ci.yml
+        env:
+          CLICKHOUSE_DB: clickdoom
+          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
@@ -41,6 +51,9 @@ jobs:
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.3   # keep in sync with ci.yml
+        env:
+          CLICKHOUSE_DB: clickdoom
+          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"

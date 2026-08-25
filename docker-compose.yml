@@ -11,6 +11,11 @@ services:
       nofile: 262144
     environment:
       CLICKHOUSE_DB: clickdoom
+      # The image ships users.d/default-user.xml restricting `default` to
+      # 127.0.0.1/::1 *inside the container*, so every host-side and CI
+      # connection is refused with REQUIRED_PASSWORD. Setting a password makes
+      # `default` reachable over the network. Keep in sync with the workflows.
+      CLICKHOUSE_PASSWORD: clickdoom
     volumes:
       - ch-data:/var/lib/clickhouse
 volumes:

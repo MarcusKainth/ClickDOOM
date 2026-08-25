@@ -52,15 +52,15 @@ def test_illegal_insn_bad_alu_funct(cpu):
     assert exc.value.reason == HaltReason.ILLEGAL_INSN
 
 
-def test_illegal_insn_unimplemented_m_extension(cpu):
-    # funct7=0x01 on OP_REG is the M-extension seam issue #12 fills in;
-    # until then it must halt cleanly, not silently compute garbage.
+def test_m_extension_does_not_illegal_insn(cpu):
+    # funct7=0x01 on OP_REG is the M-extension (issue #12) -- it must
+    # execute, not halt. All eight funct3 values are assigned, so there is
+    # no illegal encoding left in this arm; functional coverage for the
+    # M-extension ops themselves lives in test_m_extension.py.
     from .asm import mul
 
     load(cpu, [mul(1, 0, 0)])
-    with pytest.raises(Halted) as exc:
-        cpu.step()
-    assert exc.value.reason == HaltReason.ILLEGAL_INSN
+    cpu.step()  # must not raise
 
 
 def test_bad_addr_load_outside_all_regions(cpu):

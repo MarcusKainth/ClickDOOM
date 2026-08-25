@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 300
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:25.8   # keep in sync with ci.yml
+        image: clickhouse/clickhouse-server:26.8   # keep in sync with ci.yml
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 60
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:25.8   # keep in sync with ci.yml
+        image: clickhouse/clickhouse-server:26.8   # keep in sync with ci.yml
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"

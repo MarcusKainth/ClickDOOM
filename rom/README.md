@@ -75,8 +75,25 @@ container: entry point `0x8000_0000`, `.text` contains exactly `_start` +
 one `.bss` global that exists, and the build is still byte-reproducible
 (same sha256 across a rebuild and after evicting the local toolchain image).
 
-One thing this issue's "done when" can't fully close yet: "reaches `main`
-in refemu without faulting" needs refemu's RV32I interpreter core (#11),
-which hasn't landed. Verified everything checkable without it (ELF
-structure, disassembly, reproducibility); asked refemu to confirm the boot
-once #11 lands.
+One thing this issue's "done when" couldn't close from `rom`'s side alone:
+"reaches `main` in refemu without faulting." Confirmed since — `refemu`
+rebuilt this ELF from the branch and booted it in their own interpreter:
+10,000 instructions, no faults, landed exactly at `main`'s `for(;;)` loop
+at `pc=0x80000048` after correctly executing the `bss_counter` increment.
+First genuine cross-workstream integration on the project.
+
+## Vendored sources and licensing (issue #41)
+
+`rom/vendor/` holds unmodified upstream doomgeneric (which already carries
+the full DOOM engine source) — see
+[`rom/vendor/README.md`](vendor/README.md) for the pinned commit,
+provenance, and integrity manifest. **The DOOM engine and doomgeneric are
+GPL-2.0-or-later**; the license text is vendored verbatim at
+[`rom/vendor/doomgeneric/LICENSE`](vendor/doomgeneric/LICENSE). This is
+separate from the shareware `doom1.wad` licensing, which lands with the WAD
+itself in issue #9.
+
+Every deviation the port requires from that pristine tree — libc shim call
+sites, the `DG_*` MMIO wiring, anything RV32IM-bare-metal-specific — is a
+patch file in [`rom/patches/`](patches/README.md), never a hand-edit to
+`rom/vendor/`.

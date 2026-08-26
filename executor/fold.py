@@ -187,6 +187,29 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     five scalars into one tuple field each cuts that to ~2 evaluations,
     measured to matter (see the PR's before/after numbers).
     """
+    # #146: text_start_widx/text_end_widx are compared directly against WA
+    # below, and WA is RAM_BASE-relative, clamped to [0, ram_words-1] by
+    # construction (_addr_and_align's wa_safe) -- never an absolute word
+    # address. This is the third time an absolute/relative word-address
+    # mix-up has slipped past every existing test silently in this project
+    # (#81's RAMT indexing, the write-log's wl_addr-into-ram.word_addr
+    # flush, and #146 itself, independently, in two different callers'
+    # own gate/runner scripts) -- nothing in this function's signature
+    # enforces the unit otherwise, so a loud failure here beats a fourth
+    # silent one. `text_end_widx <= ram_words` alone would have caught
+    # #146's actual numbers (536,969,736 > 6,291,456); the rest of the
+    # range makes the invariant precise, not just sufficient for that one
+    # bug. Checked first, before anything below derives from these values
+    # (including _fb_pal_wa_provably_outside_text's own text_end_widx
+    # argument) -- a precondition on the whole function, not just on WA's
+    # own comparison further down.
+    assert 0 <= text_start_widx <= text_end_widx <= ram_words, (
+        f"text_start_widx={text_start_widx}/text_end_widx={text_end_widx} must be "
+        f"RAM_BASE-relative word indices with 0 <= text_start_widx <= text_end_widx "
+        f"<= ram_words={ram_words} -- got a value outside that range, which is what "
+        f"an absolute word address looks like here (#146)"
+    )
+
     fb_pal_wa_outside_text = _fb_pal_wa_provably_outside_text(
         ram_base, ram_words, text_end_widx)
 

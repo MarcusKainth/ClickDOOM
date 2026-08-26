@@ -38,8 +38,6 @@ plumbing (SPEC §6). You also own `driver/` (the deliberately dumb loop) and
 
 ## What Phase 0 settled — do not re-litigate
 
-- **K default 50,000**, confirmed optimal: 8,721 / 11,894 / 11,628 instr/sec at
-  K = 10,000 / 50,000 / 200,000, end to end.
 - **Captured constant arrays are not copied per fold step** — flat from 4 KiB to
   24 MiB. Holding all of RAM as a query-level constant is sound.
 - **Node count is the only throughput lever** (~0.8 µs/node/step). Nothing
@@ -48,6 +46,32 @@ plumbing (SPEC §6). You also own `driver/` (the deliberately dumb loop) and
   that on *every* instruction. Collapsing them with pre-decoded signedness flags
   is the most valuable optimization left. Correctness first; coordinate with
   `sqlcpu`.
+
+## What Phase 0 measured but is now stale — read the numbers below, not the ones above this line
+
+**Phase 0's 8,721 / 11,894 / 11,628 instr/sec (K = 10,000 / 50,000 /
+200,000, end to end) is a real number for a prototype fold
+(`executor/bench/phase0/fold_predecoded.py`) that never implemented SPEC
+§1 halt semantics, the real 31-element register file, `SELF_MODIFY`
+detection, or MMIO. It is not the current fold's throughput, and it is not
+"confirmed optimal" — that framing is exactly what issue #96 filed against,
+after a teammate used this line as a benchmark baseline this session and
+nearly mistook a genuine regression for noise.**
+
+- **ADR-0004** measured SPEC §1 halt semantics alone at 1,159 instr/sec e2e
+  (K=50,000) and retired ADR-0001's ≥10,000 threshold as a merge gate.
+  `#86`/`#88` (MMIO) moved the number again since; current real-ROM
+  throughput is **~1,300 instr/sec**.
+- **Issue #104 sets the number that matters now**: ≥5,000 instr/sec for
+  `-timedemo demo3` to be a week-long run, stretch ≥11,000 to restore the
+  ~3-day run Phase 0's fictional number implied the phase plan was built
+  around. Measure every throughput-affecting change against *this* target,
+  not Phase 0's.
+- **`K = 50,000` is not settled.** Issue #80 tracks whether the write-log
+  high-water mark now binds before `K` does for store-dense code, which
+  would make the exact value largely moot. Do not cite the K-sweep table
+  above as re-confirming 50,000 under the current fold — it was never
+  re-measured against it.
 
 ## The genuinely unsolved problem: batch commit atomicity
 

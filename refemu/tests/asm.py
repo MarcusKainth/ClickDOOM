@@ -104,7 +104,14 @@ def sra(rd, rs1, rs2): return r_type(0x33, rd, 0b101, rs1, rs2, 0x20)
 def or_(rd, rs1, rs2): return r_type(0x33, rd, 0b110, rs1, rs2, 0x00)
 def and_(rd, rs1, rs2): return r_type(0x33, rd, 0b111, rs1, rs2, 0x00)
 
-def mul(rd, rs1, rs2): return r_type(0x33, rd, 0b000, rs1, rs2, 0x01)  # M-ext, issue #12
+def mul(rd, rs1, rs2): return r_type(0x33, rd, 0b000, rs1, rs2, 0x01)  # M-extension (issue #12)
+def mulh(rd, rs1, rs2): return r_type(0x33, rd, 0b001, rs1, rs2, 0x01)
+def mulhsu(rd, rs1, rs2): return r_type(0x33, rd, 0b010, rs1, rs2, 0x01)
+def mulhu(rd, rs1, rs2): return r_type(0x33, rd, 0b011, rs1, rs2, 0x01)
+def div(rd, rs1, rs2): return r_type(0x33, rd, 0b100, rs1, rs2, 0x01)
+def divu(rd, rs1, rs2): return r_type(0x33, rd, 0b101, rs1, rs2, 0x01)
+def rem(rd, rs1, rs2): return r_type(0x33, rd, 0b110, rs1, rs2, 0x01)
+def remu(rd, rs1, rs2): return r_type(0x33, rd, 0b111, rs1, rs2, 0x01)
 
 def fence(): return i_type(0x0F, 0, 0b000, 0, 0)
 def ecall(): return i_type(0x73, 0, 0b000, 0, 0)

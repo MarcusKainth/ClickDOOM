@@ -54,12 +54,37 @@ that PR — same rendered frame, fewer instructions to produce it — and this
 regeneration confirms it holds for refemu's own trace, not just the
 one-off comparison in #127's review.
 
-This is the **third** ROM this directory has held a trace for:
+This was the **third** ROM this directory held a trace for:
 `e133789d9cec…` (attract-mode, superseded by #111 before its trace was
 ever merged) → `e74cf575f931…` (`-timedemo demo3`, superseded by #127) →
-`eabb12ed4f18…` (current, frozen). The hash-in-filename convention is
-exactly what makes each transition safe rather than a repeat of the
-near-miss it was built to prevent after the first one.
+`eabb12ed4f18…` (frozen, superseded by #175 below). The hash-in-filename
+convention is exactly what makes each transition safe rather than a
+repeat of the near-miss it was built to prevent after the first one.
+
+## `demo-boot-to-first-frame.9a6a47d01119.tsv` / `.json`
+
+The **fourth** ROM, `PINNED_HASH 9a6a47d01119f67580e48e9875207186c25efd56ff93019df331eb307cfaa5d9`
+(#175: id Software's own dormant, unused-since-1993 8x/4x loop-unrolled
+`R_DrawColumn`/`R_DrawSpan` — 62.28% of the entire `demo3` instruction
+count between the two of them — enabled for real, human-owner-approved
+conditional on frame-hash equivalence). Boot to icount 15,728,640, first
+`FRAME_COMMIT` at icount **15,393,136** (was 15,653,137 — **260,001 fewer
+instructions**, matching `rom-2`'s independent equivalence-gate finding
+exactly and confirmed here a second way).
+
+**`fbhash fe5d82c0f42d45f1` — unchanged from the previous ROM.** Same
+significance as #127's unroll before it: same rendered frame, fewer
+instructions to produce it, not a coincidence. `rom-2`'s own equivalence
+gate confirmed this bit-for-bit across the first 300 committed frames
+before this ROM was ever built for real; see the `demo3/` entry below for
+the full-run (2,172-frame) confirmation this regeneration also produced
+for free.
+
+`I_InitGraphics` also shifted slightly: 11,016,543 → 11,014,966 (−1,577
+instructions), despite that boot path never calling either unrolled
+function directly — an ordinary knock-on effect of the binary's overall
+size/layout changing (e.g. BSS zero-fill length, static data placement),
+not a correctness concern for a boot-time console-output milestone.
 
 ## `demo3/demo3.eabb12ed4f18.json`
 

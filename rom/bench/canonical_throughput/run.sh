@@ -87,10 +87,21 @@ BATCHES=3
 # instructions to reach the same frame -- #175's own frame-hash
 # equivalence gate confirms the *rendered content* doesn't move, only the
 # instruction cost to reach it), so this no longer lands on frame 200
-# precisely. Needs a fresh rom/bench/e7_memfns profile against the new
-# ROM to re-derive exactly -- flagged, not blocking this PR, since this
-# bench's gameplay window is "a representative store-heavy stretch," not
-# an asserted/gated value the way #29's milestone icount is.
+# precisely.
+#
+# CONFIRMED unasserted, not just unlikely to be hit: gen_snapshot.py's
+# generate() only checks `while cpu.icount < target_icount`, raising on a
+# halt before reaching it -- it never reads or checks frame_commits, so
+# there is no error path that would catch this drifting. Since the new
+# ROM reaches any given icount at a *later* frame than before (fewer
+# instructions per frame), this constant now silently snapshots some
+# frame after 200, not "frame 200 on the new ROM" and not a crash --
+# exactly the "stale constant nothing reads yet" trap, for whoever wires
+# a frame-number check up next. Needs a fresh rom/bench/e7_memfns profile
+# against the new ROM to re-derive frame 200's real icount -- flagged,
+# not blocking this PR, since this bench's gameplay window is "a
+# representative store-heavy stretch," not an asserted/gated value the
+# way #29's milestone icount is.
 GAMEPLAY_TARGET_ICOUNT=233932753
 SNAPSHOT_DIR="${TMPDIR:-/tmp}/clickdoom-canonical-throughput"
 HOST="localhost"

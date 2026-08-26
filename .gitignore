@@ -9,6 +9,14 @@ build/
 traces/
 *.trace
 bench-results/
+# demo3 reference harness working state (issue #123) -- large, binary,
+# per-run, and never the deliverable itself (that's the finished .tsv/
+# .json once a run completes, reviewed and committed deliberately, not
+# swept in by a broad `git add`).
+refemu/reference_traces/demo3/*.state.pkl
+refemu/reference_traces/demo3/*.state.pkl.tmp
+refemu/reference_traces/demo3/*.progress.json
+refemu/reference_traces/demo3/*.progress.json.tmp
 # Python
 __pycache__/
 *.pyc

@@ -9,6 +9,18 @@ build/
 traces/
 *.trace
 bench-results/
+# demo3 reference harness working state (issue #129) -- large, binary or
+# derived, per-run, and never the deliverable itself. The trace .tsv is
+# deliberately NOT committed (team lead's call: ~20-30 MB of data that
+# changes with every ROM, cheaply regenerable in ~50 minutes) -- only its
+# small companion .json manifest (final icount/fb_hash/exit_code/
+# PINNED_HASH/trace sha256) is meant to be committed, reviewed and added
+# deliberately, not swept in by a broad `git add`.
+refemu/reference_traces/demo3/*.tsv
+refemu/reference_traces/demo3/*.state.pkl
+refemu/reference_traces/demo3/*.state.pkl.tmp
+refemu/reference_traces/demo3/*.progress.json
+refemu/reference_traces/demo3/*.progress.json.tmp
 # Python
 __pycache__/
 *.pyc

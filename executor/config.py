@@ -19,6 +19,17 @@ WRITE_LOG_HIGH_WATER_MARK_DEFAULT = 20_000
 # parameter per SPEC §9 -- not validated here, just plumbed through.
 IPMS_DEFAULT = 10_000
 
+# SPEC §2/§3: the MMIO window, and the five register offsets within it.
+# Word access only; see fold.py's MMIO section for what non-register and
+# non-word accesses do and why.
+MMIO_BASE = 0x1000_0000
+MMIO_SIZE = 4 * 1024
+MMIO_TICKS_MS = 0x00
+MMIO_KEYQ = 0x04
+MMIO_EXIT = 0x08
+MMIO_PUTCHAR = 0x0C
+MMIO_FRAME_COMMIT = 0x10
+
 # SPEC §7.
 CHECKPOINT_INTERVAL = 4_096
 RAM_HASH_INTERVAL = 1_048_576
@@ -41,6 +52,13 @@ HALT_MISALIGNED = 4
 HALT_ECALL = 5
 HALT_EBREAK = 6
 HALT_CSR = 7
+# Not a SPEC §1 *fault* -- the ROM's own clean stop via SPEC §3's EXIT
+# register. It travels through the same halted/halt_reason/exit_code columns
+# as every fault (SPEC §5), so it needs a code here. The *string* it maps to
+# is the open question in #37: SPEC §1's vocabulary is closed and does not
+# contain EXIT, while refemu emits "EXIT". Resolving #37 changes the entry
+# below and nothing in the fold.
+HALT_EXIT = 8
 
 HALT_REASON_NAMES = {
     HALT_NONE: "",
@@ -51,6 +69,7 @@ HALT_REASON_NAMES = {
     HALT_ECALL: "ECALL",
     HALT_EBREAK: "EBREAK",
     HALT_CSR: "CSR",
+    HALT_EXIT: "EXIT",   # pending #37 -- see HALT_EXIT above
 }
 
 # Collapsed op_id space. 0-27 match ADR-0002 exactly (fold_predecoded.py);

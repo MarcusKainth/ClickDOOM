@@ -76,7 +76,8 @@ def _addr_and_align(A, IMM, DMKv, RAM_BASE, RAM_WORDS):
 
 
 def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
-               ram_base=config.RAM_BASE, hwm=config.WRITE_LOG_HIGH_WATER_MARK_DEFAULT):
+               ram_base=config.RAM_BASE, hwm=config.WRITE_LOG_HIGH_WATER_MARK_DEFAULT,
+               icount_base="0", ipms=config.IPMS_DEFAULT):
     """Returns the arrayFold lambda body: `(acc, i) -> tuple(...)`.
 
     Accumulator (5-tuple): pc, regs[31], wl, control, retired, where pc is a
@@ -142,6 +143,55 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 
     ADDR, ADDR64, bad_addr_cond, misaligned_cond, WA = _addr_and_align(
         A, IMM, DMKv, ram_base, ram_words)
+    # --- SPEC §3 MMIO ------------------------------------------------------
+    # The MMIO window is a *valid* address range, so `bad_addr_cond` (which
+    # means "outside RAM") is no longer the whole bad-address test: an access
+    # is bad only if it is outside RAM AND outside MMIO.
+    # bitAnd against the window mask, not `>= base AND < end`: one reference to
+    # ADDR instead of two. With no let-binding available inside the fold's
+    # lambda, every textual reference to ADDR re-expands its whole subtree
+    # (two DEC lookups and a register read), so reference *count* is the thing
+    # that costs -- see the node-budget note at the top of the MMIO section.
+    assert config.MMIO_SIZE == 4096, "window mask below assumes a 4 KiB window"
+    is_mmio = f"(bitAnd({ADDR}, {0xFFFFFFFF ^ (config.MMIO_SIZE - 1)}) = {config.MMIO_BASE})"
+    bad_addr_cond = f"({bad_addr_cond} AND NOT {is_mmio})"
+
+    # Byte offset within the window. Compared against the five register
+    # offsets exactly rather than masked -- a mask would alias every 32 bytes
+    # of the 4 KiB window onto the registers, turning a stray access into a
+    # silent EXIT or a phantom console byte.
+    def mmio_is(reg):
+        """`ADDR = <absolute register address>` rather than `MOFF = <offset>`:
+        same discrimination, one node fewer per site, and no separate MOFF
+        subtree to re-expand."""
+        return f"({ADDR} = {config.MMIO_BASE + reg})"
+
+    # Non-register offsets, and non-word widths, read 0 and ignore writes.
+    # refemu backs the whole 4 KiB with plain byte storage (mmio.py:79), so
+    # this differs from the oracle for a program that writes then reads back
+    # non-register MMIO. DOOM does not, and reproducing a byte-addressable
+    # scratch region here would cost nodes on every step to serve nothing --
+    # but the difference is real and is filed rather than left implicit.
+    is_mmio_load = f"({is_mmio} AND {ID} = {config.OP_LOAD})"
+    is_mmio_store = f"({is_mmio} AND {ID} = {config.OP_STORE})"
+
+    # TICKS_MS: elastic time, SPEC §3.1. instructions_retired / IPMS, where
+    # `icount_base` is the batch's starting icount (a query-level constant)
+    # and acc.5 is what this batch has retired so far. Never wall clock --
+    # SPEC §8.1, and scripts/check_purity.sh greps for it.
+    TICKS_MS = f"toUInt32(intDiv(toUInt64({icount_base}) + toUInt64(acc.5), {ipms}))"
+
+    # KEYQ: SPEC §3.2. acc.6.2 is how many events this batch has already
+    # popped; KEYQT is the queue captured in event_seq order. An empty-queue
+    # read returns 0 and pops nothing, so the position advance is guarded by
+    # the same bounds test that selects the value.
+    KEYQ_HAS = f"(acc.6.2 < toUInt32(length(KEYQT)))"
+    KEYQ_VAL = f"if({KEYQ_HAS}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1].1), toUInt32(0))"
+
+    MMIO_READ = (f"multiIf({mmio_is(config.MMIO_TICKS_MS)}, {TICKS_MS},"
+                 f" {mmio_is(config.MMIO_KEYQ)}, {KEYQ_VAL},"
+                 f" toUInt32(0))")
+
     SH = f"(8 * bitAnd({ADDR}, 3))"
 
     # Write-log first (reverse order, last writer wins), then RAM.
@@ -183,6 +233,10 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # 4-byte aligned) is deliberately left intact so the MISALIGNED check
     # below can see it; sqlcpu's execute.py computes this identically.
     JALR_TARGET = f"bitAnd(toUInt32({A} + {IMM}), 4294967294)"
+
+    # A load from the MMIO window takes its value from the register file
+    # above, not from RAM/write-log.
+    LOADV = f"if({is_mmio}, {MMIO_READ}, {LOADV})"
 
     RESULT = ("multiIf("
         f"{ID}=0, toUInt32({A} + {B}),"
@@ -272,7 +326,15 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{is_mem} AND {bad_addr_cond}, {config.HALT_BAD_ADDR},"
         f"{is_mem} AND NOT {bad_addr_cond} AND {misaligned_cond}, {config.HALT_MISALIGNED},"
         f"{is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond}"
+        f" AND NOT {is_mmio}"
         f" AND {WA} >= {text_start_widx} AND {WA} < {text_end_widx}, {config.HALT_SELF_MODIFY},"
+        # SPEC §3's EXIT register: the ROM's own clean stop, not a fault.
+        # After the misaligned arms so a misaligned write to EXIT faults
+        # rather than exiting. NOT {misaligned_cond} guards it directly too,
+        # since multiIf arm order is the only thing that would otherwise
+        # enforce it and that is fragile to reordering.
+        f"{is_mmio_store} AND NOT {misaligned_cond} AND {mmio_is(config.MMIO_EXIT)},"
+        f" {config.HALT_EXIT},"
         f"{config.HALT_NONE})")
 
     active = f"(NOT {STOPPED})"
@@ -285,11 +347,19 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # checked before the generic is_mem-driven ADDR fallback since a jump's
     # "address" (jump_target_if_taken) and a load/store's (ADDR) are
     # different expressions computed from different fields.
+    # EXIT carries the written value as the exit code, per SPEC §3 -- the same
+    # halt_extra slot that carries the raw word for ILLEGAL_INSN and the
+    # faulting address for the address faults, rather than a sixth tuple
+    # element that every step would have to copy.
     halt_extra_calc = (f"if(({HALT_CODE}) = {config.HALT_ILLEGAL_INSN}, {RAW},"
+                        f" if(({HALT_CODE}) = {config.HALT_EXIT}, {RS2V},"
                         f" if({jump_misaligned}, {jump_target_if_taken},"
-                        f" if(({HALT_CODE}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0))))")
+                        f" if(({HALT_CODE}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0)))))")
 
-    is_retiring_store = f"({step_retires} AND {is_store})"
+    # NOT is_mmio: an MMIO store's WA is `least((ADDR - RAM_BASE) >> 2, ...)`,
+    # a meaningless clamped index. Letting it into the write-log would flush a
+    # garbage value over a real RAM word. MMIO store effects land in acc.6.
+    is_retiring_store = f"({step_retires} AND {is_store} AND NOT {is_mmio})"
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
@@ -302,6 +372,35 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
                    f" {hits_hwm}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5),"
                    f" acc.4)")
 
+    # --- acc.6: MMIO side effects ---------------------------------------
+    # console bytes (PUTCHAR), keyq position (KEYQ pops), frame number and
+    # frame-committed flag (FRAME_COMMIT). Each guarded so a non-retiring or
+    # non-MMIO step carries the previous value through unchanged.
+    #
+    # A retiring MMIO store, specifically: a step that halts on EXIT must not
+    # also push a console byte or commit a frame, and `step_retires` is false
+    # for it because HALT_CODE != 0 -- so `retiring_mmio_store` covers both.
+    retiring_mmio_store = f"({step_retires} AND {is_mmio_store})"
+
+    new_console = (f"if({retiring_mmio_store} AND {mmio_is(config.MMIO_PUTCHAR)},"
+                   f" arrayPushBack(acc.6.1, toUInt8(bitAnd({RS2V}, 255))),"
+                   f" acc.6.1)")
+
+    # Guarded increment: a read of an empty queue returns 0 and pops nothing
+    # (SPEC §3.2), so the advance is conditioned on the same bounds test that
+    # produced the value, not merely on "a KEYQ read happened".
+    new_keyq_pos = (f"if({step_retires} AND {is_mmio_load}"
+                    f" AND {mmio_is(config.MMIO_KEYQ)} AND {KEYQ_HAS},"
+                    f" toUInt32(acc.6.2 + 1), acc.6.2)")
+
+    # frame number and committed-flag share one condition, so they live in a
+    # nested tuple and are written by a single `if`. Two separate slots would
+    # mean testing FRAME_COMMIT twice, and each test re-expands ADDR.
+    new_frame = (f"if({retiring_mmio_store} AND {mmio_is(config.MMIO_FRAME_COMMIT)},"
+                 f" tuple({RS2V}, toUInt8(1)), acc.6.3)")
+
+    new_mmio = f"tuple({new_console}, {new_keyq_pos}, {new_frame})"
+
     step_tuple = ("tuple("
         f"if({step_retires}, {NEXT}, {PC}),"
         f"if({step_retires} AND {RD} != 0,"
@@ -313,7 +412,8 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f" acc.2),"
         f"{new_wl},"
         f"{new_control},"
-        f"if({step_retires}, toUInt32(acc.5 + 1), acc.5))")
+        f"if({step_retires}, toUInt32(acc.5 + 1), acc.5),"
+        f"{new_mmio})")
     return step_tuple
 
 
@@ -354,39 +454,69 @@ def decode_with(db=DB):
      FROM (SELECT value, word_addr FROM {db}.ram FINAL ORDER BY word_addr)) AS RAMT,
   (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw))
      FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr
-           FROM {db}.decoded ORDER BY word_addr)) AS DEC"""
+           FROM {db}.decoded ORDER BY word_addr)) AS DEC,
+  -- SPEC §3.2: the key queue, in event_seq order, captured the same way as
+  -- RAM and the decode table. `consumed` is deliberately NOT filtered here:
+  -- whether an event has been consumed is a computed predicate on the
+  -- cumulative keyq position (ADR-0003 §5), not a mutated flag, so the fold
+  -- must see the whole queue and index into it.
+  (SELECT groupArray(tuple(key_event))
+     FROM (SELECT key_event, event_seq FROM {db}.input_queue
+           ORDER BY event_seq)) AS KEYQT"""
 
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"
             " tuple(toUInt8(0), toUInt8(0), toUInt8(0), toUInt32(0), toUInt32(0)),"
-            " toUInt32(0))")
+            " toUInt32(0),"
+            # acc.6, SPEC §3 MMIO: console bytes, keyq position, frame
+            # number, frame-committed flag. keyq_pos starts at 0 each batch
+            # and is *cumulative across batches* only via batch_commit --
+            # see #25; within a batch it indexes KEYQT from {keyq0}.
+            " tuple(emptyArrayUInt8(), toUInt32({keyq0}),"
+            " tuple(toUInt32(0), toUInt8(0))))")
 
 
-def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None, db=DB):
-    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
+def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None,
+                db=DB, icount0=0, keyq0=0, ipms=config.IPMS_DEFAULT):
+    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm,
+                      icount_base=str(icount0), ipms=ipms)
     # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
         "arrayResize(emptyArrayUInt32(), 31, toUInt32(0))"
     # pc0 default is RAM_BASE (SPEC §1's reset value 0x8000_0000), not 0 --
     # pc is a byte address now, not a word index relative to the text window.
     pc0 = config.RAM_BASE if pc0 is None else pc0
-    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql)
+    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql, keyq0=keyq0)
     return f"""WITH{decode_with(db)}
 SELECT r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason, r.4.4 AS halt_pc,
-       r.4.5 AS halt_extra, r.5 AS retired
+       r.4.5 AS halt_extra, r.5 AS retired,
+       r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
-SETTINGS max_threads = 1"""
+SETTINGS max_threads = 1,
+         -- The step expression is generated, not hand-written, and MMIO (#24)
+         -- pushed it past ClickHouse's 50,000-node default. This raises a
+         -- *limit*, it does not change what is computed: measured AST size is
+         -- ~90k nodes and the ceiling is a guard against runaway generated
+         -- SQL, which this is not. Node count still costs time under
+         -- ADR-0001's model -- that is tracked as throughput, not as a limit.
+         max_ast_elements = 500000, max_expanded_ast_elements = 500000"""
 
 
-def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="batch_out", db=DB):
+def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="batch_out", db=DB,
+          ipms=config.IPMS_DEFAULT):
     """One full batch: reload prior state, fold up to K instructions, stage
     the result (including the halt record and per-store icounts) into
     `out_table`. Flushing wl_* into `ram` and cpu_state into the SPEC §5
     table is a separate statement -- deliberately out of scope here; #25
     owns the atomic-commit shape (batch_commit, pending ratification)."""
-    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
-    init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')")
+    # TICKS_MS reads the *absolute* retired count, so the batch's starting
+    # icount has to reach the step expression. It is a query-level constant
+    # (one scalar subquery), not per-step work -- only acc.5 varies inside.
+    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm,
+                      icount_base="assumeNotNull(PREV.4)", ipms=ipms)
+    init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')",
+                           keyq0="assumeNotNull(PREV.5)")
     # The fold goes in a subquery and the 13 columns are projected off `r`
     # outside it -- NOT `(arrayFold(...) AS r).1, r.2, ...` in one SELECT list.
     # ClickHouse does not common-subexpression the alias in that position: each
@@ -400,15 +530,23 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="ba
     # like an unavoidable property of INSERT ... SELECT. It was not; it was this.
     return f"""INSERT INTO {db}.{out_table}
 WITH{decode_with(db)},
-  (SELECT tuple(batch_id, pc, regs, icount)
+  (SELECT tuple(batch_id, pc, regs, icount, keyq_pos)
      FROM {db}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
        toUInt64(assumeNotNull(PREV.4)) AS icount_before,
        r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason,
-       r.4.4 AS halt_pc, r.4.5 AS halt_extra, r.5 AS retired
+       r.4.4 AS halt_pc, r.4.5 AS halt_extra, r.5 AS retired,
+       r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
-SETTINGS max_threads = 1"""
+SETTINGS max_threads = 1,
+         -- The step expression is generated, not hand-written, and MMIO (#24)
+         -- pushed it past ClickHouse's 50,000-node default. This raises a
+         -- *limit*, it does not change what is computed: measured AST size is
+         -- ~90k nodes and the ceiling is a guard against runaway generated
+         -- SQL, which this is not. Node count still costs time under
+         -- ADR-0001's model -- that is tracked as throughput, not as a limit.
+         max_ast_elements = 500000, max_expanded_ast_elements = 500000"""
 
 
 if __name__ == "__main__":

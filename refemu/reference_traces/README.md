@@ -121,3 +121,29 @@ applied at the far end of the scale).
   2,172 frames were committed total; the last real `FRAME_COMMIT` was
   18,014 instructions before `EXIT`, with nothing writing to FRAMEBUFFER/
   PALETTE in between, so this `fbhash` is the last rendered frame's.
+
+## `demo3/demo3.9a6a47d01119.json`
+
+The full `-timedemo demo3` run against #175's ROM (`PINNED_HASH
+9a6a47d01119…`): id Software's own dormant, unused-since-1993
+loop-unrolled `R_DrawColumn`/`R_DrawSpan` enabled for real, 62.28% of the
+prior run's entire instruction count between the two functions. Same
+harness, same "only the manifest is committed" reasoning as the
+`eabb12ed4f18…` entry above.
+
+**The true `demo3` instruction count under the unroll: 2,300,210,133** —
+**535,996,964 fewer instructions, an 18.90% cut**, above #175's own
+conservative ~15.9% estimate (which reasoned from a 15-20% *per-function*
+reduction, well below #127's precedent of ~53% on a structurally similar
+unroll, applied only to the 62.28% of the run those two functions cover).
+
+**`fbhash d303721d8116e877` — unchanged from the pre-#175 run.** This is
+the equivalence claim's strongest form: `rom-2`'s own pre-implementation
+gate confirmed bit-for-bit agreement across a validated representative
+window (frames 0-299, 300 of 2,172); this run is the **entire** real
+`demo3` — same `frame_commit_count` (2,172), same final `EXIT`/`pc
+0x800006b0`/`exit_code 4294967295` as the pre-#175 baseline, and the same
+final rendered frame despite arriving there in 18.90% fewer instructions.
+30 years of dead code, one `#if 0`/`#endif` and a one-character typo away
+from real, verified end to end rather than assumed correct because it
+compiled.

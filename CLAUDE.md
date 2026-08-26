@@ -45,9 +45,14 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   it. This has cost us three PRs (#36, #38, #64); each needed the base
   branch recreated before GitHub would even reopen them, and one could not
   be recovered at all. Merge, then retarget the dependent PR to `main`,
-  then delete. Squash-merge makes this worse: the dependent PR also needs a
-  rebase afterwards, because the squashed commit shares no history with the
-  branch it came from. Keep stacks shallow — one PR in flight, two at most.
+  then delete. **Stack depth is irrelevant here** — one dependent PR is
+  enough, so a two-deep stack fails exactly the same way.
+- **Keep stacks shallow — one PR in flight, two at most.** Different
+  problem, different evidence: squash-merge collapses a branch into a
+  commit sharing no history with it, so every merge forces a rebase and a
+  full CI cycle on every PR stacked above. A four-deep stack cost four
+  sequential rebase-and-recheck rounds. This is a throughput tax, not a
+  correctness hazard — the rule above is what protects the PRs.
 - **Force-pushing does not reliably retrigger CI.** GitHub's
   `pull_request` synchronize event is unreliable after a force-push, so a
   rebased PR can sit with zero check-runs and look merge-blocked for no

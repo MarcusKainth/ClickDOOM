@@ -30,7 +30,7 @@ build-riscv-tests-fixtures:
 # riscv-tests INSIDE ClickHouse — sqlcpu workstream
 test-sqlcpu: up
     @test -f sqlcpu/schema.sql || { echo "sqlcpu/ not landed yet"; exit 1; }
-    ./sqlcpu/run_tests.sh --host localhost --port 9000
+    ./sqlcpu/run_tests.sh --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
 # Differential run of N instructions; reports first divergence (SPEC §7)
 diff N: up
@@ -55,7 +55,12 @@ run: up
     cd driver && uv run python main.py
 
 # All linters + purity check (what CI runs)
+#
+# NOTE: CI's lint job (.github/workflows/ci.yml) only shellchecks scripts/ and
+# driver/ — it predates sqlcpu/executor landing shell scripts and is a
+# workflow file (human gate), so this recipe covers the gap locally rather
+# than editing it here. Flagged to the team lead as a ci: follow-up.
 lint:
     ./scripts/check_purity.sh
-    find scripts driver -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
+    find scripts driver sqlcpu executor -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
     @if [ -f refemu/pyproject.toml ] || [ -f driver/pyproject.toml ]; then ruff check refemu driver; fi

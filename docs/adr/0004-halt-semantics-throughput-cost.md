@@ -6,6 +6,20 @@ gate for correctness work, for the reasons in Decision below. ADR-0001's
 own numbers stay as the historical record of what Phase 0 measured; they
 are no longer the bar future work is required to clear.
 
+**The current, final, verified numbers** (K=50,000; superseding every
+intermediate figure elsewhere in this document, which is kept as the
+measurement history, not as competing conclusions): **fold-in-isolation
+~1,860 instr/sec, end-to-end 1,159 instr/sec**, both confirmed via
+`batch_out.retired`/`select_only`'s own `retired` field showing full,
+non-halting execution (50,000/50,000 per fold call, 600,000/600,000 across
+the 12-batch e2e run) -- not inferred from wall-clock alone. **1,159 is
+159 instr/sec above the human owner's standing 1,000 instr/sec e2e
+escalation floor** (team lead, no fallback reaching it triggers a report) --
+a real margin, but a thin one, given #24 and #25 both still add cost to the
+same paths. At 1,159 instr/sec, using refemu's measured ~1.35M
+instructions/tic: a 1,400-tic `demo3` is ~19 days, 2,100 tics ~28 days,
+3,000 tics ~41 days.
+
 ## Context
 
 ADR-0002's Phase 0 prototype (`fold_predecoded.py`) never implemented SPEC
@@ -242,10 +256,11 @@ word-indexed-PC/MISALIGNED-truncation bug -- are defects `sqlcpu` and the
 team lead found reviewing this PR against `schema.sql`/`execute.py`, not
 choices this PR made freely.
 
-**This ADR is amending ADR-0001's acceptance criterion.** 2,004 instr/sec
-e2e is not a number to leave quietly unmet against a >=10,000 threshold. The
-10,000 figure was a pre-implementation estimate, made before Phase 0
-discovered that arrayFold's cost model is per-expression-node rather than
+**This ADR is amending ADR-0001's acceptance criterion.** 1,159 instr/sec
+e2e (the final, verified number -- see the top of this document) is not a
+number to leave quietly unmet against a >=10,000 threshold. The 10,000
+figure was a pre-implementation estimate, made before Phase 0 discovered
+that arrayFold's cost model is per-expression-node rather than
 per-byte-of-data-moved -- a discovery that came *after* the number was
 picked, not something the number accounted for. SPEC §1 correctness was
 never optional either way. A throughput target set before the cost model was
@@ -253,17 +268,20 @@ understood, and before the correctness requirements were priced in, is the
 thing that should move, not the correctness.
 
 **Wall-clock consequence, stated plainly rather than left for discovery
-during the timelapse run:** Phase 0's ~11,900 instr/sec e2e already implied
-a multi-week `-timedemo demo3` run. At ~2,004 instr/sec -- roughly 5.9x
-slower -- what was multi-week becomes multi-month at this PR's numbers
-alone, before #24 (MMIO plumbing) and #25 (batch commit) add their own
-per-instruction cost on top. This is not proposed as the final number:
-§Consequences below names the concrete, understood optimization
-(consolidating `RESULT`/`NEXT`/`HALT_CODE` into one dispatch) that the next
-session should attempt before this becomes the number DOOM actually runs
-at. Amending ADR-0001's threshold now is about not blocking correctness on
-an estimate made before the cost model was known -- it is not a claim that
-2,004 instr/sec is an acceptable place to stop.
+during the timelapse run:** at 1,159 instr/sec and refemu's measured
+~1.35M instructions/tic, a 1,400-tic `-timedemo demo3` run is ~19 days,
+scaling to ~41 days at 3,000 tics -- see the table at the top of this
+document. This is not proposed as the final number: §Consequences below
+names the concrete, understood optimization (consolidating
+`RESULT`/`NEXT`/`HALT_CODE` into one dispatch) that should be attempted
+before this becomes the number DOOM actually runs at, and the batch-commit
+overhead investigation (also in §Consequences) is a second, independent
+lever of comparable size. Amending ADR-0001's threshold now is about not
+blocking correctness on an estimate made before the cost model was known --
+it is not a claim that 1,159 instr/sec is an acceptable place to stop. It
+is, however, within 159 instr/sec of the human owner's standing 1,000
+instr/sec escalation floor, which is not this ADR's to relax -- see the top
+of this document.
 
 ## Consequences
 

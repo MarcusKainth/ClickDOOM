@@ -65,7 +65,7 @@ def word_array_hash(words_expr: str) -> str:
     """xxh64 over an Array(UInt32), each word little-endian, in array
     order — refemu's ram_hash() (caller supplies the array already
     address-ascending, e.g. `groupArray(value) FROM (... ORDER BY
-    word_addr)` — see run_riscv_tests.py's DECODE_ARRAYS comment for why
+    word_addr)` — see run_riscv_tests.py's decode_arrays() comment for why
     that capture needs the word_addr-paired-tuple form, not a bare
     per-column groupArray, to be trustworthy in the first place).
 

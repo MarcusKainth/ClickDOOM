@@ -38,8 +38,15 @@ DOOM_SRCS := $(filter-out $(addprefix $(DG_DIR)/,$(DG_EXCLUDE)),$(wildcard $(DG_
 
 # src/dg_hooks.c, src/main.c and src/syscalls.c are the real thing, not
 # placeholders — issue #8 retired the last stand-in (src/dg_hooks_stub.c).
-SRC := src/crt0.S src/syscalls.c src/main.c src/dg_hooks.c $(DOOM_SRCS)
+# src/wad_embed.S/.c (issue #9) embed rom/wad/doom1.wad (vendored in #60)
+# as a rodata blob via .incbin and register it with syscalls.c's virtual
+# filesystem before doomgeneric_Create() runs.
+SRC := src/crt0.S src/syscalls.c src/main.c src/dg_hooks.c src/wad_embed.S src/wad_embed.c $(DOOM_SRCS)
 LD  := toolchain/link.ld
+# .incbin's dependency is invisible to make (it's resolved by the
+# assembler, not the preprocessor) -- listed explicitly so editing the WAD
+# actually triggers a rebuild instead of reusing a stale $(BIN).
+WAD := wad/doom1.wad
 
 # SPEC §1: RV32IM, no compressed extension, strict alignment (keeps the SQL
 # load/store path branch-free). -mno-relax: never emit gp-relative linker
@@ -88,7 +95,7 @@ all: $(BIN)
 toolchain-image: $(DOCKERFILE)
 	docker build -t $(IMAGE):$(IMAGE_TAG) -f $(DOCKERFILE) toolchain/
 
-$(BIN): toolchain-image $(SRC) $(LD)
+$(BIN): toolchain-image $(SRC) $(LD) $(WAD)
 	@mkdir -p $(BUILD)
 	docker run --rm \
 	  -v $(CURDIR):/work -w /work \

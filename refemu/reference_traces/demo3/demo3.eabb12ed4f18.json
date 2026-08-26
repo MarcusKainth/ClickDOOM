@@ -1,0 +1,43 @@
+{
+  "spec_version": "0.1.0",
+  "rom_sha256": "eabb12ed4f188f456177fc11a1fdcf3046ee5c9c38c8d2fd33246c72bd2ab92c",
+  "rom_manifest": {
+    "spec_version": "0.1.0",
+    "entry": 2147483648,
+    "load_addr": 2147483648,
+    "size": 4789464,
+    "sha256": "eabb12ed4f188f456177fc11a1fdcf3046ee5c9c38c8d2fd33246c72bd2ab92c",
+    "text_start": 2147483648,
+    "text_end": 2147878944
+  },
+  "generated_by": "refemu/scripts/gen_demo3_trace.py --pinned-hash /private/tmp/claude-501/-Users-marcus-Develop-ClickDOOM/4a266fd8-f4ac-4c5d-95f6-a02dc2e6d114/scratchpad/PINNED_HASH_frozen",
+  "trace_file": "demo3.eabb12ed4f18.tsv",
+  "trace_file_sha256": "b4d00e2ea894257c9b3b47abfeb4b2b7aaf03c6197f8d825e0dc38028f37e61d",
+  "trace_file_bytes": 25440692,
+  "final_checkpoint_line": "2836205568\t800543e4\t1bb6c676eaf05ddc",
+  "final_icount": 2836207097,
+  "halt": {
+    "reason": "EXIT",
+    "pc": 2147485360,
+    "icount": 2836207097,
+    "insn": 10986531,
+    "addr": null,
+    "exit_code": 4294967295
+  },
+  "elapsed_seconds": 2846.313120542094,
+  "checkpoint_interval": 4096,
+  "ram_hash_interval": 1048576,
+  "final_state_at_halt": {
+    "icount": 2836207097,
+    "pc": 2147485360,
+    "reghash": "d95ebce052c2f82f",
+    "ramhash": "4911ae813a30f0b6",
+    "fbhash": "d303721d8116e877",
+    "note": "Computed directly from the resume-state snapshot saved at halt (exact CPU/RAM/framebuffer/palette bytes at the instant EXIT fired), not from the .tsv's periodic RAM_HASH_INTERVAL cadence -- the halt (icount 2836207097) does not land on a RAM_HASH_INTERVAL boundary, so the .tsv's own last hash-bearing line is stale by up to one interval. This is the actual 'final frame hash' README's Definition of Victory means. frame_commits shows the last real FRAME_COMMIT was 18,014 instructions earlier (icount 2836189083, frame 2171 of 2172 total) with nothing writing to FRAMEBUFFER/PALETTE in between (dg_hooks.c only writes them from DG_DrawFrame), so this fbhash equals the last rendered frame's."
+  },
+  "frame_commit_count": 2172,
+  "last_frame_commit": {
+    "frame_no": 2171,
+    "committed_icount": 2836189083
+  }
+}

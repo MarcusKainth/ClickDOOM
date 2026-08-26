@@ -319,3 +319,29 @@ def test_main_writes_manifest_with_trace_sha256_and_final_checkpoint(tmp_path, m
     assert meta["halt"]["exit_code"] == 7
     assert meta["trace_file_sha256"] == hashlib.sha256(tsv_path.read_bytes()).hexdigest()
     assert meta["trace_file_bytes"] == tsv_path.stat().st_size
+
+    # final_state_at_halt: the fix for #129's own finding -- the halt
+    # icount rarely lands on a RAM_HASH_INTERVAL boundary, so the .tsv's
+    # last hash-bearing line can be stale by up to one interval. This
+    # program's own EXIT lands at icount 5, nowhere near a
+    # RAM_HASH_INTERVAL multiple, so if final_state_at_halt were being
+    # read off the .tsv instead of computed fresh from the halted cpu,
+    # it would be missing (no ramhash/fbhash on that line) exactly like
+    # the real run that motivated this fix.
+    from refemu.trace import fb_hash, ram_hash
+
+    fs = meta["final_state_at_halt"]
+    # 4, not 5: SPEC §1's fatal-halt-doesn't-retire rule -- the 5th
+    # (EXIT) instruction never increments icount.
+    assert fs["icount"] == 4
+    # RAM is the loaded image followed by zeros; framebuffer/palette are
+    # untouched (empty) in this synthetic run -- confirms the manifest's
+    # hashes are independently reproducible from the real expected
+    # content, not just "some string", by recomputing with the real hash
+    # functions and comparing.
+    expected_ram = bytearray(24 * 1024 * 1024)
+    expected_ram[: len(image)] = image
+    assert fs["ramhash"] == f"{ram_hash(bytes(expected_ram)):016x}"
+    assert fs["fbhash"] == f"{fb_hash(bytes(64_000), bytes(768)):016x}"
+    assert meta["frame_commit_count"] == 1
+    assert meta["last_frame_commit"] == {"frame_no": 0, "committed_icount": 2}

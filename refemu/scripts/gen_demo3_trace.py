@@ -543,6 +543,30 @@ def main() -> int:
         stripped = trace_bytes.rstrip(b"\n")
         final_checkpoint = stripped.rsplit(b"\n", 1)[-1].decode() if stripped else None
 
+        # The halt icount does NOT generally land on a RAM_HASH_INTERVAL
+        # boundary (EXIT can fire anywhere), so the .tsv's own last
+        # hash-bearing line can be stale by up to one interval -- exactly
+        # what happened on the first real run this was used for (#129):
+        # the .tsv's final line had no ramhash/fbhash at all, and manually
+        # recomputing from the saved state was the only way to get README's
+        # actual "final frame hash". Computed here directly from `cpu`
+        # (still holds the exact halt-time state -- `run()` mutates it in
+        # place, it isn't reloaded from disk) so every future run gets this
+        # for free instead of requiring the same manual recovery.
+        final_state = {
+            "icount": cpu.icount,
+            "pc": cpu.pc,
+            "reghash": f"{reg_hash(cpu.pc, cpu.regs):016x}",
+            "ramhash": f"{ram_hash(cpu.memory.ram):016x}",
+            "fbhash": f"{fb_hash(cpu.memory.framebuffer, cpu.memory.palette):016x}",
+        }
+        frame_commits = cpu.memory.mmio.frame_commits
+        last_frame_commit = (
+            {"frame_no": frame_commits[-1][0], "committed_icount": frame_commits[-1][1]}
+            if frame_commits
+            else None
+        )
+
         full_meta = {
             "spec_version": manifest.get("spec_version"),
             "rom_sha256": rom_sha256,
@@ -553,6 +577,9 @@ def main() -> int:
             "trace_file_bytes": tsv_path.stat().st_size,
             "final_checkpoint_line": final_checkpoint,
             "final_icount": summary["final_icount"],
+            "final_state_at_halt": final_state,
+            "frame_commit_count": len(frame_commits),
+            "last_frame_commit": last_frame_commit,
             "halt": summary["halt"],
             "elapsed_seconds": summary["elapsed_seconds"],
             "checkpoint_interval": CHECKPOINT_INTERVAL,
@@ -560,6 +587,7 @@ def main() -> int:
         }
         meta_path.write_text(json.dumps(full_meta, indent=2) + "\n")
         print(f"# wrote {meta_path} (manifest only -- .tsv is not committed, see script docstring)", file=sys.stderr)
+        print(f"# final_state_at_halt: {final_state}", file=sys.stderr)
 
     return 0
 

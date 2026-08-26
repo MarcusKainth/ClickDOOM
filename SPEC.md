@@ -142,7 +142,10 @@ shape. All tables carry `spec_version String`.
   batch; the derivation is deterministic from a single `batch_commit` row, so
   any duplicates would be byte-identical anyway, but "one row per committed
   batch" should be literally true of the table rather than merely true of
-  what a reader happens to select.
+  what a reader happens to select. Read it with `FINAL` when the row *count*
+  or the full history matters; the per-batch state reload (`ORDER BY
+  batch_id DESC LIMIT 1`) does not need it, since a duplicate pair is
+  content-identical and either row answers correctly.
 - `batch_commit` — the batch's single atomic write (§6). One row per batch,
   superset of `cpu_state`'s columns plus the per-batch bulky data recovery
   needs to safely re-derive `ram` and `console_out`: `keyq_pos UInt64`
@@ -199,7 +202,7 @@ shape. All tables carry `spec_version String`.
   `sqlcpu/schema.sql` literally, as every other table in this section does.
   `id` is the collapsed opcode space, including dedicated arms for the fatal-halt
   decode cases (§1): `ecall`, `ebreak`, CSR, and unimplemented/illegal each
-  get their own `op_id`, disjoint from the executable arms. `imm` is already
+  get their own `id`, disjoint from the executable arms. `imm` is already
   sign-extended; `tgt` holds **only** the absolute branch/jump target as a
   **byte address** — not a word index — (a word index discards bit 1, which
   is exactly the bit misaligned-target detection needs; an earlier draft was

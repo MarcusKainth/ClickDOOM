@@ -425,9 +425,18 @@ underneath a reproducibility claim that had looked solid for five PRs:
    be; never wrong, which is the actual requirement.
 
 Verified the fix closes both gaps, not just CI's specific symptom: same
-sha256 from a native arm64-macOS-invoked build, a QEMU-emulated-amd64
-build on the same Mac, and CI's real amd64 runner — three genuinely
-different execution environments, one hash. This is also why the
+sha256 from two genuinely different execution environments — an Apple
+Silicon Mac (`make`'s `docker run --platform linux/amd64` forces Docker
+Desktop's Linux VM to run the container under QEMU emulation there) and
+CI's real amd64 runner (no emulation, the container's native
+architecture). Corrected from an earlier draft of this note that counted
+the Mac build twice — once as "native arm64-macOS," once as
+"QEMU-emulated-amd64, same Mac" — as if they were separate trials; they're
+the same invocation of the same pinned pipeline on the same host, so it
+was one data point double-counted, not three independent ones. Caught by
+`refemu`'s review of the PR that introduced this note (#71) — worth
+recording since this section exists specifically so a future reader can
+trust its counts. This is also why the
 top-of-file comment in `rom/Makefile` no longer claims "reproduces
 byte-for-byte on any host with Docker" as a blanket statement without the
 platform pin backing it — the claim is true now because something

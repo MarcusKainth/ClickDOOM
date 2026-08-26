@@ -211,7 +211,23 @@ def step_expr():
 # the same way an unread variable does.
 def decode_arrays(word_count):
     lo, hi = RAM_BASE_WORD, RAM_BASE_WORD + word_count - 1
-    density = f"count() != {word_count} OR min(word_addr) != {lo} OR max(word_addr) != {hi}"
+    # count(DISTINCT word_addr), not bare count() -- caught in review
+    # (executor, PR #98): `ram` is deduped by FINAL/ReplacingMergeTree, so
+    # count() happens to equal count(DISTINCT ...) there, but `decoded` is a
+    # plain MergeTree with no per-key dedup at all, and a duplicate row at
+    # one address plus a genuine gap at another cancel out in a bare
+    # count()+min+max check (reproduced: 4 rows over word_addr
+    # [x,x,x+2,x+3] passes count()=4/min/max despite x+1 missing and x
+    # duplicated) -- exactly the silently-wrong case this guard exists to
+    # rule out, just relocated from "load order" into the guard's own math.
+    # count(DISTINCT word_addr) = word_count with matching min/max is
+    # airtight regardless of the underlying table's dedup behavior: by
+    # pigeonhole, word_count distinct integers spanning exactly [lo, hi]
+    # (width word_count) can only be the full contiguous range.
+    density = (
+        f"count(DISTINCT word_addr) != {word_count} "
+        f"OR min(word_addr) != {lo} OR max(word_addr) != {hi}"
+    )
     return f"""
   (SELECT throwIf({density}, 'ram is not dense over [{lo}, {hi}] -- word_addr(s) missing or duplicated, RAM_T positional indexing would be silently wrong (#81/#93)') FROM ram FINAL) AS ram_density_ok,
   (SELECT throwIf({density}, 'decoded is not dense over [{lo}, {hi}] -- word_addr(s) missing or duplicated, DEC_T positional indexing would be silently wrong (#81/#93)') FROM decoded) AS dec_density_ok,

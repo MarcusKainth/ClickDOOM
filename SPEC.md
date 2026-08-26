@@ -74,6 +74,30 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   **last** value a victory run produces, and a cross-engine mismatch here
   fails the §7 final-state comparison after everything else has already
   agreed. No riscv-test writes that register.
+
+  **A conforming `-timedemo demo3` completion's `exit_code` is
+  `4,294,967,295`** (`(uint32_t)-1`) — not a failure signature despite the
+  value's usual connotation. `-timedemo`'s completion path is not `I_Quit`;
+  it is `G_CheckDemoStatus`'s `if (timingdemo)` branch calling `I_Error`
+  directly, which falls through `ZenityErrorBox` → `ZenityAvailable` →
+  `system(ZENITY_BINARY " --help ...")` — a syscall `rom/src/syscalls.c`
+  never implements — before its own `exit(-1)`. Pinned from a measured,
+  complete run, not the isolated mechanism probe that first found this path
+  (issue #107/#111): `refemu` ran the full `demo3` timedemo to termination
+  (issue #129) — 2,836,207,097 instructions, halting cleanly with
+  `halt_reason = 'EXIT'`, `pc = 0x8000_06b0` (the same `_exit`
+  MMIO-write-then-spin address the isolated probe found), `exit_code =
+  4,294,967,295` — confirming the probe's mechanism holds for a real,
+  full-length run and not only in isolation. Worth pinning explicitly
+  rather than leaving as "whatever `EXIT` happens to carry": the exit path
+  depends on `system()` continuing to resolve the way this newlib build
+  currently does (returning promptly rather than hanging or erroring
+  differently), which a future change to `rom/src/syscalls.c` could alter
+  without anyone intending to change what "victory" means (issue #121). A
+  `-timedemo demo3` run's success is therefore judged on `halt_reason =
+  'EXIT'` **and** `exit_code = 4,294,967,295` together, alongside §7's
+  `fbhash` — a `halt_reason` match with a different `exit_code` is a real
+  divergence, not a benign difference.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).

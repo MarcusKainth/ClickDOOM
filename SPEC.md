@@ -238,9 +238,23 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
 - Every `CHECKPOINT_INTERVAL` (default 4,096) retired instructions:
   `(icount, pc, xxh64(pc || regs[1..31] as LE bytes))`.
 - Every `RAM_HASH_INTERVAL` (default 1,048,576) instructions: additionally
-  `xxh64` over the full RAM region as LE words.
+  `xxh64` over the full RAM region as LE words, **and** a second, independent
+  `xxh64` over FRAMEBUFFER (64,000 B) concatenated with PALETTE (768 B), both
+  in address-ascending order (64,768 bytes total) — `fbhash`. MMIO is
+  excluded from both hashes: it is live device state, not a value two
+  independently-running engines are expected to agree on bit-for-bit.
+  `fbhash` exists because a store that lands the wrong value at the right
+  framebuffer/palette address (or vice versa) touches neither a register nor
+  RAM, so `reghash`/`ramhash` alone are blind to exactly the class of bug
+  most likely to matter for DOOM specifically — a rendering bug that
+  wouldn't surface until the final frame comparison, with no checkpoint in
+  between narrowing down where it happened. A separate column (not folded
+  into `ramhash`) trades a larger trace-format surface for telling a
+  divergence hunt *which* region diverged without bisecting — real
+  diagnostic value specifically in the Phase 3 desync hunt this format
+  exists for. Agreed by `refemu` and `sqlcpu` independently (issue #55).
 - Trace file: one checkpoint per line, TSV:
-  `icount<TAB>pc_hex<TAB>reghash_hex[<TAB>ramhash_hex]`.
+  `icount<TAB>pc_hex<TAB>reghash_hex[<TAB>ramhash_hex<TAB>fbhash_hex]`.
 - First divergence = first line that differs. `just diff N` runs both
   engines N instructions and reports it; divergences are filed with the
   `divergence-report` issue form.

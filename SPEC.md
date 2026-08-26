@@ -116,6 +116,15 @@ RGB happens in the render query (SQL side — allowed) at readout time.
 | `0x1000_000C` | `PUTCHAR`     | W   | Debug console: append low byte to `console_out` table              |
 | `0x1000_0010` | `FRAME_COMMIT`| W   | ROM signals framebuffer complete; value = frame number             |
 
+Accesses to the MMIO window that are not word-width, or whose address is
+not one of the five register offsets above, **read as 0 and are silently
+ignored on write** — no side effect, no fatal halt. Reproducing a
+byte-addressable scratch region for this window would cost node-evaluation
+budget in the executor's fold on every retired instruction (§6) to serve
+behavior no ROM address exercises; DOOM's platform layer only ever declares
+these five offsets as `volatile uint32_t *`. Agreed cross-engine in issue
+#87.
+
 ### 3.1 Elastic time
 `IPMS` (instructions-per-emulated-millisecond) is a constant in
 `executor/config`, default **10,000** (≈10 MHz virtual CPU). Time advances

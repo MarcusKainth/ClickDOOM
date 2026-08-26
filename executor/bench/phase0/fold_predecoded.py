@@ -36,23 +36,35 @@ DECM = DECN - 1
 # accumulator: (pcidx UInt32, regs Array(UInt32)[32], wl_addr, wl_val)
 PC  = "acc.1"
 IDX = "(acc.1 + 1)"     # 1-based index into the decode arrays
-ID  = f"DID[{IDX}]"
-RD  = f"DRD[{IDX}]"
-IMM = f"DIM[{IDX}]"
-TGT = f"DTG[{IDX}]"
-DMK = f"DMK[{IDX}]"
-DSG = f"DSG[{IDX}]"
+# DEC[i] is a tuple(id, rd, rs1, rs2, imm, tgt, mk, sg) -- one combined
+# groupArray per table, not one per column. See WITH_CLAUSE's comment below
+# for why: sqlcpu found (PR #67, executor/fold.py) that ClickHouse 26.3's
+# `optimize_read_in_order` can silently misalign a per-column groupArray
+# against its declared ORDER BY. Not reproduced against this bench's own
+# tables (team lead verified 0/524,288 and 0/6,291,456 misaligned, both
+# directions), so Phase 0's ratified numbers stand unchanged -- this is a
+# defensive fix, not a correction, applied because this file is the pattern
+# both executor/fold.py and sqlcpu's schema.sql originally copied from.
+ID  = f"DEC[{IDX}].1"
+RD  = f"DEC[{IDX}].2"
+IMM = f"DEC[{IDX}].5"
+TGT = f"DEC[{IDX}].6"
+DMK = f"DEC[{IDX}].7"
+DSG = f"DEC[{IDX}].8"
 
-A   = f"acc.2[DR1[{IDX}] + 1]"
-B   = f"toUInt32(acc.2[DR2[{IDX}] + 1] + {IMM})"
+A   = f"acc.2[DEC[{IDX}].3 + 1]"
+B   = f"toUInt32(acc.2[DEC[{IDX}].4 + 1] + {IMM})"
 SA  = f"toInt32({A})"
 SB  = f"toInt32({B})"
 
 ADDR = f"toUInt32({A} + {IMM})"
 WA   = f"bitAnd(bitShiftRight({ADDR}, 2), {MASK})"
 # Read a word: write-log first (reverse order, last writer wins), then RAM.
+# RAMT[i].1 -- RAM is captured as a one-column tuple too, same defensive
+# pattern (a lone-column groupArray was never the vulnerable shape, but this
+# keeps RAM and DEC visibly consistent with each other and with fold.py).
 LW   = (f"if(arrayLastIndex(z -> z = {WA}, acc.3) > 0,"
-        f" acc.4[arrayLastIndex(z -> z = {WA}, acc.3)], RAM[{WA} + 1])")
+        f" acc.4[arrayLastIndex(z -> z = {WA}, acc.3)], RAMT[{WA} + 1].1)")
 SH   = f"(8 * bitAnd({ADDR}, 3))"
 
 # One load path for lb/lh/lw/lbu/lhu: extract with the pre-decoded width mask,
@@ -110,16 +122,18 @@ def step():
             f"if({is_store}, arrayPushBack(acc.4, {SVAL}), acc.4))")
 
 
+# One combined groupArray(tuple(...)) per table, not one groupArray per
+# column -- see the ID/RD/... comment above. `SETTINGS optimize_read_in_order
+# = 0` would also fix it but is a setting a future query can omit, not a
+# structural fix; capturing every column of a table in ONE tuple, in ONE
+# groupArray call, can't misalign columns against each other because
+# there's no second independent read path for the optimizer to diverge onto.
 WITH_CLAUSE = f"""
-  (SELECT groupArray(value) FROM (SELECT value FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAM,
-  (SELECT groupArray(id)  FROM (SELECT id,  widx FROM {DB}.decoded ORDER BY widx)) AS DID,
-  (SELECT groupArray(rd)  FROM (SELECT rd,  widx FROM {DB}.decoded ORDER BY widx)) AS DRD,
-  (SELECT groupArray(rs1) FROM (SELECT rs1, widx FROM {DB}.decoded ORDER BY widx)) AS DR1,
-  (SELECT groupArray(rs2) FROM (SELECT rs2, widx FROM {DB}.decoded ORDER BY widx)) AS DR2,
-  (SELECT groupArray(imm) FROM (SELECT imm, widx FROM {DB}.decoded ORDER BY widx)) AS DIM,
-  (SELECT groupArray(tgt) FROM (SELECT tgt, widx FROM {DB}.decoded ORDER BY widx)) AS DTG,
-  (SELECT groupArray(mk)  FROM (SELECT mk,  widx FROM {DB}.decoded ORDER BY widx)) AS DMK,
-  (SELECT groupArray(sg)  FROM (SELECT sg,  widx FROM {DB}.decoded ORDER BY widx)) AS DSG"""
+  (SELECT groupArray(tuple(value))
+     FROM (SELECT value, word_addr FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAMT,
+  (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg))
+     FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, widx
+           FROM {DB}.decoded ORDER BY widx)) AS DEC"""
 
 
 def select_only(K):

@@ -36,26 +36,27 @@ saying so — a mismatch there means either the ROM genuinely changed
 (update the defaults) or refemu itself regressed (investigate before
 trusting the output).
 
-## `demo-boot-to-first-frame.e74cf575f931.tsv` / `.json`
+## `demo-boot-to-first-frame.eabb12ed4f18.tsv` / `.json`
 
-The real DOOM ROM, `-timedemo demo3` argv wired (#111,
-`PINNED_HASH e74cf575f931c0492eb09eb16f58d99d84b2b6442b8c7bec8e593fd1c72e6443`),
+The real DOOM ROM, frozen (#127/#130's ROM freeze) at
+`PINNED_HASH eabb12ed4f188f456177fc11a1fdcf3046ee5c9c38c8d2fd33246c72bd2ab92c`
+(`-timedemo demo3` argv from #111, `DG_DrawFrame` unrolled x8 by #127),
 boot to icount 15,728,640 — the first full `RAM_HASH_INTERVAL` checkpoint
-at or past the first `FRAME_COMMIT` (icount 15,695,836, #29/#111).
+at or past the first `FRAME_COMMIT` (icount 15,653,137, #29/#127).
 
 Independently cross-checked against issue #29's own reproduction before
-being committed: `I_InitGraphics` reached at icount 11,016,543, and the
-full first-`FRAME_COMMIT` checkpoint line (icount, pc, reghash, ramhash,
-**`fbhash fe5d82c0f42d45f1`**) match exactly. This ROM's first committed
-frame is a screen wipe caught mid-transition (19 distinct palette indices,
-climbing to a steady 76 by frame ~10 — verified by rendering the actual
-frame sequence to PNG during PR #111's review, not just asserted): a
-genuinely different point in the engine than the superseded attract-mode
-ROM's title screen, not the same milestone re-measured with a worse
-result.
+being committed: `I_InitGraphics` reached at icount 11,016,543 (unchanged
+from pre-#127 — that unroll only touches `DG_DrawFrame`, well after
+`I_InitGraphics`), and the full first-`FRAME_COMMIT` checkpoint line
+(icount, pc, reghash, ramhash, **`fbhash fe5d82c0f42d45f1`**) match
+exactly. `fbhash` **unchanged** from the pre-#127 ROM is the whole point of
+that PR — same rendered frame, fewer instructions to produce it — and this
+regeneration confirms it holds for refemu's own trace, not just the
+one-off comparison in #127's review.
 
-This is the second ROM this directory has held a trace for
-(`e133789d9cec…`, attract-mode, superseded by #111 before its trace was
-ever merged — see PR #114's history). The hash-in-filename convention
-above is exactly what makes that transition safe rather than a repeat of
-the near-miss it was built to prevent.
+This is the **third** ROM this directory has held a trace for:
+`e133789d9cec…` (attract-mode, superseded by #111 before its trace was
+ever merged) → `e74cf575f931…` (`-timedemo demo3`, superseded by #127) →
+`eabb12ed4f18…` (current, frozen). The hash-in-filename convention is
+exactly what makes each transition safe rather than a repeat of the
+near-miss it was built to prevent after the first one.

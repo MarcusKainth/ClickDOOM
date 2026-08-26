@@ -37,13 +37,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deep differential run
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
         run: |
           make -C rom
           ./scripts/diff_run.sh "${{ github.event.inputs.deep_diff_instructions || '200000000' }}"
       - name: Skipped (workstreams not landed)
-        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == ''
-        run: echo "deep diff activates when rom, refemu and sqlcpu have all landed"
+        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == '' || hashFiles('scripts/diff_run.sh') == ''
+        run: echo "deep diff activates when rom, refemu, sqlcpu AND scripts/diff_run.sh have all landed"
 
   bench:
     runs-on: ubuntu-latest

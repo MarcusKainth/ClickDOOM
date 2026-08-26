@@ -34,6 +34,7 @@ test-sqlcpu: up
 
 # Differential run of N instructions; reports first divergence (SPEC §7)
 diff N: up
+    @test -f scripts/diff_run.sh || { echo "scripts/diff_run.sh not landed yet (executor workstream, issue #27)"; exit 1; }
     ./scripts/diff_run.sh {{N}}
 
 # CI-sized differential smoke

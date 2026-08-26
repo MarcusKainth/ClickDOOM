@@ -139,14 +139,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download ROM artifact
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
         uses: actions/download-artifact@v4
         with:
           name: rom
           path: rom/build
       - name: Run smoke diff (1M instructions)
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != ''
+        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
         run: ./scripts/diff_run.sh 1000000
       - name: Skipped (needs rom + refemu + sqlcpu all landed)
-        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == ''
-        run: echo "differential smoke activates when rom, refemu and sqlcpu have all landed"
+        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == '' || hashFiles('scripts/diff_run.sh') == ''
+        run: echo "differential smoke activates when rom, refemu, sqlcpu AND scripts/diff_run.sh have all landed"

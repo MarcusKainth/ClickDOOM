@@ -84,7 +84,7 @@ check_table batch_commit MergeTree
 check_table ram          ReplacingMergeTree
 check_table input_queue  MergeTree
 check_table frames_out   MergeTree
-check_table console_out  MergeTree
+check_table console_out  ReplacingMergeTree
 check_table decoded      MergeTree
 
 # Round-trip: every table accepts a row and reads it back with spec_version
@@ -95,7 +95,7 @@ ch --query "INSERT INTO ram (word_addr, value, version) VALUES (0, 0, 0)"
 ch --query "INSERT INTO input_queue (event_seq, key_event, consumed) VALUES (0, 0, 0)"
 ch --query "INSERT INTO frames_out (frame_no, committed_icount, fb, palette) VALUES (0, 0, '', '')"
 ch --query "INSERT INTO console_out (seq, byte) VALUES (0, 0)"
-ch --query "INSERT INTO decoded (word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg) VALUES (0, 0, 0, 0, 0, 0, 0, 0, 0)"
+ch --query "INSERT INTO decoded (word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg, m_sg1, m_sg2, m_hi, d_sg) VALUES (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)"
 for table in cpu_state batch_commit ram input_queue frames_out console_out decoded; do
   version=$(ch --query "SELECT spec_version FROM ${table} LIMIT 1")
   if [ "$version" != "0.1.0" ]; then

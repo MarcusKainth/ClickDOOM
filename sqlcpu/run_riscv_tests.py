@@ -94,7 +94,7 @@ def step_expr():
     PC, REGS, WL_ADDR, WL_VAL = "acc.1", "acc.2", "acc.3", "acc.4"
     REL_IDX = f"(bitShiftRight(toUInt32({PC}), 2) - {RAM_BASE_WORD} + 1)"
     # DEC_T[i] = tuple(word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg) -- see
-    # DECODE_ARRAYS's comment for why this is one combined capture rather
+    # decode_arrays()'s comment for why this is one combined capture rather
     # than one groupArray per column.
     d_expr = f"DEC_T[{REL_IDX}]"
     WORD_ADDR_AT, ID, RD, RS1, RS2, IMM, TGT, MK, SG = (f"d.{i}" for i in range(1, 10))
@@ -183,17 +183,81 @@ def step_expr():
 # `decoded`'s multi-column case looked fine until specifically checked).
 # Flagged project-wide: PR #ADR-0001's whole array-capture idiom needs the
 # same treatment wherever it's used (Phase 0's bench, executor's fold.py).
-DECODE_ARRAYS = f"""
+#
+# RAM_T[i]/DEC_T[i] (see step_expr()'s REL_IDX/wa lookups) are indexed
+# POSITIONALLY relative to RAM_BASE_WORD: position i is trusted to be the
+# word at RAM_BASE_WORD + i - 1, which only holds if `ram`/`decoded` are
+# dense and contiguous over exactly the loaded fixture's word range, with no
+# gaps. load_sql() and decode.sql's [text_start_word, text_end_word) window
+# make that true for every fixture today (a contiguous VALUES list starting
+# at RAM_BASE_WORD), but nothing enforced it -- #81 found this exact
+# positional-index assumption silently broken in executor's fold.py against
+# a real, non-dense ROM image (values displaced with no error, no halt);
+# #93 tracks the same bug class here. The two `throwIf`s below assert
+# density once per query (count + endpoints, given the upstream `ORDER BY
+# word_addr` -- sufficient to prove a contiguous gap-free run without
+# checking every element) rather than trusting load order, so a future
+# sparse fixture or reuse of this harness fails loudly instead of
+# displacing every subsequent load like #81's demonstrated case.
+#
+# CORRECTNESS-CRITICAL, found writing this guard: a WITH-bound scalar
+# subquery that nothing downstream references is never evaluated --
+# ClickHouse prunes it, so `ram_density_ok`/`dec_density_ok` as originally
+# written were silent no-ops (verified: forcing a mismatched word_count
+# produced no error at all until the aliases were threaded into the fold's
+# init tuple below). The two checks MUST be consumed somewhere the query
+# can't optimize away, which is exactly the failure shape #83's guidance
+# warns about -- a guard that isn't structurally load-bearing gets pruned
+# the same way an unread variable does.
+def decode_arrays(word_count):
+    lo, hi = RAM_BASE_WORD, RAM_BASE_WORD + word_count - 1
+    # count(DISTINCT word_addr), not bare count() -- caught in review
+    # (executor, PR #98): `ram` is deduped by FINAL/ReplacingMergeTree, so
+    # count() happens to equal count(DISTINCT ...) there, but `decoded` is a
+    # plain MergeTree with no per-key dedup at all, and a duplicate row at
+    # one address plus a genuine gap at another cancel out in a bare
+    # count()+min+max check (reproduced: 4 rows over word_addr
+    # [x,x,x+2,x+3] passes count()=4/min/max despite x+1 missing and x
+    # duplicated) -- exactly the silently-wrong case this guard exists to
+    # rule out, just relocated from "load order" into the guard's own math.
+    # count(DISTINCT word_addr) = word_count with matching min/max is
+    # airtight regardless of the underlying table's dedup behavior: by
+    # pigeonhole, word_count distinct integers spanning exactly [lo, hi]
+    # (width word_count) can only be the full contiguous range.
+    density = (
+        f"count(DISTINCT word_addr) != {word_count} "
+        f"OR min(word_addr) != {lo} OR max(word_addr) != {hi}"
+    )
+    return f"""
+  (SELECT throwIf({density}, 'ram is not dense over [{lo}, {hi}] -- word_addr(s) missing or duplicated, RAM_T positional indexing would be silently wrong (#81/#93)') FROM ram FINAL) AS ram_density_ok,
+  (SELECT throwIf({density}, 'decoded is not dense over [{lo}, {hi}] -- word_addr(s) missing or duplicated, DEC_T positional indexing would be silently wrong (#81/#93)') FROM decoded) AS dec_density_ok,
   (SELECT groupArray(tuple(word_addr, value)) FROM (SELECT word_addr, value FROM ram FINAL ORDER BY word_addr)) AS RAM_T,
   (SELECT groupArray(tuple(word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg))
      FROM (SELECT word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg FROM decoded ORDER BY word_addr)) AS DEC_T"""
 
 
-def run_query(max_instructions):
+def run_query(max_instructions, word_count):
     step = step_expr()
-    init = ("tuple(toUInt32(%d), arrayResize(emptyArrayUInt32(), 31, toUInt32(0)),"
+    # `+ ram_density_ok + dec_density_ok` is load-bearing, not decorative:
+    # both throwIf()s return 0 on success, so this doesn't change the
+    # starting pc -- but it's what forces ClickHouse to actually evaluate
+    # them (see decode_arrays()'s comment). Folding them into the fold's own
+    # init tuple, rather than the outer SELECT list, ties the guard to the
+    # computation itself so a future edit to the SELECT list can't
+    # reintroduce the silent-no-op failure by accident.
+    #
+    # assumeNotNull() on both: a scalar subquery's result is Nullable in
+    # ClickHouse regardless of the underlying expression's own nullability,
+    # and a Nullable anywhere in arrayFold's initial accumulator poisons the
+    # whole tuple's inferred type against the lambda's non-Nullable return
+    # (the exact Phase 0 finding this workstream's own charter notes --
+    # verified again here: the first version of this line, without
+    # assumeNotNull, failed every fixture with a TYPE_MISMATCH on the
+    # accumulator before a single instruction ran).
+    init = ("tuple(toUInt32(%d) + assumeNotNull(ram_density_ok) + assumeNotNull(dec_density_ok),"
+            " arrayResize(emptyArrayUInt32(), 31, toUInt32(0)),"
             " emptyArrayUInt32(), emptyArrayUInt32(), toUInt8(0), '', toUInt32(0))" % RAM_BASE)
-    return f"""WITH{DECODE_ARRAYS}
+    return f"""WITH{decode_arrays(word_count)}
 SELECT r.1 AS pc, r.2 AS regs, r.5 AS halted, r.6 AS halt_reason, r.7 AS icount
 FROM (SELECT arrayFold((acc, i) -> {step}, range({max_instructions}), {init}) AS r)
 SETTINGS max_threads = 1
@@ -207,7 +271,7 @@ def run_one_fixture(ch, fixture: Path, max_instructions):
         data = data + b"\x00" * (4 - len(data) % 4)
     words = struct.unpack(f"<{len(data) // 4}I", data)
 
-    sql = load_sql(words) + decode_sql(len(words)) + run_query(max_instructions)
+    sql = load_sql(words) + decode_sql(len(words)) + run_query(max_instructions, len(words))
     result = ch(sql)
     lines = result.strip("\n").split("\n")
     header, row = lines[0].split("\t"), lines[1].split("\t")

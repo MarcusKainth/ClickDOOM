@@ -8,7 +8,7 @@ semantics) -- these tests are specifically about the semantics.
 from refemu.cpu import Halted, HaltReason
 from refemu.mmio import DEFAULT_IPMS, EXIT, FRAME_COMMIT, KEYQ, PUTCHAR, TICKS_MS
 
-from .asm import addi, lw, sw
+from .asm import addi, lb, lw, sw
 from .conftest import load
 
 
@@ -100,6 +100,35 @@ def test_frame_commit_records_frame_number_and_icount(cpu_factory):
     _store_word(cpu, FRAME_COMMIT, 42)
     assert cpu.memory.mmio.frame_commits[-1][0] == 42
     assert cpu.memory.mmio.frame_commits[-1][1] == cpu.icount - 1  # icount before the store itself
+
+
+def test_non_register_offset_reads_zero(cpu_factory):
+    # SPEC §3 (issue #87/#90): an offset that isn't one of the five
+    # registers reads 0 -- not persisted byte storage. 0x20 is safely past
+    # FRAME_COMMIT (0x10) and still inside the 4 KiB window.
+    cpu = cpu_factory()
+    assert _load_word(cpu, 0x20) == 0
+
+
+def test_non_register_offset_write_has_no_effect(cpu_factory):
+    # A write to a non-register offset is silently ignored -- not stored
+    # anywhere a later read could observe, which is exactly the byte-backed
+    # behavior #87/#90 ruled out.
+    cpu = cpu_factory()
+    _store_word(cpu, 0x20, 0xDEAD_BEEF)
+    assert _load_word(cpu, 0x20) == 0
+
+
+def test_non_word_width_access_to_a_register_offset_reads_zero(cpu_factory):
+    # A byte access lands on a real register's offset but isn't the word
+    # access SPEC §3 defines -- still falls to the reads-0 fallback, not a
+    # partial/misinterpreted register read.
+    cpu = cpu_factory()
+    mmio_base = 0x1000_0000
+    cpu.write_reg(1, mmio_base)
+    load(cpu, [lb(2, 1, PUTCHAR)])
+    cpu.step()
+    assert cpu.read_reg(2) == 0
 
 
 def test_no_host_clock_import(cpu_factory):

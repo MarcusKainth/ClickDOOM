@@ -13,6 +13,35 @@
 -- broken test-sqlcpu job in between.
 --
 -- Idempotent: safe to re-run against an already-provisioned database.
+--
+-- ---------------------------------------------------------------------------
+-- Two ClickHouse (26.3) traps hit writing sqlcpu/run_riscv_tests.py's
+-- density guard (#93/#98) that anyone writing NEW fold/flush/query SQL
+-- against this schema -- executor's batch loop and commit flush chief among
+-- them -- will hit too if they aren't warned. Both are silent-wrong-answer
+-- shaped, not error-shaped, which is this project's signature failure mode.
+--
+-- 1. An unreferenced WITH-bound scalar subquery is never evaluated.
+--    `WITH (SELECT throwIf(...) FROM t) AS guard, ...` does NOT run `guard`
+--    unless something downstream actually references it -- ClickHouse
+--    prunes it as dead. A guard/assertion written this way silently never
+--    fires. Verified directly: a density check written exactly this way
+--    produced zero error against a deliberately-broken input, with nothing
+--    in the query plan or output hinting it hadn't run. Fix: consume the
+--    alias somewhere the optimizer can't prune, e.g. folded into an
+--    arrayFold's own init-tuple arithmetic (`initial_value + guard`, where
+--    `guard` is 0 on success) rather than left dangling in the WITH clause.
+--
+-- 2. A scalar subquery's result is Nullable, regardless of whether the
+--    underlying expression is. `(SELECT throwIf(...) FROM t)` has type
+--    Nullable(UInt8) even though `throwIf` itself returns plain UInt8 --
+--    and a single Nullable value anywhere in an arrayFold accumulator's
+--    initial tuple poisons the WHOLE tuple's inferred type against the
+--    step lambda's non-Nullable return, failing every row with a
+--    TYPE_MISMATCH before a single instruction executes. Fix: wrap with
+--    `assumeNotNull(...)`, same as this project's Phase 0 guidance for any
+--    other scalar-subquery-derived value entering an accumulator.
+-- ---------------------------------------------------------------------------
 
 CREATE DATABASE IF NOT EXISTS clickdoom;
 
@@ -165,13 +194,46 @@ ORDER BY frame_no;
 
 -- Debug console bytes (PUTCHAR, SPEC §3). One row per byte written; seq
 -- gives the emission order for readout.
+--
+-- ReplacingMergeTree, not plain MergeTree (agreed with executor, #25):
+-- console_out is flushed from batch_commit.console_bytes the same
+-- idempotent-redo-safe way ram/cpu_state are (ADR-0003) -- a flush
+-- re-run after a crash must not append duplicate bytes. `seq` is the key
+-- rather than a separate `consumed`-style write, per ADR-0003 point 4 ("the
+-- cheapest way to make a write atomic is to not have the write").
+--
+-- seq = bitShiftLeft(batch_id, 32) + array_position (array_position =
+-- this byte's 0-indexed position within its batch's console_bytes array,
+-- so the value is monotonic in emission order within a batch by
+-- construction). NOT `batch_id * STRIDE + array_position` for a fixed
+-- STRIDE -- an earlier draft used that and it collides silently the
+-- moment K is tuned so one batch's console output exceeds STRIDE bytes
+-- (ReplacingMergeTree just keeps one of the two colliding rows, no
+-- error). Reserving the full low 32 bits for array_position instead of a
+-- fixed STRIDE needs no such cap: a batch retiring at most K (<=200,000
+-- tested, SPEC §6) instructions cannot emit anywhere near 2^32 PUTCHARs in
+-- one batch, and batch_id staying under 2^32 (demo3 is ~48,500 batches at
+-- K=50,000, nine orders of magnitude of headroom) is what keeps the shift
+-- itself from losing bits. Verified no aliasing is possible under either
+-- bound.
+--
+-- FINAL is required for a correct read, same as ram/cpu_state above: an
+-- un-FINAL'd read after a redone flush can return the duplicate row a
+-- crash-recovery replay produces before the next merge collapses it, and
+-- unlike ram's "duplicates are content-identical so it's harmless either
+-- way," a duplicate row here means the SAME byte is read TWICE at
+-- adjacent-looking positions in an `ORDER BY seq` scan -- a real corrupted
+-- readout (a repeated character), not a merely-redundant one. Every
+-- console_out reader (the debug readout query, any future divergence
+-- tooling) MUST read with FINAL; this is not optional the way it can be
+-- for a one-off row-count check elsewhere in this file.
 CREATE TABLE IF NOT EXISTS clickdoom.console_out
 (
     spec_version String DEFAULT '0.1.0',
     seq          UInt64,
     byte         UInt8
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 ORDER BY seq;
 
 -- ---------------------------------------------------------------------------
@@ -221,6 +283,35 @@ ORDER BY seq;
 --        only for id = 18 (load) and id = 19 (store)
 --   sg   sign-extend flag for loads (1 = sign-extend, 0 = zero-extend);
 --        meaningful only for id = 18 (load) — stores never sign-extend
+--   m_sg1 1 if rs1 is a SIGNED operand for this multiply, meaningful only
+--        for id IN (10, 11, 12) -- mul/mulh/mulhsu; 0 (unsigned) for
+--        id = 13 (mulhu) and for every non-multiply id
+--   m_sg2 1 if rs2 is a SIGNED operand for this multiply, meaningful only
+--        for id IN (10, 11) -- mul/mulh; 0 (unsigned) for id IN (12, 13)
+--        -- mulhsu/mulhu -- and for every non-multiply id
+--   m_hi  1 if the result is the HIGH 32 bits of the 64-bit product,
+--        meaningful only for id IN (11, 12, 13) -- mulh/mulhsu/mulhu; 0
+--        (low 32 bits) for id = 10 (mul) and for every non-multiply id.
+--        m_sg1/m_sg2/m_hi (issue #54) exist so the execute expression's
+--        mul/mulh/mulhsu/mulhu arms -- currently four separate arms, each
+--        paying its own 64-bit cast+multiply on EVERY step regardless of
+--        which id is live, since neither multiIf nor if short-circuits
+--        inside arrayFold (ADR-0002) -- can collapse to one shared 64-bit
+--        multiply selected by these three decode-time flags instead of
+--        four independently-evaluated subexpressions.
+--   d_sg  1 if this div/rem is SIGNED, meaningful only for id IN (14, 16)
+--        -- div/rem; 0 (unsigned) for id IN (15, 17) -- divu/remu -- and
+--        for every non-div/rem id. Same collapse motivation as m_sg1/m_sg2/
+--        m_hi above: div/divu/rem/remu (four arms) become one shared
+--        Int64 division selected by this flag (issue #54). Doing that
+--        division in Int64 rather than Int32/UInt32 is also what avoids
+--        the crash in issue #99: ClickHouse's intDiv()/modulo() raise
+--        ILLEGAL_DIVISION on `INT_MIN / -1` in 32-bit arithmetic, but
+--        `-2147483648` widened to Int64 and divided by `-1` doesn't
+--        overflow Int64 at all, and truncating the Int64 result back to
+--        UInt32 gives exactly RISC-V's spec'd INT_MIN result for div (and
+--        `modulo` correspondingly gives 0 for rem) with no separate
+--        overflow branch needed.
 --   raw  the undecoded instruction word, kept only so an id = 31
 --        (ILLEGAL_INSN) halt record can report the actual bad instruction
 --        (SPEC §1) without re-reading `ram` at halt time. Added at
@@ -264,6 +355,10 @@ CREATE TABLE IF NOT EXISTS clickdoom.decoded
     tgt          UInt32,
     mk           UInt32,
     sg           UInt8,
+    m_sg1        UInt8,
+    m_sg2        UInt8,
+    m_hi         UInt8,
+    d_sg         UInt8,
     raw          UInt32
 )
 ENGINE = MergeTree

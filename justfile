@@ -23,6 +23,10 @@ test-refemu:
     @test -f refemu/pyproject.toml || { echo "refemu/ not landed yet"; exit 1; }
     cd refemu && uv run pytest -q
 
+# Regenerate refemu's committed riscv-tests fixtures (maintenance only, not part of CI)
+build-riscv-tests-fixtures:
+    ./refemu/scripts/build_riscv_tests.sh
+
 # riscv-tests INSIDE ClickHouse — sqlcpu workstream
 test-sqlcpu: up
     @test -f sqlcpu/schema.sql || { echo "sqlcpu/ not landed yet"; exit 1; }

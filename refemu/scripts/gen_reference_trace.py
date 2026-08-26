@@ -211,8 +211,10 @@ def main() -> int:
         type=int,
         default=15_728_640,  # 15 * RAM_HASH_INTERVAL: the first full
         # ram/fb-hash checkpoint at or past the first FRAME_COMMIT (icount
-        # 15,695,836, #29/#111's timedemo ROM), for margin -- not a magic
-        # number, see module docstring.
+        # 15,653,137 as of #127's DG_DrawFrame unroll, previously
+        # 15,695,836 pre-#127 -- both fall in [14, 15) * RAM_HASH_INTERVAL,
+        # so this constant didn't need to move with that ROM change), for
+        # margin -- not a magic number, see module docstring.
     )
     parser.add_argument(
         "--out",
@@ -233,8 +235,10 @@ def main() -> int:
     # a mismatch, not silently accept a different reference than the one
     # this script's docstring claims to produce.
     parser.add_argument("--expect-init-graphics-icount", type=int, default=11_016_543)
-    parser.add_argument("--expect-frame-commit-icount", type=int, default=15_695_836)
+    parser.add_argument("--expect-frame-commit-icount", type=int, default=15_653_137)
     parser.add_argument(
+        # Unchanged by #127's DG_DrawFrame unroll -- that's the whole point
+        # (icount moved, fb_hash didn't; see #127's evidence and #29).
         "--expect-frame-commit-fbhash", default="fe5d82c0f42d45f1", help="hex, no 0x prefix"
     )
     parser.add_argument("--no-expect", action="store_true", help="skip the issue-#29 cross-check")

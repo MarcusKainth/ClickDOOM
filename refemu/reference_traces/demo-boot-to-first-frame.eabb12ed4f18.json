@@ -1,0 +1,30 @@
+{
+  "spec_version": "0.1.0",
+  "rom_sha256": "eabb12ed4f188f456177fc11a1fdcf3046ee5c9c38c8d2fd33246c72bd2ab92c",
+  "rom_manifest": {
+    "spec_version": "0.1.0",
+    "entry": 2147483648,
+    "load_addr": 2147483648,
+    "size": 4789464,
+    "sha256": "eabb12ed4f188f456177fc11a1fdcf3046ee5c9c38c8d2fd33246c72bd2ab92c",
+    "text_start": 2147483648,
+    "text_end": 2147878944
+  },
+  "generated_by": "refemu/scripts/gen_reference_trace.py ",
+  "trace_file": "demo-boot-to-first-frame.eabb12ed4f18.tsv",
+  "trace_line_count": 3840,
+  "final_icount": 15728640,
+  "halt": null,
+  "init_graphics_icount": 11016543,
+  "frame_commit": {
+    "frame_no": 0,
+    "committed_icount": 15653136,
+    "icount": 15653137,
+    "pc": 2147485724,
+    "checkpoint": "15653137\t8000081c\tece8f52f33e1b243\t6dd48e3bf95028e9\tfe5d82c0f42d45f1"
+  },
+  "checkpoint_interval": 4096,
+  "ram_hash_interval": 1048576,
+  "generation_seconds": 15.39,
+  "instructions_per_second": 1021986
+}

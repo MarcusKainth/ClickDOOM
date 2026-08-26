@@ -94,8 +94,8 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   `PINNED_HASH 9a6a47d0…`): 2,300,210,133 instructions — a different
   length, consistent with #175's own accounting, not a discrepancy — but
   the same `halt_reason`, `pc`, and `exit_code` as the first run,
-  confirming the mechanism holds independent of which conforming binary
-  reaches it. Worth pinning explicitly rather than leaving as "whatever
+  confirming the mechanism isn't an artifact of one specific binary.
+  Worth pinning explicitly rather than leaving as "whatever
   `EXIT` happens to carry": the exit path
   depends on `system()` continuing to resolve the way this newlib build
   currently does (returning promptly rather than hanging or erroring

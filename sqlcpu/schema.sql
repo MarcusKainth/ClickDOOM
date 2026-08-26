@@ -111,6 +111,19 @@ CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
     wl_addr      Array(UInt32),
     wl_val       Array(UInt32),
     wl_icount    Array(UInt64),
+    -- SPEC §2 FRAMEBUFFER/PALETTE write-log (#130/#160) -- same shape as
+    -- wl_* above, one (addr, val, icount) triple per region, needed to
+    -- re-derive `framebuffer`/`palette` (below) the same way wl_*
+    -- re-derives `ram`. word_addr is region-relative on both sides of the
+    -- flush (fold.py's fb_wa/pal_wa already match framebuffer/palette's
+    -- own word_addr convention) -- no RAM_BASE-style rebasing step, unlike
+    -- ram's flush.
+    fb_wl_addr   Array(UInt32),
+    fb_wl_val    Array(UInt32),
+    fb_wl_icount Array(UInt64),
+    pal_wl_addr  Array(UInt32),
+    pal_wl_val   Array(UInt32),
+    pal_wl_icount Array(UInt64),
     console_bytes Array(UInt8)
 )
 ENGINE = MergeTree
@@ -155,6 +168,40 @@ ORDER BY batch_id;
 -- 0.022-0.030s against 0.245-0.256s for the argMax form, and FINAL stayed
 -- flat with 1.2M accumulated deltas (docs/adr/0001-batch-execution-with-arrayfold.md).
 CREATE TABLE IF NOT EXISTS clickdoom.ram
+(
+    spec_version String DEFAULT '0.1.0',
+    word_addr    UInt32,
+    value        UInt32,
+    version      UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+ORDER BY word_addr;
+
+-- SPEC §2 FRAMEBUFFER, persistent (#130/#160) -- identical shape to `ram`
+-- above, same FINAL-materialization reasoning. word_addr is relative to
+-- FRAMEBUFFER's own base (0x1100_0000), range [0, 16000) -- NOT RAM-
+-- relative or absolute, and NOT the same domain as `ram.word_addr`. No
+-- byte-decomposition path needed: DG_DrawFrame's 64,000-byte region
+-- divides into exactly 16,000 words with no remainder, and SPEC §2 clause
+-- 2 makes every store landing here already word-width (a narrower store
+-- halts BAD_ADDR before it can retire), so `value` is always a complete
+-- word, never a partial blend against a previous value nothing ever reads.
+CREATE TABLE IF NOT EXISTS clickdoom.framebuffer
+(
+    spec_version String DEFAULT '0.1.0',
+    word_addr    UInt32,
+    value        UInt32,
+    version      UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+ORDER BY word_addr;
+
+-- SPEC §2 PALETTE, persistent (#130/#160) -- identical shape again, for
+-- PALETTE's own base (0x1101_0000), range [0, 192). A separate table from
+-- `framebuffer` rather than one combined table with a region tag: palette
+-- writes are rare (on palette change) against framebuffer's ~16,000/frame,
+-- so a palette read never pays framebuffer's write volume and vice versa.
+CREATE TABLE IF NOT EXISTS clickdoom.palette
 (
     spec_version String DEFAULT '0.1.0',
     word_addr    UInt32,

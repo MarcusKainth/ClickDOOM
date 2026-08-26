@@ -896,7 +896,9 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, db=DB,
     # what #86 forbids is aliasing the fold call itself inside the SELECT list.
     return f"""INSERT INTO {db}.batch_commit
   (batch_id, icount, pc, regs, halted, halt_reason, exit_code,
-   keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes)
+   keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount,
+   fb_wl_addr, fb_wl_val, fb_wl_icount, pal_wl_addr, pal_wl_val, pal_wl_icount,
+   console_bytes)
 WITH{decode_with(db)},
   (SELECT tuple(batch_id, pc, regs, icount, keyq_pos)
      FROM {db}.batch_commit ORDER BY batch_id DESC LIMIT 1) AS PREV
@@ -905,7 +907,15 @@ SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
        r.1 AS pc, r.2 AS regs,
        r.4.2 AS halted, {halt_reason_expr} AS halt_reason, {exit_code_expr} AS exit_code,
        r.6.2 AS keyq_pos, r.6.3.2 AS has_frame, r.6.3.1 AS frame_no,
-       r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount, r.6.1 AS console_bytes
+       r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
+       -- #130/#160: acc.7 was ALREADY computed on every step (this fold
+       -- pays for it regardless -- see build_step()'s acc.7 comment); this
+       -- was the missing projection, not new fold work. select_only()
+       -- projects the same r.7.* fields already, for tests -- batch()
+       -- just hadn't caught up.
+       r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,
+       r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount,
+       r.6.1 AS console_bytes
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1,
          -- The step expression is generated, not hand-written, and MMIO (#24)

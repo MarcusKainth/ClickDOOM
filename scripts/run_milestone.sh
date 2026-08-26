@@ -197,6 +197,7 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   echo "$BATCH_SQL" | ch --multiquery
 
   ch --multiquery <<< "$(python3 executor/commit.py ram --db "$DATABASE")"
+  ch --multiquery <<< "$(python3 executor/commit.py fbpal --db "$DATABASE")"
   ch --multiquery <<< "$(python3 executor/commit.py console_out --db "$DATABASE")"
   ch --multiquery <<< "$(python3 executor/commit.py cpu_state --db "$DATABASE")"
   ch --multiquery <<< "$(python3 executor/commit.py retention --db "$DATABASE")"

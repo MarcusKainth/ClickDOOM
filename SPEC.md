@@ -252,7 +252,13 @@ shape. All tables carry `spec_version String`.
   (cumulative KEYQ pops through this batch), `has_frame UInt8` / `frame_no
   UInt32` (FRAME_COMMIT, if any, this batch), `wl_addr Array(UInt32)`,
   `wl_val Array(UInt32)`, `wl_icount Array(UInt64)` (per-store version — see
-  the versioning note below), `console_bytes Array(UInt8)`. Bounded by
+  the versioning note below), `fb_wl_addr Array(UInt32)`, `fb_wl_val
+  Array(UInt32)`, `fb_wl_icount Array(UInt64)`, `pal_wl_addr Array(UInt32)`,
+  `pal_wl_val Array(UInt32)`, `pal_wl_icount Array(UInt64)` (§2's
+  FRAMEBUFFER/PALETTE write-log — same shape as `wl_*` above, one triple of
+  arrays per region, recovery-needed to re-derive `framebuffer`/`palette`
+  below the same way `wl_*` re-derives `ram`; #130/#160), `console_bytes
+  Array(UInt8)`. Bounded by
   retention on **batch_id lag, not wall-clock time**: only the most recent N
   rows are kept (N = 16, `executor/config`), older ones dropped **whole** by
   a fixed statement (partition-drop, or a delete keyed on `batch_id <
@@ -290,10 +296,46 @@ shape. All tables carry `spec_version String`.
   same-address stores in one batch sharing a version is a
   `ReplacingMergeTree` tie with an unspecified winner, which violates §8's
   explicit-ordering rule.
+- `framebuffer` — `ReplacingMergeTree(version)` keyed by `word_addr UInt32`,
+  `value UInt32`, `version UInt64` (= icount of the store, same convention as
+  `ram`) — persistent storage for §2's FRAMEBUFFER region, mirroring `ram`'s
+  shape exactly. `word_addr` here is relative to FRAMEBUFFER's own base
+  (`0..15,999`, `(byte_addr - 0x1100_0000) >> 2`), **not** RAM-relative or
+  absolute — there is no RAM_BASE-style rebasing step on this table's flush,
+  unlike `ram`'s (`wl_addr` is RAM_BASE-relative and must add `RAM_BASE >>
+  2` back on to become `ram.word_addr`'s absolute convention; `fb_wl_addr`
+  is already region-relative on both sides of the flush, so no such
+  adjustment applies here). Word-only by construction (§2 clause 2 — every
+  store landing in `fb_wl_addr`/`fb_wl_val` is already a full-word store, or
+  the executor halted `BAD_ADDR` before it could retire), so `value` is
+  always the complete word, never a partial blend. `DG_DrawFrame`'s 64,000
+  bytes divide into exactly 16,000 words with no remainder, so this table's
+  `word_addr` range is dense over `[0, 16,000)` once every pixel has been
+  drawn at least once — never partially written mid-word the way a
+  byte-decomposition scheme would risk.
+- `palette` — identical shape to `framebuffer` above, for §2's PALETTE
+  region: `word_addr` relative to `0x1101_0000`, range `[0, 192)` (768
+  bytes / 4). Written far less often (on palette change, not per-pixel) —
+  a separate table from `framebuffer` rather than one combined table with a
+  region tag, so a palette read never pays framebuffer's write volume and
+  vice versa (#130).
 - `input_queue` — `(event_seq UInt64, key_event UInt16, consumed UInt8)`.
 - `frames_out` — `(frame_no UInt32, committed_icount UInt64, fb String /*
   64,000 bytes */, palette String /* 768 bytes */)`; written by the render
-  query on `FRAME_COMMIT`.
+  query on `FRAME_COMMIT`. `committed_icount` is the icount **after** the
+  `FRAME_COMMIT`-writing store itself retires — the same post-increment
+  convention as `wl_icount`/`fb_wl_icount`/`pal_wl_icount` above (§1: icount
+  counts retired instructions, and the MMIO store that writes
+  `FRAME_COMMIT` is an ordinary retiring instruction, not a fatal halt, so
+  it increments icount like any other). Called out explicitly because it is
+  easy to get backwards by one: a naive read of "the icount when
+  `FRAME_COMMIT` fired" could mean either the icount *before* that
+  instruction's own retirement or *after* it, and only the latter is
+  consistent with every other `icount` value in this schema meaning "count
+  of instructions retired so far, inclusive of the current row's own
+  triggering instruction." `#29`'s target checkpoint
+  (`fb_hash fe5d82c0f42d45f1` at icount `15,653,137`) is this
+  post-increment value.
 - `console_out` — `(seq UInt64, byte UInt8)`.
 - `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
   `ram` at ROM load and covering `[text_start, text_end)` only:

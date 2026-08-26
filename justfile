@@ -46,6 +46,13 @@ test-sqlcpu: up
 test-executor: up
     cd executor && uv run pytest tests/ -v
 
+# Frame readout (issue #29) against a fixture matching sqlcpu's proposed
+# framebuffer/palette persistence shape (#160, not landed yet) -- proves
+# frame_readout_sql() reproduces the real fb_hash oracle from real refemu
+# data, and ansi_render_sql() byte-matches a hand-computed synthetic case.
+test-render: up
+    ./driver/test_render.sh --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
+
 # Differential run of N instructions; reports first divergence (SPEC §7)
 diff N: up
     @test -f scripts/diff_run.sh || { echo "scripts/diff_run.sh not landed yet (executor workstream, issue #27)"; exit 1; }

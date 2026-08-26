@@ -184,11 +184,24 @@ trap cleanup_smoke EXIT
 if [ ! -f executor/fold.py ]; then
   fail "executor/fold.py not found -- gate 4 needs the real fold code path, not a hand-rolled substitute"
 fi
+# RAM-relative, not absolute: fold.py's build_step() compares
+# text_start_widx/text_end_widx directly against WA (executor/fold.py:539,
+# the SELF_MODIFY arm), and WA (_addr_and_align's wa_safe, fold.py:74) is
+# RAM_BASE-relative -- least(bitShiftRight(toUInt32(toUInt64(ADDR) -
+# RAM_BASE), 2), RAM_WORDS - 1), always in [0, RAM_WORDS - 1]. Passing the
+# absolute TEXT_START_WORD/TEXT_END_WORD (gate 1's manifest-derived word
+# addresses, ~536,870,912 for the current ROM) here makes `WA >=
+# text_start_widx` unconditionally false for every address this fold can
+# ever compute -- SELF_MODIFY can never fire, not rarely, algebraically
+# (#146). Subtract RAM_BASE_WORD (gate 2) to match every other caller's
+# convention (test_fold.py, fold.py's own docstrings).
+TEXT_START_WIDX=$(( TEXT_START_WORD - RAM_BASE_WORD ))
+TEXT_END_WIDX=$(( TEXT_END_WORD - RAM_BASE_WORD ))
 FOLD_SQL=$(python3 -c "
 import sys
 sys.path.insert(0, 'executor')
 import fold
-print(fold.select_only($SMOKE_K, $TEXT_START_WORD, $TEXT_END_WORD, $EXPECTED_DECODED, $RAM_WORDS, $HWM,
+print(fold.select_only($SMOKE_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $EXPECTED_DECODED, $RAM_WORDS, $HWM,
                         pc0=$RAM_BASE, db='$SMOKE_DB'))
 ")
 # Via stdin, not `--query "$FOLD_SQL"`: the fold's generated step expression

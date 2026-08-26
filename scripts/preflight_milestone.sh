@@ -94,6 +94,23 @@ ch() {
 
 fail() { echo "::error::PRE-FLIGHT FAILED: $1" >&2; exit 1; }
 
+# #140: gate 4 already requests `--format TSVWithNames` (a header row), but
+# every caller used to throw it away with `tail -1` and index columns by
+# hardcoded position -- the exact failure shape gate 1 exists to prevent one
+# level up (#98's count()-vs-count(DISTINCT) hole): if fold.py's SELECT list
+# ever reorders, a positional read silently returns the WRONG field instead
+# of failing, and this gate protects a 3-4 hour run (#110) on the strength
+# of that read. Extract by the header's own column name instead -- a reorder
+# then fails loudly ("column not found"), which is the correct behavior for
+# a guard.
+tsv_field() { # tsv_field <column-name> <TSVWithNames output>
+  local name="$1" data="$2" header idx
+  header=$(echo "$data" | head -1)
+  idx=$(echo "$header" | tr '\t' '\n' | grep -nx "$name" | cut -d: -f1)
+  [ -n "$idx" ] || fail "column '$name' not found in select_only()'s TSVWithNames header ($header) -- fold.py's SELECT list changed shape; this gate's assumptions about it are stale (#140)."
+  echo "$data" | tail -1 | awk -F'\t' -v i="$idx" '{print $i}'
+}
+
 echo "# pre-flight: gate 1/4 -- decoded populated and correctly sized" >&2
 TEXT_START=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_start'])")
 TEXT_END=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_end'])")
@@ -178,7 +195,11 @@ ch --query "CREATE TABLE $SMOKE_DB.input_queue AS $DATABASE.input_queue"
 ch --query "INSERT INTO $SMOKE_DB.ram SELECT * FROM $DATABASE.ram"
 ch --query "INSERT INTO $SMOKE_DB.decoded SELECT * FROM $DATABASE.decoded"
 
-cleanup_smoke() { ch --query "DROP DATABASE IF EXISTS $SMOKE_DB" 2>/dev/null || true; }
+SELFMOD_DB="clickdoom_preflight_selfmod_$$"
+cleanup_smoke() {
+  ch --query "DROP DATABASE IF EXISTS $SMOKE_DB" 2>/dev/null || true
+  ch --query "DROP DATABASE IF EXISTS $SELFMOD_DB" 2>/dev/null || true
+}
 trap cleanup_smoke EXIT
 
 if [ ! -f executor/fold.py ]; then
@@ -212,17 +233,94 @@ print(fold.select_only($SMOKE_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $EXPECTED_DEC
 # output (executor/bench/*/run.sh, sqlcpu/run_tests.sh) pipes SQL in rather
 # than passing it as an argument.
 SMOKE_OUT=$(echo "$FOLD_SQL" | ch --format TSVWithNames)
-# select_only()'s column order (executor/fold.py): pc, regs, wl_addr,
-# wl_val, wl_icount, stopped, halted, halt_reason, halt_pc, halt_extra,
-# retired, console_bytes, keyq_pos, frame_no, frame_committed -- retired is
-# field 11, halted is field 7, taken from the real SELECT list rather than
-# assumed positionally.
-SMOKE_ICOUNT=$(echo "$SMOKE_OUT" | tail -1 | awk -F'\t' '{print $11}')
-SMOKE_HALTED=$(echo "$SMOKE_OUT" | tail -1 | awk -F'\t' '{print $7}')
+# By column NAME (#140), not hardcoded position -- select_only()'s SELECT
+# list (executor/fold.py) aliases these as `retired`/`halted` regardless of
+# where they fall in the column order.
+SMOKE_ICOUNT=$(tsv_field retired "$SMOKE_OUT")
+SMOKE_HALTED=$(tsv_field halted "$SMOKE_OUT")
 if [ "$SMOKE_HALTED" = "0" ] && [ "$SMOKE_ICOUNT" != "$SMOKE_K" ]; then
   fail "smoke-test batch (K=$SMOKE_K) retired $SMOKE_ICOUNT, not $SMOKE_K, and did not halt -- this is exactly the silent-stall shape #110 warns about: arrayFold ran all $SMOKE_K steps regardless, so a working run and a stalled one look identical by wall clock alone. Something in the currently-loaded state or fold path is producing an unexplained short retirement."
 fi
 echo "  smoke test: K=$SMOKE_K retired=$SMOKE_ICOUNT halted=$SMOKE_HALTED -- OK" >&2
+
+echo "# pre-flight: gate 4/4 (cont'd) -- SELF_MODIFY guard actually fires" >&2
+# #146: the retirement check above cannot catch a unit-confusion bug in
+# TEXT_START_WIDX/TEXT_END_WIDX -- the real loaded ROM's boot slice never
+# performs a genuine self-modifying store within SMOKE_K instructions, so
+# "SELF_MODIFY never fires" looks identical whether the arm is wired
+# correctly or silently dead (which #146 proved it was: the absolute word
+# addresses this gate passed before the fix made `WA >= text_start_widx`
+# unconditionally false, for every address the fold can ever compute).
+# Two checks close that gap, at different cost/precision points:
+#
+# (a) A direct bound check on THIS SCRIPT's own TEXT_START_WIDX/
+#     TEXT_END_WIDX -- the exact values the real smoke test above just used
+#     -- against RAM_WORDS. Free (no ClickHouse round-trip) and catches
+#     #146's actual numbers precisely: 536,870,912 is not < RAM_WORDS
+#     (6,291,456), so this fails immediately and loudly on the pre-fix
+#     values, the same invariant executor/fold.py's build_step() now
+#     enforces internally (defense in depth: that assertion already fired,
+#     inside the smoke-test FOLD_SQL construction above, if these were
+#     wrong -- this restates it here, closer to the values themselves, so
+#     the failure message names the right gate).
+if [ "$TEXT_START_WIDX" -lt 0 ] || [ "$TEXT_END_WIDX" -le "$TEXT_START_WIDX" ] || [ "$TEXT_END_WIDX" -gt "$RAM_WORDS" ]; then
+  fail "TEXT_START_WIDX=$TEXT_START_WIDX/TEXT_END_WIDX=$TEXT_END_WIDX are not a valid RAM-relative range within RAM_WORDS=$RAM_WORDS -- this is #146's exact failure shape: these values are compared directly against WA, which is always RAM_BASE-relative, so anything outside [0, RAM_WORDS] here (an absolute word address, for instance) silently disables SELF_MODIFY detection for the entire real run."
+fi
+# (b) A synthetic self-modifying store, seeded into its OWN tiny throwaway
+#     database (never the real loaded ram/decoded -- must never perturb the
+#     state the run above just proved works), proving the SELF_MODIFY
+#     mechanism itself still fires end-to-end -- WA's computation, the halt
+#     arm's wiring, halt_reason reaching the output -- not just that the
+#     bound check above passed. Same shape as executor/tests/test_fold.py's
+#     test_halt_self_modify (word 0 relative = `sw x0, RAM_BASE(x0)`).
+#
+#     This targets word 0 relative to RAM_BASE, which only lands inside
+#     [TEXT_START_WIDX, TEXT_END_WIDX) if TEXT_START_WIDX is 0 -- true for
+#     every ROM this project has built (rom's linker places .text at
+#     load_addr; #144's manifest check confirms load_addr == text_start).
+#     Guarded explicitly rather than assumed silently, so a future ROM
+#     that breaks this assumption fails loudly here instead of this check
+#     quietly proving nothing.
+if [ "$TEXT_START_WIDX" -ne 0 ]; then
+  fail "TEXT_START_WIDX=$TEXT_START_WIDX, expected 0 -- the SELF_MODIFY synthetic check below targets word 0 relative to RAM_BASE and needs TEXT_START_WIDX=0 for that to land inside the text window. Every ROM built so far has load_addr == text_start (#144); if this ROM genuinely doesn't, this check needs to target TEXT_START_WIDX's own word instead of assuming 0, not skip silently."
+fi
+SM_DECN=8
+SM_RAM_WORDS=8
+ch --query "DROP DATABASE IF EXISTS $SELFMOD_DB"
+ch --query "CREATE DATABASE $SELFMOD_DB"
+ch --query "CREATE TABLE $SELFMOD_DB.decoded AS $DATABASE.decoded"
+ch --query "CREATE TABLE $SELFMOD_DB.ram AS $DATABASE.ram"
+ch --query "CREATE TABLE $SELFMOD_DB.input_queue AS $DATABASE.input_queue"
+# word 0 (relative to RAM_BASE): op_id=19 is a store (sqlcpu/schema.sql's
+# decoded.id convention), width_mask=0xFFFFFFFF (full word), sign_bit=0,
+# imm=RAM_BASE -- store the word AT RAM_BASE, i.e. at itself. Words 1..7
+# are op_id=31 (OP_ILLEGAL, executor/config.py) padding, never reached:
+# K=1 halts on the very first step if the guard fires correctly.
+SM_DEC_ROWS="($RAM_BASE_WORD,19,0,0,0,$RAM_BASE,0,4294967295,0,0)"
+for sm_i in $(seq 1 $(( SM_DECN - 1 ))); do
+  SM_DEC_ROWS="$SM_DEC_ROWS,($(( RAM_BASE_WORD + sm_i )),31,0,0,0,0,0,0,0,$(( 0xBAD00000 + sm_i )))"
+done
+ch --query "INSERT INTO $SELFMOD_DB.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) VALUES $SM_DEC_ROWS"
+ch --query "INSERT INTO $SELFMOD_DB.ram (word_addr,value,version) SELECT $RAM_BASE_WORD + number, 0, 0 FROM numbers($SM_RAM_WORDS)"
+# TEXT_START_WIDX is 0 here (guarded above); the synthetic end bound is
+# just this tiny window's own size, well within [0, SM_RAM_WORDS].
+SELFMOD_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'executor')
+import fold
+print(fold.select_only(1, $TEXT_START_WIDX, $SM_DECN, $SM_DECN, $SM_RAM_WORDS, $HWM,
+                        pc0=$RAM_BASE, db='$SELFMOD_DB'))
+")
+SELFMOD_OUT=$(echo "$SELFMOD_SQL" | ch --format TSVWithNames)
+# By name (#140), same as the smoke-test check above.
+SELFMOD_HALTED=$(tsv_field halted "$SELFMOD_OUT")
+SELFMOD_REASON=$(tsv_field halt_reason "$SELFMOD_OUT")
+SELFMOD_RETIRED=$(tsv_field retired "$SELFMOD_OUT")
+HALT_SELF_MODIFY=$(python3 -c "import sys; sys.path.insert(0, 'executor'); import config; print(config.HALT_SELF_MODIFY)")
+if [ "$SELFMOD_HALTED" != "1" ] || [ "$SELFMOD_REASON" != "$HALT_SELF_MODIFY" ]; then
+  fail "SELF_MODIFY guard did not fire on a synthetic self-modifying store at word 0 relative to TEXT_START_WIDX=$TEXT_START_WIDX (got halted=$SELFMOD_HALTED halt_reason=$SELFMOD_REASON retired=$SELFMOD_RETIRED, expected halted=1 halt_reason=$HALT_SELF_MODIFY) -- the SELF_MODIFY mechanism itself (WA computation, the halt arm, or halt_reason wiring) is not working, independent of #146's widx-bound issue which check (a) above already cleared."
+fi
+echo "  SELF_MODIFY guard: bound check OK, synthetic store halted=$SELFMOD_HALTED halt_reason=$SELFMOD_REASON -- OK" >&2
 
 echo "" >&2
 echo "# ALL 4 PRE-FLIGHT GATES PASSED" >&2

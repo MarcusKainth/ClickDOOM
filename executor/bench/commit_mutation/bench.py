@@ -255,6 +255,12 @@ def main():
             raise RuntimeError(f"RAMT materialised {r['rows']} rows, ram has {ram_rows} -- "
                                "the FINAL scan did not do the work it was supposed to")
 
+    # Seed icount: the gameplay window starts at a real mid-run icount, so
+    # `retired` for the FIRST batch has to be measured against the seeded
+    # value. Defaulting it to 0 makes a boot arm look right and a gameplay
+    # arm report a 233-million-instruction first batch.
+    icount_seed = int(ch.scalar(f"SELECT icount FROM {args.db}.batch_commit "
+                                f"ORDER BY batch_id DESC LIMIT 1"))
     batches = []
     qids = []
     for b in range(args.batches):
@@ -277,7 +283,7 @@ def main():
         icount, halted, halt_reason, batch_id = row.split("\t")
         rec.update(icount=int(icount), halted=int(halted), halt_reason=halt_reason,
                    batch_id=int(batch_id))
-        prev = batches[-1]["icount"] if batches else 0
+        prev = batches[-1]["icount"] if batches else icount_seed
         rec["retired"] = rec["icount"] - prev
         rec["ran_retention"] = run_retention
         # Write-log occupancy for this batch. `retired < K` with `halted = 0`
@@ -315,10 +321,18 @@ def main():
         ramt_after.append({"i": i, "wall_s": secs, "rows": int(out.strip()), "query_id": qid})
     ram_parts_after = int(ch.scalar(
         f"SELECT count() FROM system.parts WHERE database='{args.db}' AND table='ram' AND active"))
+    # `count()` and `count() FINAL` diverge here and must not be confused:
+    # every batch's `ram` flush appends a part, so the raw count grows by the
+    # number of stores while the FINAL (deduplicated, one row per word_addr)
+    # count stays at SPEC §2's 6,291,456. RAMT reads through FINAL, so FINAL
+    # is what its length has to match. Checking against the raw count instead
+    # fails on a correct run -- which is how this check earned its comment.
     ram_rows_after = int(ch.scalar(f"SELECT count() FROM {args.db}.ram"))
+    ram_rows_after_final = int(ch.scalar(f"SELECT count() FROM {args.db}.ram FINAL"))
     for r in ramt_after:
-        if r["rows"] != ram_rows_after:
-            raise RuntimeError("post-run RAMT did not materialise the whole table")
+        if r["rows"] != ram_rows_after_final:
+            raise RuntimeError(f"post-run RAMT materialised {r['rows']} rows, "
+                               f"ram FINAL has {ram_rows_after_final}")
     probe_qids += [r["query_id"] for r in ramt_after]
 
     log = query_log(ch, qids + probe_qids)
@@ -360,11 +374,13 @@ def main():
         "server_min_bytes_for_wide_part": part_setting,
         "table_min_bytes_for_wide_part": table_setting,
         "ram_rows": ram_rows,
+        "icount_seed": icount_seed,
         "ram_active_parts_at_start": ram_parts,
         "ramt_standalone": ramt,
         "ramt_after_batches": ramt_after,
         "ram_active_parts_after": ram_parts_after,
         "ram_rows_after": ram_rows_after,
+        "ram_rows_after_final": ram_rows_after_final,
         "captures_standalone": captures,
         "setup_probe": setup_probe,
         "batches": batches,

@@ -31,8 +31,78 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 -- against.
 -- ---------------------------------------------------------------------------
 
--- One row per committed batch (SPEC §5, SPEC §6). Append-only log of CPU
--- snapshots; the row with max(batch_id) is the current state, reloaded at
+-- The batch's single atomic write (SPEC §5, §6; ADR-0003). One row per
+-- committed batch, superset of cpu_state's columns plus everything crash
+-- recovery needs to idempotently re-derive `ram` and `console_out`:
+--   keyq_pos       cumulative KEYQ pops through this batch (SPEC §3.2) --
+--                  input_queue consumption is a computed predicate against
+--                  this, not a mutated `consumed` flag, so it needs no write
+--                  of its own.
+--   has_frame/frame_no  FRAME_COMMIT (SPEC §3), if any, this batch.
+--   wl_addr/wl_val/wl_icount  the write-log: word_addr (RAM_BASE-relative,
+--                  per executor's fold.py convention -- the flush into
+--                  clickdoom.ram, which is ABSOLUTE word_addr, must add
+--                  RAM_BASE_WORD back on; see #81), the stored value, and
+--                  the store's OWN icount as that delta's `ram.version` --
+--                  never the batch's final icount, which would tie two
+--                  same-address stores in one batch under ram's
+--                  ReplacingMergeTree and violate SPEC §8's explicit-
+--                  ordering rule.
+--   console_bytes  PUTCHAR bytes emitted this batch, flushed into
+--                  console_out in (batch_id, array position) order.
+--
+-- Bounded by retention on batch_id LAG, never wall-clock time (ADR-0003's
+-- rejected-TTL writeup: a wall-clock TTL loses the last committed batch's
+-- write-log if the driver is down longer than the window, which is not an
+-- edge case for a multi-week demo3 run -- it silently and permanently
+-- diverges `ram` from `cpu_state` with nothing to reconcile from).
+-- Retention drops entire rows -- whole batch_ids, thin columns and bulky
+-- columns together -- via a fixed statement (partition-drop, or `DELETE
+-- WHERE batch_id < (SELECT max(batch_id) - N FROM batch_commit)`) the
+-- driver issues unconditionally every batch; N = 16 (executor/config). That
+-- is executor's driver-loop housekeeping (PURITY.md action 4: computes
+-- nothing, the threshold is computed in SQL), not this file's concern --
+-- this file only has to make row-level retention possible, which a plain
+-- MergeTree already is. Never selectively null the bulky columns on old
+-- rows in place: that is a second write this design doesn't need and SPEC
+-- §5 doesn't ask for.
+CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
+(
+    spec_version String DEFAULT '0.1.0',
+    batch_id     UInt64,
+    icount       UInt64,
+    pc           UInt32,
+    regs         Array(UInt32),  -- len 31: x1..x31, see convention above
+    halted       UInt8,
+    halt_reason  LowCardinality(String),
+    exit_code    UInt32,
+    keyq_pos     UInt64,
+    has_frame    UInt8,
+    frame_no     UInt32,
+    wl_addr      Array(UInt32),
+    wl_val       Array(UInt32),
+    wl_icount    Array(UInt64),
+    console_bytes Array(UInt8)
+)
+ENGINE = MergeTree
+ORDER BY batch_id;
+
+-- One row per committed batch (SPEC §5, SPEC §6), holding exactly cpu_state's
+-- historical seven columns. A durable table, NEVER pruned -- unlike
+-- batch_commit above, whose bulky write-log/console columns are windowed to
+-- the last N batches. Populated from batch_commit by the same idempotent
+-- flush that populates `ram` and `console_out` (ADR-0003): a fourth
+-- derivation on identical terms, not a special case. ReplacingMergeTree
+-- keyed by batch_id so a flush redone after a crash cannot leave two rows
+-- for one batch -- the derivation is a pure function of one batch_commit
+-- row, so any duplicate pair is content-identical regardless of merge
+-- state, and does not need FINAL to read correctly; FINAL only matters if
+-- the row *count* or the full unmerged history is what's being inspected.
+-- An earlier draft made this a VIEW over batch_commit -- rejected on review
+-- (#39): batch_commit's row-level retention would have silently turned this
+-- table from an unbounded log into a rolling N-row window, which is a real
+-- behavior change to a contracted table even though the column shape was
+-- preserved. The row with max(batch_id) is the current state, reloaded at
 -- the start of the next batch.
 CREATE TABLE IF NOT EXISTS clickdoom.cpu_state
 (
@@ -45,7 +115,7 @@ CREATE TABLE IF NOT EXISTS clickdoom.cpu_state
     halt_reason  LowCardinality(String),
     exit_code    UInt32
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree
 ORDER BY batch_id;
 
 -- RAM, word-addressed (byte address >> 2), SPEC §2's 24 MiB region.

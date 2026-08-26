@@ -180,19 +180,54 @@ corrected (non-halting) mix went from a noisy 2,437-3,867 instr/sec to a
 stable 1,757-1,898 -- a further real regression, though also notably *more
 consistent* run to run, which may mean the earlier noise was itself an
 artifact of the vulnerable capture pattern rather than genuine variance in
-write-log-length-dependent cost. Not re-measured against ADR-0001's e2e
-threshold at time of writing; the conclusion (well under 10,000, argue for
-amending) is not in doubt given fold-in-isolation alone already sits an
-order of magnitude below it.
+write-log-length-dependent cost.
+
+### Final clean re-derivation (both bugs fixed, both benchmarks re-run together)
+
+The team lead's suspicion, stated plainly before this ran: if the arrayJoin
+cross-join was the real source of the "batch overhead is 53% of e2e, 33x
+worse than Phase 0" conclusion, fixing it might make that whole
+investigation dissolve -- there would be nothing left to profile. Tested by
+re-running fold-in-isolation and e2e together, same fixture, both bugs
+fixed (the halting mix, the arrayJoin cross-join, and the groupArray capture
+fix, all three landed by the time this ran):
+
+| K | mode | seconds | instr/sec |
+|---:|---|---:|---:|
+| 50,000 | fold | 26.176 | 1,910 |
+| 50,000 | fold | 27.575 | 1,813 |
+| 50,000 | e2e (600,000 instructions, 12 batches) | 517.538 | 1,159 |
+
+|  | Phase 0 | now (clean) |
+|---|---:|---:|
+| fold | 76 µs/instr | 537.5 µs/instr |
+| e2e | 84 µs/instr | 862.6 µs/instr |
+| batch overhead | 8 µs/instr (9.5% of e2e) | 325.1 µs/instr (37.7% of e2e) |
+| e2e/fold ratio | 0.90 | 0.62 |
+
+**It did not dissolve, but it did shrink a lot.** The arrayJoin bug was
+real and worth fixing, but it was not the entire story: batch-commit
+overhead is still ~41x worse than Phase 0's baseline and still over a
+third of end-to-end time, down from the earlier (invalid) 53%/33x estimate
+but not down to noise. There is a real, smaller lever left in the
+state-reload/flush path -- the investigation the team lead originally
+asked for is still warranted, just smaller in scope than first estimated.
+Not profiled further in this PR; handed off as the concrete next step with
+a verified baseline to measure against, rather than the guessed-at one this
+ADR started with.
 
 One more thing this correction surfaced, not yet explained: fold-in-isolation
 itself was noisier across repeats with the corrected (non-halting) mix than
-before -- 2,437 and 3,867 instr/sec on the same K, same fixture, back to
-back, versus the earlier halted-mix runs which agreed within a few percent.
-A write-log that actually grows to thousands of entries makes each load's
-`arrayLastIndex` scan genuinely data-dependent in a way a log frozen at
-length 0-6 never was. Not investigated further here -- worth knowing before
-anyone treats a single fold-in-isolation run as precise.
+before the groupArray fix landed -- 2,437 and 3,867 instr/sec on the same K,
+same fixture, back to back, versus the earlier halted-mix runs which agreed
+within a few percent, and versus the post-groupArray-fix runs (1,910/1,813
+above), which are close together again. A write-log that actually grows to
+thousands of entries makes each load's `arrayLastIndex` scan genuinely
+data-dependent in a way a log frozen at length 0-6 never was, which may
+explain the noise on its own, or the groupArray fix's incidental
+consistency may be doing some of that work too. Not investigated further
+here -- worth knowing before anyone treats a single fold-in-isolation run
+as precise.
 
 ## Decision
 

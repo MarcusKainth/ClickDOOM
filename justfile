@@ -28,6 +28,10 @@ test-sqlcpu: up
     @test -f sqlcpu/schema.sql || { echo "sqlcpu/ not landed yet"; exit 1; }
     ./sqlcpu/run_tests.sh --host localhost --port 9000
 
+# Fold unit tests against the SPEC §5-shaped fixture schema — executor workstream
+test-executor: up
+    cd executor && uv run pytest tests/ -v
+
 # Differential run of N instructions; reports first divergence (SPEC §7)
 diff N: up
     ./scripts/diff_run.sh {{N}}

@@ -63,5 +63,5 @@ run: up
 # than editing it here. Flagged to the team lead as a ci: follow-up.
 lint:
     ./scripts/check_purity.sh
-    find scripts driver sqlcpu executor -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
+    find scripts driver sqlcpu executor rom -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
     @if [ -f refemu/pyproject.toml ] || [ -f driver/pyproject.toml ]; then ruff check refemu driver; fi

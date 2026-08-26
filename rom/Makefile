@@ -15,8 +15,14 @@ IMAGE_TAG  := 15.2.0-1
 DOCKERFILE := toolchain/Dockerfile
 BUILD      := build
 
-BIN := $(BUILD)/doom-rv32im.bin
-ELF := $(BUILD)/doom-rv32im.elf
+BIN      := $(BUILD)/doom-rv32im.bin
+ELF      := $(BUILD)/doom-rv32im.elf
+MANIFEST := $(BUILD)/manifest.json
+
+# Kept in sync with SPEC.md's own SPEC_VERSION by hand (SPEC.md: "must
+# update SPEC_VERSION here and the spec_version constants in code") --
+# this is rom's copy of that constant, issue #10.
+SPEC_VERSION := 0.1.0
 
 # The real DOOM engine (issue #7), vendored pristine in #41. Excludes:
 # other platforms' doomgeneric_*.c ports (this ROM's own hooks are
@@ -84,9 +90,9 @@ CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -mno-relax \
 LDFLAGS := -nostdlib -Wl,--build-id=none -T $(LD)
 LDLIBS  := -lc -lm -lgcc
 
-.PHONY: all toolchain-image clean
+.PHONY: all toolchain-image check-pinned-hash clean
 
-all: $(BIN)
+all: $(BIN) $(MANIFEST)
 
 # Build (or reuse the layer cache for) the pinned toolchain image. Every
 # input the image depends on is content-pinned in the Dockerfile itself
@@ -95,6 +101,13 @@ all: $(BIN)
 toolchain-image: $(DOCKERFILE)
 	docker build -t $(IMAGE):$(IMAGE_TAG) -f $(DOCKERFILE) toolchain/
 
+# Produces both $(BIN) and $(ELF) in one recipe run, but only $(BIN) is a
+# tracked Make target -- $(ELF) is always freshly rebuilt alongside it in
+# the same invocation, so $(MANIFEST) below only needs to depend on $(BIN)
+# for correct ordering. (Deliberately not GNU Make's grouped-target `&:`
+# syntax for this: the macOS-shipped `make` is a BSD-frozen 3.81 that
+# doesn't understand it and silently double-runs the recipe instead of
+# erroring -- portable `:` is worth the one implicit dependency.)
 $(BIN): toolchain-image $(SRC) $(LD) $(WAD)
 	@mkdir -p $(BUILD)
 	docker run --rm \
@@ -103,6 +116,29 @@ $(BIN): toolchain-image $(SRC) $(LD) $(WAD)
 	  $(IMAGE):$(IMAGE_TAG) \
 	  sh -c 'riscv-none-elf-gcc $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC) $(LDLIBS) && \
 	         riscv-none-elf-objcopy -O binary --gap-fill=0x00 $(ELF) $(BIN)'
+
+# manifest.json (SPEC §4): emitted from the built ELF/binary, never
+# hand-written -- see toolchain/gen_manifest.sh for why entry/load_addr/
+# text_start/text_end all come from readelf/nm rather than being
+# transcribed constants. Issue #10.
+$(MANIFEST): $(BIN) toolchain/gen_manifest.sh
+	docker run --rm \
+	  -v $(CURDIR):/work -w /work \
+	  $(IMAGE):$(IMAGE_TAG) \
+	  sh toolchain/gen_manifest.sh $(ELF) $(BIN) $(MANIFEST) $(SPEC_VERSION)
+
+# Not part of `all`: CI runs this as its own step (rom/PINNED_HASH must
+# exist first) so a mismatch reports clearly as "reproducibility broke",
+# not buried inside a generic build failure. See rom/PINNED_HASH's own
+# comment for what a mismatch means and what it never means.
+check-pinned-hash: $(BIN)
+	@built=$$(sha256sum $(BIN) | cut -d' ' -f1); \
+	pinned=$$(cat PINNED_HASH); \
+	if [ "$$built" != "$$pinned" ]; then \
+	  echo "::error::ROM hash mismatch: built=$$built pinned=$$pinned. Either the build went nondeterministic (P0) or you changed the ROM without updating rom/PINNED_HASH in the same PR." >&2; \
+	  exit 1; \
+	fi; \
+	echo "PINNED_HASH matches: $$built"
 
 clean:
 	rm -rf $(BUILD)

@@ -44,7 +44,15 @@ derivation from that row, safe to redo any number of times.
    divergence hunt is exactly the thing likely to want history we had
    discarded.*
 3. **`ram` flush is idempotent, not atomic-with-(1).** `INSERT INTO ram
-   SELECT ... FROM batch_commit WHERE batch_id = <latest>`. Because `ram` is
+   SELECT RAM_BASE_WORD + <wl_addr>, ... FROM batch_commit WHERE batch_id =
+   <latest>`. The `RAM_BASE_WORD +` is load-bearing and was missing from this
+   ADR's first two drafts: `wl_addr` is a RAM_BASE-**relative** word index
+   (`executor/fold.py`, `wa_safe = (ADDR - RAM_BASE) >> 2`), `ram.word_addr` is
+   **absolute** (`sqlcpu/schema.sql`, "byte address >> 2"). Writing one as the
+   other is #81's first defect — silent, deterministic RAM corruption. This ADR
+   was the vector by which #25 would have inherited it, which is the argument
+   for spelling the conversion out here rather than leaving it to the
+   implementation. Because `ram` is
    a `ReplacingMergeTree` keyed by `word_addr`/`version`, and each delta's
    version is now the store's own `icount` (not the batch's final `icount` —
    see the versioning fix filed against PR #30), re-running this flush after
@@ -54,6 +62,16 @@ derivation from that row, safe to redo any number of times.
    therefore just "unconditionally redo the flush for the latest
    `batch_commit` row before running any new batch" — no state machine, no
    partial-apply bookkeeping.
+3a. **The flush must preserve `ram`'s density.** Both readers index the
+   captured RAM array positionally, so `ram` must hold a row for *every* word in
+   SPEC §2's 24 MiB region, not only the touched ones — `sqlcpu/load_rom.py`
+   establishes that by zero-filling above the image (#81). The flush preserves
+   it for free: a store's `word_addr` already exists as a zero row, and
+   `ReplacingMergeTree` amends it in place rather than adding a row. Nothing
+   else in this design may introduce a `ram` write that can create a *new*
+   `word_addr` outside that region — if one ever does, positional indexing
+   breaks silently, which is the failure #81 documents on the real ROM.
+
 4. **`console_out` gets the same idempotent-flush treatment as `ram`** — an
    append with a deterministic, dedup-safe key, not a fragile "have I already
    appended this" check.

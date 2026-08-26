@@ -47,6 +47,7 @@ K="${CLICKDOOM_BENCH_K:-50000}"
 BATCHES="${CLICKDOOM_BENCH_BATCHES:-12}"
 HWM="${CLICKDOOM_BENCH_HWM:-20000}"
 BENCH_DB="${CLICKDOOM_BENCH_DB:-clickdoom_exec_bench}"
+RAM_BASE_WORD=536870912   # SPEC §2 RAM_BASE 0x8000_0000 >> 2
 
 ch() { docker exec -i "$CONTAINER" clickhouse-client "$@"; }
 
@@ -91,8 +92,15 @@ for _ in $(seq 1 "$BATCHES"); do
   WL_LEN_TOTAL=$(( WL_LEN_TOTAL + WL_LEN ))
 
   S=$(mark)
+  # RAM_BASE_WORD + wl_addr, not bare wl_addr (#81): `wl_addr` is a
+  # RAM_BASE-*relative* word index (fold.py's `wa_safe = (ADDR-RAM_BASE)>>2`),
+  # while `ram.word_addr` is *absolute* (schema.sql: "byte address >> 2").
+  # Flushing one as the other lands every store ~536M words below the image,
+  # where it sorts ahead of everything and shifts the whole positionally-indexed
+  # RAMT array. Measured on the real ROM before the fix: 664 rows sorted ahead,
+  # RAMT[1] reading 0x00 instead of the ROM's first word 0x01800117.
   ch --query "INSERT INTO $BENCH_DB.ram (word_addr, value, version)
-              SELECT arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).1,
+              SELECT $RAM_BASE_WORD + arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).1,
                      arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).2,
                      icount_before + arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).3
               FROM $BENCH_DB.batch_out

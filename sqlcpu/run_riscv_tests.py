@@ -56,7 +56,8 @@ DEFAULT_MAX_INSTRUCTIONS = 4096
 # own `if(acc.5 != 0, acc, ...)` just freezes the value, it doesn't shrink
 # the fold), so K here is real wall-clock cost paid on every single test,
 # not a rarely-hit safety ceiling. All 48 fixtures currently complete in
-# well under 1,000 instructions (the longest, ld_st, retires 928) -- 4,096
+# well under 1,000 instructions (the longest, ld_st, retires 927 -- #72
+# fixed a 1-off overcount here, this is the post-fix number) -- 4,096
 # is generous headroom above that while keeping a genuine runaway-test
 # case fast to notice instead of paying for 200,000 empty iterations to
 # find out.
@@ -131,7 +132,16 @@ def step_expr():
         f"if({is_store_expr}, arrayPushBack({WL_VAL}, {store_val_expr}), {WL_VAL}),"
         f"toUInt8({halted_expr}),"
         f"{haltreason_expr},"
-        f"toUInt32(acc.7 + 1))"
+        # A fatal-halt instruction does not retire (SPEC §1, ruled on #72
+        # after this exact line -- unconditional acc.7+1 -- disagreed with
+        # both refemu (Halted raises before CPU.icount+=1 runs) and
+        # executor's fold (step_retires gates on HALT_CODE==0), a 1-off
+        # miscount caught by diffing every riscv-tests fixture's icount
+        # against refemu's oracle). Gated on the same halted_expr already
+        # computed above for this step, so the instruction that first
+        # raises the halt condition is the one step that does NOT bump
+        # icount -- every step before it still does, exactly as before.
+        f"toUInt32(acc.7 + if({halted_expr}, 0, 1)))"
     )
 
     nested = f"arrayMap(lw -> {final_body}, [{lw_expr}])[1]"
@@ -143,9 +153,10 @@ def step_expr():
     nested = f"arrayMap(a -> {nested}, [{a_expr}])[1]"
     nested = f"arrayMap(d -> {nested}, [{d_expr}])[1]"
 
-    # A step after halted freezes the accumulator untouched, matching SPEC
-    # §1's "pc ... in the halt record" -- the halting instruction retires
-    # once, then nothing else does.
+    # A step after halted freezes the accumulator untouched (pc, regs,
+    # halt_reason and icount all stay put) -- SPEC §1's halt record is
+    # exactly the state as of the halting instruction, which itself does
+    # not retire (see the icount comment above).
     return f"if(acc.5 != 0, acc, {nested})"
 
 

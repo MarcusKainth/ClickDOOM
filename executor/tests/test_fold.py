@@ -2,7 +2,8 @@
 Python reference model in executor/tests/reference.py.
 
 Not riscv-tests, not a SPEC §7 differential run -- those need sqlcpu's
-decode (#18/#19) and refemu (#11), neither landed yet. This checks a
+decode/execute (#18/#19, PRs #42/#46/#49, not yet merged) and refemu's
+checkpoint emitter (#15), not this fold's own tests. This checks a
 narrower, real thing: does the fold correctly implement the collapsed
 op_id/halt semantics #23's design claims, for hand-built instruction
 streams covering every arm and every halt reason.
@@ -50,8 +51,10 @@ def next_pow2(n):
     return p
 
 
-def run_case(insns, ram=None, pc0=0, regs0=None, k=None, hwm=10_000, ram_words=None):
+def run_case(insns, ram=None, pc0=None, regs0=None, k=None, hwm=10_000, ram_words=None):
     """insns: list[reference.Insn]. ram: dict relative-word-index -> value.
+    pc0 defaults to RAM_BASE (a byte address, matching fold.py/reference.py's
+    own default and SPEC §1's reset value) -- not 0, not a word index.
     Returns (actual, expected) accumulator dicts."""
     decn = next_pow2(max(len(insns), 8))
     padded = list(insns) + [reference.Insn(op_id=reference.OP_ILLEGAL, raw=0xBAD00000 + len(insns) + i)
@@ -63,9 +66,10 @@ def run_case(insns, ram=None, pc0=0, regs0=None, k=None, hwm=10_000, ram_words=N
     rows = []
     for i, ins in enumerate(padded):
         rows.append(f"({RAM_BASE_WORD + i},{ins.op_id},{ins.rd},{ins.rs1},{ins.rs2},"
-                     f"{reference.u32(ins.imm)},{ins.target},{ins.width_mask},{ins.sign_bit},"
+                     f"{reference.u32(ins.imm)},{reference.u32(ins.target)},{ins.width_mask},{ins.sign_bit},"
                      f"{reference.u32(ins.raw)})")
-    ch(f"INSERT INTO {DB}.decoded (word_addr,op_id,rd,rs1,rs2,imm,target,width_mask,sign_bit,raw) "
+    # Column names match sqlcpu/schema.sql (id/tgt/mk/sg), not SPEC §5's prose.
+    ch(f"INSERT INTO {DB}.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) "
        f"VALUES {','.join(rows)}")
 
     ram = ram or {}
@@ -91,7 +95,7 @@ def run_case(insns, ram=None, pc0=0, regs0=None, k=None, hwm=10_000, ram_words=N
     insns = padded  # so the reference model sees the exact same padding, including
                      # the ILLEGAL entries a stray jump target can land on
     actual = dict(
-        pcidx=int(out["pcidx"]), regs=[int(x) for x in out["regs"]],
+        pc=int(out["pc"]), regs=[int(x) for x in out["regs"]],
         wl_addr=[int(x) for x in out["wl_addr"]], wl_val=[int(x) for x in out["wl_val"]],
         wl_icount=[int(x) for x in out["wl_icount"]], stopped=int(out["stopped"]),
         halted=int(out["halted"]), halt_reason=int(out["halt_reason"]),
@@ -170,7 +174,7 @@ def test_store_then_load_shadows_ram():
 
 def test_load_byte_sign_extend():
     insns = [
-        I(op_id=18, rd=1, rs1=0, rs2=0, imm=RAM_BASE, width_mask=0xFF, sign_bit=0x80),  # lb
+        I(op_id=18, rd=1, rs1=0, rs2=0, imm=RAM_BASE, width_mask=0xFF, sign_bit=1),  # lb (sg is boolean)
     ]
     actual, expected = run_case(insns, ram={0: 0xFFFFFF80})  # low byte 0x80
     assert actual == expected
@@ -178,6 +182,9 @@ def test_load_byte_sign_extend():
 
 
 def test_branches_and_jumps():
+    # target is a byte address (word 7 -> RAM_BASE + 28), matching sqlcpu's
+    # schema.sql/decode.sql and the PC-representation fix in this PR.
+    target = RAM_BASE + 7 * 4
     for op_id, a, b, taken in [(20, 5, 5, True), (20, 5, 6, False),
                                 (21, 5, 6, True), (21, 5, 5, False),
                                 (22, -1, 1, True), (23, -1, 1, False),
@@ -185,29 +192,30 @@ def test_branches_and_jumps():
         insns = [
             I(op_id=0, rd=1, rs1=0, rs2=0, imm=a & 0xFFFFFFFF),
             I(op_id=0, rd=2, rs1=0, rs2=0, imm=b & 0xFFFFFFFF),
-            I(op_id=op_id, rs1=1, rs2=2, target=7),
+            I(op_id=op_id, rs1=1, rs2=2, target=target),
             I(op_id=0, rd=5, rs1=0, rs2=0, imm=111),   # fallthrough marker
         ]
         actual, expected = run_case(insns, k=4)
         assert actual == expected, (op_id, a, b, taken)
-        assert (actual["pcidx"] == 7) == taken
+        assert (actual["pc"] == target) == taken
 
 
 def test_jal_jalr():
-    # jump target (pre-decoded word index) and link value (pc+4 as a byte
-    # address, computed live) are independent -- conflating them into one
-    # decoded column was the bug this PR fixed (see LINK_VALUE in fold.py).
-    # target=99 is deliberately not RAM_BASE-derived and not 4-related, so
-    # a test that accidentally still reads `target` for the link value
-    # would produce 99, not RAM_BASE+4, and fail loudly.
+    # jump target and link value (pc+4 as a byte address, computed live) are
+    # independent -- conflating them into one decoded column was the bug
+    # this PR fixed (see LINK_VALUE in fold.py). target is deliberately not
+    # RAM_BASE+4 (what the link value would be), so a test that accidentally
+    # still reads `target` for the link value would fail loudly rather than
+    # coincidentally pass.
+    target = RAM_BASE + 99 * 4
     insns = [
-        I(op_id=26, rd=1, target=99, imm=0),   # jal x1, 99
+        I(op_id=26, rd=1, target=target, imm=0),   # jal x1, target
         I(op_id=0, rd=9, rs1=0, rs2=0, imm=111),  # skipped
     ]
     actual, expected = run_case(insns, k=1)
     assert actual == expected
-    assert actual["pcidx"] == 99  # jump target, from `target` (ADR-0002) -- not masked, unlike fallthrough
-    assert actual["regs"][0] == RAM_BASE + 4  # x1 (regs[0]) = link value: pc0(0)+1 word -> byte addr
+    assert actual["pc"] == target  # jump target, from `tgt` (ADR-0002/PR #46) -- unclamped byte address
+    assert actual["regs"][0] == RAM_BASE + 4  # x1 (regs[0]) = link value: pc0(RAM_BASE) + 4
 
 
 def test_halt_ecall_ebreak_csr_illegal():
@@ -218,9 +226,9 @@ def test_halt_ecall_ebreak_csr_illegal():
         actual, expected = run_case(insns, k=2)
         assert actual == expected
         assert actual["halted"] == 1 and actual["halt_reason"] == reason
-        assert actual["halt_pc"] == 1          # frozen at the faulting insn
-        assert actual["pcidx"] == 1            # did not advance past it
-        assert actual["regs"][0] == 1          # x1 (regs[0]) -- prior instruction still retired
+        assert actual["halt_pc"] == RAM_BASE + 4   # frozen at the faulting insn (word 1)
+        assert actual["pc"] == RAM_BASE + 4        # did not advance past it
+        assert actual["regs"][0] == 1              # x1 (regs[0]) -- prior instruction still retired
 
 
 def test_halt_illegal_carries_raw_word():
@@ -283,3 +291,64 @@ def test_stopped_step_is_a_no_op():
     assert actual == expected
     assert actual["regs"][0] == 0  # x1 (regs[0]) -- never reached
     assert actual["retired"] == 0
+
+
+def test_halt_jal_misaligned_target():
+    # SPEC §1 / issue #37 (ruled, all three engines): a misaligned jump
+    # target halts EAGERLY at the transferring instruction, not deferred to
+    # whatever would fetch it next -- unreachable from a well-formed RV32IM
+    # binary (jal/jalr/branch targets are always encoding-forced to at least
+    # 2-byte alignment via bit 0, and a real toolchain never emits a target
+    # with bit 1 set), which is exactly why this needs a test: an
+    # unreachable path is never exercised by anything else, so this is the
+    # only thing keeping the agreement real instead of assumed.
+    target = RAM_BASE + 4 + 2  # word-aligned base + 2: bit 1 set, bit 0 clear
+    insns = [
+        I(op_id=26, rd=1, target=target, imm=0),   # jal x1, target (misaligned)
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=111),   # must not be reached
+    ]
+    actual, expected = run_case(insns, k=2)
+    assert actual == expected
+    assert actual["halted"] == 1 and actual["halt_reason"] == reference.HALT_MISALIGNED
+    assert actual["halt_extra"] == target
+    assert actual["halt_pc"] == RAM_BASE     # the jal instruction's own pc, not the target
+    assert actual["pc"] == RAM_BASE          # frozen there -- did not "complete" onto the target
+    assert actual["regs"][0] == 0            # link value was NOT written -- rd did not update
+
+
+def test_halt_jalr_misaligned_target():
+    target_base = RAM_BASE + 4 + 2  # bit 1 set
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=target_base),  # x1 = target_base
+        I(op_id=27, rd=2, rs1=1, rs2=0, imm=0),            # jalr x2, x1, 0 (misaligned)
+    ]
+    actual, expected = run_case(insns, k=2)
+    assert actual == expected
+    assert actual["halted"] == 1 and actual["halt_reason"] == reference.HALT_MISALIGNED
+    assert actual["halt_extra"] == target_base  # jalr clears bit 0 only, bit 1 survives
+    assert actual["halt_pc"] == RAM_BASE + 4    # the jalr instruction's own pc
+    assert actual["regs"][1] == 0               # x2 (regs[1]) -- link value not written
+
+
+def test_branch_misaligned_target_only_halts_if_taken():
+    target = RAM_BASE + 4 + 2  # bit 1 set
+    # beq, not taken (5 != 6): the misaligned target is never used, so this
+    # must NOT halt -- proves the check is gated on `would_jump`, not blanket.
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=5),
+        I(op_id=0, rd=2, rs1=0, rs2=0, imm=6),
+        I(op_id=20, rs1=1, rs2=2, target=target),  # beq x1, x2, target -- not taken
+        I(op_id=0, rd=3, rs1=0, rs2=0, imm=222),
+    ]
+    actual, expected = run_case(insns, k=4)
+    assert actual == expected
+    assert actual["halted"] == 0
+    assert actual["regs"][2] == 222  # x3 (regs[2]) -- fallthrough executed normally
+
+    # Same instructions, but beq now taken (5 == 5): must halt MISALIGNED.
+    insns[0] = I(op_id=0, rd=1, rs1=0, rs2=0, imm=5)
+    insns[1] = I(op_id=0, rd=2, rs1=0, rs2=0, imm=5)
+    actual, expected = run_case(insns, k=4)
+    assert actual == expected
+    assert actual["halted"] == 1 and actual["halt_reason"] == reference.HALT_MISALIGNED
+    assert actual["halt_extra"] == target

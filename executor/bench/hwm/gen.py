@@ -17,11 +17,13 @@ def emit_schema():
 ENGINE = ReplacingMergeTree(version) ORDER BY word_addr;""")
     print(f"INSERT INTO clickdoom_executor.ram SELECT toUInt32(2147483648+number), 0, 0 FROM numbers({RAM_WORDS});")
     print("DROP TABLE IF EXISTS clickdoom_executor.decoded;")
+    # Column names match sqlcpu/schema.sql (id/tgt/mk/sg), not SPEC §5's prose.
     print("""CREATE TABLE clickdoom_executor.decoded
-(word_addr UInt32, op_id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32, target UInt32,
- width_mask UInt32, sign_bit UInt32, raw UInt32) ENGINE = MergeTree ORDER BY word_addr;""")
+(word_addr UInt32, id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32, tgt UInt32,
+ mk UInt32, sg UInt8, raw UInt32) ENGINE = MergeTree ORDER BY word_addr;""")
     # sw x1, (RAM_BASE + DECN*4 + (number%256)*4)(x0) -- cycles through 256
-    # addresses just past the text window (never self-modifies).
+    # addresses just past the text window (never self-modifies). tgt/sg are
+    # irrelevant for a store (not a jump, not a load) so left at 0.
     print(f"""INSERT INTO clickdoom_executor.decoded
 SELECT toUInt32(2147483648+number), {config.OP_STORE}, 0, 0, 1,
        toUInt32(2147483648 + {DECN*4} + (number%256)*4), 0, 4294967295, 0, 0

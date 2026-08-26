@@ -5,16 +5,27 @@ termination (halt / write-log high-water mark -- FRAME_COMMIT hooks in at
 (SPEC §5, flagged on PR #30 and in issue #35): every write-log entry carries
 its own retiring instruction's icount, not the batch's final icount.
 
-Starting point: executor/bench/phase0/fold_predecoded.py (ADR-0002). Reused
-verbatim: the collapsed op_id space 0-27, the accumulator's RAM/write-log
-addressing idiom, the register-write guard on rd=0. New in this file:
+Starting point: executor/bench/phase0/fold_predecoded.py (ADR-0002). Reused:
+the collapsed op_id space 0-27 (agreed with sqlcpu, PR #42/#46/#49), the
+accumulator's RAM/write-log addressing idiom, the register-write guard on
+rd=0. NOT reused, despite looking similar at a glance: the bench's word-
+indexed pc and its 32-element x0-pinned register file -- both were bugs the
+bench's own "never actually executed" disclaimer let slide (RESULTS.md §6),
+caught by sqlcpu and the team lead reviewing this PR against their
+schema.sql, and fixed here (see IDX's docstring and the register-file note
+below). New in this file relative to the bench:
 
-  * op_id 28-31 (ecall/ebreak/csr/illegal) -- SPEC §1 fatal-halt decode arms.
-    Not yet agreed with sqlcpu; flagged in the PR for coordination.
+  * op_id 28-31 (ecall/ebreak/csr/illegal) -- SPEC §1 fatal-halt decode arms,
+    agreed with sqlcpu.
   * Address-bounds and load/store-alignment checks (SPEC §1, §2) ahead of
     every memory access, using the "mask to a safe index, check the real
     bound separately" idiom so an out-of-range address can never make
     arrayElement throw, whether or not the access is what triggers the halt.
+  * A misaligned jump/branch target (jal/jalr/a taken branch) halts eagerly
+    at the transferring instruction, per issue #37's ruling -- neither pc
+    nor rd updates. Unreachable from a well-formed RV32IM binary, which is
+    why it's covered by a dedicated test rather than left as "it can't
+    happen".
   * SELF_MODIFY: a store whose target word index falls in [text_start,
     text_end).
   * A `stopped`/`halted` split in the accumulator: a step that halts does
@@ -68,9 +79,10 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
                ram_base=config.RAM_BASE, hwm=config.WRITE_LOG_HIGH_WATER_MARK_DEFAULT):
     """Returns the arrayFold lambda body: `(acc, i) -> tuple(...)`.
 
-    Accumulator (5-tuple): pcidx, regs[32], wl, control, retired, where
-    wl = tuple(addr[], val[], icount[]) and
-    control = tuple(stopped, halted, halt_reason, halt_pc, halt_extra).
+    Accumulator (5-tuple): pc, regs[31], wl, control, retired, where pc is a
+    byte address (matching cpu_state.pc, sqlcpu's schema.sql), regs is
+    x1..x31 (no x0 slot), wl = tuple(addr[], val[], icount[]) and control =
+    tuple(stopped, halted, halt_reason, halt_pc, halt_extra).
 
     Deliberately NOT an 11-flat-field tuple (an earlier version of this
     function was exactly that): every accumulator field needs its own
@@ -81,12 +93,21 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     five scalars into one tuple field each cuts that to ~2 evaluations,
     measured to matter (see the PR's before/after numbers).
     """
-    decm = decn - 1
-    assert (decn & decm) == 0, "decode table length must be a power of two"
-
     PC = "acc.1"
-    IDX = "(acc.1 + 1)"
     STOPPED = "acc.4.1"
+
+    # PC is a BYTE address (matching cpu_state.pc, SPEC §5's reset value
+    # `0x8000_0000`, and sqlcpu's schema.sql/execute.py, PR #46/#49) -- NOT
+    # a word index. An earlier version of this function kept PC as a word
+    # index for one shift fewer per step; sqlcpu found the same bug
+    # independently and migrated first (PR #46/#49), and their review of
+    # this PR caught it here too: a word index can't represent a target
+    # whose bit 1 is set (2-byte aligned but not 4-byte aligned -- the
+    # RV32I encodings only force bit 0 to 0), so a `>>2` doesn't just make
+    # a MISALIGNED check harder, it destroys the bit the check needs before
+    # any check could run. IDX below is a *safe, clamped* word index used
+    # only for array lookups; PC itself is never rounded.
+    IDX = f"(least(bitShiftRight(toUInt32(toUInt64({PC}) - {ram_base}), 2), {decn - 1}) + 1)"
 
     ID = f"DID[{IDX}]"
     RD = f"DRD[{IDX}]"
@@ -123,22 +144,39 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     LW = (f"if(arrayLastIndex(z -> z = {WA}, acc.3.1) > 0,"
           f" acc.3.2[arrayLastIndex(z -> z = {WA}, acc.3.1)], RAM[{WA} + 1])")
 
-    LOADV = (f"toUInt32(bitAnd(bitShiftRight({LW}, {SH}), {DMKv})"
-             f" - if(bitAnd(bitAnd(bitShiftRight({LW}, {SH}), {DMKv}), {DSGv}) != 0,"
+    # sg is a boolean sign-extend flag (0/1), not a bit-mask value -- matches
+    # sqlcpu's schema.sql/execute.py (`sg UInt8`) exactly, per their
+    # confirmation on PR #46. The sign bit's *position* is derived from mk
+    # itself (mk's top bit: 0xFF -> 0x80, 0xFFFF -> 0x8000) rather than
+    # stored as a separate value, so there's one fewer column whose meaning
+    # could drift out of sync with mk. An earlier version of this file
+    # stored sg as the bit-mask directly, inherited from the Phase 0 bench.
+    EXTRACTED = f"bitAnd(bitShiftRight({LW}, {SH}), {DMKv})"
+    SIGN_POS = f"(bitShiftRight({DMKv}, 1) + 1)"
+    LOADV = (f"toUInt32({EXTRACTED}"
+             f" - if(bitAnd({EXTRACTED}, {SIGN_POS}) != 0 AND {DSGv} != 0,"
              f" toUInt64({DMKv}) + 1, 0))")
 
     SVAL = (f"toUInt32(bitOr(bitAnd({LW}, bitXor(4294967295, toUInt32(bitShiftLeft({DMKv}, {SH})))),"
             f" toUInt32(bitShiftLeft(bitAnd({RS2V}, {DMKv}), {SH}))))")
 
     # jal/jalr's link value (written to rd) is pc+4 as a byte address --
-    # NOT `target` (sqlcpu's `tgt`/this file's TGT, the jump target word
-    # index). The Phase 0 prototype used the same column for both, which
-    # is only harmless in a benchmark that never executes its decode data
+    # NOT `target` (sqlcpu's `tgt`/this file's TGT, the jump target). The
+    # Phase 0 prototype used the same column for both, which is only
+    # harmless in a benchmark that never executes its decode data
     # (RESULTS.md §6) -- sqlcpu caught this reviewing PR #42's schema and
     # this PR initially carried the bug forward from fold_predecoded.py.
     # Computed live from the accumulator's own pc, not decoded, since it's
     # simple pc-relative arithmetic with nothing to gain from precomputing.
-    LINK_VALUE = f"toUInt32({ram_base} + ({PC} + 1) * 4)"
+    # Now that PC is a byte address (see the IDX note above), this is just
+    # PC+4 -- no more word/byte conversion needed at this boundary.
+    LINK_VALUE = f"toUInt32({PC} + 4)"
+
+    # jalr target: (rs1 + imm) with bit 0 cleared per the RV32I spec --
+    # NOT further shifted. Bit 1 (a target that's 2-byte aligned but not
+    # 4-byte aligned) is deliberately left intact so the MISALIGNED check
+    # below can see it; sqlcpu's execute.py computes this identically.
+    JALR_TARGET = f"bitAnd(toUInt32({A} + {IMM}), 4294967294)"
 
     RESULT = ("multiIf("
         f"{ID}=0, toUInt32({A} + {B}),"
@@ -162,16 +200,20 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{ID}={config.OP_LOAD}, {LOADV},"
         f"{LINK_VALUE})")
 
+    # Fallthrough is PC+4, unclamped -- the real byte address, not rounded
+    # into decode-array bounds (IDX's `least` clamp handles array-lookup
+    # safety independently; this value is what commits to cpu_state.pc).
+    FALLTHROUGH = f"toUInt32({PC}+4)"
     NEXT = ("multiIf("
-        f"{ID}=20, if({A} = {B},  {TGT}, toUInt32({PC}+1)),"
-        f"{ID}=21, if({A} != {B}, {TGT}, toUInt32({PC}+1)),"
-        f"{ID}=22, if({SA} < {SB},  {TGT}, toUInt32({PC}+1)),"
-        f"{ID}=23, if({SA} >= {SB}, {TGT}, toUInt32({PC}+1)),"
-        f"{ID}=24, if({A} < {B},  {TGT}, toUInt32({PC}+1)),"
-        f"{ID}=25, if({A} >= {B}, {TGT}, toUInt32({PC}+1)),"
+        f"{ID}=20, if({A} = {B},  {TGT}, {FALLTHROUGH}),"
+        f"{ID}=21, if({A} != {B}, {TGT}, {FALLTHROUGH}),"
+        f"{ID}=22, if({SA} < {SB},  {TGT}, {FALLTHROUGH}),"
+        f"{ID}=23, if({SA} >= {SB}, {TGT}, {FALLTHROUGH}),"
+        f"{ID}=24, if({A} < {B},  {TGT}, {FALLTHROUGH}),"
+        f"{ID}=25, if({A} >= {B}, {TGT}, {FALLTHROUGH}),"
         f"{ID}=26, {TGT},"
-        f"{ID}=27, toUInt32(bitAnd(bitShiftRight(toUInt32({A} + {IMM}), 2), {decm})),"
-        f"toUInt32(bitAnd({PC}+1, {decm})))")
+        f"{ID}=27, {JALR_TARGET},"
+        f"{FALLTHROUGH})")
 
     is_load = f"{ID}={config.OP_LOAD}"
     is_store = f"{ID}={config.OP_STORE}"
@@ -180,6 +222,31 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     is_ebreak = f"{ID}={config.OP_EBREAK}"
     is_csr = f"{ID}={config.OP_CSR}"
     is_illegal = f"{ID}={config.OP_ILLEGAL}"
+
+    # SPEC §1 / issue #37 (ruled): a misaligned jump/branch target halts
+    # eagerly AT THE TRANSFERRING INSTRUCTION -- not deferred to whatever
+    # would have fetched it next -- with neither pc nor rd updated. jal
+    # (26) and jalr (27) always transfer; branches (20-25) only when taken,
+    # so "would this instruction actually jump" has to be re-derived here
+    # (same conditions NEXT already computes, just as a boolean rather than
+    # a pc value) -- unreachable with a well-formed RV32IM binary (no
+    # compressed extension means every real target is 4-byte aligned, and
+    # jalr clears bit 0), which is exactly why this needs to be pinned by
+    # agreement and a test rather than left to "it'll never happen".
+    would_jump = ("multiIf("
+        f"{ID}=20, {A} = {B},"
+        f"{ID}=21, {A} != {B},"
+        f"{ID}=22, {SA} < {SB},"
+        f"{ID}=23, {SA} >= {SB},"
+        f"{ID}=24, {A} < {B},"
+        f"{ID}=25, {A} >= {B},"
+        f"{ID}=26, true,"
+        f"{ID}=27, true,"
+        "false)")
+    jump_target_if_taken = f"if({ID}=27, {JALR_TARGET}, {TGT})"
+    is_jump_op = f"({ID} >= 20 AND {ID} <= 27)"
+    jump_misaligned = (f"({is_jump_op} AND ({would_jump})"
+                        f" AND bitAnd({jump_target_if_taken}, 3) != 0)")
 
     # One multiIf computing the halt reason directly (0 = does not halt),
     # so bad_addr_cond/misaligned_cond/self-modify each appear once here
@@ -195,6 +262,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{is_ecall}, {config.HALT_ECALL},"
         f"{is_ebreak}, {config.HALT_EBREAK},"
         f"{is_csr}, {config.HALT_CSR},"
+        f"{jump_misaligned}, {config.HALT_MISALIGNED},"
         f"{is_mem} AND {bad_addr_cond}, {config.HALT_BAD_ADDR},"
         f"{is_mem} AND NOT {bad_addr_cond} AND {misaligned_cond}, {config.HALT_MISALIGNED},"
         f"{is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond}"
@@ -205,8 +273,15 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     step_halts_now = f"({active} AND ({HALT_CODE}) != 0)"
     step_retires = f"({active} AND ({HALT_CODE}) = 0)"
 
-    halt_extra_calc = f"if(({HALT_CODE}) = {config.HALT_ILLEGAL_INSN}, {RAW}," \
-                       f" if(({HALT_CODE}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0)))"
+    # halt_extra: the raw instruction word for ILLEGAL_INSN, the faulting
+    # target for a misaligned jump/branch, or the faulting address for a
+    # data-side BAD_ADDR/MISALIGNED/SELF_MODIFY. `jump_misaligned` must be
+    # checked before the generic is_mem-driven ADDR fallback since a jump's
+    # "address" (jump_target_if_taken) and a load/store's (ADDR) are
+    # different expressions computed from different fields.
+    halt_extra_calc = (f"if(({HALT_CODE}) = {config.HALT_ILLEGAL_INSN}, {RAW},"
+                        f" if({jump_misaligned}, {jump_target_if_taken},"
+                        f" if(({HALT_CODE}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0))))")
 
     is_retiring_store = f"({step_retires} AND {is_store})"
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
@@ -236,17 +311,22 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     return step_tuple
 
 
+# Column names match sqlcpu/schema.sql (PR #42/#46/#49) exactly -- id/tgt/
+# mk/sg, not the SPEC §5 prose's op_id/target/width_mask/sign_bit -- per
+# sqlcpu's request to reconcile this in the same pass as the PC fix, so
+# switching from executor/schema_fixture.sql to the real decoded table
+# needs no changes here.
 DECODE_WITH = f"""
   (SELECT groupArray(value) FROM (SELECT value FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAM,
-  (SELECT groupArray(op_id)     FROM (SELECT op_id, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DID,
-  (SELECT groupArray(rd)        FROM (SELECT rd, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRD,
-  (SELECT groupArray(rs1)       FROM (SELECT rs1, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR1,
-  (SELECT groupArray(rs2)       FROM (SELECT rs2, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR2,
-  (SELECT groupArray(imm)       FROM (SELECT imm, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DIM,
-  (SELECT groupArray(target)    FROM (SELECT target, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DTG,
-  (SELECT groupArray(width_mask) FROM (SELECT width_mask, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DMK,
-  (SELECT groupArray(sign_bit)  FROM (SELECT sign_bit, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DSG,
-  (SELECT groupArray(raw)       FROM (SELECT raw, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRW"""
+  (SELECT groupArray(id)  FROM (SELECT id,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DID,
+  (SELECT groupArray(rd)  FROM (SELECT rd,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRD,
+  (SELECT groupArray(rs1) FROM (SELECT rs1, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR1,
+  (SELECT groupArray(rs2) FROM (SELECT rs2, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR2,
+  (SELECT groupArray(imm) FROM (SELECT imm, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DIM,
+  (SELECT groupArray(tgt) FROM (SELECT tgt, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DTG,
+  (SELECT groupArray(mk)  FROM (SELECT mk,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DMK,
+  (SELECT groupArray(sg)  FROM (SELECT sg,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DSG,
+  (SELECT groupArray(raw) FROM (SELECT raw, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRW"""
 
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"
@@ -254,14 +334,17 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " toUInt32(0))")
 
 
-def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=0, regs0=None):
+def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None):
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
     # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
         "arrayResize(emptyArrayUInt32(), 31, toUInt32(0))"
+    # pc0 default is RAM_BASE (SPEC §1's reset value 0x8000_0000), not 0 --
+    # pc is a byte address now, not a word index relative to the text window.
+    pc0 = config.RAM_BASE if pc0 is None else pc0
     init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql)
     return f"""WITH{DECODE_WITH}
-SELECT r.1 AS pcidx, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
+SELECT r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason, r.4.4 AS halt_pc,
        r.4.5 AS halt_extra, r.5 AS retired
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
@@ -278,11 +361,11 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="ba
     init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')")
     return f"""INSERT INTO {DB}.{out_table}
 WITH{DECODE_WITH},
-  (SELECT tuple(batch_id, pcidx, regs, icount)
+  (SELECT tuple(batch_id, pc, regs, icount)
      FROM {DB}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
        toUInt64(assumeNotNull(PREV.4)) AS icount_before,
-       (arrayFold((acc, i) -> {step}, range({K}), {init}) AS r).1 AS pcidx,
+       (arrayFold((acc, i) -> {step}, range({K}), {init}) AS r).1 AS pc,
        r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason,
        r.4.4 AS halt_pc, r.4.5 AS halt_extra, r.5 AS retired

@@ -2,7 +2,12 @@
 
 **Status:** accepted (Phase 0 benchmark met the threshold — see Phase 0 results below).
 Amended by [ADR-0002](0002-predecoded-instruction-table.md), which supplies the
-pre-decoding this decision turned out to require.
+pre-decoding this decision turned out to require, and by
+[ADR-0004](0004-halt-semantics-throughput-cost.md), which retires the ">=10,000
+instr/sec sustained end-to-end" threshold below as a merge gate: it was set
+before SPEC §1's halt semantics were priced in, and #23 measured 2,004
+instr/sec e2e implementing them. The architecture (arrayFold, write-log,
+K=50,000) stands; only the acceptance number is retired.
 
 ## Context
 

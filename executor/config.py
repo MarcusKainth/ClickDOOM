@@ -54,7 +54,7 @@ HALT_REASON_NAMES = {
 }
 
 # Collapsed op_id space. 0-27 match ADR-0002 exactly (fold_predecoded.py);
-# 28-31 are new for #23's halt semantics and are not yet agreed with sqlcpu.
+# 28-31 are new for #23's halt semantics, agreed with sqlcpu (PR #42/#46/#49).
 OP_LOAD = 18
 OP_STORE = 19
 OP_ECALL = 28

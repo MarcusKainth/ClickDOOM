@@ -1,54 +1,20 @@
 -- Isolated-database counterpart to executor/bench/halt_overhead/setup.sql.
--- `ram`/`decoded`'s DDL comes from the REAL sqlcpu/schema.sql (renamed onto
--- this bench's private database by run.sh, via sed) rather than a
--- hand-copied approximation, so it can't drift from what sqlcpu maintains --
--- team lead's ruling after a batch-overhead run got silently corrupted by
+-- `ram`/`decoded`/`batch_commit`/`cpu_state`/`console_out`/`input_queue`'s
+-- DDL all comes from the REAL sqlcpu/schema.sql (renamed onto this bench's
+-- private database by run.sh, via sed) rather than a hand-copied
+-- approximation, so it can't drift from what sqlcpu maintains -- team
+-- lead's ruling after a batch-overhead run got silently corrupted by
 -- concurrent DDL on the shared `clickdoom_executor` tables (some other
 -- process -- almost certainly a riscv-tests iteration -- issued 101
 -- TRUNCATE/CREATE/DROP cycles against those exact tables mid-run; caught via
 -- `batch_out.retired` not matching K*BATCHES, root-caused via
--- system.query_log). This file only adds what the real schema doesn't have.
+-- system.query_log). This file only adds what the real schema doesn't have
+-- (nothing, now -- #25 landed `batch_commit`, so this bench's former
+-- `state`/`batch_out` stand-ins are gone; run.sh seeds batch_commit's
+-- batch_id=0 row directly instead).
 --
--- `state`/`batch_out` are NOT part of sqlcpu's schema (same as
--- executor/schema_fixture.sql's note) -- they're this benchmark's stand-in
--- for "the previous batch's committed state" until #25 (batch_commit) is
--- ratified. `{{DB}}` is substituted by run.sh with the bench's private
--- database name -- never run this file unsubstituted.
-
-DROP TABLE IF EXISTS {{DB}}.state;
-CREATE TABLE {{DB}}.state
-(
-    batch_id UInt64,
-    pc       UInt32,  -- byte address, matching SPEC §5's cpu_state.pc
-    regs     Array(UInt32),
-    icount   UInt64,
-    keyq_pos UInt32   -- cumulative KEYQ pops (SPEC §3.2); carried across batches
-)
-ENGINE = MergeTree ORDER BY batch_id;
-
-DROP TABLE IF EXISTS {{DB}}.batch_out;
-CREATE TABLE {{DB}}.batch_out
-(
-    batch_id      UInt64,
-    icount_before UInt64,
-    pc            UInt32,  -- byte address
-    regs          Array(UInt32),
-    wl_addr       Array(UInt32),
-    wl_val        Array(UInt32),
-    wl_icount     Array(UInt64),
-    stopped       UInt8,
-    halted        UInt8,
-    halt_reason   UInt8,
-    halt_pc       UInt32,  -- byte address
-    halt_extra    UInt32,
-    retired       UInt32,
-    -- SPEC §3 MMIO side effects, produced by the fold's acc.6
-    console_bytes   Array(UInt8),
-    keyq_pos        UInt32,
-    frame_no        UInt32,
-    frame_committed UInt8
-)
-ENGINE = MergeTree ORDER BY batch_id;
+-- `{{DB}}` is substituted by run.sh with the bench's private database name
+-- -- never run this file unsubstituted.
 
 -- Same synthetic DOOM-shaped mix as executor/bench/halt_overhead/setup.sql
 -- (same fractions, same deterministic hash of `number`, same safety fixes:
@@ -88,5 +54,7 @@ FROM (SELECT number, m,
                              toUInt8(10 + number % 8)) AS id
       FROM (SELECT number, (number * 2654435761) % 100 AS m FROM numbers(524288)));
 
-TRUNCATE TABLE {{DB}}.state;
-TRUNCATE TABLE {{DB}}.batch_out;
+TRUNCATE TABLE {{DB}}.batch_commit;
+TRUNCATE TABLE {{DB}}.cpu_state;
+TRUNCATE TABLE {{DB}}.console_out;
+TRUNCATE TABLE {{DB}}.input_queue;

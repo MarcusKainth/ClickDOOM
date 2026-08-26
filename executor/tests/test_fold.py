@@ -352,3 +352,42 @@ def test_branch_misaligned_target_only_halts_if_taken():
     assert actual == expected
     assert actual["halted"] == 1 and actual["halt_reason"] == reference.HALT_MISALIGNED
     assert actual["halt_extra"] == target
+
+
+def test_div_rem_int_min_by_minus_one_does_not_trap():
+    """#99, P0: RV32IM's DIV/REM don't trap on dividend=INT_MIN (-2^31),
+    divisor=-1 -- DIV wraps to -2^31 (the same bit pattern), REM gives 0 --
+    but ClickHouse's Int32 intDiv()/modulo() DO trap on exactly this
+    combination (ILLEGAL_DIVISION: the mathematical quotient, +2^31,
+    doesn't fit back in Int32). Pre-fix, this test doesn't merely assert
+    the wrong value -- run_case()'s `ch()` helper raises RuntimeError
+    (wrapping the real ClickHouse exception) before any assertion below
+    even runs, which is the point: a regression test for a hard trap has
+    to actually reproduce the trap, not just check a number. Confirmed by
+    reproducing the crash directly (`SELECT
+    toUInt32(intDiv(toInt32(-2147483648), toInt32(-1)))` ->
+    DB::Exception ILLEGAL_DIVISION) before writing the fix.
+
+    DIVU/REMU included for contrast, per #102's own test vectors: there is
+    no unsigned equivalent of this overflow (0x80000000 / 0xFFFFFFFF is
+    unremarkable unsigned division), so they must NOT halt and must give
+    the ordinary unsigned result."""
+    INT_MIN = -2147483648  # sign-extends to the UInt32 bit pattern 0x80000000
+    NEG_ONE = -1           # 0xFFFFFFFF
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=INT_MIN),  # x1 = INT_MIN
+        I(op_id=0, rd=2, rs1=0, rs2=0, imm=NEG_ONE),  # x2 = -1
+        I(op_id=14, rd=3, rs1=1, rs2=2, imm=0),        # div  x3, x1, x2
+        I(op_id=16, rd=4, rs1=1, rs2=2, imm=0),        # rem  x4, x1, x2
+        I(op_id=15, rd=5, rs1=1, rs2=2, imm=0),        # divu x5, x1, x2
+        I(op_id=17, rd=6, rs1=1, rs2=2, imm=0),        # remu x6, x1, x2
+    ]
+    actual, expected = run_case(insns, k=6)
+    assert actual == expected
+    assert actual["halted"] == 0, "DIV/REM on INT_MIN/-1 must not fault -- it's a defined result, not a halt"
+    assert actual["regs"][2] == 0x80000000, "div INT_MIN/-1 -> INT_MIN (wrapped, same bit pattern)"
+    assert actual["regs"][3] == 0, "rem INT_MIN/-1 -> 0"
+    # 0x80000000u / 0xFFFFFFFFu = 0 remainder 0x80000000 -- ordinary unsigned division,
+    # no overflow representation to escape, so untouched by the fix.
+    assert actual["regs"][4] == 0
+    assert actual["regs"][5] == 0x80000000

@@ -49,7 +49,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sqlcpu"))
-import checkpoint  # noqa: E402 -- fb_hash(), used directly, never reimplemented
+import checkpoint
 
 DB = "clickdoom"
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Dump refemu's real FRAMEBUFFER/PALETTE bytes at the milestone icount
 (#110's target, #29's oracle) for driver/render.py's fixture tests, so
 render.py's readout query can be proven against real, known-correct data
@@ -38,8 +39,10 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO / "refemu" / "src"))
 
-from refemu.cpu import Halted, new_cpu  # noqa: E402
-from refemu.trace import fb_hash  # noqa: E402 -- the oracle, computed here too, not trusted blind
+from refemu.cpu import Halted, new_cpu
+from refemu.trace import (
+    fb_hash,
+)
 
 
 def main() -> int:

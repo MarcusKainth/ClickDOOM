@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Load a `gen_frame_fixture.py` dump into an isolated database's
 `framebuffer`/`palette`/`batch_commit` fixture tables (`fixture_schema.sql`
 in this directory), so `render.py`'s frame_readout_sql() has real,
@@ -54,7 +55,7 @@ def main() -> int:
         words = struct.unpack(f"<{nwords}I", data)
         rows = "\n".join(f"{i}\t{w}\t{version}" for i, w in enumerate(words))
         insert = base_cmd + ["--query", f"INSERT INTO {table} (word_addr, value, version) FORMAT TSV"]
-        result = subprocess.run(insert, input=rows, text=True)  # purity-ok: loads already-computed word bytes via clickhouse-client, computes nothing (fixture tooling, not the runtime driver)
+        result = subprocess.run(insert, input=rows, text=True, check=False)  # purity-ok: loads already-computed word bytes via clickhouse-client, computes nothing (fixture tooling, not the runtime driver)
         return result.returncode
 
     for table, data in (("framebuffer", fb), ("palette", palette)):
@@ -65,13 +66,15 @@ def main() -> int:
 
     insert_batch_commit = base_cmd + [
         "--query",
-        "INSERT INTO batch_commit "
-        "(batch_id, icount, pc, regs, halted, halt_reason, exit_code, "
-        " keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes) "
-        f"VALUES (1, {state['committed_icount']}, 0, [], 0, '', 0, "
-        f" 0, 1, {state['frame_no']}, [], [], [], [])",
+        (
+            "INSERT INTO batch_commit "
+            "(batch_id, icount, pc, regs, halted, halt_reason, exit_code, "
+            " keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes) "
+            f"VALUES (1, {state['committed_icount']}, 0, [], 0, '', 0, "
+            f" 0, 1, {state['frame_no']}, [], [], [], [])"
+        ),
     ]
-    result = subprocess.run(insert_batch_commit, text=True)  # purity-ok: fixed-literal insert of already-known values, computes nothing (fixture tooling, not the runtime driver)
+    result = subprocess.run(insert_batch_commit, text=True, check=False)  # purity-ok: fixed-literal insert of already-known values, computes nothing (fixture tooling, not the runtime driver)
     if result.returncode != 0:
         return result.returncode
     print(f"seeded batch_commit: frame_no={state['frame_no']} icount={state['committed_icount']} has_frame=1",

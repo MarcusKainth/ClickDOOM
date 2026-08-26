@@ -18,10 +18,12 @@ from refemu.memory import (
 from .asm import (
     RESERVED_OPCODE,
     addi,
+    beq,
     csrrw,
     ebreak,
     ecall,
     jal,
+    jalr,
     lw,
     sw,
 )
@@ -151,19 +153,53 @@ def test_byte_access_never_misaligned(cpu):
     assert cpu.read_reg(3) == 0xFFFFFFAB  # sign-extended 0xAB, not a fault
 
 
-def test_misaligned_fetch_after_jal(cpu):
-    # jal architecturally completes (rd is written, pc updates) even to a
-    # misaligned target; the fault surfaces on the *next* fetch, matching
-    # real RISC-V's instruction-address-misaligned semantics.
+def test_misaligned_jal_target_halts_eagerly(cpu):
+    # SPEC agreement (issue #37): the transferring instruction itself
+    # faults, matching real RISC-V's instruction-address-misaligned
+    # semantics -- not the deferred "jump completes, next fetch faults"
+    # behavior an earlier version of this file had.
     load(cpu, [jal(1, 2)])  # target = RAM_BASE + 2, not 4-aligned
-    cpu.step()
-    assert cpu.read_reg(1) == RAM_BASE + 4  # link register did get written
-    assert cpu.pc == RAM_BASE + 2
     with pytest.raises(Halted) as exc:
         cpu.step()
     halt = exc.value
     assert halt.reason == HaltReason.MISALIGNED
-    assert halt.pc == RAM_BASE + 2
+    assert halt.pc == RAM_BASE  # the jal instruction itself, not the target
+    assert halt.addr == RAM_BASE + 2  # the computed (bad) target
+    assert cpu.read_reg(1) == 0  # rd never written -- no partial effect
+    assert cpu.pc == RAM_BASE  # pc never advanced
+    assert cpu.icount == 0
+
+
+def test_misaligned_jalr_target_halts_eagerly(cpu):
+    cpu.write_reg(2, RAM_BASE + 0x102)  # already even; +0x102 % 4 == 2
+    load(cpu, [jalr(1, 2, 0)])
+    with pytest.raises(Halted) as exc:
+        cpu.step()
+    halt = exc.value
+    assert halt.reason == HaltReason.MISALIGNED
+    assert halt.pc == RAM_BASE
+    assert halt.addr == RAM_BASE + 0x102
+    assert cpu.read_reg(1) == 0
+
+
+def test_misaligned_branch_target_no_fault_when_not_taken(cpu):
+    cpu.write_reg(1, 1)
+    cpu.write_reg(2, 2)  # unequal -> beq not taken
+    load(cpu, [beq(1, 2, 2)])  # target would be RAM_BASE + 2 if taken
+    cpu.step()  # must not raise
+    assert cpu.pc == RAM_BASE + 4
+
+
+def test_misaligned_branch_target_halts_when_taken(cpu):
+    cpu.write_reg(1, 5)
+    cpu.write_reg(2, 5)  # equal -> beq taken
+    load(cpu, [beq(1, 2, 2)])  # target = RAM_BASE + 2, not 4-aligned
+    with pytest.raises(Halted) as exc:
+        cpu.step()
+    halt = exc.value
+    assert halt.reason == HaltReason.MISALIGNED
+    assert halt.pc == RAM_BASE
+    assert halt.addr == RAM_BASE + 2
 
 
 def test_self_modify_halts_on_text_store(cpu):

@@ -69,6 +69,25 @@ run: up
     @test -f driver/main.py || { echo "driver/ not landed yet"; exit 1; }
     cd driver && uv run python main.py
 
+# Pre-flight gate for a multi-hour run (#110's Phase 2 milestone first,
+# demo3 later) — refuses to start rather than advising. K/HWM/database
+# match #110's stated run parameters; override via CLICKDOOM_* env vars the
+# same way executor's bench scripts do. Reference trace path is computed
+# the same way refemu/scripts/gen_reference_trace.py names its own output
+# (ROM-sha-prefixed, since a stale hardcoded path would point at whatever
+# ROM happened to be pinned when this recipe was written, not the current
+# one) — override CLICKDOOM_REFERENCE_TRACE directly if the file doesn't
+# exist yet under that name.
+preflight-milestone: up
+    ./scripts/preflight_milestone.sh \
+        --bin "${CLICKDOOM_ROM_BIN:-rom/build/doom-rv32im.bin}" \
+        --manifest "${CLICKDOOM_ROM_MANIFEST:-rom/build/manifest.json}" \
+        --k "${CLICKDOOM_RUN_K:-60000}" \
+        --hwm "${CLICKDOOM_RUN_HWM:-20000}" \
+        --database "${CLICKDOOM_DATABASE:-clickdoom}" \
+        --trace "${CLICKDOOM_REFERENCE_TRACE:-refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv}" \
+        --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
+
 # All linters + purity check (what CI runs)
 #
 # NOTE: CI's lint job (.github/workflows/ci.yml) only shellchecks scripts/ and

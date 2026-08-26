@@ -1,0 +1,2853 @@
+{
+  "rom_sha256": "22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed",
+  "pinned_hash": "22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed",
+  "pinned_match": true,
+  "icount": 307388156,
+  "frame_commits": [
+    {
+      "frame": 0,
+      "icount": 13243964
+    },
+    {
+      "frame": 1,
+      "icount": 13715122
+    },
+    {
+      "frame": 2,
+      "icount": 14185231
+    },
+    {
+      "frame": 3,
+      "icount": 14656377
+    },
+    {
+      "frame": 4,
+      "icount": 15127523
+    },
+    {
+      "frame": 5,
+      "icount": 15597637
+    },
+    {
+      "frame": 6,
+      "icount": 16068783
+    },
+    {
+      "frame": 7,
+      "icount": 16539929
+    },
+    {
+      "frame": 8,
+      "icount": 17010038
+    },
+    {
+      "frame": 9,
+      "icount": 17481184
+    },
+    {
+      "frame": 10,
+      "icount": 17952335
+    },
+    {
+      "frame": 11,
+      "icount": 18422444
+    },
+    {
+      "frame": 12,
+      "icount": 18893602
+    },
+    {
+      "frame": 13,
+      "icount": 19364252
+    },
+    {
+      "frame": 14,
+      "icount": 19834875
+    },
+    {
+      "frame": 15,
+      "icount": 20306038
+    },
+    {
+      "frame": 16,
+      "icount": 20776688
+    },
+    {
+      "frame": 17,
+      "icount": 21247311
+    },
+    {
+      "frame": 18,
+      "icount": 21718469
+    },
+    {
+      "frame": 19,
+      "icount": 22188584
+    },
+    {
+      "frame": 20,
+      "icount": 22659754
+    },
+    {
+      "frame": 21,
+      "icount": 23130912
+    },
+    {
+      "frame": 22,
+      "icount": 23601027
+    },
+    {
+      "frame": 23,
+      "icount": 24072185
+    },
+    {
+      "frame": 24,
+      "icount": 24543348
+    },
+    {
+      "frame": 25,
+      "icount": 25013463
+    },
+    {
+      "frame": 26,
+      "icount": 25484621
+    },
+    {
+      "frame": 27,
+      "icount": 25955779
+    },
+    {
+      "frame": 28,
+      "icount": 26425894
+    },
+    {
+      "frame": 29,
+      "icount": 26897057
+    },
+    {
+      "frame": 30,
+      "icount": 27367707
+    },
+    {
+      "frame": 31,
+      "icount": 27838330
+    },
+    {
+      "frame": 32,
+      "icount": 28309488
+    },
+    {
+      "frame": 33,
+      "icount": 28780138
+    },
+    {
+      "frame": 34,
+      "icount": 29250766
+    },
+    {
+      "frame": 35,
+      "icount": 29721924
+    },
+    {
+      "frame": 36,
+      "icount": 30192039
+    },
+    {
+      "frame": 37,
+      "icount": 30663197
+    },
+    {
+      "frame": 38,
+      "icount": 31134355
+    },
+    {
+      "frame": 39,
+      "icount": 31604482
+    },
+    {
+      "frame": 40,
+      "icount": 32075640
+    },
+    {
+      "frame": 41,
+      "icount": 32546798
+    },
+    {
+      "frame": 42,
+      "icount": 33016913
+    },
+    {
+      "frame": 43,
+      "icount": 33488071
+    },
+    {
+      "frame": 44,
+      "icount": 33959234
+    },
+    {
+      "frame": 45,
+      "icount": 34429349
+    },
+    {
+      "frame": 46,
+      "icount": 34900507
+    },
+    {
+      "frame": 47,
+      "icount": 35371157
+    },
+    {
+      "frame": 48,
+      "icount": 35841780
+    },
+    {
+      "frame": 49,
+      "icount": 36312943
+    },
+    {
+      "frame": 50,
+      "icount": 36783593
+    },
+    {
+      "frame": 51,
+      "icount": 37254216
+    },
+    {
+      "frame": 52,
+      "icount": 37725374
+    },
+    {
+      "frame": 53,
+      "icount": 38196029
+    },
+    {
+      "frame": 54,
+      "icount": 38666652
+    },
+    {
+      "frame": 55,
+      "icount": 39137810
+    },
+    {
+      "frame": 56,
+      "icount": 39607925
+    },
+    {
+      "frame": 57,
+      "icount": 40079083
+    },
+    {
+      "frame": 58,
+      "icount": 40550253
+    },
+    {
+      "frame": 59,
+      "icount": 41020368
+    },
+    {
+      "frame": 60,
+      "icount": 41491526
+    },
+    {
+      "frame": 61,
+      "icount": 41962684
+    },
+    {
+      "frame": 62,
+      "icount": 42432799
+    },
+    {
+      "frame": 63,
+      "icount": 42903962
+    },
+    {
+      "frame": 64,
+      "icount": 43374612
+    },
+    {
+      "frame": 65,
+      "icount": 43845235
+    },
+    {
+      "frame": 66,
+      "icount": 44316393
+    },
+    {
+      "frame": 67,
+      "icount": 44787043
+    },
+    {
+      "frame": 68,
+      "icount": 45257671
+    },
+    {
+      "frame": 69,
+      "icount": 45728829
+    },
+    {
+      "frame": 70,
+      "icount": 46199479
+    },
+    {
+      "frame": 71,
+      "icount": 46670102
+    },
+    {
+      "frame": 72,
+      "icount": 47141260
+    },
+    {
+      "frame": 73,
+      "icount": 47611380
+    },
+    {
+      "frame": 74,
+      "icount": 48082538
+    },
+    {
+      "frame": 75,
+      "icount": 48553696
+    },
+    {
+      "frame": 76,
+      "icount": 49023811
+    },
+    {
+      "frame": 77,
+      "icount": 49494969
+    },
+    {
+      "frame": 78,
+      "icount": 49966141
+    },
+    {
+      "frame": 79,
+      "icount": 50436256
+    },
+    {
+      "frame": 80,
+      "icount": 50907414
+    },
+    {
+      "frame": 81,
+      "icount": 51378064
+    },
+    {
+      "frame": 82,
+      "icount": 51848687
+    },
+    {
+      "frame": 83,
+      "icount": 52319850
+    },
+    {
+      "frame": 84,
+      "icount": 52790500
+    },
+    {
+      "frame": 85,
+      "icount": 53261123
+    },
+    {
+      "frame": 86,
+      "icount": 53732281
+    },
+    {
+      "frame": 87,
+      "icount": 54202936
+    },
+    {
+      "frame": 88,
+      "icount": 54673559
+    },
+    {
+      "frame": 89,
+      "icount": 55144717
+    },
+    {
+      "frame": 90,
+      "icount": 55615367
+    },
+    {
+      "frame": 91,
+      "icount": 56085990
+    },
+    {
+      "frame": 92,
+      "icount": 56557153
+    },
+    {
+      "frame": 93,
+      "icount": 57027268
+    },
+    {
+      "frame": 94,
+      "icount": 57498426
+    },
+    {
+      "frame": 95,
+      "icount": 57969584
+    },
+    {
+      "frame": 96,
+      "icount": 58439699
+    },
+    {
+      "frame": 97,
+      "icount": 58910869
+    },
+    {
+      "frame": 98,
+      "icount": 59382027
+    },
+    {
+      "frame": 99,
+      "icount": 59852142
+    },
+    {
+      "frame": 100,
+      "icount": 60323300
+    },
+    {
+      "frame": 101,
+      "icount": 60793950
+    },
+    {
+      "frame": 102,
+      "icount": 61264578
+    },
+    {
+      "frame": 103,
+      "icount": 61735738
+    },
+    {
+      "frame": 104,
+      "icount": 65073788
+    },
+    {
+      "frame": 105,
+      "icount": 65368437
+    },
+    {
+      "frame": 106,
+      "icount": 65596477
+    },
+    {
+      "frame": 107,
+      "icount": 65838425
+    },
+    {
+      "frame": 108,
+      "icount": 66089914
+    },
+    {
+      "frame": 109,
+      "icount": 66348584
+    },
+    {
+      "frame": 110,
+      "icount": 66607837
+    },
+    {
+      "frame": 111,
+      "icount": 66895911
+    },
+    {
+      "frame": 112,
+      "icount": 67173256
+    },
+    {
+      "frame": 113,
+      "icount": 67461209
+    },
+    {
+      "frame": 114,
+      "icount": 67739143
+    },
+    {
+      "frame": 115,
+      "icount": 68025268
+    },
+    {
+      "frame": 116,
+      "icount": 68313349
+    },
+    {
+      "frame": 117,
+      "icount": 68589234
+    },
+    {
+      "frame": 118,
+      "icount": 68872901
+    },
+    {
+      "frame": 119,
+      "icount": 69146476
+    },
+    {
+      "frame": 120,
+      "icount": 69430035
+    },
+    {
+      "frame": 121,
+      "icount": 69703470
+    },
+    {
+      "frame": 122,
+      "icount": 69986990
+    },
+    {
+      "frame": 123,
+      "icount": 70270589
+    },
+    {
+      "frame": 124,
+      "icount": 70544189
+    },
+    {
+      "frame": 125,
+      "icount": 70827788
+    },
+    {
+      "frame": 126,
+      "icount": 71101390
+    },
+    {
+      "frame": 127,
+      "icount": 71384989
+    },
+    {
+      "frame": 128,
+      "icount": 71658588
+    },
+    {
+      "frame": 129,
+      "icount": 71941974
+    },
+    {
+      "frame": 130,
+      "icount": 72226105
+    },
+    {
+      "frame": 131,
+      "icount": 72501685
+    },
+    {
+      "frame": 132,
+      "icount": 72788140
+    },
+    {
+      "frame": 133,
+      "icount": 73065109
+    },
+    {
+      "frame": 134,
+      "icount": 73352479
+    },
+    {
+      "frame": 135,
+      "icount": 73630454
+    },
+    {
+      "frame": 136,
+      "icount": 73919070
+    },
+    {
+      "frame": 137,
+      "icount": 74208073
+    },
+    {
+      "frame": 138,
+      "icount": 74487224
+    },
+    {
+      "frame": 139,
+      "icount": 74776490
+    },
+    {
+      "frame": 140,
+      "icount": 75055890
+    },
+    {
+      "frame": 141,
+      "icount": 75345458
+    },
+    {
+      "frame": 142,
+      "icount": 75625150
+    },
+    {
+      "frame": 143,
+      "icount": 75914959
+    },
+    {
+      "frame": 144,
+      "icount": 76205043
+    },
+    {
+      "frame": 145,
+      "icount": 77561741
+    },
+    {
+      "frame": 146,
+      "icount": 78945696
+    },
+    {
+      "frame": 147,
+      "icount": 80357242
+    },
+    {
+      "frame": 148,
+      "icount": 81768942
+    },
+    {
+      "frame": 149,
+      "icount": 83121054
+    },
+    {
+      "frame": 150,
+      "icount": 84478500
+    },
+    {
+      "frame": 151,
+      "icount": 85848148
+    },
+    {
+      "frame": 152,
+      "icount": 87205321
+    },
+    {
+      "frame": 153,
+      "icount": 88520678
+    },
+    {
+      "frame": 154,
+      "icount": 89778098
+    },
+    {
+      "frame": 155,
+      "icount": 91122258
+    },
+    {
+      "frame": 156,
+      "icount": 92323501
+    },
+    {
+      "frame": 157,
+      "icount": 93537561
+    },
+    {
+      "frame": 158,
+      "icount": 94810082
+    },
+    {
+      "frame": 159,
+      "icount": 96070377
+    },
+    {
+      "frame": 160,
+      "icount": 97453670
+    },
+    {
+      "frame": 161,
+      "icount": 98757987
+    },
+    {
+      "frame": 162,
+      "icount": 100216926
+    },
+    {
+      "frame": 163,
+      "icount": 101730077
+    },
+    {
+      "frame": 164,
+      "icount": 103214567
+    },
+    {
+      "frame": 165,
+      "icount": 104732941
+    },
+    {
+      "frame": 166,
+      "icount": 106326995
+    },
+    {
+      "frame": 167,
+      "icount": 107867953
+    },
+    {
+      "frame": 168,
+      "icount": 109495965
+    },
+    {
+      "frame": 169,
+      "icount": 111050916
+    },
+    {
+      "frame": 170,
+      "icount": 112633482
+    },
+    {
+      "frame": 171,
+      "icount": 114298458
+    },
+    {
+      "frame": 172,
+      "icount": 116006685
+    },
+    {
+      "frame": 173,
+      "icount": 117501123
+    },
+    {
+      "frame": 174,
+      "icount": 118977746
+    },
+    {
+      "frame": 175,
+      "icount": 120357494
+    },
+    {
+      "frame": 176,
+      "icount": 121794590
+    },
+    {
+      "frame": 177,
+      "icount": 123169623
+    },
+    {
+      "frame": 178,
+      "icount": 124580883
+    },
+    {
+      "frame": 179,
+      "icount": 126002539
+    },
+    {
+      "frame": 180,
+      "icount": 127521142
+    },
+    {
+      "frame": 181,
+      "icount": 129151731
+    },
+    {
+      "frame": 182,
+      "icount": 130727252
+    },
+    {
+      "frame": 183,
+      "icount": 132274559
+    },
+    {
+      "frame": 184,
+      "icount": 133840867
+    },
+    {
+      "frame": 185,
+      "icount": 135381126
+    },
+    {
+      "frame": 186,
+      "icount": 136923555
+    },
+    {
+      "frame": 187,
+      "icount": 138407651
+    },
+    {
+      "frame": 188,
+      "icount": 140027116
+    },
+    {
+      "frame": 189,
+      "icount": 141495000
+    },
+    {
+      "frame": 190,
+      "icount": 143064896
+    },
+    {
+      "frame": 191,
+      "icount": 144642344
+    },
+    {
+      "frame": 192,
+      "icount": 146332759
+    },
+    {
+      "frame": 193,
+      "icount": 148241494
+    },
+    {
+      "frame": 194,
+      "icount": 150120435
+    },
+    {
+      "frame": 195,
+      "icount": 151884636
+    },
+    {
+      "frame": 196,
+      "icount": 153539495
+    },
+    {
+      "frame": 197,
+      "icount": 155119773
+    },
+    {
+      "frame": 198,
+      "icount": 156843270
+    },
+    {
+      "frame": 199,
+      "icount": 158522322
+    },
+    {
+      "frame": 200,
+      "icount": 160095547
+    },
+    {
+      "frame": 201,
+      "icount": 161535727
+    },
+    {
+      "frame": 202,
+      "icount": 162910817
+    },
+    {
+      "frame": 203,
+      "icount": 164273096
+    },
+    {
+      "frame": 204,
+      "icount": 165580660
+    },
+    {
+      "frame": 205,
+      "icount": 166954772
+    },
+    {
+      "frame": 206,
+      "icount": 168477929
+    },
+    {
+      "frame": 207,
+      "icount": 169914271
+    },
+    {
+      "frame": 208,
+      "icount": 171378958
+    },
+    {
+      "frame": 209,
+      "icount": 172864154
+    },
+    {
+      "frame": 210,
+      "icount": 174431600
+    },
+    {
+      "frame": 211,
+      "icount": 176035379
+    },
+    {
+      "frame": 212,
+      "icount": 177672037
+    },
+    {
+      "frame": 213,
+      "icount": 179243411
+    },
+    {
+      "frame": 214,
+      "icount": 180694869
+    },
+    {
+      "frame": 215,
+      "icount": 182113727
+    },
+    {
+      "frame": 216,
+      "icount": 183506473
+    },
+    {
+      "frame": 217,
+      "icount": 184889339
+    },
+    {
+      "frame": 218,
+      "icount": 186251941
+    },
+    {
+      "frame": 219,
+      "icount": 187796576
+    },
+    {
+      "frame": 220,
+      "icount": 189361079
+    },
+    {
+      "frame": 221,
+      "icount": 190970544
+    },
+    {
+      "frame": 222,
+      "icount": 192526304
+    },
+    {
+      "frame": 223,
+      "icount": 194048360
+    },
+    {
+      "frame": 224,
+      "icount": 195477201
+    },
+    {
+      "frame": 225,
+      "icount": 196978295
+    },
+    {
+      "frame": 226,
+      "icount": 198409962
+    },
+    {
+      "frame": 227,
+      "icount": 199898542
+    },
+    {
+      "frame": 228,
+      "icount": 201440402
+    },
+    {
+      "frame": 229,
+      "icount": 203053806
+    },
+    {
+      "frame": 230,
+      "icount": 204678473
+    },
+    {
+      "frame": 231,
+      "icount": 206277088
+    },
+    {
+      "frame": 232,
+      "icount": 207836702
+    },
+    {
+      "frame": 233,
+      "icount": 209536624
+    },
+    {
+      "frame": 234,
+      "icount": 211123404
+    },
+    {
+      "frame": 235,
+      "icount": 212686315
+    },
+    {
+      "frame": 236,
+      "icount": 214247319
+    },
+    {
+      "frame": 237,
+      "icount": 215763955
+    },
+    {
+      "frame": 238,
+      "icount": 217203337
+    },
+    {
+      "frame": 239,
+      "icount": 218705750
+    },
+    {
+      "frame": 240,
+      "icount": 220076511
+    },
+    {
+      "frame": 241,
+      "icount": 221527209
+    },
+    {
+      "frame": 242,
+      "icount": 223035096
+    },
+    {
+      "frame": 243,
+      "icount": 224644440
+    },
+    {
+      "frame": 244,
+      "icount": 226192487
+    },
+    {
+      "frame": 245,
+      "icount": 227770109
+    },
+    {
+      "frame": 246,
+      "icount": 229244923
+    },
+    {
+      "frame": 247,
+      "icount": 230810682
+    },
+    {
+      "frame": 248,
+      "icount": 232242581
+    },
+    {
+      "frame": 249,
+      "icount": 233746086
+    },
+    {
+      "frame": 250,
+      "icount": 235216669
+    },
+    {
+      "frame": 251,
+      "icount": 236700217
+    },
+    {
+      "frame": 252,
+      "icount": 238076996
+    },
+    {
+      "frame": 253,
+      "icount": 239504464
+    },
+    {
+      "frame": 254,
+      "icount": 240768636
+    },
+    {
+      "frame": 255,
+      "icount": 242060450
+    },
+    {
+      "frame": 256,
+      "icount": 243385618
+    },
+    {
+      "frame": 257,
+      "icount": 244651261
+    },
+    {
+      "frame": 258,
+      "icount": 245944491
+    },
+    {
+      "frame": 259,
+      "icount": 247194301
+    },
+    {
+      "frame": 260,
+      "icount": 248442207
+    },
+    {
+      "frame": 261,
+      "icount": 249955682
+    },
+    {
+      "frame": 262,
+      "icount": 251257424
+    },
+    {
+      "frame": 263,
+      "icount": 252664291
+    },
+    {
+      "frame": 264,
+      "icount": 254164818
+    },
+    {
+      "frame": 265,
+      "icount": 255655251
+    },
+    {
+      "frame": 266,
+      "icount": 257223149
+    },
+    {
+      "frame": 267,
+      "icount": 258860678
+    },
+    {
+      "frame": 268,
+      "icount": 260478686
+    },
+    {
+      "frame": 269,
+      "icount": 262060899
+    },
+    {
+      "frame": 270,
+      "icount": 263600977
+    },
+    {
+      "frame": 271,
+      "icount": 265159369
+    },
+    {
+      "frame": 272,
+      "icount": 266705138
+    },
+    {
+      "frame": 273,
+      "icount": 268207590
+    },
+    {
+      "frame": 274,
+      "icount": 269662902
+    },
+    {
+      "frame": 275,
+      "icount": 271123451
+    },
+    {
+      "frame": 276,
+      "icount": 272561269
+    },
+    {
+      "frame": 277,
+      "icount": 273993853
+    },
+    {
+      "frame": 278,
+      "icount": 275360989
+    },
+    {
+      "frame": 279,
+      "icount": 276706824
+    },
+    {
+      "frame": 280,
+      "icount": 278143095
+    },
+    {
+      "frame": 281,
+      "icount": 279575017
+    },
+    {
+      "frame": 282,
+      "icount": 280994682
+    },
+    {
+      "frame": 283,
+      "icount": 282415389
+    },
+    {
+      "frame": 284,
+      "icount": 283844482
+    },
+    {
+      "frame": 285,
+      "icount": 285279697
+    },
+    {
+      "frame": 286,
+      "icount": 286728236
+    },
+    {
+      "frame": 287,
+      "icount": 288202288
+    },
+    {
+      "frame": 288,
+      "icount": 289807780
+    },
+    {
+      "frame": 289,
+      "icount": 291424792
+    },
+    {
+      "frame": 290,
+      "icount": 293047692
+    },
+    {
+      "frame": 291,
+      "icount": 294681902
+    },
+    {
+      "frame": 292,
+      "icount": 296322116
+    },
+    {
+      "frame": 293,
+      "icount": 297956237
+    },
+    {
+      "frame": 294,
+      "icount": 299563170
+    },
+    {
+      "frame": 295,
+      "icount": 301087281
+    },
+    {
+      "frame": 296,
+      "icount": 302545792
+    },
+    {
+      "frame": 297,
+      "icount": 303983355
+    },
+    {
+      "frame": 298,
+      "icount": 305714136
+    },
+    {
+      "frame": 299,
+      "icount": 307388155
+    }
+  ],
+  "halt": null,
+  "windows": [
+    {
+      "label": "whole run (includes crt0 BSS zeroing)",
+      "icount": 307388156,
+      "total_attributed": 307388156,
+      "top": [
+        {
+          "fn": "R_DrawColumn",
+          "insns": 67583139,
+          "pct": 21.986253432614365
+        },
+        {
+          "fn": "R_DrawSpan",
+          "insns": 59431680,
+          "pct": 19.33440792689488
+        },
+        {
+          "fn": "V_DrawPatch",
+          "insns": 38365438,
+          "pct": 12.481104834761428
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 24102043,
+          "pct": 7.840914664259218
+        },
+        {
+          "fn": "memcpy",
+          "insns": 18740524,
+          "pct": 6.096696842151589
+        },
+        {
+          "fn": "R_RenderSegLoop",
+          "insns": 7617464,
+          "pct": 2.478125409620532
+        },
+        {
+          "fn": "P_CrossBSPNode",
+          "insns": 6705343,
+          "pct": 2.181392766479916
+        },
+        {
+          "fn": "R_DrawFuzzColumn",
+          "insns": 6480790,
+          "pct": 2.1083408301522195
+        },
+        {
+          "fn": "P_DivlineSide",
+          "insns": 6448768,
+          "pct": 2.097923382578215
+        },
+        {
+          "fn": "P_CrossSubsector",
+          "insns": 4705288,
+          "pct": 1.5307317175877135
+        },
+        {
+          "fn": "P_MobjThinker",
+          "insns": 4479869,
+          "pct": 1.45739805277338
+        },
+        {
+          "fn": "R_MakeSpans",
+          "insns": 4317606,
+          "pct": 1.4046103975457012
+        },
+        {
+          "fn": "R_DrawMaskedColumn",
+          "insns": 3998001,
+          "pct": 1.3006359945761865
+        },
+        {
+          "fn": "DG_SleepMs",
+          "insns": 3677460,
+          "pct": 1.196357090609568
+        },
+        {
+          "fn": "R_MapPlane",
+          "insns": 3000439,
+          "pct": 0.9761075504808975
+        },
+        {
+          "fn": "R_InitTextureMapping",
+          "insns": 2745991,
+          "pct": 0.8933301255758208
+        },
+        {
+          "fn": "wipe_doMelt",
+          "insns": 2439772,
+          "pct": 0.793710477250789
+        },
+        {
+          "fn": "strncasecmp",
+          "insns": 2270565,
+          "pct": 0.7386637889847649
+        },
+        {
+          "fn": "R_GetColumn",
+          "insns": 1943813,
+          "pct": 0.6323643126965504
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 1879806,
+          "pct": 0.6115414544469306
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 1809084,
+          "pct": 0.5885340618003512
+        },
+        {
+          "fn": "R_DrawVisSprite",
+          "insns": 1586642,
+          "pct": 0.5161688793240297
+        },
+        {
+          "fn": "I_FinishUpdate",
+          "insns": 1512600,
+          "pct": 0.4920814190381493
+        },
+        {
+          "fn": "R_DrawPlanes",
+          "insns": 1464441,
+          "pct": 0.47641425715830116
+        },
+        {
+          "fn": "R_PointInSubsector",
+          "insns": 1454668,
+          "pct": 0.47323488937550345
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 1301626,
+          "pct": 0.4234470244195095
+        },
+        {
+          "fn": "P_RunThinkers",
+          "insns": 1235980,
+          "pct": 0.40209096410337947
+        },
+        {
+          "fn": "P_BlockLinesIterator",
+          "insns": 1110412,
+          "pct": 0.36124098418417916
+        },
+        {
+          "fn": "Z_ChangeTag2",
+          "insns": 1095062,
+          "pct": 0.3562472979603027
+        },
+        {
+          "fn": "P_LookForPlayers",
+          "insns": 970489,
+          "pct": 0.3157210130113146
+        },
+        {
+          "fn": "R_PointOnSide",
+          "insns": 966477,
+          "pct": 0.31441582283996655
+        },
+        {
+          "fn": "P_CheckPosition",
+          "insns": 940911,
+          "pct": 0.30609865137419284
+        },
+        {
+          "fn": "R_DrawSprite",
+          "insns": 859523,
+          "pct": 0.27962137877557
+        },
+        {
+          "fn": "P_BlockThingsIterator",
+          "insns": 823363,
+          "pct": 0.2678577505113762
+        },
+        {
+          "fn": "P_CheckSight",
+          "insns": 817646,
+          "pct": 0.2659978870493631
+        },
+        {
+          "fn": "PIT_CheckThing",
+          "insns": 778298,
+          "pct": 0.2531971335941779
+        },
+        {
+          "fn": "R_InitSpriteDefs",
+          "insns": 750050,
+          "pct": 0.24400744965593274
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 727650,
+          "pct": 0.23672024630643218
+        },
+        {
+          "fn": "R_StoreWallRange",
+          "insns": 713165,
+          "pct": 0.23200796324761452
+        },
+        {
+          "fn": "Transform",
+          "insns": 657384,
+          "pct": 0.21386120029946762
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 84778,
+          "bytes": 24225494,
+          "aligned_calls": 83481,
+          "aligned_bytes": 24175588,
+          "insns": 18740524
+        },
+        "memmove": {
+          "calls": 538,
+          "bytes": 2965,
+          "aligned_calls": 298,
+          "aligned_bytes": 2198,
+          "insns": 17257
+        },
+        "memset": {
+          "calls": 4794,
+          "bytes": 865424,
+          "aligned_calls": 3662,
+          "aligned_bytes": 503184,
+          "insns": 433081
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 3152,
+          "bytes": 0,
+          "aligned_calls": 3148,
+          "aligned_bytes": 0,
+          "insns": 93950
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 14290,
+          "bytes": 0,
+          "aligned_calls": 14289,
+          "aligned_bytes": 0,
+          "insns": 406378
+        },
+        "strncpy": {
+          "calls": 2885,
+          "bytes": 23119,
+          "aligned_calls": 2881,
+          "aligned_bytes": 23068,
+          "insns": 146749
+        }
+      }
+    },
+    {
+      "label": "boot: 0 -> first FRAME_COMMIT",
+      "icount": 13243965,
+      "total_attributed": 13243965,
+      "top": [
+        {
+          "fn": "R_InitTextureMapping",
+          "insns": 2745991,
+          "pct": 20.733904083860082
+        },
+        {
+          "fn": "memcpy",
+          "insns": 2485233,
+          "pct": 18.765022408319563
+        },
+        {
+          "fn": "strncasecmp",
+          "insns": 2065765,
+          "pct": 15.5977835942635
+        },
+        {
+          "fn": "R_InitSpriteDefs",
+          "insns": 750050,
+          "pct": 5.6633342054286615
+        },
+        {
+          "fn": "Transform",
+          "insns": 657384,
+          "pct": 4.96364948110328
+        },
+        {
+          "fn": "R_GenerateLookup",
+          "insns": 588406,
+          "pct": 4.4428235804005825
+        },
+        {
+          "fn": "strcmp",
+          "insns": 406378,
+          "pct": 3.068401343555348
+        },
+        {
+          "fn": "SHA1_Update",
+          "insns": 347860,
+          "pct": 2.6265548119464226
+        },
+        {
+          "fn": "V_DrawPatch",
+          "insns": 334809,
+          "pct": 2.528011815192807
+        },
+        {
+          "fn": "DG_SleepMs",
+          "insns": 286887,
+          "pct": 2.1661715354880506
+        },
+        {
+          "fn": "_start",
+          "insns": 184048,
+          "pct": 1.3896744668231908
+        },
+        {
+          "fn": "GetDefaultForName",
+          "insns": 160270,
+          "pct": 1.2101360883995087
+        },
+        {
+          "fn": "strncpy",
+          "insns": 146749,
+          "pct": 1.1080443054629032
+        },
+        {
+          "fn": "W_CheckNumForName",
+          "insns": 136956,
+          "pct": 1.0341011925054167
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 130116,
+          "pct": 0.9824550276295656
+        },
+        {
+          "fn": "W_GenerateHashTable",
+          "insns": 126950,
+          "pct": 0.9585497998522345
+        },
+        {
+          "fn": "Z_Malloc",
+          "insns": 107786,
+          "pct": 0.813849930893052
+        },
+        {
+          "fn": "strlen",
+          "insns": 93905,
+          "pct": 0.7090399287524545
+        },
+        {
+          "fn": "_fread_r",
+          "insns": 91393,
+          "pct": 0.6900727991957092
+        },
+        {
+          "fn": "memset",
+          "insns": 86786,
+          "pct": 0.6552871439935095
+        },
+        {
+          "fn": "_read",
+          "insns": 85409,
+          "pct": 0.6448899555382395
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 83994,
+          "pct": 0.6342058439447703
+        },
+        {
+          "fn": "_fseeko_r",
+          "insns": 81171,
+          "pct": 0.6128904750201318
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 76110,
+          "pct": 0.574676843377342
+        },
+        {
+          "fn": "__srefill_r",
+          "insns": 70226,
+          "pct": 0.5302490606098702
+        },
+        {
+          "fn": "SHA1_UpdateInt32",
+          "insns": 68256,
+          "pct": 0.5153743610769131
+        },
+        {
+          "fn": "_svfprintf_r",
+          "insns": 65951,
+          "pct": 0.49797020756246335
+        },
+        {
+          "fn": "W_Checksum",
+          "insns": 45548,
+          "pct": 0.3439151341762078
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 44335,
+          "pct": 0.33475624558053424
+        },
+        {
+          "fn": "W_AddFile",
+          "insns": 43070,
+          "pct": 0.3252047253220618
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 41904,
+          "pct": 0.31640071534468717
+        },
+        {
+          "fn": "R_InitLightTables",
+          "insns": 41087,
+          "pct": 0.31023186787340495
+        },
+        {
+          "fn": "R_InitTextures",
+          "insns": 37352,
+          "pct": 0.28203034363198637
+        },
+        {
+          "fn": "R_InstallSpriteLump",
+          "insns": 34898,
+          "pct": 0.2635011493914398
+        },
+        {
+          "fn": "_read_r",
+          "insns": 34164,
+          "pct": 0.2579590024588558
+        },
+        {
+          "fn": "M_StringCopy",
+          "insns": 33894,
+          "pct": 0.2559203380558617
+        },
+        {
+          "fn": "_vfprintf_r",
+          "insns": 33103,
+          "pct": 0.2499478064159789
+        },
+        {
+          "fn": "__sread",
+          "insns": 28470,
+          "pct": 0.21496583538237982
+        },
+        {
+          "fn": "W_ReadLump",
+          "insns": 26169,
+          "pct": 0.19759188430352995
+        },
+        {
+          "fn": "__ascii_mbtowc",
+          "insns": 23232,
+          "pct": 0.17541574596429393
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 4815,
+          "bytes": 3780539,
+          "aligned_calls": 4745,
+          "aligned_bytes": 3779979,
+          "insns": 2485233
+        },
+        "memmove": {
+          "calls": 536,
+          "bytes": 2959,
+          "aligned_calls": 297,
+          "aligned_bytes": 2196,
+          "insns": 17205
+        },
+        "memset": {
+          "calls": 1292,
+          "bytes": 172716,
+          "aligned_calls": 1292,
+          "aligned_bytes": 172716,
+          "insns": 86786
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 3150,
+          "bytes": 0,
+          "aligned_calls": 3146,
+          "aligned_bytes": 0,
+          "insns": 93905
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 14290,
+          "bytes": 0,
+          "aligned_calls": 14289,
+          "aligned_bytes": 0,
+          "insns": 406378
+        },
+        "strncpy": {
+          "calls": 2885,
+          "bytes": 23119,
+          "aligned_calls": 2881,
+          "aligned_bytes": 23068,
+          "insns": 146749
+        }
+      }
+    },
+    {
+      "label": "steady state: frame 0 -> frame 299 (excludes crt0/boot)",
+      "icount": 294144191,
+      "total_attributed": 294144191,
+      "top": [
+        {
+          "fn": "R_DrawColumn",
+          "insns": 67583139,
+          "pct": 22.976193672306792
+        },
+        {
+          "fn": "R_DrawSpan",
+          "insns": 59431680,
+          "pct": 20.204947715591636
+        },
+        {
+          "fn": "V_DrawPatch",
+          "insns": 38030629,
+          "pct": 12.929247003215508
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 24018049,
+          "pct": 8.165399737572924
+        },
+        {
+          "fn": "memcpy",
+          "insns": 16255291,
+          "pct": 5.526300194723206
+        },
+        {
+          "fn": "R_RenderSegLoop",
+          "insns": 7617464,
+          "pct": 2.5897040407641434
+        },
+        {
+          "fn": "P_CrossBSPNode",
+          "insns": 6705343,
+          "pct": 2.279610886485261
+        },
+        {
+          "fn": "R_DrawFuzzColumn",
+          "insns": 6480790,
+          "pct": 2.2032697562264625
+        },
+        {
+          "fn": "P_DivlineSide",
+          "insns": 6448768,
+          "pct": 2.19238325872633
+        },
+        {
+          "fn": "P_CrossSubsector",
+          "insns": 4705288,
+          "pct": 1.5996535522267037
+        },
+        {
+          "fn": "P_MobjThinker",
+          "insns": 4479869,
+          "pct": 1.5230180085385403
+        },
+        {
+          "fn": "R_MakeSpans",
+          "insns": 4317606,
+          "pct": 1.4678535670962818
+        },
+        {
+          "fn": "R_DrawMaskedColumn",
+          "insns": 3998001,
+          "pct": 1.35919767322551
+        },
+        {
+          "fn": "DG_SleepMs",
+          "insns": 3390573,
+          "pct": 1.1526907903477857
+        },
+        {
+          "fn": "R_MapPlane",
+          "insns": 3000439,
+          "pct": 1.0200572004496937
+        },
+        {
+          "fn": "wipe_doMelt",
+          "insns": 2439772,
+          "pct": 0.8294476228497064
+        },
+        {
+          "fn": "R_GetColumn",
+          "insns": 1943813,
+          "pct": 0.6608367798771182
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 1835471,
+          "pct": 0.6240038240292837
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 1767180,
+          "pct": 0.6007869793355871
+        },
+        {
+          "fn": "R_DrawVisSprite",
+          "insns": 1586642,
+          "pct": 0.5394095986073715
+        },
+        {
+          "fn": "I_FinishUpdate",
+          "insns": 1507558,
+          "pct": 0.512523465064792
+        },
+        {
+          "fn": "R_DrawPlanes",
+          "insns": 1464441,
+          "pct": 0.49786500798174865
+        },
+        {
+          "fn": "R_PointInSubsector",
+          "insns": 1454668,
+          "pct": 0.4945424878371982
+        },
+        {
+          "fn": "P_RunThinkers",
+          "insns": 1235980,
+          "pct": 0.4201952776283112
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 1171510,
+          "pct": 0.3982774556985897
+        },
+        {
+          "fn": "P_BlockLinesIterator",
+          "insns": 1110412,
+          "pct": 0.3775060103090732
+        },
+        {
+          "fn": "Z_ChangeTag2",
+          "insns": 1087633,
+          "pct": 0.36976184921496547
+        },
+        {
+          "fn": "P_LookForPlayers",
+          "insns": 970489,
+          "pct": 0.32993648343033233
+        },
+        {
+          "fn": "R_PointOnSide",
+          "insns": 966477,
+          "pct": 0.3285725265266245
+        },
+        {
+          "fn": "P_CheckPosition",
+          "insns": 940911,
+          "pct": 0.3198808709433259
+        },
+        {
+          "fn": "R_DrawSprite",
+          "insns": 859523,
+          "pct": 0.29221144809213656
+        },
+        {
+          "fn": "P_BlockThingsIterator",
+          "insns": 823363,
+          "pct": 0.2799181575542316
+        },
+        {
+          "fn": "P_CheckSight",
+          "insns": 817646,
+          "pct": 0.2779745529633798
+        },
+        {
+          "fn": "PIT_CheckThing",
+          "insns": 778298,
+          "pct": 0.2645974402397768
+        },
+        {
+          "fn": "R_StoreWallRange",
+          "insns": 713165,
+          "pct": 0.24245421865223918
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 651540,
+          "pct": 0.22150360943215092
+        },
+        {
+          "fn": "P_SetMobjState",
+          "insns": 617821,
+          "pct": 0.21004018399941815
+        },
+        {
+          "fn": "R_PointToAngle",
+          "insns": 566814,
+          "pct": 0.1926993689975676
+        },
+        {
+          "fn": "PIT_CheckLine",
+          "insns": 437603,
+          "pct": 0.14877159345295382
+        },
+        {
+          "fn": "R_CheckBBox",
+          "insns": 394448,
+          "pct": 0.13410021753582752
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 79963,
+          "bytes": 20444955,
+          "aligned_calls": 78736,
+          "aligned_bytes": 20395609,
+          "insns": 16255291
+        },
+        "memmove": {
+          "calls": 2,
+          "bytes": 6,
+          "aligned_calls": 1,
+          "aligned_bytes": 2,
+          "insns": 52
+        },
+        "memset": {
+          "calls": 3502,
+          "bytes": 692708,
+          "aligned_calls": 2370,
+          "aligned_bytes": 330468,
+          "insns": 346295
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 2,
+          "bytes": 0,
+          "aligned_calls": 2,
+          "aligned_bytes": 0,
+          "insns": 45
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strncpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        }
+      }
+    },
+    {
+      "label": "frames 40 -> 170",
+      "icount": 80557842,
+      "total_attributed": 80557842,
+      "top": [
+        {
+          "fn": "V_DrawPatch",
+          "insns": 21720523,
+          "pct": 26.962642569298218
+        },
+        {
+          "fn": "R_DrawSpan",
+          "insns": 11670008,
+          "pct": 14.486495306068402
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 10422745,
+          "pct": 12.938212768907091
+        },
+        {
+          "fn": "R_DrawColumn",
+          "insns": 9500507,
+          "pct": 11.793398090281515
+        },
+        {
+          "fn": "memcpy",
+          "insns": 7031493,
+          "pct": 8.72850218604416
+        },
+        {
+          "fn": "DG_SleepMs",
+          "insns": 3390573,
+          "pct": 4.2088677102348395
+        },
+        {
+          "fn": "wipe_doMelt",
+          "insns": 2439772,
+          "pct": 3.028596520745926
+        },
+        {
+          "fn": "R_RenderSegLoop",
+          "insns": 1543810,
+          "pct": 1.9163993990802286
+        },
+        {
+          "fn": "P_DivlineSide",
+          "insns": 1242630,
+          "pct": 1.5425313900538695
+        },
+        {
+          "fn": "P_CrossBSPNode",
+          "insns": 1141777,
+          "pct": 1.4173381158844847
+        },
+        {
+          "fn": "P_CrossSubsector",
+          "insns": 945369,
+          "pct": 1.173528208464174
+        },
+        {
+          "fn": "R_MakeSpans",
+          "insns": 829577,
+          "pct": 1.0297904951326775
+        },
+        {
+          "fn": "P_MobjThinker",
+          "insns": 740071,
+          "pct": 0.9186827522018278
+        },
+        {
+          "fn": "I_FinishUpdate",
+          "insns": 655460,
+          "pct": 0.8136513885265199
+        },
+        {
+          "fn": "R_MapPlane",
+          "insns": 549981,
+          "pct": 0.6827156566582308
+        },
+        {
+          "fn": "R_DrawMaskedColumn",
+          "insns": 393035,
+          "pct": 0.48789166919342253
+        },
+        {
+          "fn": "R_GetColumn",
+          "insns": 380450,
+          "pct": 0.4722693539879085
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 364025,
+          "pct": 0.45188027752779175
+        },
+        {
+          "fn": "wipe_shittyColMajorXform",
+          "insns": 322476,
+          "pct": 0.40030367248417603
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 307356,
+          "pct": 0.3815345500441782
+        },
+        {
+          "fn": "R_DrawPlanes",
+          "insns": 283963,
+          "pct": 0.3524957880574805
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 237889,
+          "pct": 0.2953021010667093
+        },
+        {
+          "fn": "Z_ChangeTag2",
+          "insns": 215665,
+          "pct": 0.2677144703056966
+        },
+        {
+          "fn": "P_RunThinkers",
+          "insns": 203861,
+          "pct": 0.25306164482410043
+        },
+        {
+          "fn": "strncasecmp",
+          "insns": 198720,
+          "pct": 0.24667989492568582
+        },
+        {
+          "fn": "P_LookForPlayers",
+          "insns": 171483,
+          "pct": 0.2128694063080786
+        },
+        {
+          "fn": "R_DrawVisSprite",
+          "insns": 170492,
+          "pct": 0.21163923432804965
+        },
+        {
+          "fn": "R_StoreWallRange",
+          "insns": 153509,
+          "pct": 0.19055748787312352
+        },
+        {
+          "fn": "R_PointInSubsector",
+          "insns": 133568,
+          "pct": 0.1658038456392613
+        },
+        {
+          "fn": "P_CheckSight",
+          "insns": 133454,
+          "pct": 0.16566233241451528
+        },
+        {
+          "fn": "R_DrawSprite",
+          "insns": 131655,
+          "pct": 0.16342915442049702
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 131580,
+          "pct": 0.16333605361474304
+        },
+        {
+          "fn": "memset",
+          "insns": 123340,
+          "pct": 0.15310737842257494
+        },
+        {
+          "fn": "P_SetMobjState",
+          "insns": 102450,
+          "pct": 0.12717570065990597
+        },
+        {
+          "fn": "R_PointToAngle",
+          "insns": 97976,
+          "pct": 0.12162192726066322
+        },
+        {
+          "fn": "W_LumpNameHash",
+          "insns": 92306,
+          "pct": 0.11458350634566403
+        },
+        {
+          "fn": "R_PointOnSide",
+          "insns": 90283,
+          "pct": 0.11207226727846062
+        },
+        {
+          "fn": "P_LoadSegs",
+          "insns": 87098,
+          "pct": 0.10811858639410922
+        },
+        {
+          "fn": "G_BuildTiccmd",
+          "insns": 84604,
+          "pct": 0.10502267426677095
+        },
+        {
+          "fn": "P_LoadLineDefs",
+          "insns": 73369,
+          "pct": 0.09107617356482811
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 30289,
+          "bytes": 9151135,
+          "aligned_calls": 29960,
+          "aligned_bytes": 9135057,
+          "insns": 7031493
+        },
+        "memmove": {
+          "calls": 2,
+          "bytes": 6,
+          "aligned_calls": 1,
+          "aligned_bytes": 2,
+          "insns": 52
+        },
+        "memset": {
+          "calls": 986,
+          "bytes": 264952,
+          "aligned_calls": 768,
+          "aligned_bytes": 195192,
+          "insns": 123340
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 2,
+          "bytes": 0,
+          "aligned_calls": 2,
+          "aligned_bytes": 0,
+          "insns": 45
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strncpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        }
+      }
+    },
+    {
+      "label": "frames 200 -> 299",
+      "icount": 147292608,
+      "total_attributed": 147292608,
+      "top": [
+        {
+          "fn": "R_DrawColumn",
+          "insns": 45451132,
+          "pct": 30.857714190246398
+        },
+        {
+          "fn": "R_DrawSpan",
+          "insns": 32915232,
+          "pct": 22.34683223206965
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 7973879,
+          "pct": 5.413631483801278
+        },
+        {
+          "fn": "R_DrawFuzzColumn",
+          "insns": 6467051,
+          "pct": 4.390614768665105
+        },
+        {
+          "fn": "memcpy",
+          "insns": 5616602,
+          "pct": 3.8132273413204825
+        },
+        {
+          "fn": "R_RenderSegLoop",
+          "insns": 4872075,
+          "pct": 3.3077525519814275
+        },
+        {
+          "fn": "P_CrossBSPNode",
+          "insns": 4088993,
+          "pct": 2.776101975192129
+        },
+        {
+          "fn": "P_DivlineSide",
+          "insns": 3727425,
+          "pct": 2.530625976831098
+        },
+        {
+          "fn": "P_MobjThinker",
+          "insns": 2851436,
+          "pct": 1.9358989149000607
+        },
+        {
+          "fn": "R_MakeSpans",
+          "insns": 2751784,
+          "pct": 1.8682431096610088
+        },
+        {
+          "fn": "P_CrossSubsector",
+          "insns": 2668946,
+          "pct": 1.8120026770114628
+        },
+        {
+          "fn": "R_DrawMaskedColumn",
+          "insns": 2444686,
+          "pct": 1.6597479216336506
+        },
+        {
+          "fn": "V_DrawPatch",
+          "insns": 2214477,
+          "pct": 1.503454267032871
+        },
+        {
+          "fn": "R_MapPlane",
+          "insns": 1849022,
+          "pct": 1.2553393039248786
+        },
+        {
+          "fn": "R_GetColumn",
+          "insns": 1239848,
+          "pct": 0.841758467607553
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 1160834,
+          "pct": 0.7881142277010942
+        },
+        {
+          "fn": "R_PointInSubsector",
+          "insns": 1103716,
+          "pct": 0.749335635363317
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 1102176,
+          "pct": 0.7482900974908394
+        },
+        {
+          "fn": "R_DrawVisSprite",
+          "insns": 963362,
+          "pct": 0.6540463999388211
+        },
+        {
+          "fn": "R_DrawPlanes",
+          "insns": 932548,
+          "pct": 0.6331261375995189
+        },
+        {
+          "fn": "P_BlockLinesIterator",
+          "insns": 902703,
+          "pct": 0.612863749415042
+        },
+        {
+          "fn": "P_RunThinkers",
+          "insns": 787102,
+          "pct": 0.5343798379888827
+        },
+        {
+          "fn": "P_CheckPosition",
+          "insns": 771003,
+          "pct": 0.523449893697313
+        },
+        {
+          "fn": "R_PointOnSide",
+          "insns": 722280,
+          "pct": 0.49037084060593183
+        },
+        {
+          "fn": "P_BlockThingsIterator",
+          "insns": 706717,
+          "pct": 0.4798047978076401
+        },
+        {
+          "fn": "Z_ChangeTag2",
+          "insns": 686808,
+          "pct": 0.46628816566273307
+        },
+        {
+          "fn": "PIT_CheckThing",
+          "insns": 670180,
+          "pct": 0.45499907232276043
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 642798,
+          "pct": 0.4364088658135512
+        },
+        {
+          "fn": "P_LookForPlayers",
+          "insns": 607510,
+          "pct": 0.4124511122784926
+        },
+        {
+          "fn": "P_CheckSight",
+          "insns": 513720,
+          "pct": 0.34877514016181993
+        },
+        {
+          "fn": "I_FinishUpdate",
+          "insns": 499158,
+          "pct": 0.3388886969806387
+        },
+        {
+          "fn": "R_DrawSprite",
+          "insns": 456205,
+          "pct": 0.3097270163075665
+        },
+        {
+          "fn": "P_SetMobjState",
+          "insns": 386451,
+          "pct": 0.26236958204990163
+        },
+        {
+          "fn": "R_StoreWallRange",
+          "insns": 385169,
+          "pct": 0.26149920571709884
+        },
+        {
+          "fn": "PIT_CheckLine",
+          "insns": 367757,
+          "pct": 0.24967783855113762
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 358050,
+          "pct": 0.24308755535104654
+        },
+        {
+          "fn": "R_PointToAngle",
+          "insns": 308504,
+          "pct": 0.20944975052651657
+        },
+        {
+          "fn": "abs",
+          "insns": 242632,
+          "pct": 0.16472788641233102
+        },
+        {
+          "fn": "R_CheckBBox",
+          "insns": 224508,
+          "pct": 0.152423127710523
+        },
+        {
+          "fn": "R_ProjectSprite",
+          "insns": 189972,
+          "pct": 0.12897592253916776
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 32085,
+          "bytes": 6700722,
+          "aligned_calls": 31242,
+          "aligned_bytes": 6669248,
+          "insns": 5616602
+        },
+        "memmove": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "memset": {
+          "calls": 1665,
+          "bytes": 276152,
+          "aligned_calls": 1117,
+          "aligned_bytes": 100792,
+          "insns": 143382
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strncpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        }
+      }
+    },
+    {
+      "label": "frames 250 -> 299",
+      "icount": 72171486,
+      "total_attributed": 72171486,
+      "top": [
+        {
+          "fn": "R_DrawColumn",
+          "insns": 24078148,
+          "pct": 33.36241129911057
+        },
+        {
+          "fn": "R_DrawSpan",
+          "insns": 14233247,
+          "pct": 19.72142710211066
+        },
+        {
+          "fn": "DG_DrawFrame",
+          "insns": 3960848,
+          "pct": 5.488106480168637
+        },
+        {
+          "fn": "R_RenderSegLoop",
+          "insns": 3113177,
+          "pct": 4.313583067972301
+        },
+        {
+          "fn": "memcpy",
+          "insns": 2877352,
+          "pct": 3.986826597972501
+        },
+        {
+          "fn": "P_CrossBSPNode",
+          "insns": 1837332,
+          "pct": 2.5457865728301616
+        },
+        {
+          "fn": "P_DivlineSide",
+          "insns": 1676034,
+          "pct": 2.3222938765595043
+        },
+        {
+          "fn": "R_MakeSpans",
+          "insns": 1619304,
+          "pct": 2.243689426042856
+        },
+        {
+          "fn": "P_MobjThinker",
+          "insns": 1399065,
+          "pct": 1.938528742500882
+        },
+        {
+          "fn": "P_CrossSubsector",
+          "insns": 1205057,
+          "pct": 1.669713437797304
+        },
+        {
+          "fn": "V_DrawPatch",
+          "insns": 1175974,
+          "pct": 1.6294163598072513
+        },
+        {
+          "fn": "R_DrawMaskedColumn",
+          "insns": 1045670,
+          "pct": 1.4488686016524588
+        },
+        {
+          "fn": "R_MapPlane",
+          "insns": 907553,
+          "pct": 1.2574952384934959
+        },
+        {
+          "fn": "R_PointInSubsector",
+          "insns": 760898,
+          "pct": 1.0542917184772944
+        },
+        {
+          "fn": "R_GetColumn",
+          "insns": 743706,
+          "pct": 1.0304706764663263
+        },
+        {
+          "fn": "W_CacheLumpNum",
+          "insns": 688395,
+          "pct": 0.9538323764041661
+        },
+        {
+          "fn": "P_BlockLinesIterator",
+          "insns": 632614,
+          "pct": 0.8765428496234648
+        },
+        {
+          "fn": "FixedMul",
+          "insns": 585042,
+          "pct": 0.8106276209970237
+        },
+        {
+          "fn": "P_CheckPosition",
+          "insns": 582299,
+          "pct": 0.806826951020518
+        },
+        {
+          "fn": "P_BlockThingsIterator",
+          "insns": 569070,
+          "pct": 0.7884969972767362
+        },
+        {
+          "fn": "R_DrawPlanes",
+          "insns": 563958,
+          "pct": 0.7814138675210318
+        },
+        {
+          "fn": "PIT_CheckThing",
+          "insns": 555185,
+          "pct": 0.7692580973045228
+        },
+        {
+          "fn": "R_PointOnSide",
+          "insns": 512428,
+          "pct": 0.7100144785712186
+        },
+        {
+          "fn": "R_DrawFuzzColumn",
+          "insns": 454436,
+          "pct": 0.6296614150358495
+        },
+        {
+          "fn": "R_DrawVisSprite",
+          "insns": 435322,
+          "pct": 0.603177271422678
+        },
+        {
+          "fn": "Z_ChangeTag2",
+          "insns": 407281,
+          "pct": 0.564323976923518
+        },
+        {
+          "fn": "P_RunThinkers",
+          "insns": 386608,
+          "pct": 0.5356797004290587
+        },
+        {
+          "fn": "__divdi3",
+          "insns": 351256,
+          "pct": 0.4866963664846807
+        },
+        {
+          "fn": "P_LookForPlayers",
+          "insns": 298620,
+          "pct": 0.41376451636315204
+        },
+        {
+          "fn": "PIT_CheckLine",
+          "insns": 276709,
+          "pct": 0.38340488098028075
+        },
+        {
+          "fn": "I_FinishUpdate",
+          "insns": 247058,
+          "pct": 0.3423207885729275
+        },
+        {
+          "fn": "R_DrawSprite",
+          "insns": 243358,
+          "pct": 0.3371941101503716
+        },
+        {
+          "fn": "P_CheckSight",
+          "insns": 242537,
+          "pct": 0.3360565417760693
+        },
+        {
+          "fn": "R_StoreWallRange",
+          "insns": 239988,
+          "pct": 0.3325246760195571
+        },
+        {
+          "fn": "FixedDiv",
+          "insns": 196830,
+          "pct": 0.27272543619234885
+        },
+        {
+          "fn": "R_PointToAngle",
+          "insns": 190052,
+          "pct": 0.2633339155577315
+        },
+        {
+          "fn": "P_SetMobjState",
+          "insns": 186881,
+          "pct": 0.2589402135907247
+        },
+        {
+          "fn": "abs",
+          "insns": 168684,
+          "pct": 0.23372665487308936
+        },
+        {
+          "fn": "R_CheckBBox",
+          "insns": 127957,
+          "pct": 0.1772957813283767
+        },
+        {
+          "fn": "R_ProjectSprite",
+          "insns": 113246,
+          "pct": 0.15691238503804675
+        }
+      ],
+      "memfns": {
+        "memcpy": {
+          "calls": 16472,
+          "bytes": 3351334,
+          "aligned_calls": 15657,
+          "aligned_bytes": 3320564,
+          "insns": 2877352
+        },
+        "memmove": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "memset": {
+          "calls": 850,
+          "bytes": 146236,
+          "aligned_calls": 546,
+          "aligned_bytes": 48956,
+          "insns": 75793
+        },
+        "memcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strlen": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strcmp": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        },
+        "strncpy": {
+          "calls": 0,
+          "bytes": 0,
+          "aligned_calls": 0,
+          "aligned_bytes": 0,
+          "insns": 0
+        }
+      }
+    }
+  ],
+  "len_hist": {
+    "memcpy": {
+      "8": 8299,
+      "0": 3,
+      "1024": 3304,
+      "64": 728,
+      "512": 660,
+      "16": 1920,
+      "256": 60616,
+      "128": 244,
+      "32": 8897,
+      "4": 34,
+      "32768": 5,
+      "2": 68
+    },
+    "memmove": {
+      "16": 30,
+      "1": 237,
+      "32": 12,
+      "8": 35,
+      "2": 75,
+      "4": 145,
+      "64": 4
+    },
+    "memset": {
+      "8": 1049,
+      "64": 59,
+      "256": 1143,
+      "32768": 3,
+      "4096": 1,
+      "16": 1904,
+      "128": 320,
+      "32": 16,
+      "512": 294,
+      "2048": 2,
+      "8192": 1,
+      "16384": 1,
+      "1024": 1
+    },
+    "memcmp": {},
+    "strlen": {
+      "0": 3152
+    },
+    "strcpy": {},
+    "strcmp": {
+      "0": 14290
+    },
+    "strncpy": {
+      "8": 2883,
+      "16": 2
+    }
+  }
+}

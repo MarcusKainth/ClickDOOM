@@ -59,6 +59,13 @@ smoke: (diff "1000000")
 bench-phase0: up
     ./executor/bench/phase0/run.sh
 
+# E7: exact per-symbol instruction attribution for the real ROM (issue #126)
+# -- also a general "where do the instructions go" tool, not single-use.
+# No `up` dependency: refemu-only, no ClickHouse involved.
+bench-e7-memfns:
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    cd refemu && uv run python ../rom/bench/e7_memfns/profile_memfns.py --frames 40
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

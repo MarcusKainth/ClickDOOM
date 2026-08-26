@@ -1,0 +1,237 @@
+# rom      : /Users/marcus/Develop/ClickDOOM/rom/build/doom-rv32im.bin
+# rom sha256: 22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed
+# PINNED_HASH: 22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed  (MATCH)
+# symbols  : 1191 STT_FUNC
+# instrumented entries: ['memcmp', 'memcpy', 'memmove', 'memset', 'strcmp', 'strcpy', 'strlen', 'strncpy']
+# outcome  : frame budget reached
+# icount   : 307,388,156   frame_commits: 300
+# frame commit icounts: [13243964, 13715122, 14185231, 14656377, 15127523, 15597637, 16068783, 16539929, 17010038, 17481184, 17952335, 18422444, 18893602, 19364252, 19834875, 20306038, 20776688, 21247311, 21718469, 22188584, 22659754, 23130912, 23601027, 24072185, 24543348, 25013463, 25484621, 25955779, 26425894, 26897057, 27367707, 27838330, 28309488, 28780138, 29250766, 29721924, 30192039, 30663197, 31134355, 31604482, 32075640, 32546798, 33016913, 33488071, 33959234, 34429349, 34900507, 35371157, 35841780, 36312943, 36783593, 37254216, 37725374, 38196029, 38666652, 39137810, 39607925, 40079083, 40550253, 41020368, 41491526, 41962684, 42432799, 42903962, 43374612, 43845235, 44316393, 44787043, 45257671, 45728829, 46199479, 46670102, 47141260, 47611380, 48082538, 48553696, 49023811, 49494969, 49966141, 50436256, 50907414, 51378064, 51848687, 52319850, 52790500, 53261123, 53732281, 54202936, 54673559, 55144717, 55615367, 56085990, 56557153, 57027268, 57498426, 57969584, 58439699, 58910869, 59382027, 59852142, 60323300, 60793950, 61264578, 61735738, 65073788, 65368437, 65596477, 65838425, 66089914, 66348584, 66607837, 66895911, 67173256, 67461209, 67739143, 68025268, 68313349, 68589234, 68872901, 69146476, 69430035, 69703470, 69986990, 70270589, 70544189, 70827788, 71101390, 71384989, 71658588, 71941974, 72226105, 72501685, 72788140, 73065109, 73352479, 73630454, 73919070, 74208073, 74487224, 74776490, 75055890, 75345458, 75625150, 75914959, 76205043, 77561741, 78945696, 80357242, 81768942, 83121054, 84478500, 85848148, 87205321, 88520678, 89778098, 91122258, 92323501, 93537561, 94810082, 96070377, 97453670, 98757987, 100216926, 101730077, 103214567, 104732941, 106326995, 107867953, 109495965, 111050916, 112633482, 114298458, 116006685, 117501123, 118977746, 120357494, 121794590, 123169623, 124580883, 126002539, 127521142, 129151731, 130727252, 132274559, 133840867, 135381126, 136923555, 138407651, 140027116, 141495000, 143064896, 144642344, 146332759, 148241494, 150120435, 151884636, 153539495, 155119773, 156843270, 158522322, 160095547, 161535727, 162910817, 164273096, 165580660, 166954772, 168477929, 169914271, 171378958, 172864154, 174431600, 176035379, 177672037, 179243411, 180694869, 182113727, 183506473, 184889339, 186251941, 187796576, 189361079, 190970544, 192526304, 194048360, 195477201, 196978295, 198409962, 199898542, 201440402, 203053806, 204678473, 206277088, 207836702, 209536624, 211123404, 212686315, 214247319, 215763955, 217203337, 218705750, 220076511, 221527209, 223035096, 224644440, 226192487, 227770109, 229244923, 230810682, 232242581, 233746086, 235216669, 236700217, 238076996, 239504464, 240768636, 242060450, 243385618, 244651261, 245944491, 247194301, 248442207, 249955682, 251257424, 252664291, 254164818, 255655251, 257223149, 258860678, 260478686, 262060899, 263600977, 265159369, 266705138, 268207590, 269662902, 271123451, 272561269, 273993853, 275360989, 276706824, 278143095, 279575017, 280994682, 282415389, 283844482, 285279697, 286728236, 288202288, 289807780, 291424792, 293047692, 294681902, 296322116, 297956237, 299563170, 301087281, 302545792, 303983355, 305714136, 307388155]
+
+=== window: whole run (includes crt0 BSS zeroing)  (307,388,156 instructions) ===
+   21.99%    67,583,139  R_DrawColumn
+   19.33%    59,431,680  R_DrawSpan
+   12.48%    38,365,438  V_DrawPatch
+    7.84%    24,102,043  DG_DrawFrame
+    6.10%    18,740,524  memcpy
+    2.48%     7,617,464  R_RenderSegLoop
+    2.18%     6,705,343  P_CrossBSPNode
+    2.11%     6,480,790  R_DrawFuzzColumn
+    2.10%     6,448,768  P_DivlineSide
+    1.53%     4,705,288  P_CrossSubsector
+    1.46%     4,479,869  P_MobjThinker
+    1.40%     4,317,606  R_MakeSpans
+    1.30%     3,998,001  R_DrawMaskedColumn
+    1.20%     3,677,460  DG_SleepMs
+    0.98%     3,000,439  R_MapPlane
+    0.89%     2,745,991  R_InitTextureMapping
+    0.79%     2,439,772  wipe_doMelt
+    0.74%     2,270,565  strncasecmp
+    0.63%     1,943,813  R_GetColumn
+    0.61%     1,879,806  W_CacheLumpNum
+    0.59%     1,809,084  FixedMul
+    0.52%     1,586,642  R_DrawVisSprite
+    0.49%     1,512,600  I_FinishUpdate
+    0.48%     1,464,441  R_DrawPlanes
+    0.47%     1,454,668  R_PointInSubsector
+    0.42%     1,301,626  __divdi3
+    0.40%     1,235,980  P_RunThinkers
+    0.36%     1,110,412  P_BlockLinesIterator
+    0.36%     1,095,062  Z_ChangeTag2
+    0.32%       970,489  P_LookForPlayers
+  -- mem/str functions --
+  memcpy   insns=  18,740,524 ( 6.10%) calls=    84,778 bytes=    24,225,494 insn/byte= 0.774 word-aligned-calls= 98.5%
+  memmove  insns=      17,257 ( 0.01%) calls=       538 bytes=         2,965 insn/byte= 5.820 word-aligned-calls= 55.4%
+  memset   insns=     433,081 ( 0.14%) calls=     4,794 bytes=       865,424 insn/byte= 0.500 word-aligned-calls= 76.4%
+  strlen   insns=      93,950 ( 0.03%) calls=     3,152 bytes=             0 insn/byte=   nan word-aligned-calls= 99.9%
+  strcmp   insns=     406,378 ( 0.13%) calls=    14,290 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+  strncpy  insns=     146,749 ( 0.05%) calls=     2,885 bytes=        23,119 insn/byte= 6.348 word-aligned-calls= 99.9%
+
+=== window: boot: 0 -> first FRAME_COMMIT  (13,243,965 instructions) ===
+   20.73%     2,745,991  R_InitTextureMapping
+   18.77%     2,485,233  memcpy
+   15.60%     2,065,765  strncasecmp
+    5.66%       750,050  R_InitSpriteDefs
+    4.96%       657,384  Transform
+    4.44%       588,406  R_GenerateLookup
+    3.07%       406,378  strcmp
+    2.63%       347,860  SHA1_Update
+    2.53%       334,809  V_DrawPatch
+    2.17%       286,887  DG_SleepMs
+    1.39%       184,048  _start
+    1.21%       160,270  GetDefaultForName
+    1.11%       146,749  strncpy
+    1.03%       136,956  W_CheckNumForName
+    0.98%       130,116  __divdi3
+    0.96%       126,950  W_GenerateHashTable
+    0.81%       107,786  Z_Malloc
+    0.71%        93,905  strlen
+    0.69%        91,393  _fread_r
+    0.66%        86,786  memset
+    0.64%        85,409  _read
+    0.63%        83,994  DG_DrawFrame
+    0.61%        81,171  _fseeko_r
+    0.57%        76,110  FixedDiv
+    0.53%        70,226  __srefill_r
+    0.52%        68,256  SHA1_UpdateInt32
+    0.50%        65,951  _svfprintf_r
+    0.34%        45,548  W_Checksum
+    0.33%        44,335  W_CacheLumpNum
+    0.33%        43,070  W_AddFile
+  -- mem/str functions --
+  memcpy   insns=   2,485,233 (18.77%) calls=     4,815 bytes=     3,780,539 insn/byte= 0.657 word-aligned-calls= 98.5%
+  memmove  insns=      17,205 ( 0.13%) calls=       536 bytes=         2,959 insn/byte= 5.814 word-aligned-calls= 55.4%
+  memset   insns=      86,786 ( 0.66%) calls=     1,292 bytes=       172,716 insn/byte= 0.502 word-aligned-calls=100.0%
+  strlen   insns=      93,905 ( 0.71%) calls=     3,150 bytes=             0 insn/byte=   nan word-aligned-calls= 99.9%
+  strcmp   insns=     406,378 ( 3.07%) calls=    14,290 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+  strncpy  insns=     146,749 ( 1.11%) calls=     2,885 bytes=        23,119 insn/byte= 6.348 word-aligned-calls= 99.9%
+
+=== window: steady state: frame 0 -> frame 299 (excludes crt0/boot)  (294,144,191 instructions) ===
+   22.98%    67,583,139  R_DrawColumn
+   20.20%    59,431,680  R_DrawSpan
+   12.93%    38,030,629  V_DrawPatch
+    8.17%    24,018,049  DG_DrawFrame
+    5.53%    16,255,291  memcpy
+    2.59%     7,617,464  R_RenderSegLoop
+    2.28%     6,705,343  P_CrossBSPNode
+    2.20%     6,480,790  R_DrawFuzzColumn
+    2.19%     6,448,768  P_DivlineSide
+    1.60%     4,705,288  P_CrossSubsector
+    1.52%     4,479,869  P_MobjThinker
+    1.47%     4,317,606  R_MakeSpans
+    1.36%     3,998,001  R_DrawMaskedColumn
+    1.15%     3,390,573  DG_SleepMs
+    1.02%     3,000,439  R_MapPlane
+    0.83%     2,439,772  wipe_doMelt
+    0.66%     1,943,813  R_GetColumn
+    0.62%     1,835,471  W_CacheLumpNum
+    0.60%     1,767,180  FixedMul
+    0.54%     1,586,642  R_DrawVisSprite
+    0.51%     1,507,558  I_FinishUpdate
+    0.50%     1,464,441  R_DrawPlanes
+    0.49%     1,454,668  R_PointInSubsector
+    0.42%     1,235,980  P_RunThinkers
+    0.40%     1,171,510  __divdi3
+    0.38%     1,110,412  P_BlockLinesIterator
+    0.37%     1,087,633  Z_ChangeTag2
+    0.33%       970,489  P_LookForPlayers
+    0.33%       966,477  R_PointOnSide
+    0.32%       940,911  P_CheckPosition
+  -- mem/str functions --
+  memcpy   insns=  16,255,291 ( 5.53%) calls=    79,963 bytes=    20,444,955 insn/byte= 0.795 word-aligned-calls= 98.5%
+  memmove  insns=          52 ( 0.00%) calls=         2 bytes=             6 insn/byte= 8.667 word-aligned-calls= 50.0%
+  memset   insns=     346,295 ( 0.12%) calls=     3,502 bytes=       692,708 insn/byte= 0.500 word-aligned-calls= 67.7%
+  strlen   insns=          45 ( 0.00%) calls=         2 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+
+=== window: frames 40 -> 170  (80,557,842 instructions) ===
+   26.96%    21,720,523  V_DrawPatch
+   14.49%    11,670,008  R_DrawSpan
+   12.94%    10,422,745  DG_DrawFrame
+   11.79%     9,500,507  R_DrawColumn
+    8.73%     7,031,493  memcpy
+    4.21%     3,390,573  DG_SleepMs
+    3.03%     2,439,772  wipe_doMelt
+    1.92%     1,543,810  R_RenderSegLoop
+    1.54%     1,242,630  P_DivlineSide
+    1.42%     1,141,777  P_CrossBSPNode
+    1.17%       945,369  P_CrossSubsector
+    1.03%       829,577  R_MakeSpans
+    0.92%       740,071  P_MobjThinker
+    0.81%       655,460  I_FinishUpdate
+    0.68%       549,981  R_MapPlane
+    0.49%       393,035  R_DrawMaskedColumn
+    0.47%       380,450  R_GetColumn
+    0.45%       364,025  W_CacheLumpNum
+    0.40%       322,476  wipe_shittyColMajorXform
+    0.38%       307,356  FixedMul
+    0.35%       283,963  R_DrawPlanes
+    0.30%       237,889  __divdi3
+    0.27%       215,665  Z_ChangeTag2
+    0.25%       203,861  P_RunThinkers
+    0.25%       198,720  strncasecmp
+    0.21%       171,483  P_LookForPlayers
+    0.21%       170,492  R_DrawVisSprite
+    0.19%       153,509  R_StoreWallRange
+    0.17%       133,568  R_PointInSubsector
+    0.17%       133,454  P_CheckSight
+  -- mem/str functions --
+  memcpy   insns=   7,031,493 ( 8.73%) calls=    30,289 bytes=     9,151,135 insn/byte= 0.768 word-aligned-calls= 98.9%
+  memmove  insns=          52 ( 0.00%) calls=         2 bytes=             6 insn/byte= 8.667 word-aligned-calls= 50.0%
+  memset   insns=     123,340 ( 0.15%) calls=       986 bytes=       264,952 insn/byte= 0.466 word-aligned-calls= 77.9%
+  strlen   insns=          45 ( 0.00%) calls=         2 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+
+=== window: frames 200 -> 299  (147,292,608 instructions) ===
+   30.86%    45,451,132  R_DrawColumn
+   22.35%    32,915,232  R_DrawSpan
+    5.41%     7,973,879  DG_DrawFrame
+    4.39%     6,467,051  R_DrawFuzzColumn
+    3.81%     5,616,602  memcpy
+    3.31%     4,872,075  R_RenderSegLoop
+    2.78%     4,088,993  P_CrossBSPNode
+    2.53%     3,727,425  P_DivlineSide
+    1.94%     2,851,436  P_MobjThinker
+    1.87%     2,751,784  R_MakeSpans
+    1.81%     2,668,946  P_CrossSubsector
+    1.66%     2,444,686  R_DrawMaskedColumn
+    1.50%     2,214,477  V_DrawPatch
+    1.26%     1,849,022  R_MapPlane
+    0.84%     1,239,848  R_GetColumn
+    0.79%     1,160,834  W_CacheLumpNum
+    0.75%     1,103,716  R_PointInSubsector
+    0.75%     1,102,176  FixedMul
+    0.65%       963,362  R_DrawVisSprite
+    0.63%       932,548  R_DrawPlanes
+    0.61%       902,703  P_BlockLinesIterator
+    0.53%       787,102  P_RunThinkers
+    0.52%       771,003  P_CheckPosition
+    0.49%       722,280  R_PointOnSide
+    0.48%       706,717  P_BlockThingsIterator
+    0.47%       686,808  Z_ChangeTag2
+    0.45%       670,180  PIT_CheckThing
+    0.44%       642,798  __divdi3
+    0.41%       607,510  P_LookForPlayers
+    0.35%       513,720  P_CheckSight
+  -- mem/str functions --
+  memcpy   insns=   5,616,602 ( 3.81%) calls=    32,085 bytes=     6,700,722 insn/byte= 0.838 word-aligned-calls= 97.4%
+  memset   insns=     143,382 ( 0.10%) calls=     1,665 bytes=       276,152 insn/byte= 0.519 word-aligned-calls= 67.1%
+
+=== window: frames 250 -> 299  (72,171,486 instructions) ===
+   33.36%    24,078,148  R_DrawColumn
+   19.72%    14,233,247  R_DrawSpan
+    5.49%     3,960,848  DG_DrawFrame
+    4.31%     3,113,177  R_RenderSegLoop
+    3.99%     2,877,352  memcpy
+    2.55%     1,837,332  P_CrossBSPNode
+    2.32%     1,676,034  P_DivlineSide
+    2.24%     1,619,304  R_MakeSpans
+    1.94%     1,399,065  P_MobjThinker
+    1.67%     1,205,057  P_CrossSubsector
+    1.63%     1,175,974  V_DrawPatch
+    1.45%     1,045,670  R_DrawMaskedColumn
+    1.26%       907,553  R_MapPlane
+    1.05%       760,898  R_PointInSubsector
+    1.03%       743,706  R_GetColumn
+    0.95%       688,395  W_CacheLumpNum
+    0.88%       632,614  P_BlockLinesIterator
+    0.81%       585,042  FixedMul
+    0.81%       582,299  P_CheckPosition
+    0.79%       569,070  P_BlockThingsIterator
+    0.78%       563,958  R_DrawPlanes
+    0.77%       555,185  PIT_CheckThing
+    0.71%       512,428  R_PointOnSide
+    0.63%       454,436  R_DrawFuzzColumn
+    0.60%       435,322  R_DrawVisSprite
+    0.56%       407,281  Z_ChangeTag2
+    0.54%       386,608  P_RunThinkers
+    0.49%       351,256  __divdi3
+    0.41%       298,620  P_LookForPlayers
+    0.38%       276,709  PIT_CheckLine
+  -- mem/str functions --
+  memcpy   insns=   2,877,352 ( 3.99%) calls=    16,472 bytes=     3,351,334 insn/byte= 0.859 word-aligned-calls= 95.1%
+  memset   insns=      75,793 ( 0.11%) calls=       850 bytes=       146,236 insn/byte= 0.518 word-aligned-calls= 64.2%
+
+=== memcpy/memset call-size histogram (whole run, power-of-two buckets) ===
+  memcpy: 0:3  2:68  4:34  8:8,299  16:1,920  32:8,897  64:728  128:244  256:60,616  512:660  1024:3,304  32768:5
+  memset: 8:1,049  16:1,904  32:16  64:59  128:320  256:1,143  512:294  1024:1  2048:2  4096:1  8192:1  16384:1  32768:3
+  memmove: 1:237  2:75  4:145  8:35  16:30  32:12  64:4
+
+# json written to /private/tmp/claude-501/-Users-marcus-Develop-ClickDOOM/4a266fd8-f4ac-4c5d-95f6-a02dc2e6d114/scratchpad/e7_demo.json

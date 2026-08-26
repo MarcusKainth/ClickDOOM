@@ -16,10 +16,40 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   (C) extension — compile with `-march=rv32im -mabi=ilp32`.
 - Privilege: machine-mode only, flat physical addressing, no MMU, no
   interrupts. All device interaction is polled MMIO (§3).
-- `ecall`, `ebreak`, CSR instructions: **fatal halt** with reason code
-  (should never appear in the ROM; if they do, the ROM is misbuilt).
-- Misaligned word/halfword access: **fatal halt** (compile ROM with
-  `-mstrict-align`). Keeps the SQL load/store path branch-free.
+- `ecall`: fatal halt, reason = `ECALL`. `ebreak`: fatal halt, reason =
+  `EBREAK`. Any CSR instruction (`csrrw`/`csrrs`/`csrrc`/`csrrwi`/`csrrsi`/
+  `csrrci`): fatal halt, reason = `CSR`. None should ever appear in the ROM;
+  if they do, the ROM is misbuilt.
+- `fence`/`fence.i`: **not** a fatal halt — a plain retiring no-op (decodes
+  onto the same collapsed arm as a real no-op, e.g. `addi x0,x0,0`; `pc +=
+  4`, no other state change). A single hart with no cache has nothing to
+  reorder against, and the toolchain emits these from compiled C — halting on
+  them would break the ROM. Agreed cross-engine in issue #37; no automated
+  test currently exercises this (riscv-tests' `fence_i.S` is excluded, since
+  it also exercises self-modifying code, which ADR-0002 forbids outright —
+  see #37), so treat "does my decode give FENCE its own arm, or does it fall
+  through to `ILLEGAL_INSN`?" as a thing to verify by reading the decode
+  path, not by memory.
+- Misaligned word/halfword **data** access (load/store): fatal halt, reason =
+  `MISALIGNED`, with pc and target address in the halt record (compile ROM
+  with `-mstrict-align`, keeping the SQL load/store path branch-free).
+- Misaligned **jump/branch target** (`jal`/`jalr`/a taken branch computes a
+  target not aligned to 4 bytes): fatal halt, reason = `MISALIGNED`, checked
+  **at the transferring instruction, eagerly** — matching real RISC-V's
+  instruction-address-misaligned semantics, where the exception is reported
+  on the branch/jump, not on the target. The halt record's pc is the
+  transferring instruction's own pc (not the unreached target), and neither
+  `pc` nor `rd` is updated — the jump does not architecturally complete.
+  Ruled in issue #37 over the alternative (deferring the check to the next
+  fetch, with the target as the halt's pc): the eager check keeps the halt
+  inside the instruction that caused it, and removes an ordering dependency
+  between engines over exactly when "the next fetch" happens relative to
+  batch boundaries. In practice unreachable from a correctly-built ROM (no
+  compressed-instruction extension means every real target is 4-byte
+  aligned, and `jalr` clears bit 0) — which is exactly why it needs pinning
+  rather than being left to each engine's judgment: an unreachable path never
+  gets exercised by a passing test, so the written agreement is the only
+  thing keeping two independent engines aligned on it.
 - Unimplemented/illegal opcode: fatal halt, reason = `ILLEGAL_INSN`, with pc
   and raw instruction word in the halt record.
 - Store into the text region (§2): fatal halt, reason = `SELF_MODIFY`, with pc
@@ -27,6 +57,11 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   table (ADR-0002) because decoding inside the fold costs 7.4× the throughput;
   a write to text would silently invalidate that table. DOOM does not
   self-modify — if it appears to, that is a bug worth halting on.
+- Halt-reason vocabulary is closed and exact-match: `ILLEGAL_INSN`,
+  `BAD_ADDR`, `SELF_MODIFY`, `MISALIGNED`, `ECALL`, `EBREAK`, `CSR` — all
+  uppercase ASCII, no punctuation, no per-engine normalization. It is
+  observable state (`cpu_state.halt_reason`, §5) that both `refemu` and
+  `sqlcpu` must produce identically; agreed cross-engine in issue #37.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).
@@ -109,15 +144,31 @@ shape. All tables carry `spec_version String`.
   UInt32` (FRAME_COMMIT, if any, this batch), `wl_addr Array(UInt32)`,
   `wl_val Array(UInt32)`, `wl_icount Array(UInt64)` (per-store version — see
   the versioning note below), `console_bytes Array(UInt8)`. The bulky
-  columns (`wl_*`, `console_bytes`) are bounded by a TTL rather than
-  retained forever: in normal operation only the latest row's bulky columns
-  are ever read (everything else has already been flushed into `ram` /
-  `console_out`), so a generous TTL (executor/config, default 1 day) is
-  sound. This is a documented tradeoff, not a solved one: a driver outage
-  longer than the TTL window before restart can lose the last committed
-  batch's write-log before recovery replays it. Acceptable for this
-  project's supervised-run operating model; would need revisiting for an
-  unattended-service deployment.
+  columns (`wl_*`, `console_bytes`) are bounded by retention on **batch_id
+  lag, not wall-clock time**: only the most recent N batches' bulky columns
+  are kept (N = 16, `executor/config`), older ones dropped by a fixed
+  statement (partition-drop, or a delete keyed on `batch_id < (SELECT
+  max(batch_id) - N FROM batch_commit)`) the driver issues unconditionally
+  every batch — the threshold is computed inside the query, not decided by
+  driver logic, so this stays within PURITY.md's housekeeping allowance. In
+  normal operation only the latest row's bulky columns are ever read
+  (everything older has already been flushed into `ram`/`console_out`), so
+  N=16 is generous headroom, not a tight bound.
+  **Rejected alternative: a wall-clock TTL** (an earlier draft of this PR
+  used `commit_ts DateTime DEFAULT now()` with a 1-day column TTL).
+  Rejected because it reintroduces exactly the failure mode this table
+  exists to avoid: a driver outage longer than the TTL window loses the
+  last committed batch's write-log before recovery can replay it, silently
+  and permanently diverging `ram` from `cpu_state` with nothing to
+  reconcile from. For this project that is not an edge case — a `demo3`
+  timelapse run is multi-week at realistic throughput, machines sleep, and
+  work routinely pauses on a human gate, so "the outage exceeds one day" is
+  an expected occurrence, not an exotic one. Batch-id-lag retention is
+  strictly better on every axis that mattered: no clock anywhere (the
+  `now()` and its purity annotation disappear entirely), no outage hazard
+  (recovery is unconditional, independent of how long the driver was down),
+  deterministic per §8, and a tighter bound in practice than a day's worth
+  of batches.
 - `ram` — `ReplacingMergeTree(version)` keyed by `word_addr UInt32` (byte
   addr >> 2), `value UInt32`, `version UInt64` (= icount of the store).
   Loaded once per batch as a constant array; stores inside a batch live in
@@ -135,11 +186,26 @@ shape. All tables carry `spec_version String`.
 - `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
   `ram` at ROM load and covering `[text_start, text_end)` only:
   `(word_addr UInt32, op_id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32,
-  target UInt32, width_mask UInt32, sign_bit UInt32)`. `op_id` is the collapsed
-  opcode space; `imm` is already sign-extended; `target` holds the absolute
-  branch/jump target word index, or the link value for `jal`/`jalr`. Decoding
-  must happen **inside** ClickHouse — decoding externally and inserting the
-  result is a PURITY.md violation, not an optimization.
+  target UInt32, width_mask UInt32, sign_bit UInt32, raw UInt32)`. `op_id` is
+  the collapsed opcode space, including dedicated arms for the fatal-halt
+  decode cases (§1): `ecall`, `ebreak`, CSR, and unimplemented/illegal each
+  get their own `op_id`, disjoint from the executable arms. `imm` is already
+  sign-extended; `target` holds **only** the absolute branch/jump target word
+  index for branches and `jal` (not `jalr`, which is register-relative and
+  computed live) — it is never the link value. The link value `jal`/`jalr`
+  write to `rd` (`pc + 4`) is **not** stored in `decoded`; it is computed live
+  from the executing pc, since it is simple pc-relative arithmetic with
+  nothing to gain from precomputing. An earlier draft of this table used
+  `target` for both the jump target and the link value on the same row —
+  caught in review (issue discussion on PR #42/#48) before it shipped as a
+  real bug: harmless in the Phase 0 benchmark this design is descended from,
+  since that benchmark's decode data is synthetic and never executed
+  (`executor/bench/phase0/RESULTS.md` §6), but a genuine correctness bug in a
+  table meant to produce correct results. `raw` carries the original
+  instruction word, needed only for the `ILLEGAL_INSN` halt record (§1) since
+  every other column replaces the raw word rather than preserving it.
+  Decoding must happen **inside** ClickHouse — decoding externally and
+  inserting the result is a PURITY.md violation, not an optimization.
 
 Materialize `ram` into the batch's constant array with `FINAL`, **not**
 `argMax(value, version) ... GROUP BY word_addr`: measured 0.022–0.030 s against

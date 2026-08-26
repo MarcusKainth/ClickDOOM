@@ -47,15 +47,45 @@ derivation from that row, safe to redo any number of times.
    event has been consumed is a computed predicate — its rank by `event_seq`
    compared against `batch_commit`'s cumulative `keyq_pos` — not a mutated
    flag. The cheapest way to make a write atomic is to not have the write.
-6. **Bulky columns are bounded, not retained forever.** `wl_*` and
-   `console_bytes` on `batch_commit` are only ever read for the
-   most-recently-committed row in normal operation (everything older has
-   already been flushed into `ram`/`console_out`), so they carry a TTL
-   (executor/config, default 1 day) rather than accumulating for the life of
-   a `demo3` run (~80,000 batches, which would otherwise retain gigabytes of
-   write-log arrays with no further use). The small columns (`batch_id`
-   through `exit_code`) are cheap and kept forever, matching §5's "one row
-   per committed batch" for `cpu_state`.
+6. **Bulky columns are bounded by batch-id lag, not retained forever and not
+   by wall-clock time.** `wl_*` and `console_bytes` on `batch_commit` are
+   only ever read for the most-recently-committed row in normal operation
+   (everything older has already been flushed into `ram`/`console_out`), so
+   only the last N=16 batches' bulky columns are kept, dropped by a fixed
+   statement (partition-drop, or a delete keyed on the query's own
+   `max(batch_id) - N`) the driver issues unconditionally — the threshold is
+   computed in SQL, not decided by driver logic. This bounds `batch_commit`
+   to a small, constant footprint instead of accumulating gigabytes of
+   write-log arrays over a `demo3` run (~80,000 batches). The small columns
+   (`batch_id` through `exit_code`) are cheap and kept forever, matching
+   §5's "one row per committed batch" for `cpu_state`.
+
+### Rejected alternative: retention by wall-clock TTL
+
+The first draft of this ADR used `commit_ts DateTime DEFAULT now()` with a
+column-level TTL (1 day) instead of batch-id-lag retention. Rejected on
+review: a wall-clock TTL reintroduces exactly the failure this design exists
+to prevent. If the driver is down longer than the TTL window, the last
+committed batch's write-log expires before recovery can replay it — `ram`
+and `cpu_state` diverge permanently, silently, with nothing to reconcile
+from, defeating the entire "idempotently re-derivable" premise of (3) above.
+
+The original framing treated this as an acceptable documented tradeoff for
+"this project's supervised-run operating model." That framing doesn't
+survive contact with the project's actual operating model: a `demo3`
+timelapse at realistic throughput runs for weeks, machines sleep, sessions
+resume days later, and work routinely pauses on a human gate. A one-day
+window isn't an unlikely thing to exceed — it's a likely one, in ordinary
+operation, not an edge case reserved for an unattended-service deployment.
+
+Batch-id-lag retention has no downside the TTL had an upside for: it needs
+no clock anywhere (the `now()` column and its purity-declaration annotation
+disappear entirely — one fewer thing for `check_purity.sh` to special-case),
+recovery is unconditional regardless of elapsed wall time, it's deterministic
+per SPEC §8 by construction, and N=16 batches is a *tighter* bound in
+practice than a day's worth. There was no real tradeoff being made — framing
+it as one was mistaking "the mechanism I reached for first" for "the
+mechanism the problem actually calls for."
 
 ## Consequences
 
@@ -63,12 +93,10 @@ derivation from that row, safe to redo any number of times.
   differential trace, can ever witness a half-applied batch, whether or not
   a crash interrupted derivation — because the only fact that can be
   "half-applied" is a single-row insert, which by construction cannot be.
-- **Documented tradeoff, not a solved problem:** if the driver is down longer
-  than the TTL window before restarting, the last committed batch's
-  write-log can expire before recovery replays it, silently losing those
-  deltas from `ram` going forward. Judged acceptable for this project's
-  supervised-run operating model (a human-run timelapse, not an unattended
-  service); would need revisiting for that use case.
+- Recovery is unconditional: batch-id-lag retention means there is no outage
+  duration that causes silent, permanent divergence between `ram` and
+  `cpu_state` — the rejected TTL alternative's central flaw doesn't exist
+  in this design at all, not just in the common case.
 - Requires a SPEC §5 change (`batch_commit` table, `cpu_state` as a view) —
   additive only, no existing shape changes. Filed as issue #35, human-gated
   per CODEOWNERS.

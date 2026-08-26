@@ -333,3 +333,6 @@ printf 'HWM\t%s\n' "$HWM"
 printf 'reference_trace\t%s\n' "${TRACE:-<none given>}"
 printf 'database\t%s\n' "$DATABASE"
 echo "# ---------------------------------------------------------------------" >&2
+# (real content touch, not an empty commit: CLAUDE.md's documented
+# empty-commit CI-retrigger workaround did not fire on this branch either
+# -- two consecutive silent no-triggers on the same branch, not just one.)

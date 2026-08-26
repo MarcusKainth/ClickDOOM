@@ -337,3 +337,44 @@ can't cause a `refemu`/`sqlcpu` divergence (both engines just store
 whatever bytes the ROM writes, gamma-applied or not), but the render
 query turning `PALETTE` bytes into displayable RGB must not apply gamma a
 second time.
+
+## manifest.json and PINNED_HASH (issue #10)
+
+Closes the ROM contract SPEC §4 defines: `manifest.json` and
+`rom/PINNED_HASH`, both emitted by the build, not hand-written.
+
+`toolchain/gen_manifest.sh` runs inside the pinned container immediately
+after the ELF/flat-binary build and reads every field from the actual
+build artifacts:
+
+- `entry`, `load_addr` — from `readelf -h`/`readelf -l`'s real entry point
+  and first `LOAD` segment address (both `0x8000_0000` = `2147483648` by
+  design, but read from the ELF rather than assumed).
+- `text_start`, `text_end` — from `nm`'s `__text_start`/`__text_end`
+  symbols, the same `toolchain/link.ld` symbols that delimit the
+  `SELF_MODIFY`-protected region (SPEC §1/§2, ADR-0002). This is the field
+  pair SPEC §4 specifically calls out as build-emitted rather than
+  hand-transcribed — a hand-copied bound that drifted from the linker
+  script would silently disable that protection, the worst failure mode
+  for a check whose entire purpose is catching silent corruption.
+- `size`, `sha256` — computed directly from the built `.bin`.
+- `spec_version` — the one field that isn't derived from the build; it's a
+  Makefile constant (`SPEC_VERSION`) kept in sync with `SPEC.md`'s own
+  version by hand, per `SPEC.md`'s own instruction ("must update
+  SPEC_VERSION here and the `spec_version` constants in code").
+
+Verified end to end: `manifest.json` is byte-identical across a plain
+rebuild and a full cache-evicted rebuild, same as `doom-rv32im.bin`
+always has been.
+
+`rom/PINNED_HASH` is the current build's sha256
+(`67fa83e1c07f32f1cd43b74e1183c98d3919c1a4e8867688cefd1a318b4a615d`).
+`make check-pinned-hash` mirrors the verification CI's own (already
+present, human-gated `ci.yml`) hash-check step runs once this file exists
+— tested both directions locally: passes against the real build, and
+fails loudly with the exact "P0 or update the pin" message when the
+committed hash doesn't match (simulated with a corrupted `PINNED_HASH`,
+restored before committing). From this point on, **any ROM-affecting
+change must update `rom/PINNED_HASH` in the same PR** — CLAUDE.md's third
+non-negotiable is that a mismatch elsewhere is information (a
+nondeterminism P0), never something to "fix" by editing the pin.

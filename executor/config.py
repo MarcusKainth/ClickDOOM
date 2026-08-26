@@ -30,6 +30,20 @@ MMIO_EXIT = 0x08
 MMIO_PUTCHAR = 0x0C
 MMIO_FRAME_COMMIT = 0x10
 
+# SPEC §2: FRAMEBUFFER and PALETTE. #130 -- write-only from fold.py's side
+# (a load from either region halts BAD_ADDR by construction: fold.py's
+# routing exemption from bad_addr_cond is gated on the access being a
+# store, so the load path is simply never touched, per the team lead's
+# framing on #130). Both sizes are exact multiples of 4 -- 64,000/4 =
+# 16,000, 768/4 = 192 -- which is load-bearing for #130's word-only-store
+# design: a word-aligned address inside [BASE, BASE+SIZE) can never spill
+# past the region's end, so no separate boundary-overrun check is needed
+# on top of the word-alignment one.
+FRAMEBUFFER_BASE = 0x1100_0000
+FRAMEBUFFER_SIZE = 64_000
+PALETTE_BASE = 0x1101_0000
+PALETTE_SIZE = 768
+
 # SPEC §7.
 CHECKPOINT_INTERVAL = 4_096
 RAM_HASH_INTERVAL = 1_048_576

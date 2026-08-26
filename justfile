@@ -66,6 +66,11 @@ bench-e7-memfns:
     @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
     cd refemu && uv run python ../rom/bench/e7_memfns/profile_memfns.py --frames 40
 
+# E1: does ClickHouse's arrayFold dedup repeated subexpressions, and at what
+# node-count cost (issue #126) -- needs the shared clickdoom-ch container.
+bench-e1-cse: up
+    ./executor/bench/e1_cse/run.sh
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

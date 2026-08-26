@@ -88,13 +88,30 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 -- Retention drops entire rows -- whole batch_ids, thin columns and bulky
 -- columns together -- via a fixed statement (partition-drop, or `DELETE
 -- WHERE batch_id < (SELECT max(batch_id) - N FROM batch_commit)`) the
--- driver issues unconditionally every batch; N = 16 (executor/config). That
--- is executor's driver-loop housekeeping (PURITY.md action 4: computes
--- nothing, the threshold is computed in SQL), not this file's concern --
--- this file only has to make row-level retention possible, which a plain
--- MergeTree already is. Never selectively null the bulky columns on old
--- rows in place: that is a second write this design doesn't need and SPEC
--- §5 doesn't ask for.
+-- driver issues every N batches (N = 16, executor/config -- the cadence
+-- issue #185 tightened this to, see that issue for why "every batch" was
+-- 16x more mutations than the bound needs). That is executor's driver-loop
+-- housekeeping (PURITY.md action 4: computes nothing, the threshold is
+-- computed in SQL), not this file's concern -- this file only has to make
+-- row-level retention possible, which a plain MergeTree already is. Never
+-- selectively null the bulky columns on old rows in place: that is a
+-- second write this design doesn't need and SPEC §5 doesn't ask for.
+--
+-- `min_bytes_for_wide_part = 0` (#185): this table's own rows are large
+-- (six write-log array triples plus the fb/pal pair, easily hundreds of KB
+-- once a batch has real store/framebuffer traffic), but ClickHouse's
+-- default 10 MiB threshold keeps a part this size in Compact format --
+-- one file for ALL columns together. Retention's own DELETE (a
+-- lightweight-delete mutation, SPEC §5's own recommended form) rewrites a
+-- Compact part's single file in full to flip the deleted rows' existence
+-- mask, i.e. every column, every retention run, even though only a
+-- `_row_exists` bit actually changes. Forcing Wide format (one file per
+-- column) instead means that same mutation only touches the file it's
+-- adding the mask to -- the bulky wl_*/fb_wl_*/pal_wl_* array columns for
+-- rows that survive retention are hardlinked into the new part unchanged,
+-- not rewritten. Zero determinism risk: this changes ClickHouse's on-disk
+-- part LAYOUT only, never a computed value SPEC §8 or any reader depends
+-- on.
 CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
 (
     spec_version String DEFAULT '0.1.0',
@@ -127,7 +144,8 @@ CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
     console_bytes Array(UInt8)
 )
 ENGINE = MergeTree
-ORDER BY batch_id;
+ORDER BY batch_id
+SETTINGS min_bytes_for_wide_part = 0;
 
 -- One row per committed batch (SPEC §5, SPEC §6), holding exactly cpu_state's
 -- historical seven columns. A durable table, NEVER pruned -- unlike

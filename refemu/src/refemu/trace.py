@@ -149,27 +149,66 @@ def iter_trace(cpu: CPU, max_instructions: int) -> Iterator[str]:
 
 
 def _main() -> int:  # pragma: no cover -- thin argument-parsing shell
-    """`python -m refemu <image.bin> [--max-instructions N]` (see
-    `__main__.py`, which is what actually invokes this): load a flat
+    """`python -m refemu <image.bin> [--manifest manifest.json] [--max-instructions N]`
+    (see `__main__.py`, which is what actually invokes this): load a flat
     binary at SPEC §2's RAM base and print its SPEC §7 trace to stdout,
     TSV, one checkpoint per line -- the interface `scripts/diff_run.sh`
-    (executor workstream) runs against refemu's side of a differential
-    comparison. Halt info (if any) goes to stderr, not stdout, so stdout
-    stays pure trace data.
+    (executor workstream, issue #27) runs against refemu's side of a
+    differential comparison. Halt info (if any) goes to stderr, not
+    stdout, so stdout stays pure trace data.
+
+    `--manifest` mirrors `boot.py`'s CLI (same flag, same auto-discovery,
+    same fields read) rather than inventing a second way to point this
+    tool at a ROM's `text_start`/`text_end` -- #27 will want to invoke
+    both CLIs against the same manifest.json without two different
+    conventions for finding it.
+
+    Exit code mirrors `boot.py`'s bucketing (1 = halted, for any reason,
+    fault or clean `EXIT`; 0 = reached `--max-instructions` without
+    halting) minus `boot.py`'s `frame_commit` bucket, which has no
+    equivalent here -- this CLI doesn't stop early at the first frame.
     """
     import argparse
+    import json
     import sys
+    from pathlib import Path
 
     from .cpu import new_cpu
+    from .memory import RAM_BASE
     from .mmio import DEFAULT_IPMS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", help="flat binary, loaded verbatim at RAM_BASE (SPEC §4)")
+    parser.add_argument(
+        "--manifest",
+        help="path to manifest.json (default: <image's directory>/manifest.json if present)",
+    )
     parser.add_argument("--max-instructions", type=int, default=10_000_000)
     parser.add_argument("--text-start", type=lambda s: int(s, 0), default=None)
     parser.add_argument("--text-end", type=lambda s: int(s, 0), default=None)
     parser.add_argument("--ipms", type=int, default=DEFAULT_IPMS, help="SPEC §3.1 elastic-time constant")
     args = parser.parse_args()
+
+    image_path = Path(args.image)
+    manifest_path = Path(args.manifest) if args.manifest else image_path.parent / "manifest.json"
+
+    # --text-start/--text-end (explicit, hex-or-decimal) win if given --
+    # the manifest is a convenience default, not an override of something
+    # the caller deliberately set.
+    text_start, text_end = args.text_start, args.text_end
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        if text_start is None:
+            text_start = manifest.get("text_start")
+        if text_end is None:
+            text_end = manifest.get("text_end")
+        print(f"# manifest: {manifest_path}", file=sys.stderr)
+    elif text_start is None and text_end is None:
+        print(
+            f"# no manifest.json at {manifest_path}; using SPEC §1 defaults "
+            f"(load_addr=0x{RAM_BASE:08x}, no text-region protection)",
+            file=sys.stderr,
+        )
 
     # new_cpu() wires up real MMIO (SPEC §3) -- TICKS_MS, KEYQ, EXIT,
     # PUTCHAR, FRAME_COMMIT. A bare `CPU(memory=Memory())` defaults to
@@ -178,8 +217,8 @@ def _main() -> int:  # pragma: no cover -- thin argument-parsing shell
     # real differential run against sqlcpu/executor drives (see this
     # function's docstring), and without real MMIO the ROM's own EXIT halt
     # never fires (issue #94).
-    cpu = new_cpu(ipms=args.ipms, text_start=args.text_start, text_end=args.text_end)
-    with open(args.image, "rb") as f:
+    cpu = new_cpu(ipms=args.ipms, text_start=text_start, text_end=text_end)
+    with open(image_path, "rb") as f:
         cpu.memory.load_image(f.read())
 
     try:
@@ -194,7 +233,7 @@ def _main() -> int:  # pragma: no cover -- thin argument-parsing shell
             ]
         )
         print(f"# halted: {h.reason} at pc=0x{h.pc:08x} icount={cpu.icount}{detail}", file=sys.stderr)
-        return 0
+        return 1
 
     print(f"# reached --max-instructions ({args.max_instructions}) without halting", file=sys.stderr)
     return 0

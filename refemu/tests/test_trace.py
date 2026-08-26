@@ -13,10 +13,11 @@ with sqlcpu" requirement -- these numbers are what sqlcpu's own xxHash64
 usage has to reproduce, not just this file's assumptions about it.
 """
 
+import json
 import sys
 
 from refemu.cpu import CPU, HaltReason
-from refemu.memory import Memory
+from refemu.memory import RAM_BASE, Memory
 from refemu.mmio import EXIT
 from refemu.trace import (
     CHECKPOINT_INTERVAL,
@@ -212,7 +213,74 @@ def test_main_cli_wires_real_mmio_so_exit_halts(tmp_path, monkeypatch, capsys):
     exit_status = _main()
 
     captured = capsys.readouterr()
-    assert exit_status == 0
+    assert exit_status == 1  # halted (mirrors boot.py's bucketing -- see _main's docstring)
     assert captured.out == ""  # halted before any checkpoint -- 3 instructions, CHECKPOINT_INTERVAL=4096
     assert "halted: EXIT" in captured.err
     assert "exit_code=7" in captured.err
+
+
+def test_main_cli_reads_text_bounds_from_manifest(tmp_path, monkeypatch, capsys):
+    # Mirrors boot.py's --manifest convention exactly (same flag, same
+    # auto-discovery next to the image, same text_start/text_end fields)
+    # so issue #27's differential harness can point both CLIs at one
+    # manifest.json without two conventions for finding it. A store into
+    # the declared text region should raise SelfModify -> SELF_MODIFY,
+    # which only happens if the manifest's bounds actually reached the CPU.
+    words = [
+        lui(1, RAM_BASE >> 12),  # x1 = RAM_BASE
+        addi(2, 0, 0),  # x2 = 0
+        sw(1, 2, 0),  # store x2 -> [x1 + 0] == RAM_BASE -- inside the manifest's text region below
+    ]
+    image = b"".join(w.to_bytes(4, "little") for w in words)
+    image_dir = tmp_path
+    image_path = image_dir / "self_modify.bin"
+    image_path.write_bytes(image)
+    (image_dir / "manifest.json").write_text(
+        json.dumps({"text_start": RAM_BASE, "text_end": RAM_BASE + 0x1000})
+    )
+
+    monkeypatch.setattr(sys, "argv", ["refemu", str(image_path), "--max-instructions", "100"])
+    exit_status = _main()
+
+    captured = capsys.readouterr()
+    assert exit_status == 1
+    assert f"# manifest: {image_dir / 'manifest.json'}" in captured.err
+    assert "halted: SELF_MODIFY" in captured.err
+
+
+def test_main_cli_explicit_text_bounds_override_manifest(tmp_path, monkeypatch, capsys):
+    # --text-start/--text-end are a deliberate override, not shadowed by a
+    # manifest.json that happens to sit next to the image.
+    words = [
+        lui(1, RAM_BASE >> 12),  # x1 = RAM_BASE
+        addi(2, 0, 0),  # x2 = 0
+        sw(1, 2, 0),  # store x2 -> [x1 + 0] == RAM_BASE
+    ]
+    image = b"".join(w.to_bytes(4, "little") for w in words)
+    image_dir = tmp_path
+    image_path = image_dir / "self_modify.bin"
+    image_path.write_bytes(image)
+    # Manifest declares a text region that does NOT cover RAM_BASE.
+    (image_dir / "manifest.json").write_text(
+        json.dumps({"text_start": RAM_BASE + 0x2000, "text_end": RAM_BASE + 0x3000})
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "refemu",
+            str(image_path),
+            "--max-instructions",
+            "100",
+            "--text-start",
+            hex(RAM_BASE),
+            "--text-end",
+            hex(RAM_BASE + 0x1000),
+        ],
+    )
+    exit_status = _main()
+
+    captured = capsys.readouterr()
+    assert exit_status == 1
+    assert "halted: SELF_MODIFY" in captured.err

@@ -8,11 +8,18 @@ narrower, real thing: does the fold correctly implement the collapsed
 op_id/halt semantics #23's design claims, for hand-built instruction
 streams covering every arm and every halt reason.
 
-Requires `just up` (clickdoom-ch reachable via `docker exec`).
+Requires a reachable ClickHouse: locally, `just up` (clickdoom-ch via
+`docker exec` -- the default below, unchanged for local dev). In CI (#116),
+`docker exec clickdoom-ch` doesn't exist -- GitHub Actions' `services:`
+containers are reached over the network at `localhost:<port>`, not by a
+fixed container name, the same way test-sqlcpu/differential-smoke/nightly's
+bench already connect. Set CLICKHOUSE_HOST to switch modes; CI's
+test-executor job does.
 
 Run: cd executor && uv run pytest tests/test_fold.py -v
 """
 import json
+import os
 import subprocess
 import sys
 
@@ -27,9 +34,27 @@ DB = "clickdoom_executor"
 RAM_BASE = 0x8000_0000
 RAM_BASE_WORD = RAM_BASE >> 2
 
+# CLICKHOUSE_HOST unset (the local-dev default): docker exec into the named
+# container, exactly as before. Set (CI, #116): plain network connection,
+# same --host/--port/--user/--password shape sqlcpu/run_tests.sh and every
+# other script in this repo already uses -- ci.yml's job-level
+# CLICKHOUSE_USER/CLICKHOUSE_PASSWORD/CLICKHOUSE_DATABASE env vars carry
+# straight through with no new secrets or config.
+CH_HOST = os.environ.get("CLICKHOUSE_HOST")
+
 
 def ch(sql, fmt=None):
-    cmd = ["docker", "exec", "-i", CONTAINER, "clickhouse-client", "--multiquery"]
+    if CH_HOST:
+        cmd = ["clickhouse-client",
+               "--host", CH_HOST,
+               "--port", os.environ.get("CLICKHOUSE_PORT", "9000"),
+               "--user", os.environ.get("CLICKHOUSE_USER", "default"),
+               "--database", os.environ.get("CLICKHOUSE_DATABASE", "clickdoom"),
+               "--multiquery"]
+        if os.environ.get("CLICKHOUSE_PASSWORD"):
+            cmd += ["--password", os.environ["CLICKHOUSE_PASSWORD"]]
+    else:
+        cmd = ["docker", "exec", "-i", CONTAINER, "clickhouse-client", "--multiquery"]
     if fmt:
         cmd += ["--format", fmt]
     r = subprocess.run(cmd, input=sql, capture_output=True, text=True)

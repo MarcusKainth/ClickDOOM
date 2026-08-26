@@ -101,11 +101,6 @@ preflight-milestone: up
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
 # All linters + purity check (what CI runs)
-#
-# NOTE: CI's lint job (.github/workflows/ci.yml) only shellchecks scripts/ and
-# driver/ — it predates sqlcpu/executor landing shell scripts and is a
-# workflow file (human gate), so this recipe covers the gap locally rather
-# than editing it here. Flagged to the team lead as a ci: follow-up.
 lint:
     ./scripts/check_purity.sh
     find scripts driver sqlcpu executor rom -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck

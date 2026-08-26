@@ -43,9 +43,13 @@ jobs:
       - name: Purity check (always on)
         run: ./scripts/check_purity.sh
       - name: shellcheck
+        # scripts/driver only, until now -- predated sqlcpu/executor landing
+        # shell scripts (justfile's own `lint` recipe comment flagged this
+        # exact gap as a `ci:` follow-up). Matches `just lint`'s scope,
+        # found auditing for CI/justfile orphans alongside #116.
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
-          find scripts driver -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
+          find scripts driver sqlcpu executor rom -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
       - name: "ruff (Python: refemu, driver)"
         if: hashFiles('refemu/pyproject.toml', 'driver/pyproject.toml') != ''
         run: |
@@ -119,6 +123,56 @@ jobs:
       - name: Skipped (sqlcpu/ not landed yet)
         if: hashFiles('sqlcpu/schema.sql') == ''
         run: echo "sqlcpu workstream not landed — skipped by design"
+
+  # #116: since #88, three benches AND the whole 16-case test_fold.py suite
+  # were broken (missing input_queue in their schema fixtures) with no CI
+  # job to catch it -- a green PR page said nothing about any of it for
+  # every executor PR in that window. Same shape as #83: a check that
+  # silently does nothing looks identical to one that passes.
+  test-executor:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.3   # keep in sync
+        env:
+          CLICKHOUSE_DB: clickdoom
+          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      # executor/tests/*.py's ch() talks to `clickhouse-client` directly
+      # over the network (CLICKHOUSE_HOST switches it out of the
+      # docker-exec-a-container-named-clickdoom-ch path local dev uses,
+      # which has no equivalent here -- GitHub Actions' `services:`
+      # containers are reached at localhost:<port>, not by a fixed
+      # container name). ubuntu-latest ships neither `clickhouse-client`
+      # nor `clickhouse` (same gap sqlcpu/run_tests.sh already works
+      # around) -- fetch the official single-file binary and expose it
+      # under the name the tests (and every other script in this repo)
+      # actually invoke, via a one-line wrapper rather than a rename, since
+      # the binary's `client` subcommand is what the fetched form supports.
+      - name: Install clickhouse-client
+        if: hashFiles('executor/pyproject.toml') != ''
+        run: |
+          curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
+          sh /tmp/install.sh
+          sudo install -m 0755 clickhouse /usr/local/bin/clickhouse
+          printf '#!/bin/sh\nexec /usr/local/bin/clickhouse client "$@"\n' | sudo tee /usr/local/bin/clickhouse-client >/dev/null
+          sudo chmod +x /usr/local/bin/clickhouse-client
+      - name: Fold unit tests (executor)
+        if: hashFiles('executor/pyproject.toml') != ''
+        env:
+          CLICKHOUSE_HOST: localhost
+          CLICKHOUSE_PORT: "9000"
+        run: |
+          pipx install uv
+          cd executor && uv sync --frozen && uv run pytest tests/ -v
+      - name: Skipped (executor/ not landed yet)
+        if: hashFiles('executor/pyproject.toml') == ''
+        run: echo "executor workstream not landed — skipped by design"
 
   differential-smoke:
     # Highest-value check in the repo: first 1M instructions of the DOOM ROM

@@ -206,6 +206,19 @@ def m_extension_edge_case_vectors():
         (wa + 3, 17, 5, 1, 3, 0, 0, 0, 0, "remu by zero -> dividend, no trap"),
         (wa + 4, 14, 5, 4, 5, 0, 0, 0, 0, "div INT_MIN/-1 overflow -> INT_MIN"),    # x4=INT_MIN, x5=-1
         (wa + 5, 16, 5, 4, 5, 0, 0, 0, 0, "rem INT_MIN/-1 overflow -> 0"),
+        # divu/remu on the SAME bit pattern that overflows div/rem (0x80000000,
+        # 0xFFFFFFFF) -- issue #99/#54: fold.py's unguarded div/rem crash on
+        # this exact pattern in SIGNED arithmetic (ClickHouse's intDiv/modulo
+        # raise ILLEGAL_DIVISION on Int32 "minimal signed number / -1"), but
+        # there is no unsigned equivalent of that overflow -- 0x80000000 and
+        # 0xFFFFFFFF are just ordinary large UInt32 values, and
+        # 0x80000000u / 0xFFFFFFFFu is unremarkable unsigned division (0
+        # remainder 0x80000000). These vectors exist to make that contrast
+        # explicit and machine-checked, per the team lead's request on #54 to
+        # cover "all four of div/divu/rem/remu" for this operand pattern --
+        # not because divu/remu need (or get) an overflow guard themselves.
+        (wa + 7, 15, 5, 4, 5, 0, 0, 0, 0, "divu 0x80000000u/0xFFFFFFFFu -> 0, ordinary"),
+        (wa + 8, 17, 5, 4, 5, 0, 0, 0, 0, "remu 0x80000000u/0xFFFFFFFFu -> 0x80000000, ordinary"),
         (wa + 6, 12, 5, 6, 7, 0, 0, 0, 0, "mulhsu: signed rs1 x UNSIGNED rs2"),     # x6 negative, x7 top-bit set
     ]
     return [row + (M_EXT_REG_OVERRIDES,) for row in rows]

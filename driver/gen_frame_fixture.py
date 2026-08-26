@@ -22,7 +22,12 @@ use is a stderr progress ticker.
 
 Usage:
     cd refemu && uv run python ../driver/gen_frame_fixture.py \\
-        --target-icount 15653137 --out /tmp/frame_fixture.pkl
+        --target-icount 15393136 --out /tmp/frame_fixture.pkl
+
+(15,393,136 is #110's milestone icount as of #175's R_DrawColumn/R_DrawSpan
+unroll, PINNED_HASH 9a6a47d0...; it was 15,653,137 before that landed --
+see #175's frame-hash equivalence gate for why fb_hash stayed the same,
+fe5d82c0f42d45f1, while the icount moved.)
 """
 
 from __future__ import annotations

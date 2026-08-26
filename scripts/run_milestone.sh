@@ -65,7 +65,7 @@
 #   scripts/run_milestone.sh --bin rom/build/doom-rv32im.bin \
 #     --manifest rom/build/manifest.json --k 60000 --hwm 20000 \
 #     --database clickdoom --trace path/to/reference_trace.tsv \
-#     --target-icount 15653137 \
+#     --target-icount 15393136 \  # #175's unrolled ROM; was 15653137 before it
 #     [--host localhost --port 9000 --user default --password ... --client '...']
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -111,12 +111,21 @@ if [ -x sqlcpu/test_decode.sh ]; then
   decode_status="decode vectors: ${vector_count}/${vector_count} passed"
 fi
 
+execute_status="execute checks: not landed yet (see #19)"
+if [ -f sqlcpu/test_execute.py ]; then
+  echo "# running execute correctness checks (issue #19)..." >&2
+  execute_out=$(python3 sqlcpu/test_execute.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
+    --password "$PASSWORD" --client "${CH_CMD[*]}")
+  echo "$execute_out" >&2
+  execute_status="$execute_out"
+fi
+
 run_riscv_tests() {
-  # Placeholder until execute (#19, #20) lands. Reports zero rather than a
-  # pass count this script has no way to earn yet — decode alone (#18) can't
-  # run a riscv-tests binary, only decode it.
+  # Placeholder until M-extension (#20) lands and a real riscv-tests corpus
+  # is wired up. Reports zero rather than a pass count this script has no
+  # way to earn yet.
   echo "0"
 }
 
 pass_count=$(run_riscv_tests)
-echo "riscv-tests inside ClickHouse: ${pass_count} passed (execute not landed yet — see #19, #20). ${decode_status}"
+echo "riscv-tests inside ClickHouse: ${pass_count} passed (M-extension not landed yet — see #20; full riscv-tests corpus is #21). ${decode_status}. ${execute_status}"

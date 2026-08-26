@@ -8,10 +8,24 @@ Ownership is claimed via issue self-assignment.
     just build-rom
 
 produces `rom/build/doom-rv32im.bin` (and `.elf`). Nothing beyond Docker is
-required on the host — `rom/Makefile` builds a pinned toolchain container
-(`rom/toolchain/Dockerfile`) and runs every compile/link step inside it, so
-the build is byte-reproducible on any host (verified: identical sha256
-across repeat builds and after evicting the local image cache).
+required on the host — `rom/Makefile` builds a toolchain container
+(`rom/toolchain/Dockerfile`) and runs every compile/link step inside it.
+
+**What's actually guaranteed reproducible is the ROM artifact, not the
+Docker image.** `doom-rv32im.bin`'s sha256 is stable across repeat builds
+and after evicting the local image cache (verified) because it depends
+only on the toolchain binaries that do the real work — `riscv-none-elf-gcc`
+et al., fetched as a specific uploaded release asset and checked against a
+sha256 pinned independently of the upload (see "Toolchain" below) — not on
+which `curl`/`ca-certificates`/`xz-utils` happened to fetch and unpack
+them. Those apt packages are intentionally left unpinned to a specific
+version: they float with Debian's `bookworm-slim` security updates, so the
+image's own layer digests are *not* guaranteed byte-stable over time, and
+that's fine — nothing in that layer reaches the output. Don't read a
+different image digest on a later build as evidence of a compromised or
+nondeterministic build; check `doom-rv32im.bin`'s sha256 (or
+`rom/PINNED_HASH`, once #10 lands), which is the thing SPEC §4 actually
+promises.
 
 ## Toolchain (issue #5)
 

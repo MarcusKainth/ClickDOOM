@@ -84,12 +84,19 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   never implements — before its own `exit(-1)`. Pinned from a measured,
   complete run, not the isolated mechanism probe that first found this path
   (issue #107/#111): `refemu` ran the full `demo3` timedemo to termination
-  (issue #129) — 2,836,207,097 instructions, halting cleanly with
-  `halt_reason = 'EXIT'`, `pc = 0x8000_06b0` (the same `_exit`
-  MMIO-write-then-spin address the isolated probe found), `exit_code =
-  4,294,967,295` — confirming the probe's mechanism holds for a real,
-  full-length run and not only in isolation. Worth pinning explicitly
-  rather than leaving as "whatever `EXIT` happens to carry": the exit path
+  (issue #129, against `PINNED_HASH eabb12ed…`) — 2,836,207,097
+  instructions, halting cleanly with `halt_reason = 'EXIT'`,
+  `pc = 0x8000_06b0` (the same `_exit` MMIO-write-then-spin address the
+  isolated probe found), `exit_code = 4,294,967,295` — confirming the
+  probe's mechanism holds for a real, full-length run and not only in
+  isolation. Re-measured after #175's instruction-count optimization
+  changed which specific binary is pinned (issue #202, against
+  `PINNED_HASH 9a6a47d0…`): 2,300,210,133 instructions — a different
+  length, consistent with #175's own accounting, not a discrepancy — but
+  the same `halt_reason`, `pc`, and `exit_code` as the first run,
+  confirming the mechanism holds independent of which conforming binary
+  reaches it. Worth pinning explicitly rather than leaving as "whatever
+  `EXIT` happens to carry": the exit path
   depends on `system()` continuing to resolve the way this newlib build
   currently does (returning promptly rather than hanging or erroring
   differently), which a future change to `rom/src/syscalls.c` could alter
@@ -333,9 +340,13 @@ shape. All tables carry `spec_version String`.
   instruction's own retirement or *after* it, and only the latter is
   consistent with every other `icount` value in this schema meaning "count
   of instructions retired so far, inclusive of the current row's own
-  triggering instruction." `#29`'s target checkpoint
-  (`fb_hash fe5d82c0f42d45f1` at icount `15,653,137`) is this
-  post-increment value.
+  triggering instruction." `#29`'s target checkpoint is this
+  post-increment value. Its `fb_hash` (`fe5d82c0f42d45f1`) is stable
+  across a conforming binary's exact instruction cost — confirmed by
+  #175's instruction-count optimization, which changed the icount below
+  without changing the hash — but the icount itself is not: `15,653,137`
+  against the original `PINNED_HASH eabb12ed…`, `15,393,136` against the
+  current `PINNED_HASH 9a6a47d0…` (issues #175/#198).
 - `console_out` — `(seq UInt64, byte UInt8)`.
 - `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
   `ram` at ROM load and covering `[text_start, text_end)` only:

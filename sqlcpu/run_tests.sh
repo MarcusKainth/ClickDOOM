@@ -103,11 +103,29 @@ for table in cpu_state ram input_queue frames_out console_out decoded; do
 done
 echo "# schema round-trip OK, spec_version defaults correctly on every table" >&2
 
+decode_status="decode vectors: not landed yet (see #18)"
+if [ -x sqlcpu/test_decode.sh ]; then
+  echo "# running decode correctness vectors (issue #18)..." >&2
+  vector_count=$(wc -l < sqlcpu/fixtures/decode_vectors.tsv | tr -d ' ')
+  ./sqlcpu/test_decode.sh --host "$HOST" --port "$PORT" --user "$CH_USER" --password "$PASSWORD" --database "$DATABASE"
+  decode_status="decode vectors: ${vector_count}/${vector_count} passed"
+fi
+
+execute_status="execute checks: not landed yet (see #19)"
+if [ -f sqlcpu/test_execute.py ]; then
+  echo "# running execute correctness checks (issue #19)..." >&2
+  execute_out=$(python3 sqlcpu/test_execute.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
+    --password "$PASSWORD" --client "${CH_CMD[*]}")
+  echo "$execute_out" >&2
+  execute_status="$execute_out"
+fi
+
 run_riscv_tests() {
-  # Placeholder until decode (#18) and execute (#19, #20) land. Reports zero
-  # rather than a pass count this script has no way to earn yet.
+  # Placeholder until M-extension (#20) lands and a real riscv-tests corpus
+  # is wired up. Reports zero rather than a pass count this script has no
+  # way to earn yet.
   echo "0"
 }
 
 pass_count=$(run_riscv_tests)
-echo "riscv-tests inside ClickHouse: ${pass_count} passed (decode/execute not landed yet — see #18, #19, #20; this script's job today is schema.sql, tracked by #17)"
+echo "riscv-tests inside ClickHouse: ${pass_count} passed (M-extension not landed yet — see #20; full riscv-tests corpus is #21). ${decode_status}. ${execute_status}"

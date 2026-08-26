@@ -1,0 +1,44 @@
+# rom/patches/0001-fix-dg-screenbuffer-alloc-size.patch
+#
+# Issue #63: doomgeneric_Create() sizes DG_ScreenBuffer as
+# DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4, hardcoding the 32bpp pixel width
+# every other doomgeneric platform backend uses. Under this port's
+# -DCMAP256 build (issue #8), pixel_t is uint8_t (doomgeneric.h) and only
+# DOOMGENERIC_RESX * DOOMGENERIC_RESY = 64,000 bytes are ever written or
+# read (i_video.c's I_FinishUpdate, confirmed by reading the copy loop:
+# with fb_scaling=1 and CMAP256 defined, it's a single
+# `memcpy(line_out, line_in, SCREENWIDTH)` per of SCREENHEIGHT rows =
+# 320*200 = 64,000 bytes, nothing more; every other DG_ScreenBuffer write
+# site lives in doomgeneric_sdl.c / _linuxvt.c / _soso.c / _sosox.c /
+# _win.c / _xlib.c / _allegro.c / _emscripten.c, none of which this ROM
+# compiles — see rom/Makefile's DG_EXCLUDE). The extra 192,000 bytes were
+# allocated but never touched: not a correctness bug
+# (rom/src/dg_hooks.c's DG_DrawFrame already only ever reads the first
+# 64,000 bytes), just 192 KiB of RAM heap wasted per doomgeneric_Create()
+# call, out of SPEC §2's 24 MiB RAM budget.
+#
+# Fix: size the allocation from sizeof(pixel_t) instead of a hardcoded 4,
+# so it's correct for whatever pixel width the active DOOMGENERIC_* build
+# actually uses (this port's CMAP256 -> uint8_t, giving exactly 64,000
+# bytes) without special-casing this build over any other.
+#
+# Rebuilding with this patch moves rom/PINNED_HASH: the malloc() call's
+# immediate size operand is compiled into .text, so the ROM's bytes change
+# even though nothing about what DOOM writes to SPEC §2's FRAMEBUFFER
+# region changes (verified above — the write bound was already 64,000
+# bytes; only the allocation's slack shrinks). Updated in the same commit
+# per SPEC §4/CLAUDE.md: a hash move from a real, explained ROM change is
+# not the "unrelated PR went red" case that rule exists for.
+diff --git a/doomgeneric/doomgeneric/doomgeneric.c b/doomgeneric/doomgeneric/doomgeneric.c
+index 881d700..efc3766 100644
+--- a/doomgeneric/doomgeneric/doomgeneric.c
++++ b/doomgeneric/doomgeneric/doomgeneric.c
+@@ -18,7 +18,7 @@ void doomgeneric_Create(int argc, char **argv)
+ 
+ 	M_FindResponseFile();
+ 
+-	DG_ScreenBuffer = malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4);
++	DG_ScreenBuffer = malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * sizeof(pixel_t));
+ 
+ 	DG_Init();
+ 

@@ -34,7 +34,15 @@ were verified rather than assumed:
   (1.648s vs 1.601s over 20,000 steps), and `if(false, <expensive>, cheap)`
   costs the same as evaluating the expensive branch. A binary dispatch tree over
   40 leaves measured *worse* than the flat `multiIf` (1.861s vs 1.648s).
-  Ordering arms by opcode frequency buys nothing.
+  Ordering arms by opcode frequency buys nothing. This is a *cost*-equivalence
+  result (measured via timing); issue #183 establishes the stronger
+  *fault*-equivalence claim the timing result only suggests — every arm of
+  every `if`/`multiIf` inside an `arrayFold` executes for its faults too,
+  unconditionally, regardless of its guard (a data-dependent, non-foldable
+  guard; a literal `false` guard is constant-folded away and proves nothing).
+  A standing constraint on every fold expression written after this ADR, not
+  just this decision's own justification — see that issue before adding a
+  guarded division, modulo, or array index inside a fold.
 
 So the only lever on throughput is the total node count of the fold body. The
 obvious implementation — fetch the word, pull fields apart with bit ops,

@@ -47,16 +47,22 @@ testing is checked against (SPEC §7). Everything else is workstream-local.
 
 ## Status
 
-Phase 0 — resolving SPEC's open questions and ratifying SPEC 0.1.0 off an
-`arrayFold` throughput benchmark — is in progress; `SPEC_VERSION` in
-[SPEC.md](SPEC.md) is still `0.1.0-draft`. Phase 1 builds `rom`, `refemu`,
-`sqlcpu`, and `executor`+`driver` in parallel, closing when riscv-tests is
-green inside ClickHouse and the ROM boots in refemu. Phase 2 is
+[SPEC 0.1.0 is ratified](SPEC.md) (Phase 0 — the `arrayFold` throughput
+benchmark and SPEC's open questions — is done; `SPEC_VERSION` is no longer
+`-draft`). Phase 1 — building `rom`, `refemu`, `sqlcpu`, and
+`executor`+`driver` in parallel, closing when riscv-tests is green inside
+ClickHouse and the ROM boots in refemu — is **complete**. Phase 2 —
 integration and executor performance, closing at DOOM's first
-`FRAME_COMMIT`. Phase 3 is the divergence hunt against `-timedemo demo3`
-described below. None of `rom/`, `refemu/`, `sqlcpu/`, or `executor/` have
-landed code yet; the `just` recipes below fail informatively until they
-do. The phase plan and workstream charters live in [CLAUDE.md](CLAUDE.md).
+`FRAME_COMMIT` inside ClickHouse — is **in progress**: the SQL CPU executes
+the real DOOM ROM and boots through crt0; [PR #88](https://github.com/MarcusKainth/ClickDOOM/pull/88)
+demonstrated byte-for-byte parity with refemu through crt0 and MMIO init
+(`pc` and all 31 registers cross-checked), and MMIO (SPEC §3) is
+implemented. The throughput gap remaining before a full `-timedemo demo3`
+run is practical is tracked in [#104](https://github.com/MarcusKainth/ClickDOOM/issues/104).
+Phase 3 is the divergence hunt against `-timedemo demo3` described below.
+All four workstreams have landed substantial code, and the `just` recipes
+below work. The phase plan and workstream charters live in
+[CLAUDE.md](CLAUDE.md).
 
 ## Definition of victory
 

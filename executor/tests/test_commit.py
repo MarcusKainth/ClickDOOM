@@ -325,18 +325,6 @@ def test_retention_sql_carries_the_async_setting():
     assert "lightweight_deletes_sync" in sql and "= 0" in sql
 
 
-def test_should_run_retention_cadence():
-    # #185: cadence == window (N=16) by design -- runs on batch_id 0, 16,
-    # 32, ..., never in between. Checked at both the window's own N and a
-    # different N to confirm this isn't hardcoded to 16 specifically.
-    assert commit.should_run_retention(0, cadence=16) is True
-    assert commit.should_run_retention(16, cadence=16) is True
-    assert commit.should_run_retention(32, cadence=16) is True
-    for bid in range(1, 16):
-        assert commit.should_run_retention(bid, cadence=16) is False, f"batch_id={bid} should not trigger retention"
-    assert commit.should_run_retention(0, cadence=config.BATCH_COMMIT_RETENTION_N) is True
-
-
 def test_bootstrap_script_seeds_once_and_is_a_noop_on_replay():
     # This interpreter's own path, to run bootstrap.py as a subprocess and
     # test its CLI -- test-harness plumbing, not a computation delegated off

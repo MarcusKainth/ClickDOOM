@@ -88,14 +88,17 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 -- Retention drops entire rows -- whole batch_ids, thin columns and bulky
 -- columns together -- via a fixed statement (partition-drop, or `DELETE
 -- WHERE batch_id < (SELECT max(batch_id) - N FROM batch_commit)`) the
--- driver issues every N batches (N = 16, executor/config -- the cadence
--- issue #185 tightened this to, see that issue for why "every batch" was
--- 16x more mutations than the bound needs). That is executor's driver-loop
--- housekeeping (PURITY.md action 4: computes nothing, the threshold is
--- computed in SQL), not this file's concern -- this file only has to make
--- row-level retention possible, which a plain MergeTree already is. Never
--- selectively null the bulky columns on old rows in place: that is a
--- second write this design doesn't need and SPEC §5 doesn't ask for.
+-- driver issues unconditionally every batch (SPEC §5, N = 16,
+-- executor/config). #185 shipped a cadence (every N-th batch instead) as
+-- part of its mutation-cost work; #193 reverted it as a live, un-ratified
+-- SPEC divergence -- the throughput case (0.05-0.13% of batch time) didn't
+-- clear the bar for a spec-change, per the human owner. That is executor's
+-- driver-loop housekeeping (PURITY.md action 4: computes nothing, the
+-- threshold is computed in SQL), not this file's concern -- this file only
+-- has to make row-level retention possible, which a plain MergeTree
+-- already is. Never selectively null the bulky columns on old rows in
+-- place: that is a second write this design doesn't need and SPEC §5
+-- doesn't ask for.
 --
 -- `min_bytes_for_wide_part = 0` (#185): this table's own rows are large
 -- (six write-log array triples plus the fb/pal pair, easily hundreds of KB

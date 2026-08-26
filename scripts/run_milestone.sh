@@ -109,16 +109,6 @@ for req in BIN MANIFEST K HWM TRACE TARGET_ICOUNT; do
 done
 
 RAM_HASH_INTERVAL=1048576
-# #185: matches executor/config.py's BATCH_COMMIT_RETENTION_N -- reused as
-# both the retention window (how far back batch_commit keeps rows) and the
-# retention cadence (how often the DELETE runs), not a coincidence: the
-# DELETE recomputes its own threshold fresh every call, so running it every
-# Nth batch instead of every batch still enforces the identical window
-# (never more than N-1 batches of extra rows accumulate) at 1/N the
-# mutation count. Kept as a script-local literal, not read from config.py,
-# the same way this script already treats HWM/K as its own CLI-provided
-# values rather than importing executor's defaults.
-RETENTION_N=16
 
 # shellcheck disable=SC2206  # deliberate word-split, same convention as
 # preflight_milestone.sh's identical CH_CMD line.
@@ -210,6 +200,12 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   ch --multiquery <<< "$(python3 executor/commit.py fbpal --db "$DATABASE")"
   ch --multiquery <<< "$(python3 executor/commit.py console_out --db "$DATABASE")"
   ch --multiquery <<< "$(python3 executor/commit.py cpu_state --db "$DATABASE")"
+  # SPEC §5: "the driver issues [retention] unconditionally every batch" --
+  # every batch, not on a cadence (#193: #187 shipped a cadence gate here
+  # that contradicted this line; reverted, since the throughput case for it
+  # didn't clear the bar for a spec-change ratification -- retention was
+  # measured at 0.05-0.13% of batch time, below the fold noise floor).
+  ch --multiquery <<< "$(python3 executor/commit.py retention --db "$DATABASE")"
 
   # Never trust STEP_K as what actually retired -- a batch can stop early
   # on the write-log high-water mark, a halt, or FRAME_COMMIT. Re-read the
@@ -218,18 +214,6 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   read -r BATCH_ID ICOUNT PC HALTED HALT_REASON <<< "$(ch --query \
     "SELECT batch_id, icount, pc, halted, halt_reason FROM cpu_state ORDER BY batch_id DESC LIMIT 1" \
     | tr '\t' ' ')"
-
-  # #185: retention every RETENTION_N-th batch, not every batch -- the
-  # window it enforces (batch_id > max(batch_id) - RETENTION_N) is
-  # identical either way, since the DELETE recomputes that threshold fresh
-  # from the CURRENT max(batch_id) whenever it runs; only the mutation
-  # COUNT drops, to 1/RETENTION_N. Gated on $BATCH_ID, which SQL (the read
-  # above) already computed -- same shape as the existing
-  # `ICOUNT % RAM_HASH_INTERVAL` checkpoint-cadence gate a few lines below,
-  # not a new kind of decision introduced here.
-  if [ "$((BATCH_ID % RETENTION_N))" -eq 0 ]; then
-    ch --multiquery <<< "$(python3 executor/commit.py retention --db "$DATABASE")"
-  fi
   # FRAME_COMMIT is a batch-early-exit condition (SPEC §6), not a fatal
   # halt (SPEC §1's halt-reason vocabulary doesn't include it) -- cpu_state
   # has no has_frame/frame_no column (SPEC §5), only batch_commit does, so

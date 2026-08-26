@@ -1,0 +1,128 @@
+# rom      : /Users/marcus/Develop/ClickDOOM/rom/build/doom-rv32im.bin
+# rom sha256: 22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed
+# PINNED_HASH: 22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed  (MATCH)
+# symbols  : 1191 STT_FUNC
+# instrumented entries: ['memcmp', 'memcpy', 'memmove', 'memset', 'strcmp', 'strcpy', 'strlen', 'strncpy']
+# outcome  : frame budget reached
+# icount   : 31,604,483   frame_commits: 40
+# frame commit icounts: [13243964, 13715122, 14185231, 14656377, 15127523, 15597637, 16068783, 16539929, 17010038, 17481184, 17952335, 18422444, 18893602, 19364252, 19834875, 20306038, 20776688, 21247311, 21718469, 22188584, 22659754, 23130912, 23601027, 24072185, 24543348, 25013463, 25484621, 25955779, 26425894, 26897057, 27367707, 27838330, 28309488, 28780138, 29250766, 29721924, 30192039, 30663197, 31134355, 31604482]
+
+=== window: whole run (includes crt0 BSS zeroing)  (31,604,483 instructions) ===
+   42.37%    13,392,360  V_DrawPatch
+   13.86%     4,379,873  memcpy
+   10.14%     3,204,852  DG_DrawFrame
+    8.69%     2,745,991  R_InitTextureMapping
+    6.56%     2,071,693  strncasecmp
+    2.37%       750,050  R_InitSpriteDefs
+    2.08%       657,384  Transform
+    1.86%       588,406  R_GenerateLookup
+    1.29%       406,378  strcmp
+    1.10%       347,860  SHA1_Update
+    0.91%       286,887  DG_SleepMs
+    0.64%       201,680  I_FinishUpdate
+    0.58%       184,048  _start
+    0.51%       160,270  GetDefaultForName
+    0.46%       146,749  strncpy
+    0.45%       142,338  W_CheckNumForName
+    0.41%       130,116  __divdi3
+    0.40%       126,950  W_GenerateHashTable
+    0.34%       107,786  Z_Malloc
+    0.30%        93,905  strlen
+    0.29%        91,393  _fread_r
+    0.28%        88,962  memset
+    0.27%        85,409  _read
+    0.26%        81,171  _fseeko_r
+    0.24%        76,110  FixedDiv
+    0.22%        70,226  __srefill_r
+    0.22%        68,256  SHA1_UpdateInt32
+    0.21%        65,951  _svfprintf_r
+    0.14%        45,548  W_Checksum
+    0.14%        45,466  W_CacheLumpNum
+  -- mem/str functions --
+  memcpy   insns=   4,379,873 (13.86%) calls=    12,743 bytes=     6,279,611 insn/byte= 0.697 word-aligned-calls= 99.5%
+  memmove  insns=      17,205 ( 0.05%) calls=       536 bytes=         2,959 insn/byte= 5.814 word-aligned-calls= 55.4%
+  memset   insns=      88,962 ( 0.28%) calls=     1,420 bytes=       174,764 insn/byte= 0.509 word-aligned-calls=100.0%
+  strlen   insns=      93,905 ( 0.30%) calls=     3,150 bytes=             0 insn/byte=   nan word-aligned-calls= 99.9%
+  strcmp   insns=     406,378 ( 1.29%) calls=    14,290 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+  strncpy  insns=     146,749 ( 0.46%) calls=     2,885 bytes=        23,119 insn/byte= 6.348 word-aligned-calls= 99.9%
+
+=== window: boot: 0 -> first FRAME_COMMIT  (13,243,965 instructions) ===
+   20.73%     2,745,991  R_InitTextureMapping
+   18.77%     2,485,233  memcpy
+   15.60%     2,065,765  strncasecmp
+    5.66%       750,050  R_InitSpriteDefs
+    4.96%       657,384  Transform
+    4.44%       588,406  R_GenerateLookup
+    3.07%       406,378  strcmp
+    2.63%       347,860  SHA1_Update
+    2.53%       334,809  V_DrawPatch
+    2.17%       286,887  DG_SleepMs
+    1.39%       184,048  _start
+    1.21%       160,270  GetDefaultForName
+    1.11%       146,749  strncpy
+    1.03%       136,956  W_CheckNumForName
+    0.98%       130,116  __divdi3
+    0.96%       126,950  W_GenerateHashTable
+    0.81%       107,786  Z_Malloc
+    0.71%        93,905  strlen
+    0.69%        91,393  _fread_r
+    0.66%        86,786  memset
+    0.64%        85,409  _read
+    0.63%        83,994  DG_DrawFrame
+    0.61%        81,171  _fseeko_r
+    0.57%        76,110  FixedDiv
+    0.53%        70,226  __srefill_r
+    0.52%        68,256  SHA1_UpdateInt32
+    0.50%        65,951  _svfprintf_r
+    0.34%        45,548  W_Checksum
+    0.33%        44,335  W_CacheLumpNum
+    0.33%        43,070  W_AddFile
+  -- mem/str functions --
+  memcpy   insns=   2,485,233 (18.77%) calls=     4,815 bytes=     3,780,539 insn/byte= 0.657 word-aligned-calls= 98.5%
+  memmove  insns=      17,205 ( 0.13%) calls=       536 bytes=         2,959 insn/byte= 5.814 word-aligned-calls= 55.4%
+  memset   insns=      86,786 ( 0.66%) calls=     1,292 bytes=       172,716 insn/byte= 0.502 word-aligned-calls=100.0%
+  strlen   insns=      93,905 ( 0.71%) calls=     3,150 bytes=             0 insn/byte=   nan word-aligned-calls= 99.9%
+  strcmp   insns=     406,378 ( 3.07%) calls=    14,290 bytes=             0 insn/byte=   nan word-aligned-calls=100.0%
+  strncpy  insns=     146,749 ( 1.11%) calls=     2,885 bytes=        23,119 insn/byte= 6.348 word-aligned-calls= 99.9%
+
+=== window: steady state: frame 0 -> frame 39 (excludes crt0/boot)  (18,360,518 instructions) ===
+   71.12%    13,057,551  V_DrawPatch
+   17.00%     3,120,858  DG_DrawFrame
+   10.32%     1,894,640  memcpy
+    1.07%       196,638  I_FinishUpdate
+    0.13%        23,060  G_BuildTiccmd
+    0.06%        11,854  G_Ticker
+    0.05%         9,481  TryRunTics
+    0.03%         5,928  strncasecmp
+    0.03%         5,574  NetUpdate.part.0
+    0.03%         5,382  W_CheckNumForName
+    0.02%         4,416  BuildNewTic
+    0.02%         3,783  S_UpdateSounds
+    0.02%         3,520  RunTic
+    0.02%         2,808  D_Display.part.0
+    0.01%         2,176  memset
+    0.01%         1,562  I_GetTimeMS
+    0.01%         1,280  I_GetEvent
+    0.01%         1,131  W_CacheLumpNum
+    0.01%         1,053  doomgeneric_Tick
+    0.00%           896  D_ProcessEvents
+    0.00%           741  I_GetTime
+    0.00%           702  M_AddToBox
+    0.00%           702  W_CacheLumpName
+    0.00%           663  Z_ChangeTag2
+    0.00%           616  M_Ticker
+    0.00%           546  M_Drawer
+    0.00%           543  DG_GetTicksMs
+    0.00%           448  D_PageTicker
+    0.00%           448  D_PopEvent
+    0.00%           448  HU_dequeueChatChar
+  -- mem/str functions --
+  memcpy   insns=   1,894,640 (10.32%) calls=     7,928 bytes=     2,499,072 insn/byte= 0.758 word-aligned-calls=100.0%
+  memset   insns=       2,176 ( 0.01%) calls=       128 bytes=         2,048 insn/byte= 1.062 word-aligned-calls=100.0%
+
+=== memcpy/memset call-size histogram (whole run, power-of-two buckets) ===
+  memcpy: 0:3  4:5  8:145  16:109  32:145  64:154  128:210  256:8,368  512:628  1024:2,976
+  memset: 8:1,023  16:138  32:15  64:58  128:36  256:10  512:138  4096:1  32768:1
+  memmove: 1:237  2:74  4:144  8:35  16:30  32:12  64:4
+
+# json written to /private/tmp/claude-501/-Users-marcus-Develop-ClickDOOM/4a266fd8-f4ac-4c5d-95f6-a02dc2e6d114/scratchpad/e7_frames.json

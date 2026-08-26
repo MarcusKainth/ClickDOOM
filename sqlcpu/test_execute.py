@@ -176,9 +176,15 @@ def load_vectors(path):
             # above: "deliberately not sharing any code with execute.py"),
             # so it has no use for the pre-decoded flags execute.py itself
             # still doesn't consume either (only fold.py's future collapse
-            # will).
+            # will). cmp_sel/neg/tgt_mis (issue #128/E4's branch pre-decode
+            # flags, same schema.sql comment block) are unpacked and
+            # discarded for the identical reason -- this oracle derives
+            # NEXT/misalignment independently too (see `oracle()` above),
+            # and only fold.py's future NEXT/would_jump collapse will
+            # consume these.
             (wa, _word, id_, rd, rs1, rs2, imm, tgt, mk, sg,
-             _m_sg1, _m_sg2, _m_hi, _d_sg, note) = line.rstrip("\n").split("\t")
+             _m_sg1, _m_sg2, _m_hi, _d_sg,
+             _cmp_sel, _neg, _tgt_mis, note) = line.rstrip("\n").split("\t")
             id_ = int(id_)
             rows.append((int(wa), id_, int(rd), int(rs1), int(rs2), int(imm),
                          int(tgt) if tgt else 0, int(mk), int(sg), note))

@@ -312,6 +312,43 @@ ORDER BY seq;
 --        UInt32 gives exactly RISC-V's spec'd INT_MIN result for div (and
 --        `modulo` correspondingly gives 0 for rem) with no separate
 --        overflow branch needed.
+--   cmp_sel  which comparison primitive this branch needs: 0 = eq (beq/
+--        bne), 1 = lt_signed (blt/bge), 2 = lt_unsigned (bltu/bgeu);
+--        meaningful only for id IN (20..25) -- the six branches; 0
+--        (meaningless) for every other id.
+--   neg  1 if this branch's taken-condition is the NEGATION of cmp_sel's
+--        primitive (bne/bge/bgeu), 0 if it IS the primitive directly
+--        (beq/blt/bltu); meaningful only for id IN (20..25), 0 elsewhere.
+--        cmp_sel/neg (issue #128/E4) exist so the execute expression's six
+--        independently-coded branch comparisons -- and would_jump's own
+--        six-arm re-derivation of the SAME six comparisons, computed a
+--        SECOND time for the eager-misaligned-jump check (fold.py has no
+--        expression-level let-binding, so nothing was sharing this before)
+--        -- collapse to one shared 3-arm cmp_sel select plus a negate,
+--        applied via bitXor(cmp, neg) rather than `if(neg, NOT cmp, cmp)`:
+--        the latter references cmp's whole subtree twice per site under
+--        this file's no-let-binding constraint, silently paying back the
+--        very duplication this design removes. Measured 1.212x on the
+--        isolated comparison-collapse alone, JIT-warm (#128's PR has the
+--        harness and repro); real fold.py's win should be larger, since
+--        would_jump's result is consumed via jump_misaligned at 5+
+--        downstream reference sites (HALT_CODE alone is referenced 5
+--        times), each of which a decode-time column pays for once, not
+--        once per reference.
+--   tgt_mis  1 if `tgt` (the SAME column above, never re-derived or
+--        word-shifted -- word-shifting silently drops bit 1, exactly the
+--        bug this project already fixed once for `tgt` itself, see that
+--        column's comment) is misaligned (bitAnd(tgt, 3) != 0); computed
+--        for every id since tgt is 0 (aligned) for every id that doesn't
+--        use it, so this is harmlessly 0 there too. jal (id 26) gates its
+--        eager MISALIGNED halt on tgt_mis alone -- jal always transfers.
+--        Branches (id 20..25) MUST gate on `taken AND tgt_mis`, never
+--        tgt_mis alone -- SPEC §1: an untaken branch never faults even if
+--        its target would have been bad, and tgt_mis says nothing about
+--        whether THIS branch is taken, only whether ITS target is aligned
+--        if it were. jalr (id 27) does not use this column at all -- its
+--        target is register-relative, genuinely unknown until execution,
+--        and keeps its existing runtime alignment check unchanged.
 --   raw  the undecoded instruction word, kept only so an id = 31
 --        (ILLEGAL_INSN) halt record can report the actual bad instruction
 --        (SPEC §1) without re-reading `ram` at halt time. Added at
@@ -359,6 +396,9 @@ CREATE TABLE IF NOT EXISTS clickdoom.decoded
     m_sg2        UInt8,
     m_hi         UInt8,
     d_sg         UInt8,
+    cmp_sel      UInt8,
+    neg          UInt8,
+    tgt_mis      UInt8,
     raw          UInt32
 )
 ENGINE = MergeTree

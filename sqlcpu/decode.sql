@@ -175,6 +175,13 @@ SELECT
     multiIf(op = 51 AND f7 = 1 AND f3 IN (0, 1), 1, 0) AS m_sg2,     -- mul/mulh signed rs2
     multiIf(op = 51 AND f7 = 1 AND f3 IN (1, 2, 3), 1, 0) AS m_hi,   -- mulh/mulhsu/mulhu want high bits
     multiIf(op = 51 AND f7 = 1 AND f3 IN (4, 6), 1, 0) AS d_sg,      -- div/rem signed
+    -- E4 pre-decode flags (issue #128, schema.sql's column-doc comment has
+    -- the full rationale) -- meaningless (0) outside op=99 (the six
+    -- branches), whose f3 values 0..7 are exactly this block's
+    -- id-assignment order above (0 beq, 1 bne, 4 blt, 5 bge, 6 bltu, 7 bgeu).
+    multiIf(op = 99 AND f3 IN (4, 5), 1, op = 99 AND f3 IN (6, 7), 2, 0) AS cmp_sel,  -- 0 eq, 1 lt_signed, 2 lt_unsigned
+    multiIf(op = 99 AND f3 IN (1, 5, 7), 1, 0) AS neg,                -- bne/bge/bgeu negate the shared primitive
+    multiIf(bitAnd(tgt, 3) != 0, 1, 0) AS tgt_mis,                    -- from THIS row's own tgt above, never re-derived
     w AS raw
 FROM fields
 ORDER BY word_addr;

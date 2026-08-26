@@ -345,3 +345,60 @@ def test_main_writes_manifest_with_trace_sha256_and_final_checkpoint(tmp_path, m
     assert fs["fbhash"] == f"{fb_hash(bytes(64_000), bytes(768)):016x}"
     assert meta["frame_commit_count"] == 1
     assert meta["last_frame_commit"] == {"frame_no": 0, "committed_icount": 2}
+
+    # --image/--manifest/--pinned-hash were all passed as absolute paths
+    # under the monkeypatched REPO_ROOT (tmp_path) -- generated_by should
+    # still render them repo-relative, not as REPO_ROOT-specific absolute
+    # paths (see test_generated_by_substitutes_out_of_repo_pinned_hash_path
+    # for the case where a path is NOT under REPO_ROOT at all).
+    assert str(tmp_path) not in meta["generated_by"]
+    assert "--image rom.bin" in meta["generated_by"]
+    assert "--manifest manifest.json" in meta["generated_by"]
+    assert "--pinned-hash PINNED_HASH" in meta["generated_by"]
+
+
+def test_generated_by_substitutes_out_of_repo_pinned_hash_path(tmp_path, monkeypatch, tmp_path_factory):
+    # Regression for #149's review: a run had used a scratch --pinned-hash
+    # file living outside the repo (to dodge a mid-run git rebase
+    # conflict without touching branch state), and the manifest's
+    # generated_by faithfully echoed that sandbox path verbatim -- a
+    # provenance field whose whole job is letting someone else reproduce
+    # the command, recording a path that resolves for nobody. The fix:
+    # a --pinned-hash (or --image/--manifest) value that doesn't resolve
+    # under REPO_ROOT is rendered as that flag's own repo-relative
+    # default instead -- truthful because assert_pinned_hash() already
+    # enforces the pointed-at file has the same content as the default,
+    # and that shared value (rom_sha256) is recorded separately anyway.
+    import hashlib
+    import json as json_module
+    import sys as sys_module
+
+    from .asm import ecall
+
+    image = _image_from_words([ecall()])
+    image_path = tmp_path / "rom.bin"
+    image_path.write_bytes(image)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json_module.dumps({"text_start": None, "text_end": None}))
+    pinned_hash = hashlib.sha256(image).hexdigest()
+
+    # A pinned-hash file OUTSIDE tmp_path (REPO_ROOT), same as the real
+    # scratch-file scenario that produced the #149 diff.
+    outside_dir = tmp_path_factory.mktemp("outside-repo-root")
+    pinned_hash_path = outside_dir / "PINNED_HASH_frozen"
+    pinned_hash_path.write_text(pinned_hash)
+
+    monkeypatch.setattr(demo3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        sys_module,
+        "argv",
+        ["gen_demo3_trace", "--image", str(image_path), "--manifest", str(manifest_path), "--pinned-hash", str(pinned_hash_path)],
+    )
+    assert demo3.main() == 0
+
+    meta_path = tmp_path / "refemu" / "reference_traces" / "demo3" / f"demo3.{pinned_hash[:12]}.json"
+    meta = json_module.loads(meta_path.read_text())
+    assert meta["rom_sha256"] == pinned_hash  # the value that actually matters, verified regardless
+    assert str(outside_dir) not in meta["generated_by"]
+    assert str(pinned_hash_path) not in meta["generated_by"]
+    assert "--pinned-hash rom/PINNED_HASH" in meta["generated_by"]

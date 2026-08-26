@@ -10,7 +10,7 @@
     "text_start": 2147483648,
     "text_end": 2147878944
   },
-  "generated_by": "refemu/scripts/gen_demo3_trace.py --pinned-hash /private/tmp/claude-501/-Users-marcus-Develop-ClickDOOM/4a266fd8-f4ac-4c5d-95f6-a02dc2e6d114/scratchpad/PINNED_HASH_frozen",
+  "generated_by": "refemu/scripts/gen_demo3_trace.py --pinned-hash rom/PINNED_HASH",
   "trace_file": "demo3.eabb12ed4f18.tsv",
   "trace_file_sha256": "b4d00e2ea894257c9b3b47abfeb4b2b7aaf03c6197f8d825e0dc38028f37e61d",
   "trace_file_bytes": 25440692,

@@ -393,6 +393,46 @@ def run(
     }
 
 
+def _reproducible_generated_by(argv: list[str], parser: argparse.ArgumentParser) -> str:
+    """Render this run's invocation for the manifest's `generated_by`
+    field, substituting any of --image/--manifest/--pinned-hash pointed
+    outside REPO_ROOT (e.g. a throwaway scratch file used to dodge a
+    mid-run git rebase -- see #149's review, which caught this landing
+    verbatim in the committed demo3 manifest) with that flag's own
+    default, rendered repo-relative.
+
+    `generated_by`'s whole job is letting someone else reproduce the
+    exact command; an absolute path into a sandbox that no longer exists
+    resolves for nobody. The substitution is truthful even when a flag
+    really was overridden: each of these three flags' *content* is
+    already captured verbatim elsewhere in this same manifest
+    (`rom_sha256`, `rom_manifest`) or enforced content-equal to the
+    default by `assert_pinned_hash()` -- the literal filesystem path that
+    held it during generation was never part of the answer. An in-repo
+    override is kept, but rendered repo-relative rather than absolute,
+    since REPO_ROOT itself is a path specific to one machine's checkout.
+    """
+    substitutable = {"--image", "--manifest", "--pinned-hash"}
+    out = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in substitutable and i + 1 < len(argv):
+            dest = token[2:].replace("-", "_")
+            default = parser.get_default(dest)
+            value = argv[i + 1]
+            try:
+                rendered = str(Path(value).resolve().relative_to(REPO_ROOT))
+            except ValueError:
+                rendered = str(Path(default).resolve().relative_to(REPO_ROOT))
+            out.extend([token, rendered])
+            i += 2
+            continue
+        out.append(token)
+        i += 1
+    return "refemu/scripts/gen_demo3_trace.py " + " ".join(out)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", default=str(REPO_ROOT / "rom" / "build" / "doom-rv32im.bin"))
@@ -571,7 +611,7 @@ def main() -> int:
             "spec_version": manifest.get("spec_version"),
             "rom_sha256": rom_sha256,
             "rom_manifest": manifest,
-            "generated_by": "refemu/scripts/gen_demo3_trace.py " + " ".join(sys.argv[1:]),
+            "generated_by": _reproducible_generated_by(sys.argv[1:], parser),
             "trace_file": tsv_path.name,
             "trace_file_sha256": trace_sha256,
             "trace_file_bytes": tsv_path.stat().st_size,

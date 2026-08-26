@@ -24,11 +24,15 @@ late (#69, #81, #83, #101):
      `word_array_hash`, not a hand-rolled comparison), per the plan posted
      on issue #25.
 
-Requires `just up` (clickdoom-ch reachable via `docker exec`).
+Requires a reachable ClickHouse: locally, `just up` (clickdoom-ch via
+`docker exec` -- the default below, unchanged for local dev). In CI (#116),
+`docker exec clickdoom-ch` doesn't exist -- see test_fold.py's matching
+comment for the full reasoning. Set CLICKHOUSE_HOST to switch modes.
 
 Run: cd executor && uv run pytest tests/test_commit.py -v
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -48,9 +52,22 @@ RAM_BASE = config.RAM_BASE
 RAM_BASE_WORD = RAM_BASE >> 2
 SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sqlcpu" / "schema.sql"
 
+# See test_fold.py's matching CH_HOST comment -- same switch, same reasoning.
+CH_HOST = os.environ.get("CLICKHOUSE_HOST")
+
 
 def ch(sql, fmt=None):
-    cmd = ["docker", "exec", "-i", CONTAINER, "clickhouse-client", "--multiquery"]
+    if CH_HOST:
+        cmd = ["clickhouse-client",
+               "--host", CH_HOST,
+               "--port", os.environ.get("CLICKHOUSE_PORT", "9000"),
+               "--user", os.environ.get("CLICKHOUSE_USER", "default"),
+               "--database", os.environ.get("CLICKHOUSE_DATABASE", "clickdoom"),
+               "--multiquery"]
+        if os.environ.get("CLICKHOUSE_PASSWORD"):
+            cmd += ["--password", os.environ["CLICKHOUSE_PASSWORD"]]
+    else:
+        cmd = ["docker", "exec", "-i", CONTAINER, "clickhouse-client", "--multiquery"]
     if fmt:
         cmd += ["--format", fmt]
     r = subprocess.run(cmd, input=sql, capture_output=True, text=True)
@@ -305,10 +322,20 @@ def test_bootstrap_script_seeds_once_and_is_a_noop_on_replay():
     # below, rather than one per site.
     PY = sys.executable  # purity-ok: stdlib interpreter path, not a ClickHouse UDF
     bootstrap = str(Path(__file__).resolve().parents[1] / "bootstrap.py")
-    client = "docker exec -i clickdoom-ch clickhouse-client"
+    # bootstrap.py appends --host/--port/--user/--database itself regardless
+    # of --client's shape (see bootstrap.py: `args.client.split() +
+    # ["--host", ...]`), so both forms below work unmodified -- only the
+    # client program named differs, same CH_HOST switch as this file's ch().
+    # --password is needed in network mode (the container requires one over
+    # the wire, per docker-compose.yml/#3-#4) and harmless-but-unnecessary in
+    # docker-exec mode (the container's own localhost access needs none).
+    client = "clickhouse-client" if CH_HOST else "docker exec -i clickdoom-ch clickhouse-client"
+    host = CH_HOST or "localhost"
+    extra = ["--password", os.environ["CLICKHOUSE_PASSWORD"]] if CH_HOST and os.environ.get("CLICKHOUSE_PASSWORD") else []
 
     result = subprocess.run(
-        [PY, bootstrap, "--host", "localhost", "--port", "9000", "--database", DB, "--client", client],
+        [PY, bootstrap, "--host", host, "--port", os.environ.get("CLICKHOUSE_PORT", "9000"),
+         "--database", DB, "--client", client] + extra,
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
@@ -321,7 +348,8 @@ def test_bootstrap_script_seeds_once_and_is_a_noop_on_replay():
 
     # replay must be a no-op, not a second batch_id=0 row
     result2 = subprocess.run(
-        [PY, bootstrap, "--host", "localhost", "--port", "9000", "--database", DB, "--client", client],
+        [PY, bootstrap, "--host", host, "--port", os.environ.get("CLICKHOUSE_PORT", "9000"),
+         "--database", DB, "--client", client] + extra,
         capture_output=True, text=True,
     )
     assert result2.returncode == 0, result2.stderr

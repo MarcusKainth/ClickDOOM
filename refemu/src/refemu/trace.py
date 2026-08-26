@@ -31,6 +31,23 @@ Decisions, and why:
   this byte sequence -- no re-serialization needed, which is also a
   reason to keep it that way rather than "optimizing" the in-memory
   layout later without updating this comment.
+
+- **fbhash: a separate column, not folded into ramhash.** Settled in
+  issue #55/#56 after refemu and sqlcpu independently proposed the same
+  answer before comparing notes: SPEC §7's ram_hash covers only the RAM
+  region, leaving FRAMEBUFFER and PALETTE (SPEC §2) unchecked by any
+  checkpoint. A rendering bug that writes the wrong byte to the
+  framebuffer perturbs no register and isn't in RAM, so reghash and
+  ramhash both stay identical while the actual DOOM output silently
+  diverges -- exactly the failure mode SPEC §7 exists to catch early. A
+  *separate* column (rather than one hash over all three regions) means a
+  divergence hunt learns immediately which region disagreed, without
+  having to re-hash subregions after the fact to bisect -- real value
+  specifically because Phase 3 is when this needs to be fast, not just
+  possible. Bytes: xxh64 over FRAMEBUFFER (64,000 B) `||` PALETTE (768 B),
+  address-ascending, concatenated in that order, 64,768 bytes total; same
+  seed and hex formatting as every other hash column here. Present only
+  on RAM_HASH_INTERVAL lines, same cadence as ramhash.
 """
 
 from __future__ import annotations
@@ -62,11 +79,31 @@ def ram_hash(ram: bytes | bytearray) -> int:
     return xxhash.xxh64(bytes(ram), seed=XXH64_SEED).intdigest()
 
 
-def format_checkpoint(icount: int, pc: int, reghash: int, ramhash: int | None = None) -> str:
-    """One SPEC §7 TSV line: icount<TAB>pc_hex<TAB>reghash_hex[<TAB>ramhash_hex]."""
+def fb_hash(framebuffer: bytes | bytearray, palette: bytes | bytearray) -> int:
+    """xxh64 over FRAMEBUFFER || PALETTE (issue #55/#56), each already
+    stored address-ascending -- same no-re-serialization property as
+    `ram_hash`. MMIO is deliberately excluded: it's live device state,
+    not a value two independently-running engines should agree on
+    bit-for-bit."""
+    return xxhash.xxh64(bytes(framebuffer) + bytes(palette), seed=XXH64_SEED).intdigest()
+
+
+def format_checkpoint(
+    icount: int,
+    pc: int,
+    reghash: int,
+    ramhash: int | None = None,
+    fbhash: int | None = None,
+) -> str:
+    """One SPEC §7 TSV line:
+    icount<TAB>pc_hex<TAB>reghash_hex[<TAB>ramhash_hex<TAB>fbhash_hex].
+    `fbhash` is only meaningful (and only ever passed) alongside `ramhash`
+    -- both are RAM_HASH_INTERVAL-cadence columns, per issue #55/#56."""
     fields = [str(icount), f"{pc:08x}", f"{reghash:016x}"]
     if ramhash is not None:
         fields.append(f"{ramhash:016x}")
+    if fbhash is not None:
+        fields.append(f"{fbhash:016x}")
     return "\t".join(fields)
 
 
@@ -89,8 +126,10 @@ def run_trace(cpu: CPU, max_instructions: int) -> tuple[list[str], Halted | None
             break
         if cpu.icount % CHECKPOINT_INTERVAL == 0:
             rh = reg_hash(cpu.pc, cpu.regs)
-            ramh = ram_hash(cpu.memory.ram) if cpu.icount % RAM_HASH_INTERVAL == 0 else None
-            lines.append(format_checkpoint(cpu.icount, cpu.pc, rh, ramh))
+            at_ram_interval = cpu.icount % RAM_HASH_INTERVAL == 0
+            ramh = ram_hash(cpu.memory.ram) if at_ram_interval else None
+            fbh = fb_hash(cpu.memory.framebuffer, cpu.memory.palette) if at_ram_interval else None
+            lines.append(format_checkpoint(cpu.icount, cpu.pc, rh, ramh, fbh))
     return lines, halt
 
 
@@ -103,8 +142,10 @@ def iter_trace(cpu: CPU, max_instructions: int) -> Iterator[str]:
         cpu.step()
         if cpu.icount % CHECKPOINT_INTERVAL == 0:
             rh = reg_hash(cpu.pc, cpu.regs)
-            ramh = ram_hash(cpu.memory.ram) if cpu.icount % RAM_HASH_INTERVAL == 0 else None
-            yield format_checkpoint(cpu.icount, cpu.pc, rh, ramh)
+            at_ram_interval = cpu.icount % RAM_HASH_INTERVAL == 0
+            ramh = ram_hash(cpu.memory.ram) if at_ram_interval else None
+            fbh = fb_hash(cpu.memory.framebuffer, cpu.memory.palette) if at_ram_interval else None
+            yield format_checkpoint(cpu.icount, cpu.pc, rh, ramh, fbh)
 
 
 def _main() -> int:  # pragma: no cover -- thin argument-parsing shell

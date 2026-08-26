@@ -18,6 +18,7 @@ from refemu.memory import Memory
 from refemu.trace import (
     CHECKPOINT_INTERVAL,
     RAM_HASH_INTERVAL,
+    fb_hash,
     format_checkpoint,
     iter_trace,
     ram_hash,
@@ -60,6 +61,22 @@ def test_ram_hash_matches_clickhouse():
     assert ram_hash(ram) == 17854084224570037232
 
 
+def test_fb_hash_matches_clickhouse():
+    fb = bytes(range(16))
+    palette = bytes(range(200, 208))
+    # ClickHouse: SELECT xxHash64(unhex('000102030405060708090a0b0c0d0e0fc8c9cacbcccdcecf'))
+    assert fb_hash(fb, palette) == 10814741248291066246
+
+
+def test_fb_hash_order_matters():
+    # framebuffer || palette, not the other way around -- swapping them
+    # must not produce the same digest (guards against an accidental
+    # concat-order regression, which xxh64 gives no other signal about).
+    fb = bytes(range(16))
+    palette = bytes(range(200, 208))
+    assert fb_hash(fb, palette) != fb_hash(palette, fb)
+
+
 def test_format_checkpoint_no_ram_hash():
     line = format_checkpoint(4096, 0x8000_1000, 0x1234_5678_9ABC_DEF0)
     assert line == "4096\t80001000\t123456789abcdef0"
@@ -68,6 +85,21 @@ def test_format_checkpoint_no_ram_hash():
 def test_format_checkpoint_with_ram_hash():
     line = format_checkpoint(1_048_576, 0x8000_2000, 0xFF, 0xAB)
     assert line == "1048576\t80002000\t00000000000000ff\t00000000000000ab"
+
+
+def test_format_checkpoint_with_fb_hash():
+    line = format_checkpoint(1_048_576, 0x8000_2000, 0xFF, 0xAB, 0xCD)
+    assert line == "1048576\t80002000\t00000000000000ff\t00000000000000ab\t00000000000000cd"
+
+
+def test_format_checkpoint_fb_hash_requires_ram_hash_column_present():
+    # fbhash is only ever meaningful alongside ramhash (same cadence,
+    # issue #55/#56) -- passing fbhash without ramhash would produce a
+    # malformed line (fbhash landing in the ramhash column position).
+    # format_checkpoint doesn't forbid it, but callers (run_trace/
+    # iter_trace) never do this; document the real shape instead.
+    line = format_checkpoint(1, 0, 0, ramhash=0, fbhash=0)
+    assert line.count("\t") == 4  # icount, pc, reghash, ramhash, fbhash
 
 
 def test_format_checkpoint_lowercase_zero_padded():
@@ -128,3 +160,27 @@ def test_iter_trace_matches_run_trace(cpu):
 def test_ram_hash_interval_is_multiple_of_checkpoint_interval():
     # Load-bearing assumption in run_trace/iter_trace's boundary check.
     assert RAM_HASH_INTERVAL % CHECKPOINT_INTERVAL == 0
+
+
+def test_run_trace_threads_fb_hash_from_real_cpu_memory(cpu, monkeypatch):
+    # Retiring a real RAM_HASH_INTERVAL's worth of instructions (1,048,576)
+    # just to see a ramhash/fbhash column would be wasteful (same reasoning
+    # as test_run_trace_ram_hash_only_at_ram_hash_interval above), so lower
+    # the interval to CHECKPOINT_INTERVAL for this test only -- this still
+    # exercises the real code path (run_trace reading cpu.memory.framebuffer/
+    # palette), not just fb_hash() in isolation.
+    import refemu.trace as trace_module
+
+    monkeypatch.setattr(trace_module, "RAM_HASH_INTERVAL", CHECKPOINT_INTERVAL)
+
+    cpu.memory.framebuffer[0] = 0xAB
+    cpu.memory.palette[0] = 0xCD
+    words = [addi(1, 1, 1)] * CHECKPOINT_INTERVAL + [ecall()]
+    load(cpu, words)
+    lines, halt = trace_module.run_trace(cpu, max_instructions=CHECKPOINT_INTERVAL + 10)
+
+    assert len(lines) == 1
+    _icount_str, _pc_hex, _reghash_hex, _ramhash_hex, fbhash_hex = lines[0].split("\t")
+    expected = fb_hash(cpu.memory.framebuffer, cpu.memory.palette)
+    assert fbhash_hex == f"{expected:016x}"
+    assert halt is not None

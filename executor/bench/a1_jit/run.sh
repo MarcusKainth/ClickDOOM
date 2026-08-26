@@ -37,10 +37,10 @@ fi
 
 printf 'variant\tast_nodes\tislands\tcompile_us\tcompile_bytes\tms\tsink\n'
 for V in $VARIANTS; do
-  python3 gen.py "$V" "$K" "$JIT" "$MINCOUNT" "$LINKS" > /tmp/a1_$V.sql
-  NODES=$({ echo "EXPLAIN AST"; cat /tmp/a1_$V.sql; } | ch --multiquery | wc -l | tr -d ' ')
+  python3 gen.py "$V" "$K" "$JIT" "$MINCOUNT" "$LINKS" > /tmp/a1_"$V".sql
+  NODES=$({ echo "EXPLAIN AST"; cat /tmp/a1_"$V".sql; } | ch --multiquery | wc -l | tr -d ' ')
   QID="${TAG}_${V}_$$"
-  SINK=$(ch --query_id "$QID" --multiquery < /tmp/a1_$V.sql | tr '\t' '/')
+  SINK=$(ch --query_id "$QID" --multiquery < /tmp/a1_"$V".sql | tr '\t' '/')
   ch --query "SYSTEM FLUSH LOGS" >/dev/null
   ROW=$(ch --query "SELECT ProfileEvents['CompileFunction'], ProfileEvents['CompileExpressionsMicroseconds'], ProfileEvents['CompileExpressionsBytes'], query_duration_ms FROM system.query_log WHERE query_id='$QID' AND type='QueryFinish' LIMIT 1")
   printf '%s\t%s\t%s\t%s\n' "$V" "$NODES" "$ROW" "$SINK"

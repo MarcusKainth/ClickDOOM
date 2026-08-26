@@ -81,6 +81,27 @@ MANIFEST=""
 K=60000
 HWM=20000
 BATCHES=3
+# STALE as of #175 (R_DrawColumn/R_DrawSpan unroll, PINNED_HASH 9a6a47d0...):
+# this was frame 200's icount against the pre-unroll ROM
+# (eabb12ed...); the unroll shifts every frame's icount (fewer
+# instructions to reach the same frame -- #175's own frame-hash
+# equivalence gate confirms the *rendered content* doesn't move, only the
+# instruction cost to reach it), so this no longer lands on frame 200
+# precisely.
+#
+# CONFIRMED unasserted, not just unlikely to be hit: gen_snapshot.py's
+# generate() only checks `while cpu.icount < target_icount`, raising on a
+# halt before reaching it -- it never reads or checks frame_commits, so
+# there is no error path that would catch this drifting. Since the new
+# ROM reaches any given icount at a *later* frame than before (fewer
+# instructions per frame), this constant now silently snapshots some
+# frame after 200, not "frame 200 on the new ROM" and not a crash --
+# exactly the "stale constant nothing reads yet" trap, for whoever wires
+# a frame-number check up next. Needs a fresh rom/bench/e7_memfns profile
+# against the new ROM to re-derive frame 200's real icount -- flagged,
+# not blocking this PR, since this bench's gameplay window is "a
+# representative store-heavy stretch," not an asserted/gated value the
+# way #29's milestone icount is.
 GAMEPLAY_TARGET_ICOUNT=233932753
 SNAPSHOT_DIR="${TMPDIR:-/tmp}/clickdoom-canonical-throughput"
 HOST="localhost"
@@ -457,7 +478,11 @@ print(d['pc'], '[' + ','.join(str(r) for r in regs) + ']')
 
   echo "" >&2
   printf 'window\tmode\tk\thwm\tretired\tinstr_per_sec\n'
-  run_window "boot: [0, 15653137)" "$BOOT_DB" "$LOAD_ADDR" "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
+  # 15393136, not the pre-#175 15653137 -- #175's unroll (PINNED_HASH
+  # 9a6a47d0...) moved the boot window's own end icount along with every
+  # other frame's, confirmed via a live refemu run, not carried over by
+  # arithmetic.
+  run_window "boot: [0, 15393136)" "$BOOT_DB" "$LOAD_ADDR" "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]"
 
   echo "" >&2
   echo "# re-checking contention before the second window" >&2

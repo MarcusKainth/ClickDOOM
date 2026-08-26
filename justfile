@@ -140,12 +140,16 @@ preflight-milestone: up
 # The resumable batch-loop runner itself (#110's Phase 2 milestone: first
 # FRAME_COMMIT). Same CLICKDOOM_* overrides as preflight-milestone above,
 # plus CLICKDOOM_TARGET_ICOUNT (default: #110's ratified FRAME_COMMIT
-# target). Calls preflight_milestone.sh internally and refuses to start if
-# it fails -- do not run preflight-milestone separately first, it is
-# redundant. **Do not run this against the shared `clickdoom` database for
-# real without team-lead sign-off** -- #25/#29 gate the actual milestone
-# run (#110); this recipe exists so the instrument itself is one command,
-# not so it is safe to fire at any time.
+# target -- 15,393,136 as of #175's R_DrawColumn/R_DrawSpan unroll,
+# PINNED_HASH 9a6a47d0...; the fb_hash at that icount, fe5d82c0f42d45f1,
+# is unchanged by #175 -- re-derived directly from a live refemu run
+# against the current PINNED_HASH, not carried over by arithmetic on the
+# pre-unroll number). Calls preflight_milestone.sh internally and refuses
+# to start if it fails -- do not run preflight-milestone separately first,
+# it is redundant. **Do not run this against the shared `clickdoom`
+# database for real without team-lead sign-off** -- #25/#29 gate the
+# actual milestone run (#110); this recipe exists so the instrument itself
+# is one command, not so it is safe to fire at any time.
 run-milestone: up
     ./scripts/run_milestone.sh \
         --bin "${CLICKDOOM_ROM_BIN:-rom/build/doom-rv32im.bin}" \
@@ -154,7 +158,7 @@ run-milestone: up
         --hwm "${CLICKDOOM_RUN_HWM:-20000}" \
         --database "${CLICKDOOM_DATABASE:-clickdoom}" \
         --trace "${CLICKDOOM_REFERENCE_TRACE:-refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv}" \
-        --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15653137}" \
+        --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15393136}" \
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
 # All linters + purity check (what CI runs)

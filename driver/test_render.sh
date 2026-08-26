@@ -3,9 +3,12 @@
 # posted on the issue:
 #
 #   1. frame_readout_sql() against REAL refemu data at the milestone
-#      icount (#110's target, 15,653,137) -- reproduces fb_hash
-#      fe5d82c0f42d45f1 or this fails loudly. Not eyeballed: sqlcpu/
-#      checkpoint.py's fb_hash() computes the check, never reimplemented.
+#      icount (#110's target -- 15,393,136 as of #175's unroll, PINNED_HASH
+#      9a6a47d0...; was 15,653,137 before it) -- reproduces fb_hash
+#      fe5d82c0f42d45f1 (unchanged by #175 -- that's the whole point of its
+#      frame-hash equivalence gate) or this fails loudly. Not eyeballed:
+#      sqlcpu/checkpoint.py's fb_hash() computes the check, never
+#      reimplemented.
 #   2. ansi_render_sql() against a small hand-computed synthetic case --
 #      exact byte match against an independently-computed expected escape
 #      sequence, not "looks right in a terminal."
@@ -23,7 +26,14 @@ PORT="9000"
 CH_USER="default"
 PASSWORD="${CLICKHOUSE_PASSWORD:-}"
 CLIENT="clickhouse-client"
-TARGET_ICOUNT=15653137
+# #175: R_DrawColumn/R_DrawSpan unrolled (rom/PINNED_HASH 9a6a47d0...) --
+# the milestone frame's icount moved (fewer instructions to reach the same
+# frame), fb_hash did not (frame-hash equivalence gate, #175, confirmed all
+# 300 frames of the representative window identical). Both re-derived
+# directly from a live refemu run against the current PINNED_HASH, not
+# carried over by arithmetic on the pre-unroll numbers -- see #175 for why
+# that specific shortcut isn't trusted today.
+TARGET_ICOUNT=15393136
 EXPECTED_FBHASH="fe5d82c0f42d45f1"
 FIXTURE_CACHE="${TMPDIR:-/tmp}/clickdoom-frame-fixture/fixture.${TARGET_ICOUNT}.pkl"
 

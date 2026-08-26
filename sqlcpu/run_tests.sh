@@ -103,11 +103,20 @@ for table in cpu_state ram input_queue frames_out console_out decoded; do
 done
 echo "# schema round-trip OK, spec_version defaults correctly on every table" >&2
 
+decode_status="decode vectors: not landed yet (see #18)"
+if [ -x sqlcpu/test_decode.sh ]; then
+  echo "# running decode correctness vectors (issue #18)..." >&2
+  vector_count=$(wc -l < sqlcpu/fixtures/decode_vectors.tsv | tr -d ' ')
+  ./sqlcpu/test_decode.sh --host "$HOST" --port "$PORT" --user "$CH_USER" --password "$PASSWORD" --database "$DATABASE"
+  decode_status="decode vectors: ${vector_count}/${vector_count} passed"
+fi
+
 run_riscv_tests() {
-  # Placeholder until decode (#18) and execute (#19, #20) land. Reports zero
-  # rather than a pass count this script has no way to earn yet.
+  # Placeholder until execute (#19, #20) lands. Reports zero rather than a
+  # pass count this script has no way to earn yet — decode alone (#18) can't
+  # run a riscv-tests binary, only decode it.
   echo "0"
 }
 
 pass_count=$(run_riscv_tests)
-echo "riscv-tests inside ClickHouse: ${pass_count} passed (decode/execute not landed yet — see #18, #19, #20; this script's job today is schema.sql, tracked by #17)"
+echo "riscv-tests inside ClickHouse: ${pass_count} passed (execute not landed yet — see #19, #20). ${decode_status}"

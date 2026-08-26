@@ -4,6 +4,7 @@ build/
 *.elf
 *.bin
 !rom/prebuilt/*.bin
+!refemu/tests/fixtures/riscv_tests/*.bin
 # Traces & benchmark output (regenerate via `just`; do not commit)
 traces/
 *.trace

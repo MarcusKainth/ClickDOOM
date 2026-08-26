@@ -30,14 +30,14 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).
-- A fatal halt — any of §1's conditions above, or a `BAD_ADDR` access outside
-  the memory map (§2) — does not retire the instruction that caused it:
-  `icount` is not incremented, and no architectural state (`pc`, `rd`,
-  memory) is modified. The halt record's `pc` identifies the faulting
-  instruction. `icount` is load-bearing here, not cosmetic — §7's checkpoint
-  trace and §3.1's elastic time both key on it. (#72 — ruled after sqlcpu's
-  riscv-tests harness and refemu/executor disagreed on `icount` by exactly
-  one on every fixture.)
+- A fatal halt does not retire the instruction that caused it: `icount` is
+  not incremented, and no architectural state (`pc`, `rd`, memory) is
+  modified. The halt record's `pc` identifies the faulting instruction.
+  `icount` is load-bearing here, not cosmetic — §7's checkpoint trace and
+  §3.1's elastic time both key on it. This applies to every fatal halt
+  regardless of which section defines it — including `BAD_ADDR` (§2), not
+  only §1's list above. (#72 — ruled after sqlcpu's riscv-tests harness and
+  refemu/executor disagreed on `icount` by exactly one on every fixture.)
 
 ## 2. Memory map
 

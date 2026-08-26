@@ -134,22 +134,31 @@ shape. All tables carry `spec_version String`.
 
 - `cpu_state` — one row per committed batch: `(batch_id UInt64, icount
   UInt64, pc UInt32, regs Array(UInt32) /* len 31, x1..x31 */, halted UInt8,
-  halt_reason LowCardinality(String), exit_code UInt32)`. Implemented as a
-  `VIEW` projecting exactly this shape from `batch_commit` (below) — this
-  shape is a read contract, not a physical-table requirement.
+  halt_reason LowCardinality(String), exit_code UInt32)`. A **durable table,
+  never pruned**, derived from `batch_commit` (below) by the same idempotent
+  flush that populates `ram` and `console_out` — a fourth derivation on
+  identical terms, not a special case. `ReplacingMergeTree` keyed by
+  `batch_id`, so a flush redone after a crash cannot leave two rows for one
+  batch; the derivation is deterministic from a single `batch_commit` row, so
+  any duplicates would be byte-identical anyway, but "one row per committed
+  batch" should be literally true of the table rather than merely true of
+  what a reader happens to select.
 - `batch_commit` — the batch's single atomic write (§6). One row per batch,
   superset of `cpu_state`'s columns plus the per-batch bulky data recovery
   needs to safely re-derive `ram` and `console_out`: `keyq_pos UInt64`
   (cumulative KEYQ pops through this batch), `has_frame UInt8` / `frame_no
   UInt32` (FRAME_COMMIT, if any, this batch), `wl_addr Array(UInt32)`,
   `wl_val Array(UInt32)`, `wl_icount Array(UInt64)` (per-store version — see
-  the versioning note below), `console_bytes Array(UInt8)`. The bulky
-  columns (`wl_*`, `console_bytes`) are bounded by retention on **batch_id
-  lag, not wall-clock time**: only the most recent N batches' bulky columns
-  are kept (N = 16, `executor/config`), older ones dropped by a fixed
-  statement (partition-drop, or a delete keyed on `batch_id < (SELECT
-  max(batch_id) - N FROM batch_commit)`) the driver issues unconditionally
-  every batch — the threshold is computed inside the query, not decided by
+  the versioning note below), `console_bytes Array(UInt8)`. Bounded by
+  retention on **batch_id lag, not wall-clock time**: only the most recent N
+  rows are kept (N = 16, `executor/config`), older ones dropped **whole** by
+  a fixed statement (partition-drop, or a delete keyed on `batch_id <
+  (SELECT max(batch_id) - N FROM batch_commit)`) the driver issues
+  unconditionally every batch. Retention drops entire rows rather than
+  individual columns, and touches **only** `batch_commit` — `cpu_state` is
+  derived and kept forever, so §5's "one row per committed batch" survives
+  the window. That asymmetry is the point: the atomic write is short-lived
+  scaffolding, the derived state is permanent — the threshold is computed inside the query, not decided by
   driver logic, so this stays within PURITY.md's housekeeping allowance. In
   normal operation only the latest row's bulky columns are ever read
   (everything older has already been flushed into `ram`/`console_out`), so
@@ -185,13 +194,17 @@ shape. All tables carry `spec_version String`.
 - `console_out` — `(seq UInt64, byte UInt8)`.
 - `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
   `ram` at ROM load and covering `[text_start, text_end)` only:
-  `(word_addr UInt32, op_id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32,
-  target UInt32, width_mask UInt32, sign_bit UInt32, raw UInt32)`. `op_id` is
-  the collapsed opcode space, including dedicated arms for the fatal-halt
+  `(word_addr UInt32, id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32,
+  tgt UInt32, mk UInt32, sg UInt8, raw UInt32)` — names and types match
+  `sqlcpu/schema.sql` literally, as every other table in this section does.
+  `id` is the collapsed opcode space, including dedicated arms for the fatal-halt
   decode cases (§1): `ecall`, `ebreak`, CSR, and unimplemented/illegal each
   get their own `op_id`, disjoint from the executable arms. `imm` is already
-  sign-extended; `target` holds **only** the absolute branch/jump target word
-  index for branches and `jal` (not `jalr`, which is register-relative and
+  sign-extended; `tgt` holds **only** the absolute branch/jump target as a
+  **byte address** — not a word index — (a word index discards bit 1, which
+  is exactly the bit misaligned-target detection needs; an earlier draft was
+  word-indexed and was reverted for that reason, see §1's eager alignment
+  check) for branches and `jal` (not `jalr`, which is register-relative and
   computed live) — it is never the link value. The link value `jal`/`jalr`
   write to `rd` (`pc + 4`) is **not** stored in `decoded`; it is computed live
   from the executing pc, since it is simple pc-relative arithmetic with

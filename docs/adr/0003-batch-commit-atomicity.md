@@ -27,8 +27,22 @@ derivation from that row, safe to redo any number of times.
    write-log (`wl_addr`/`wl_val`/`wl_icount`), cumulative `keyq_pos`,
    `console_bytes`, and frame-commit info. A single-row `INSERT` is one block,
    one part — ClickHouse's actual atomicity primitive, not an assumption.
-2. **`cpu_state` becomes a view** over `batch_commit`, projecting exactly
-   SPEC §5's existing shape. No consumer of `cpu_state` needs to change.
+2. **`cpu_state` becomes a durable derived table**, populated from
+   `batch_commit` by the same idempotent flush as `ram` and `console_out` —
+   a fourth derivation on identical terms, not a special case. It keeps SPEC
+   §5's exact shape, is never pruned, and is a `ReplacingMergeTree` keyed by
+   `batch_id` so a redone flush cannot leave two rows for one batch. No
+   consumer of `cpu_state` needs to change.
+
+   *An earlier draft made this a `VIEW` over `batch_commit`. Rejected on
+   review (#39): retention drops whole rows, so a view would have silently
+   turned `cpu_state` from an unbounded log into a rolling 16-row window —
+   a behaviour change to a contracted table, even though the column shape
+   was preserved. "Additive, not breaking" was a claim about shape; §5 also
+   says "one row per committed batch", and that is the half a view broke.
+   Nothing reads `cpu_state` beyond `max(batch_id)` today, but Phase 3's
+   divergence hunt is exactly the thing likely to want history we had
+   discarded.*
 3. **`ram` flush is idempotent, not atomic-with-(1).** `INSERT INTO ram
    SELECT ... FROM batch_commit WHERE batch_id = <latest>`. Because `ram` is
    a `ReplacingMergeTree` keyed by `word_addr`/`version`, and each delta's
@@ -51,14 +65,20 @@ derivation from that row, safe to redo any number of times.
    by wall-clock time.** `wl_*` and `console_bytes` on `batch_commit` are
    only ever read for the most-recently-committed row in normal operation
    (everything older has already been flushed into `ram`/`console_out`), so
-   only the last N=16 batches' bulky columns are kept, dropped by a fixed
-   statement (partition-drop, or a delete keyed on the query's own
-   `max(batch_id) - N`) the driver issues unconditionally — the threshold is
-   computed in SQL, not decided by driver logic. This bounds `batch_commit`
-   to a small, constant footprint instead of accumulating gigabytes of
-   write-log arrays over a `demo3` run (~80,000 batches). The small columns
-   (`batch_id` through `exit_code`) are cheap and kept forever, matching
-   §5's "one row per committed batch" for `cpu_state`.
+   only the last N=16 rows are kept, dropped **whole** by a fixed statement
+   (partition-drop, or a delete keyed on the query's own `max(batch_id) - N`)
+   the driver issues unconditionally — the threshold is computed in SQL, not
+   decided by driver logic. This bounds `batch_commit` to a small, constant
+   footprint instead of accumulating gigabytes of write-log arrays over a
+   `demo3` run (~80,000 batches).
+
+   Retention drops entire rows and touches **only** `batch_commit`. The
+   permanent record lives in `cpu_state`, which is derived and never pruned —
+   so §5's "one row per committed batch" survives the window. That asymmetry
+   is the design: the atomic write is short-lived scaffolding, the derived
+   state is what persists. An earlier draft tried to keep the thin columns in
+   `batch_commit` forever while dropping only the bulky ones, which
+   row-level retention cannot do without an update-in-place step.
 
 ### Rejected alternative: retention by wall-clock TTL
 
@@ -97,7 +117,7 @@ mechanism the problem actually calls for."
   duration that causes silent, permanent divergence between `ram` and
   `cpu_state` — the rejected TTL alternative's central flaw doesn't exist
   in this design at all, not just in the common case.
-- Requires a SPEC §5 change (`batch_commit` table, `cpu_state` as a view) —
+- Requires a SPEC §5 change (`batch_commit` table, `cpu_state` as a derived durable table) —
   additive only, no existing shape changes. Filed as issue #35, human-gated
   per CODEOWNERS.
 - `sqlcpu` owns `schema.sql` and must agree the DDL before this lands;

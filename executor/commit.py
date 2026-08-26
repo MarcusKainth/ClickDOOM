@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Idempotent batch-commit flush and retention (#25, ADR-0003): the three
-derivations that turn `batch_commit` -- the batch's single atomic write,
-produced by `fold.py`'s `batch()` -- into `ram`/`console_out`/`cpu_state`'s
-observable state, plus the retention statement that keeps `batch_commit`
-itself bounded.
+"""Idempotent batch-commit flush and retention (#25, ADR-0003; #130/#160):
+the four derivations that turn `batch_commit` -- the batch's single atomic
+write, produced by `fold.py`'s `batch()` -- into
+`ram`/`framebuffer`/`palette`/`console_out`/`cpu_state`'s observable state,
+plus the retention statement that keeps `batch_commit` itself bounded.
 
-All four statements here read `WHERE batch_id = (SELECT max(batch_id) FROM
+All five statements here read `WHERE batch_id = (SELECT max(batch_id) FROM
 batch_commit)` and nothing else -- no batch_id parameter, by design. That
 means "run this after every batch" and "run this unconditionally on driver
 startup, before any new batch, to recover from a crash" are the exact same
@@ -15,13 +15,18 @@ Each is safe to run any number of times for the same latest batch:
   * ram: `word_addr` is the flush's natural dedup key (ReplacingMergeTree),
     and `version` is the store's own absolute icount (fold.py's #101 fix),
     so a redone flush after a crash reinserts byte-identical rows.
+  * fbpal (framebuffer/palette, #130/#160): same argument as ram --
+    word_addr is each region's own natural dedup key, version is the
+    store's own icount. Two INSERT statements (one per table), not one
+    combined statement -- see fbpal_flush_sql()'s own docstring for why
+    there's no rebasing step here unlike ram's.
   * console_out: `seq` is bitShiftLeft(batch_id, 32) + array position -- a
     pure function of (batch_id, position), so a redone flush is also
     byte-identical at the same key (ReplacingMergeTree, agreed with sqlcpu).
   * cpu_state: the whole row is a pure projection of one batch_commit row
     (ReplacingMergeTree keyed by batch_id, SPEC §5) -- same argument.
 
-Usage: commit.py {ram,console_out,cpu_state,retention} [--db DB] [--retention-n N]
+Usage: commit.py {ram,fbpal,console_out,cpu_state,retention} [--db DB] [--retention-n N]
 """
 import argparse
 
@@ -52,6 +57,40 @@ def ram_flush_sql(db=DB):
 SELECT {ram_base_word} + t.1, t.2, t.3
 FROM (
     SELECT arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)) AS t
+    FROM {db}.batch_commit
+    WHERE batch_id = {latest}
+)"""
+
+
+def fbpal_flush_sql(db=DB):
+    """Flush this batch's FRAMEBUFFER/PALETTE write-logs into `framebuffer`/
+    `palette` (SPEC §5, #130/#160) -- the fourth idempotent derivation, same
+    terms as ram_flush_sql above: ReplacingMergeTree keyed by word_addr, a
+    redone flush after a crash reinserts byte-identical rows.
+
+    UNLIKE ram_flush_sql, no RAM_BASE-style rebasing: fb_wl_addr/pal_wl_addr
+    are already relative to each region's own base (fold.py's fb_wa/pal_wa,
+    `bitShiftRight(ADDR - {FRAMEBUFFER,PALETTE}_BASE, 2)`), and
+    `framebuffer`/`palette`.word_addr use that SAME region-relative
+    convention (sqlcpu/schema.sql) -- there is no absolute domain on either
+    side of this flush to reconcile, unlike ram's (wl_addr is RAM_BASE-
+    relative, ram.word_addr is absolute, and the flush must add
+    RAM_BASE >> 2 back on). One statement per region rather than one
+    combined statement across both, since they are two separate tables
+    (#130's write-frequency-asymmetry rationale) with two separate source
+    array-triples -- there is no single arrayZip that spans both."""
+    latest = LATEST_BATCH_ID.format(db=db)
+    return f"""INSERT INTO {db}.framebuffer (word_addr, value, version)
+SELECT t.1, t.2, t.3
+FROM (
+    SELECT arrayJoin(arrayZip(fb_wl_addr, fb_wl_val, fb_wl_icount)) AS t
+    FROM {db}.batch_commit
+    WHERE batch_id = {latest}
+);
+INSERT INTO {db}.palette (word_addr, value, version)
+SELECT t.1, t.2, t.3
+FROM (
+    SELECT arrayJoin(arrayZip(pal_wl_addr, pal_wl_val, pal_wl_icount)) AS t
     FROM {db}.batch_commit
     WHERE batch_id = {latest}
 )"""
@@ -120,7 +159,7 @@ WHERE batch_id < toUInt64(greatest(toInt64(0), toInt64((SELECT max(batch_id) FRO
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("which", choices=["ram", "console_out", "cpu_state", "retention"])
+    p.add_argument("which", choices=["ram", "fbpal", "console_out", "cpu_state", "retention"])
     p.add_argument("--db", default=DB,
                    help="database to generate SQL against (default: %(default)s). "
                         "Override for a benchmark run isolated onto its own database.")
@@ -130,6 +169,8 @@ if __name__ == "__main__":
 
     if args.which == "ram":
         print(ram_flush_sql(db=args.db))
+    elif args.which == "fbpal":
+        print(fbpal_flush_sql(db=args.db))
     elif args.which == "console_out":
         print(console_out_flush_sql(db=args.db))
     elif args.which == "cpu_state":

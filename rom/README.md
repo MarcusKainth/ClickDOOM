@@ -145,9 +145,72 @@ pure C link), which `crt0` correctly never walks — discarding it is the
 honest version of that decision rather than leaving unprocessed bytes
 sitting in `.data`.
 
-`src/dg_hooks_stub.c` replaces `src/main_stub.c` as the "temporary,
-issue-#8-will-replace-this" file — every `DG_*` hook is a no-op standing
-in for the real SPEC §3 MMIO wiring. `src/main.c` is not a placeholder:
-`doomgeneric_Create(0, 0)` is genuinely what this ROM's `main` does
-(doomgeneric's own documented usage pattern), since `D_DoomMain()` never
-returns.
+`src/dg_hooks_stub.c` was the "temporary, issue-#8-will-replace-this" file
+— every `DG_*` hook a no-op standing in for the real SPEC §3 MMIO wiring.
+`src/main.c` is not a placeholder: `doomgeneric_Create(0, 0)` is genuinely
+what this ROM's `main` does (doomgeneric's own documented usage pattern),
+since `D_DoomMain()` never returns.
+
+## DG_* platform hooks (issue #8)
+
+`src/dg_hooks.c` retires `src/dg_hooks_stub.c` with the real thing, wired
+against SPEC §3 MMIO instead of SDL/X11/Win32. No patch to `rom/vendor/`
+was needed for any of it:
+
+- **8bpp palette-indexed framebuffer, not doomgeneric's default 32bpp
+  RGBA (SPEC §2's whole rationale: 4x fewer stores per frame).**
+  doomgeneric already ships exactly this mode — `-DCMAP256
+  -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200` (`rom/Makefile`) makes
+  `pixel_t` a `uint8_t` and sizes `DG_ScreenBuffer` to match
+  `SCREENWIDTH`/`SCREENHEIGHT` (320x200, hardcoded in `i_video.h`,
+  independent of the `DOOMGENERIC_RESX`/`RESY` knob) exactly, so
+  doomgeneric's own internal scaling computes 1:1 and `DG_ScreenBuffer` is
+  already byte-identical to SPEC §2's `FRAMEBUFFER` region before
+  `DG_DrawFrame` even runs. `DG_DrawFrame` copies those 64,000 bytes as
+  16,000 word stores (not byte stores — that 4x store-count win is the
+  actual point of the 8bpp choice, so a byte-at-a-time copy would throw
+  half of it away), then writes `FRAME_COMMIT`.
+- **Palette:** doomgeneric's `CMAP256` mode exposes `colors[256]` /
+  `palette_changed` as `extern` globals from `i_video.c` specifically for
+  a platform to consume this way — there's no `DG_SetPalette` hook in
+  doomgeneric.h because none is needed. `DG_DrawFrame` packs them into 768
+  bytes (192 word stores) and writes SPEC §2's `PALETTE` region only when
+  `palette_changed`, clearing the flag after. `colors[]` is
+  gamma-corrected (`I_SetPalette` applies `gammatable[usegamma]`); SPEC
+  doesn't say anything about gamma, and reading the already-corrected
+  palette is what every other doomgeneric `CMAP256` port does.
+- **`DG_GetTicksMs`/`DG_GetKey`:** direct reads of `TICKS_MS`/`KEYQ`.
+  `DG_GetKey` returns 0 on an empty queue (matching `i_input.c`'s `while
+  (DG_GetKey(&pressed, &key))` drain-loop contract) and decodes SPEC
+  §3.2's `(pressed << 8) | doomkey` otherwise.
+- **`DG_SleepMs`:** a bounded busy-poll on `TICKS_MS` until it advances by
+  the requested amount — not a real sleep, deliberately. SPEC §3.1's
+  elastic time means "waiting" *is* retiring instructions; a real
+  wall-clock wait would be exactly the kind of host-environment read SPEC
+  §8 forbids on a computation path.
+- **`EXIT` on program stop** was already covered by issue #7's
+  `_exit`/`_kill` shims (newlib's `exit()`/`abort()` both route through
+  them) — nothing new needed here.
+
+**Verified by actually booting, not just building.** Since #9 (the WAD)
+hasn't landed, the real DOOM engine can't reach `DG_DrawFrame`/`DG_GetKey`
+yet — it fails at IWAD search first (`I_Error`, confirmed via a refemu
+boot: halts `EXIT` at icount≈827K, matching the finding from issue #7's
+review). So issue #8's "each hook exercised at least once in a refemu
+boot" was proven with a small scratch harness (not committed — crt0 +
+syscalls + `dg_hooks.c` + a `main` that calls each `DG_*` function
+directly with known test data, in place of the full engine) booted
+through refemu with a key event pre-pushed via `Mmio.push_key()`:
+
+```
+result_ticks0 = 4                          # DG_GetTicksMs: reads straight through
+result_had_event_1 = 1, pressed=1, key=0x1d  # DG_GetKey: pre-pushed event, correctly decoded
+result_had_event_2 = 0                     # DG_GetKey: empty queue after the pop
+result_ticks_after_sleep = 54              # DG_SleepMs(50): 54 - 4 == 50, exact
+frame_commits = [(0, 883091), (1, 963115)] # DG_DrawFrame x2: FRAME_COMMIT = 0, then 1
+framebuffer matches expected pattern: True # byte-exact, all 64,000 bytes
+palette matches expected pattern: True     # byte-exact, all 768 bytes
+```
+
+Every hook, exercised, MMIO trace matching SPEC §3 exactly — not asserted,
+read back from the emulator's own memory after the run.

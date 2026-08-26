@@ -250,11 +250,37 @@ Materialize `ram` into the batch's constant array with `FINAL`, **not**
 ## 6. Batch execution contract
 
 The driver invokes one batch = one `INSERT ... SELECT` executing up to `K`
-instructions (`K` default **50,000**; tunable). 50,000 is the measured optimum,
-not a guess: below it the ~0.30 s per-batch fixed cost dominates, above it the
-write-log's superlinear growth cancels the remaining amortization (8,721 /
+instructions (`K` default **50,000**; tunable). **50,000 was Phase 0's
+measured optimum for its prototype fold** (`executor/bench/phase0/
+fold_predecoded.py`, before SPEC §1's halt semantics, the real 31-element
+(no-`x0`-slot) register file, `SELF_MODIFY` detection, or MMIO (§3)
+existed): below it the ~0.30 s per-batch fixed cost dominated, above it the
+write-log's superlinear growth cancelled the remaining amortization (8,721 /
 11,894 / 11,628 instructions/sec end-to-end at K = 10,000 / 50,000 / 200,000 —
-`executor/bench/phase0/RESULTS.md`). A batch ends early on: halt,
+`executor/bench/phase0/RESULTS.md`).
+
+**Those are historical prototype numbers, not the current fold's
+throughput, and citing them without that label is actively misleading —
+see #96.** Under this fold's own established cost model (~0.8 µs per
+evaluated expression node per step, independent of whether the step
+retires — Phase 0's own finding, ADR-0001), correctness the prototype
+never implemented is paid on every instruction, not only the ones that
+exercise it: ADR-0004 measured SPEC §1's halt semantics alone at 1,159
+instructions/sec end-to-end (K=50,000) and retired the ≥10,000 instr/sec
+threshold ADR-0001 originally checked the Phase 0 numbers against (§9).
+`#86` (a state-reload fix) and `#88` (MMIO, §3) have moved the number
+again since; current measured real-ROM throughput is **~1,300
+instructions/sec**. #104 sets the actual target this needs to clear:
+**≥5,000 instructions/sec** (a week-long `-timedemo demo3` run, ~3.7× the
+current figure), stretch **≥11,000** (restores the ~3-day run the phase
+plan implicitly assumed when Phase 0's fictional 11,894 was still believed
+current). Whether `K = 50,000` itself is still the right default under the
+current cost structure is a separate, open question — issue #80 tracks
+whether the write-log high-water mark now binds before `K` does for
+store-dense code, which would make this exact value moot for a different
+reason than the one that originally set it; the default here is unchanged
+pending that answer, not because it has been re-confirmed against the real
+fold. A batch ends early on: halt,
 `FRAME_COMMIT` write, or write-log high-water mark. Batch commit is atomic:
 either all effects (ram deltas, cpu_state row, MMIO side effects) land or
 none do. "Atomic" is a statement about externally observable state, not a
@@ -311,9 +337,22 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
 Resolved by the Phase 0 benchmark (evidence:
 `executor/bench/phase0/RESULTS.md`; decisions: ADR-0001, ADR-0002):
 
-- [x] **arrayFold throughput.** 8,721 / 11,894 / 11,628 instructions per second
-      end-to-end at K = 10,000 / 50,000 / 200,000, against ADR-0001's ≥10,000
-      threshold. ADR-0001 **accepted**.
+- [x] **arrayFold throughput.** Phase 0's *prototype* fold measured 8,721 /
+      11,894 / 11,628 instructions per second end-to-end at K = 10,000 /
+      50,000 / 200,000, against ADR-0001's ≥10,000 threshold, and ADR-0001
+      was **accepted** on that basis. **Superseded by ADR-0004**: the real
+      fold (SPEC §1 halt semantics, the 31-element register file,
+      `SELF_MODIFY` detection, MMIO §3 — none of which the prototype
+      implemented) does not clear that threshold. ADR-0004 measured 1,159
+      instructions/sec end-to-end at K=50,000 (issue #23) and retired the
+      ≥10,000 figure as a merge gate for correctness work; current
+      real-ROM throughput is **~1,300 instructions/sec** after `#86`/`#88`.
+      Issue #104 sets the number that actually matters now — ≥5,000
+      instr/sec for a week-long `demo3` run, stretch ≥11,000 to restore
+      the ~3-day run Phase 0's number implied — and issue #96 is the fuller
+      account of the gap. The architectural decision (arrayFold, write-log
+      memory, K=50,000 as a starting default) still stands; only the
+      acceptance number does not.
 - [x] **Accumulator copy with large captured constant arrays.** Does not
       happen. Fold throughput is flat across a 6,144× range in captured-array
       size (4 KiB → 24 MiB: 113,895 vs 106,951 instructions/sec). Holding all

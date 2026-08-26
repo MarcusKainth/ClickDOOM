@@ -5,8 +5,7 @@
 #
 # Nothing here assumes a locally installed cross toolchain: every compile
 # and link step runs inside the pinned image, mounted at a fixed /work
-# regardless of host path, so the build reproduces byte-for-byte on any host
-# with Docker, including CI.
+# regardless of host path.
 
 SHELL := /bin/bash
 
@@ -14,6 +13,25 @@ IMAGE      := clickdoom-rom-toolchain
 IMAGE_TAG  := 15.2.0-1
 DOCKERFILE := toolchain/Dockerfile
 BUILD      := build
+
+# Always the same container *platform*, regardless of what CPU `docker`
+# itself is running on (issue #10, found by PINNED_HASH). toolchain/
+# Dockerfile picks the right xpack tarball per TARGETARCH -- but "right"
+# there meant "matches the host," and the linux-arm64 and linux-x64 xpack
+# releases of the *same* toolchain version turned out not to be byte-
+# identical: their prebuilt newlib.a each embed a handful of __FILE__-based
+# assert() paths from xpack's own build machine (e.g.
+# ".../build/linux-arm64/sources/newlib-.../dtoa.c" vs ".../linux-x64/...")
+# baked into `libc.a`, which we link. That's a real, if inert (the strings
+# are inside `assert()` calls that never fire in this program), difference
+# between the two tarballs' compiled output -- 182 bytes, three arm64/amd64
+# rebuilds all confirmed it, none of them a fluke. Pinning the *container's*
+# platform, not just its image digest, means the ROM is always built by the
+# literal same libc.a regardless of which architecture `docker build` is
+# invoked from -- under emulation (e.g. QEMU on Apple Silicon) it's slower,
+# never wrong. CI runs amd64 natively; this makes every other host match it
+# exactly rather than merely "close."
+PLATFORM := linux/amd64
 
 BIN      := $(BUILD)/doom-rv32im.bin
 ELF      := $(BUILD)/doom-rv32im.elf
@@ -40,7 +58,20 @@ DG_EXCLUDE := doomgeneric_allegro.c doomgeneric_emscripten.c \
               doomgeneric_sosox.c doomgeneric_win.c doomgeneric_xlib.c \
               i_allegromusic.c i_allegrosound.c i_sdlmusic.c i_sdlsound.c \
               icon.c gusconf.c mus2mid.c
-DOOM_SRCS := $(filter-out $(addprefix $(DG_DIR)/,$(DG_EXCLUDE)),$(wildcard $(DG_DIR)/*.c))
+# $(sort ...) is load-bearing, not tidiness. $(wildcard) order comes from
+# the *host's* raw directory-enumeration syscall -- make expands this once,
+# on whatever OS invoked `make`, before the file list ever reaches the
+# container -- found via issue #10's PINNED_HASH, the first check that
+# ever compared a macOS-built ROM against a Linux-built one. macOS
+# happened to return these sorted; Linux (every CI runner, and a
+# QEMU-emulated Linux container) does not, and source file order changes
+# where each translation unit's code/data lands in the linked binary:
+# three different hosts (macOS arm64, Linux amd64 under QEMU, GitHub's
+# real Linux amd64 runner) produced three different sha256 values, all
+# from the identical set of files, before this line had $(sort). $(sort)
+# also de-duplicates, but the actual point is making the order a property
+# of `make` itself, never of whichever filesystem happened to run it.
+DOOM_SRCS := $(filter-out $(addprefix $(DG_DIR)/,$(DG_EXCLUDE)),$(sort $(wildcard $(DG_DIR)/*.c)))
 
 # src/dg_hooks.c, src/main.c and src/syscalls.c are the real thing, not
 # placeholders — issue #8 retired the last stand-in (src/dg_hooks_stub.c).
@@ -99,7 +130,7 @@ all: $(BIN) $(MANIFEST)
 # (base image by digest, toolchain tarball by verified sha256), so this
 # never floats between runs.
 toolchain-image: $(DOCKERFILE)
-	docker build -t $(IMAGE):$(IMAGE_TAG) -f $(DOCKERFILE) toolchain/
+	docker build --platform $(PLATFORM) -t $(IMAGE):$(IMAGE_TAG) -f $(DOCKERFILE) toolchain/
 
 # Produces both $(BIN) and $(ELF) in one recipe run, but only $(BIN) is a
 # tracked Make target -- $(ELF) is always freshly rebuilt alongside it in
@@ -110,7 +141,7 @@ toolchain-image: $(DOCKERFILE)
 # erroring -- portable `:` is worth the one implicit dependency.)
 $(BIN): toolchain-image $(SRC) $(LD) $(WAD)
 	@mkdir -p $(BUILD)
-	docker run --rm \
+	docker run --rm --platform $(PLATFORM) \
 	  -v $(CURDIR):/work -w /work \
 	  -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
 	  $(IMAGE):$(IMAGE_TAG) \
@@ -122,7 +153,7 @@ $(BIN): toolchain-image $(SRC) $(LD) $(WAD)
 # text_start/text_end all come from readelf/nm rather than being
 # transcribed constants. Issue #10.
 $(MANIFEST): $(BIN) toolchain/gen_manifest.sh
-	docker run --rm \
+	docker run --rm --platform $(PLATFORM) \
 	  -v $(CURDIR):/work -w /work \
 	  $(IMAGE):$(IMAGE_TAG) \
 	  sh toolchain/gen_manifest.sh $(ELF) $(BIN) $(MANIFEST) $(SPEC_VERSION)

@@ -118,12 +118,15 @@ is missing, add it in the same PR.
 5. **A check that never ran is indistinguishable from one that passed —
    require positive evidence, never infer success from the absence of
    failure.** One shape, everywhere it shows up: `SELF_MODIFY` correct
-   but unreachable through both driver call sites, `HALT_EXIT` with zero
-   coverage anywhere, `tgt_mis=1` unreachable in a 53-row fixture, a gate
-   4 smoke test that never actually self-modifies, `gh pr checks`
-   reporting "no checks reported" reading identically to all-green if
-   your own check counts non-`pass` lines instead of requiring passes for
-   the commit you actually care about (see the CI entry above — that
-   near-miss is what surfaced this rule). Before trusting a check —
+   but unreachable through both driver call sites, `HALT_EXIT` untested
+   on the `sqlcpu` side specifically (`refemu` already covers it —
+   `refemu/tests/test_mmio.py::test_exit_halts_with_reason_and_code`),
+   `tgt_mis=1` caught unreachable and fixed within the same PR (#161) that
+   introduced its regression fixture, a gate 4 smoke test that never
+   actually self-modifies, `gh pr checks` reporting "no checks reported"
+   reading identically to all-green if your own check counts non-`pass`
+   lines instead of requiring passes for the commit you actually care
+   about (see the CI entry above — that near-miss is what surfaced this
+   rule). Before trusting a check —
    automated, in review, or in a PR's own evidence section — confirm it
    actually ran against what you think it ran against.

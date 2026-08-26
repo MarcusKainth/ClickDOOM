@@ -21,7 +21,8 @@ CREATE TABLE {{DB}}.state
     batch_id UInt64,
     pc       UInt32,  -- byte address, matching SPEC §5's cpu_state.pc
     regs     Array(UInt32),
-    icount   UInt64
+    icount   UInt64,
+    keyq_pos UInt32   -- cumulative KEYQ pops (SPEC §3.2); carried across batches
 )
 ENGINE = MergeTree ORDER BY batch_id;
 
@@ -40,7 +41,12 @@ CREATE TABLE {{DB}}.batch_out
     halt_reason   UInt8,
     halt_pc       UInt32,  -- byte address
     halt_extra    UInt32,
-    retired       UInt32
+    retired       UInt32,
+    -- SPEC §3 MMIO side effects, produced by the fold's acc.6
+    console_bytes   Array(UInt8),
+    keyq_pos        UInt32,
+    frame_no        UInt32,
+    frame_committed UInt8
 )
 ENGINE = MergeTree ORDER BY batch_id;
 

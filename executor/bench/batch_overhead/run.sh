@@ -67,7 +67,7 @@ sed -E "s/clickdoom([.;])/${BENCH_DB}\\1/g" ../../../sqlcpu/schema.sql | ch --mu
 sed "s/{{DB}}/$BENCH_DB/g" setup.sql | ch --multiquery
 
 ch --query "INSERT INTO $BENCH_DB.state
-            SELECT 0, 2147483648, arrayResize(emptyArrayUInt32(), 31, toUInt32(0)), 0"
+            SELECT 0, 2147483648, arrayResize(emptyArrayUInt32(), 31, toUInt32(0)), 0, 0"
 
 python3 ../../fold.py "$K" --hwm "$HWM" --e2e --db "$BENCH_DB" > /tmp/clickdoom_batch_overhead.sql
 python3 ../../fold.py "$K" --hwm "$HWM" --db "$BENCH_DB" > /tmp/clickdoom_select_only.sql
@@ -118,7 +118,7 @@ for _ in $(seq 1 "$BATCHES"); do
 
   S=$(mark)
   ch --query "INSERT INTO $BENCH_DB.state
-              SELECT batch_id, pc, regs, icount_before + retired FROM $BENCH_DB.batch_out
+              SELECT batch_id, pc, regs, icount_before + retired, keyq_pos FROM $BENCH_DB.batch_out
               WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_out)"
   E=$(mark)
   STATE_FLUSH_TOTAL=$(python3 -c "print($STATE_FLUSH_TOTAL + ($E - $S))")

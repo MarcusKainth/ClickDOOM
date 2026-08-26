@@ -130,7 +130,16 @@ echo "$riscv_out" >&2
 # "::error::failed: ..." line (stderr) prints after its summary (stdout).
 riscv_summary=$(echo "$riscv_out" | grep "^riscv-tests inside ClickHouse:")
 
-echo "${riscv_summary}. ${decode_status}. ${execute_status}"
+checkpoint_status="checkpoint: not landed yet (see #22)"
+if [ -f sqlcpu/test_checkpoint.py ]; then
+  echo "# running checkpoint format checks (issue #22)..." >&2
+  checkpoint_out=$(python3 sqlcpu/test_checkpoint.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
+    --password "$PASSWORD" --client "${CH_CMD[*]}")
+  echo "$checkpoint_out" >&2
+  checkpoint_status="$checkpoint_out"
+fi
+
+echo "${riscv_summary}. ${decode_status}. ${execute_status}. ${checkpoint_status}"
 if [ "$riscv_status" -ne 0 ]; then
   exit 1
 fi

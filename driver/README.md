@@ -9,8 +9,12 @@ The frame readout: `frame_readout_sql()` reconstructs the raw
 `fb`/`palette` byte strings from word-addressed FRAMEBUFFER/PALETTE
 storage and inserts a `frames_out` row per commit; `ansi_render_sql()`
 converts a committed frame into a printable half-block-truecolor ANSI
-string, ready for the driver to print verbatim (PURITY.md: all of this is
-SQL-side computation, the driver only blits the result).
+string, ready for the driver to print verbatim; `ppm_render_sql()`
+(issue #204) converts a committed frame into a complete binary PPM (P6)
+image, one String, for the driver to write to a file unmodified — an
+actual image file, since ANSI escape codes aren't something to commit to
+git or paste into a blog post. All three: SQL-side computation only
+(PURITY.md), the driver only blits/writes the result.
 
 **Originally built and validated against a fixture** (`fixture_schema.sql`),
 before the real FRAMEBUFFER/PALETTE persistence (#160) ratified and landed
@@ -34,8 +38,18 @@ Validated two ways, both against real evidence, not eyeballed:
 2. `ansi_render_sql()` against a small hand-computed synthetic case (a
    2x2 image with known colors), checked byte-for-byte against an
    independently-computed expected escape sequence.
+3. `ppm_render_sql()` two ways: against the same hand-computed 2x2
+   synthetic case (byte-exact), and against the same real, `fb_hash`-
+   verified milestone frame from check 1 — an independent Python
+   re-derivation of the expected RGB bytes from that frame's raw
+   `fb`/`palette` (not the SQL's own logic, mirrored), checked byte-exact
+   against the SQL's actual output. `fb_hash` is defined over a different
+   byte representation (indexed, SPEC §7) than PPM's (expanded RGB), so
+   there's no single hash value the two share directly — this real-data
+   check is what ties them together instead: same underlying frame, two
+   independently-computed representations, both correct.
 
-Run both: `driver/test_render.sh` (or `just test-render`).
+Run all three: `driver/test_render.sh` (or `just test-render`).
 
 ### Why this isn't wired into the milestone runner yet
 

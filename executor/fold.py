@@ -75,15 +75,71 @@ def _addr_and_align(A, IMM, DMKv, RAM_BASE, RAM_WORDS):
     return ADDR, ADDR64, bad_addr_cond, misaligned_cond, wa_safe
 
 
+def _fb_pal_wa_provably_outside_text(ram_base, ram_words, text_end_widx):
+    """#130: proves (not assumes) that `_addr_and_align`'s WA underflow for
+    a FRAMEBUFFER/PALETTE address (both below `ram_base`) can never clamp
+    into THIS build's actual text window, so HALT_CODE's SELF_MODIFY arm
+    can skip its runtime `NOT is_fb_or_pal_store` guard -- see that arm's
+    comment for why skipping it is worth doing when provable (the runtime
+    version costs roughly a third of #130's total contribution to
+    generated SQL size under this file's per-reference-count cost model).
+
+    `wa_safe` computes `least(toUInt32(toUInt64(ADDR) - ram_base) >> 2,
+    ram_words - 1)`. For ADDR < ram_base (true of both regions, since
+    SPEC §2 places them below RAM), the UInt64 subtraction underflows and
+    `toUInt32(...)` truncation of that wrapped value equals `2**32 -
+    (ram_base - ADDR)` as long as `ram_base - ADDR <= 2**32` (always true
+    for real UInt32 addresses). Below, `shifted` computes that for the
+    worst case (smallest ADDR in the region, which underflows the most).
+    If `shifted >= ram_words - 1`, the clamp always saturates at the
+    `ram_words - 1` ceiling for every address either region spans -- but
+    that ceiling is only outside the text window if `ram_words - 1` is
+    itself >= `text_end_widx` (text windows start at 0 in every caller
+    this file has). A first version of this function checked only the
+    saturation half and asserted the ceiling was "guaranteed outside any
+    real text window" without checking against `text_end_widx` at all --
+    true for SPEC's real RAM/ROM sizing (RAM is ~6.29M words, the ROM's
+    text region ~1.2M), FALSE for a small test fixture that intentionally
+    sets `ram_words == decn == text_end_widx` to stress exactly this edge
+    (test_framebuffer_store_does_not_trigger_self_modify) -- caught by
+    that test actually failing (halt_reason=SELF_MODIFY on a clean
+    FRAMEBUFFER store), not caught by this function, which is why it now
+    checks the real condition and returns a bool instead of asserting
+    unconditionally: the proof holds for production sizing and doesn't
+    for that fixture's, and both need to keep working, so `build_step`
+    uses the answer to choose which SQL to generate rather than this
+    function picking one universal answer for every caller."""
+    for base, size in ((config.FRAMEBUFFER_BASE, config.FRAMEBUFFER_SIZE),
+                        (config.PALETTE_BASE, config.PALETTE_SIZE)):
+        assert base < ram_base, (
+            f"#130's SELF_MODIFY-arm optimization assumes region base {base:#x} "
+            f"is below ram_base {ram_base:#x} -- it underflows WA on purpose; "
+            f"if this ever isn't true, the runtime guard needs to come back.")
+        worst_case_addr = base  # smallest ADDR in the region -> largest (ram_base - ADDR)
+        shifted = ((2**32 - (ram_base - worst_case_addr)) & 0xFFFFFFFF) >> 2
+        if shifted < ram_words - 1 or ram_words - 1 < text_end_widx:
+            return False
+    return True
+
+
 def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
                ram_base=config.RAM_BASE, hwm=config.WRITE_LOG_HIGH_WATER_MARK_DEFAULT,
                ipms=config.IPMS_DEFAULT):
     """Returns the arrayFold lambda body: `(acc, i) -> tuple(...)`.
 
-    Accumulator (5-tuple): pc, regs[31], wl, control, icount, where pc is a
-    byte address (matching cpu_state.pc, sqlcpu's schema.sql), regs is
-    x1..x31 (no x0 slot), wl = tuple(addr[], val[], icount[]) and control =
-    tuple(stopped, halted, halt_reason, halt_pc, halt_extra).
+    Accumulator (7-tuple): pc, regs[31], wl, control, icount, mmio, fbpal_wl,
+    where pc is a byte address (matching cpu_state.pc, sqlcpu's schema.sql),
+    regs is x1..x31 (no x0 slot), wl = tuple(addr[], val[], icount[])
+    (RAM's write-log), control = tuple(stopped, halted, halt_reason,
+    halt_pc, halt_extra), mmio = tuple(console_bytes[], keyq_pos,
+    tuple(frame_no, frame_committed)), and fbpal_wl (#130) = tuple(
+    fb_addr[], fb_val[], fb_icount[], pal_addr[], pal_val[], pal_icount[])
+    -- FRAMEBUFFER/PALETTE's own write-log lanes, packed into one field for
+    the same field-count reason RAM's three arrays share acc.3 rather than
+    getting a slot each, and kept SEPARATE from acc.3 because these lanes
+    are never scanned (no arrayLastIndex against them, ever -- nothing
+    reads FRAMEBUFFER/PALETTE, so there's nothing to search for) while
+    RAM's write-log is searched on every load.
 
     acc.5 is the ABSOLUTE icount (UInt64), not a per-batch retired count --
     seeded from the batch's starting icount in INIT_ACC, incremented by 1
@@ -131,6 +187,9 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     five scalars into one tuple field each cuts that to ~2 evaluations,
     measured to matter (see the PR's before/after numbers).
     """
+    fb_pal_wa_outside_text = _fb_pal_wa_provably_outside_text(
+        ram_base, ram_words, text_end_widx)
+
     PC = "acc.1"
     STOPPED = "acc.4.1"
 
@@ -191,7 +250,40 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # that costs -- see the node-budget note at the top of the MMIO section.
     assert config.MMIO_SIZE == 4096, "window mask below assumes a 4 KiB window"
     is_mmio = f"(bitAnd({ADDR}, {0xFFFFFFFF ^ (config.MMIO_SIZE - 1)}) = {config.MMIO_BASE})"
-    bad_addr_cond = f"({bad_addr_cond} AND NOT {is_mmio})"
+
+    # --- SPEC §2 FRAMEBUFFER/PALETTE (#130) ---------------------------------
+    # Write-only from this side: the routing exemption below is gated on
+    # `is_store` (inlined as `{ID}={config.OP_STORE}`, matching
+    # `is_mmio_store`'s own style below rather than the `is_store` variable
+    # defined later in this function -- kept local rather than reordering
+    # existing definitions), so a LOAD from either region is untouched by
+    # this block and falls through to the existing bad_addr_cond exactly as
+    # before -- BAD_ADDR, by construction, not by a new check. That is
+    # deliberate: SPEC §2 doesn't yet say these regions are readable (issue
+    # #134, pending ratification), and not routing loads at all is cheaper
+    # than routing them to always-fail.
+    #
+    # Not a bitAnd window mask like MMIO's, since 64,000 and 768 aren't
+    # power-of-two sized -- same reasoning as `_addr_and_align`'s RAM bound,
+    # a real range compare instead.
+    # ONE reference to ADDR each, not two: `toUInt32(ADDR - BASE) < SIZE`
+    # covers both bounds in one unsigned-subtraction-and-compare, same idiom
+    # `_addr_and_align`'s own bad_addr_cond uses for RAM (`ADDR64 - RAM_BASE`,
+    # implicitly, via ram_end) -- an address below BASE underflows to a huge
+    # UInt32 that's >= SIZE, an address at or past BASE+SIZE is directly >=
+    # SIZE, and only [BASE, BASE+SIZE) computes something < SIZE. Load-
+    # bearing here specifically: this file has no let-binding inside the
+    # fold lambda, so every *textual* reference to ADDR re-expands its whole
+    # subtree (DEC lookups, register reads) -- measured going from 2 refs
+    # each to 1 nearly halved this feature's contribution to generated SQL
+    # size (`is_fb_or_pal_store` below is itself referenced 4 more times
+    # inside HALT_CODE, which is referenced 5 more times downstream of
+    # that -- reference count compounds multiplicatively here, not
+    # additively, which is why halving the leaf cost matters this much).
+    is_fb = f"(toUInt32(toUInt64({ADDR}) - {config.FRAMEBUFFER_BASE}) < {config.FRAMEBUFFER_SIZE})"
+    is_pal = f"(toUInt32(toUInt64({ADDR}) - {config.PALETTE_BASE}) < {config.PALETTE_SIZE})"
+    is_fb_or_pal_store = f"({ID}={config.OP_STORE} AND ({is_fb} OR {is_pal}))"
+    bad_addr_cond = f"({bad_addr_cond} AND NOT {is_mmio} AND NOT {is_fb_or_pal_store})"
 
     # Byte offset within the window. Compared against the five register
     # offsets exactly rather than masked -- a mask would alias every 32 bytes
@@ -388,9 +480,63 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{jump_misaligned}, {config.HALT_MISALIGNED},"
         f"{is_mem} AND {bad_addr_cond}, {config.HALT_BAD_ADDR},"
         f"{is_mem} AND NOT {bad_addr_cond} AND {misaligned_cond}, {config.HALT_MISALIGNED},"
+        # #130: a store to FRAMEBUFFER/PALETTE narrower than a full word has
+        # no correct answer to write -- these lanes are never read (that's
+        # the whole point of keeping them unscanned), so there is no
+        # previous word to read-modify-write a byte/halfword store against,
+        # unlike RAM's SVAL. Halting BAD_ADDR rather than silently dropping
+        # the store or writing a wrong (zero-padded) word -- team lead's
+        # ruling on #130, being folded into #134 as SPEC text rather than
+        # left as an implementation-only decision. Checked after
+        # misaligned_cond (a genuinely misaligned halfword store should
+        # report MISALIGNED, not this) but before SELF_MODIFY, since the
+        # two conditions are address-range-disjoint and order between them
+        # doesn't otherwise matter.
+        #
+        # Deliberately NOT re-checking `NOT bad_addr_cond AND NOT
+        # misaligned_cond` here, unlike the SELF_MODIFY arm below (which
+        # does, matching this file's existing convention) -- multiIf's
+        # ordering already establishes both: is_fb_or_pal_store implies
+        # is_store implies is_mem, so if execution reaches this arm, the two
+        # `is_mem AND ...` arms immediately above did NOT match, which by
+        # construction means NOT bad_addr_cond (arm 1 didn't fire) and NOT
+        # misaligned_cond (arm 2 didn't fire, and is_mem/NOT bad_addr_cond
+        # both hold, so misaligned_cond must be false). Re-deriving either
+        # would add two more references to already-multiply-referenced
+        # terms (`bad_addr_cond` is itself referenced elsewhere in this
+        # same HALT_CODE, and HALT_CODE is referenced several times further
+        # downstream in step_retires/step_halts_now/halt_extra_calc) --
+        # measured this costing roughly half of this feature's total
+        # contribution to generated SQL size before removing it; the
+        # multiIf ordering argument is exact, not an approximation, so
+        # there's no correctness given up for that saving.
+        f"{is_fb_or_pal_store} AND {DMKv} != 4294967295, {config.HALT_BAD_ADDR},"
+        # No runtime `AND NOT is_fb_or_pal_store` guard here (an earlier
+        # version had one, and it cost roughly a third of this feature's
+        # total contribution to generated SQL size -- measured, not
+        # guessed, per this file's own cost model where every *textual*
+        # reference to an already-multiply-referenced term compounds).
+        # `WA` (`(ADDR - RAM_BASE) >> 2`, RAM-relative) underflows for an
+        # FRAMEBUFFER/PALETTE address, since both are below RAM_BASE, and
+        # `least()`-clamps the wrapped result into [0, RAM_WORDS) -- the
+        # concern this guard existed for is that clamp coincidentally
+        # landing inside [text_start_widx, text_end_widx) and misfiring
+        # SELF_MODIFY on a legitimate framebuffer store. Dropped only when
+        # `_fb_pal_wa_provably_outside_text` (checked once at SQL-generation
+        # time, above) proves it for THIS build's actual ram_words/
+        # text_end_widx -- true for SPEC's real RAM/ROM sizing, false for
+        # e.g. a small test fixture whose ram_words/text window happen to
+        # coincide. A first version dropped the guard unconditionally on a
+        # proof that didn't check text_end_widx at all; caught by
+        # test_framebuffer_store_does_not_trigger_self_modify actually
+        # failing (SELF_MODIFY on a clean FRAMEBUFFER store), not by the
+        # proof itself. Restoring the guard when unprovable keeps every
+        # caller correct; production keeps the cheaper SQL because the
+        # proof holds there.
         f"{is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond}"
         f" AND NOT {is_mmio}"
-        f" AND {WA} >= {text_start_widx} AND {WA} < {text_end_widx}, {config.HALT_SELF_MODIFY},"
+        + ("" if fb_pal_wa_outside_text else f" AND NOT {is_fb_or_pal_store}")
+        + f" AND {WA} >= {text_start_widx} AND {WA} < {text_end_widx}, {config.HALT_SELF_MODIFY},"
         # SPEC §3's EXIT register: the ROM's own clean stop, not a fault.
         # After the misaligned arms so a misaligned write to EXIT faults
         # rather than exiting. NOT {misaligned_cond} guards it directly too,
@@ -422,7 +568,12 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # NOT is_mmio: an MMIO store's WA is `least((ADDR - RAM_BASE) >> 2, ...)`,
     # a meaningless clamped index. Letting it into the write-log would flush a
     # garbage value over a real RAM word. MMIO store effects land in acc.6.
-    is_retiring_store = f"({step_retires} AND {is_store} AND NOT {is_mmio})"
+    # NOT is_fb_or_pal_store: FB/PAL stores get their OWN lane (acc.7,
+    # below), never RAM's -- letting one in here would flush a garbage
+    # value over a real RAM word, the same reasoning as NOT is_mmio a line
+    # above (`WA`'s underflow-clamp for an FB/PAL address is a meaningless
+    # index into RAM, same as an MMIO store's).
+    is_retiring_store = f"({step_retires} AND {is_store} AND NOT {is_mmio} AND NOT {is_fb_or_pal_store})"
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
@@ -450,6 +601,46 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
                    f" tuple(toUInt8(1), toUInt8(1), toUInt8({HALT_CODE}), {PC}, {halt_extra_calc}),"
                    f" {hits_hwm}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5),"
                    f" acc.4)")
+
+    # --- acc.7: FRAMEBUFFER/PALETTE write-log (#130) ------------------------
+    # Never scanned -- no arrayLastIndex against these arrays anywhere in
+    # this file, deliberately, since nothing ever reads from either region.
+    # Word-only by construction (HALT_CODE's arm above), so the value to
+    # write is RS2V directly: no read-modify-write, no LW, no SVAL --
+    # there's no previous word to blend a narrower store against, and a
+    # word store's mask covers the whole word anyway (RAM's SVAL reduces
+    # to the same thing for a word-width store, this just skips computing
+    # the reduction). `{is_fb}`/`{is_pal}` were computed once already,
+    # above, for the routing exemption -- reused here, not re-derived.
+    #
+    # No HWM interaction of its own in this PR: a single frame's ~16,000
+    # framebuffer stores could grow this lane large within one batch, but
+    # since it's never scanned, that growth doesn't inflate load-scan cost
+    # the way sharing RAM's write-log would have (the whole reason for a
+    # separate lane) -- whether it's still worth its own early-termination
+    # trigger is a real open question from the issue, deliberately left for
+    # a follow-up once real batch behavior during rendering can be measured
+    # rather than guessed at now.
+    # `{ID}={config.OP_STORE} AND {is_fb}` directly, NOT
+    # `{is_fb_or_pal_store} AND {is_fb}` -- equivalent (is_fb_or_pal_store
+    # is exactly `is_store AND (is_fb OR is_pal)`, and ANDing that with
+    # is_fb again is redundant once is_fb is already true), but avoids
+    # re-expanding is_fb_or_pal_store's larger combined text at two more
+    # call sites. Two fewer references to a term that's already referenced
+    # several times elsewhere in this function matters under this file's
+    # per-textual-reference cost model.
+    retiring_fb_store = f"({step_retires} AND {ID}={config.OP_STORE} AND {is_fb})"
+    retiring_pal_store = f"({step_retires} AND {ID}={config.OP_STORE} AND {is_pal})"
+    fb_wa = f"bitShiftRight(toUInt32(toUInt64({ADDR}) - {config.FRAMEBUFFER_BASE}), 2)"
+    pal_wa = f"bitShiftRight(toUInt32(toUInt64({ADDR}) - {config.PALETTE_BASE}), 2)"
+    new_fbpal_wl = (
+        f"tuple("
+        f"if({retiring_fb_store}, arrayPushBack(acc.7.1, {fb_wa}), acc.7.1),"
+        f"if({retiring_fb_store}, arrayPushBack(acc.7.2, {RS2V}), acc.7.2),"
+        f"if({retiring_fb_store}, arrayPushBack(acc.7.3, acc.5 + 1), acc.7.3),"
+        f"if({retiring_pal_store}, arrayPushBack(acc.7.4, {pal_wa}), acc.7.4),"
+        f"if({retiring_pal_store}, arrayPushBack(acc.7.5, {RS2V}), acc.7.5),"
+        f"if({retiring_pal_store}, arrayPushBack(acc.7.6, acc.5 + 1), acc.7.6))")
 
     # --- acc.6: MMIO side effects ---------------------------------------
     # console bytes (PUTCHAR), keyq position (KEYQ pops), frame number and
@@ -498,7 +689,8 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         # silently wrap on a long enough run (demo3's ~2.91B instructions
         # is uncomfortably close to UInt32::MAX already).
         f"if({step_retires}, acc.5 + 1, acc.5),"
-        f"{new_mmio})")
+        f"{new_mmio},"
+        f"{new_fbpal_wl})")
     return step_tuple
 
 
@@ -564,7 +756,15 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             # and is *cumulative across batches* only via batch_commit --
             # see #25; within a batch it indexes KEYQT from {keyq0}.
             " tuple(emptyArrayUInt8(), toUInt32({keyq0}),"
-            " tuple(toUInt32(0), toUInt8(0))))")
+            " tuple(toUInt32(0), toUInt8(0))),"
+            # acc.7, SPEC §2 FRAMEBUFFER/PALETTE write-log (#130): six empty
+            # arrays, same shape as RAM's acc.3 -- three per lane
+            # (addr/val/icount), two lanes, never read back within a batch
+            # (no seed value needed beyond empty, since nothing carries over
+            # from the previous batch the way keyq_pos/icount/pc do -- these
+            # lanes are flushed and forgotten every batch, same as RAM's).
+            " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64(),"
+            " emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()))")
 
 
 def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None,
@@ -588,7 +788,9 @@ def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=Non
 SELECT r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason, r.4.4 AS halt_pc,
        r.4.5 AS halt_extra, toUInt32(r.5 - toUInt64({icount0})) AS retired,
-       r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed
+       r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed,
+       r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,
+       r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1,
          -- The step expression is generated, not hand-written, and MMIO (#24)
@@ -597,7 +799,13 @@ SETTINGS max_threads = 1,
          -- ~90k nodes and the ceiling is a guard against runaway generated
          -- SQL, which this is not. Node count still costs time under
          -- ADR-0001's model -- that is tracked as throughput, not as a limit.
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000"""
+         max_ast_elements = 500000, max_expanded_ast_elements = 500000,
+         -- #130's FRAMEBUFFER/PALETTE lane pushed the generated query text
+         -- itself (not just its parsed AST) past ClickHouse's 262,144-byte
+         -- default max_query_size -- same "raises a limit, doesn't change
+         -- what's computed" reasoning as the AST settings above; the SQL
+         -- text is ~440KB, comfortably under this raised ceiling.
+         max_query_size = 2000000"""
 
 
 def _halt_reason_transform(halt_code_expr):
@@ -691,7 +899,13 @@ SETTINGS max_threads = 1,
          -- ~90k nodes and the ceiling is a guard against runaway generated
          -- SQL, which this is not. Node count still costs time under
          -- ADR-0001's model -- that is tracked as throughput, not as a limit.
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000"""
+         max_ast_elements = 500000, max_expanded_ast_elements = 500000,
+         -- #130's FRAMEBUFFER/PALETTE lane pushed the generated query text
+         -- itself (not just its parsed AST) past ClickHouse's 262,144-byte
+         -- default max_query_size -- same "raises a limit, doesn't change
+         -- what's computed" reasoning as the AST settings above; the SQL
+         -- text is ~440KB, comfortably under this raised ceiling.
+         max_query_size = 2000000"""
 
 
 if __name__ == "__main__":

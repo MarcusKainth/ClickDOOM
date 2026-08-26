@@ -26,6 +26,7 @@ import sys
 import pytest
 
 sys.path.insert(0, ".")
+import config  # noqa: E402
 import fold  # noqa: E402
 from tests import reference  # noqa: E402
 
@@ -416,3 +417,129 @@ def test_div_rem_int_min_by_minus_one_does_not_trap():
     # no overflow representation to escape, so untouched by the fix.
     assert actual["regs"][4] == 0
     assert actual["regs"][5] == 0x80000000
+
+
+# --- #130: FRAMEBUFFER/PALETTE write routing --------------------------------
+# reference.py doesn't model SPEC §2's FRAMEBUFFER/PALETTE regions at all --
+# it would treat every access to them as BAD_ADDR uniformly (no store-only
+# exemption), so run_case()'s actual==expected comparison doesn't apply to
+# any of these cases. run_raw() below is run_case() minus the reference.py
+# side: same fixture setup, but returns only the SQL-side dict (with the
+# fb_wl_*/pal_wl_* columns select_only() now projects), and these tests
+# assert specific fields directly instead.
+def run_raw(insns, pc0=None, regs0=None, k=None, hwm=10_000, ram_words=None):
+    decn = next_pow2(max(len(insns), 8))
+    padded = list(insns) + [reference.Insn(op_id=reference.OP_ILLEGAL, raw=0xBAD00000 + len(insns) + i)
+                             for i in range(decn - len(insns))]
+    ram_words = ram_words or decn
+    ch(f"TRUNCATE TABLE {DB}.decoded; TRUNCATE TABLE {DB}.ram;")
+    rows = []
+    for i, ins in enumerate(padded):
+        rows.append(f"({RAM_BASE_WORD + i},{ins.op_id},{ins.rd},{ins.rs1},{ins.rs2},"
+                     f"{reference.u32(ins.imm)},{reference.u32(ins.target)},{ins.width_mask},{ins.sign_bit},"
+                     f"{reference.u32(ins.raw)})")
+    ch(f"INSERT INTO {DB}.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) "
+       f"VALUES {','.join(rows)}")
+    ch(f"INSERT INTO {DB}.ram (word_addr,value,version) "
+       f"SELECT {RAM_BASE_WORD} + number, 0, 0 FROM numbers({ram_words})")
+    k = k if k is not None else len(insns)
+    sql = fold.select_only(k, 0, decn, decn, ram_words, hwm, pc0=pc0, regs0=regs0)
+    out = json.loads(ch(sql, fmt="JSONEachRow").strip().splitlines()[0])
+    return dict(
+        pc=int(out["pc"]), halted=int(out["halted"]), halt_reason=int(out["halt_reason"]),
+        halt_pc=int(out["halt_pc"]), halt_extra=int(out["halt_extra"]),
+        wl_addr=[int(x) for x in out["wl_addr"]],
+        fb_wl_addr=[int(x) for x in out["fb_wl_addr"]], fb_wl_val=[int(x) for x in out["fb_wl_val"]],
+        fb_wl_icount=[int(x) for x in out["fb_wl_icount"]],
+        pal_wl_addr=[int(x) for x in out["pal_wl_addr"]], pal_wl_val=[int(x) for x in out["pal_wl_val"]],
+        pal_wl_icount=[int(x) for x in out["pal_wl_icount"]],
+    )
+
+
+def test_framebuffer_word_store_lands_in_its_own_lane():
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0xDEADBEEF),  # x1 = 0xDEADBEEF (u32-masked on embedding)
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=config.FRAMEBUFFER_BASE,   # sw x1, FRAMEBUFFER_BASE(x0)
+          width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 0, "a clean word store to FRAMEBUFFER must not halt"
+    assert out["wl_addr"] == [], "must NOT land in RAM's write-log"
+    assert out["fb_wl_addr"] == [0] and out["fb_wl_val"] == [0xDEADBEEF]
+    assert out["fb_wl_icount"] == [2]  # this is the 2nd retiring instruction
+    assert out["pal_wl_addr"] == []
+
+
+def test_framebuffer_last_word_is_in_bounds():
+    # FRAMEBUFFER_SIZE - 4: the last valid word-aligned offset in the region.
+    last_word_addr = config.FRAMEBUFFER_BASE + config.FRAMEBUFFER_SIZE - 4
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=7),
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=last_word_addr, width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 0
+    assert out["fb_wl_addr"] == [config.FRAMEBUFFER_SIZE // 4 - 1]  # 15999
+    assert out["fb_wl_val"] == [7]
+
+
+def test_palette_word_store_lands_in_its_own_lane():
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0x00112233),
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=config.PALETTE_BASE, width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 0
+    assert out["fb_wl_addr"] == []
+    assert out["pal_wl_addr"] == [0] and out["pal_wl_val"] == [0x00112233]
+    assert out["pal_wl_icount"] == [2]
+
+
+def test_framebuffer_load_halts_bad_addr():
+    insns = [
+        I(op_id=18, rd=1, rs1=0, rs2=0, imm=config.FRAMEBUFFER_BASE,   # lw x1, FRAMEBUFFER_BASE(x0)
+          width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=1)
+    assert out["halted"] == 1 and out["halt_reason"] == reference.HALT_BAD_ADDR
+    assert out["halt_extra"] == config.FRAMEBUFFER_BASE
+    assert out["fb_wl_addr"] == [], "a halted load must not have touched the write-log"
+
+
+def test_palette_load_halts_bad_addr():
+    insns = [
+        I(op_id=18, rd=1, rs1=0, rs2=0, imm=config.PALETTE_BASE, width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=1)
+    assert out["halted"] == 1 and out["halt_reason"] == reference.HALT_BAD_ADDR
+
+
+def test_framebuffer_narrow_store_halts_bad_addr():
+    # #130: no previous word to read-modify-write a sub-word store against
+    # (these lanes are never read), so a halfword/byte store has no correct
+    # answer -- halts rather than silently dropping or corrupting a pixel.
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0x1234),
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=config.FRAMEBUFFER_BASE,   # sh x1, FRAMEBUFFER_BASE(x0)
+          width_mask=0xFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 1 and out["halt_reason"] == reference.HALT_BAD_ADDR
+    assert out["halt_pc"] == RAM_BASE + 4  # the store instruction's own pc, not the addi's
+    assert out["fb_wl_addr"] == [], "the faulting store must not have appended anything"
+
+
+def test_framebuffer_store_does_not_trigger_self_modify():
+    # Defensive-guard regression: WA (RAM-relative index) underflows for an
+    # FRAMEBUFFER address (FRAMEBUFFER_BASE < RAM_BASE) and clamps to *some*
+    # value -- must not coincidentally land in [text_start, text_end) and
+    # misfire SELF_MODIFY. decn=8 here makes the text window tiny (0..7),
+    # the case where a wrongly-computed WA would be most likely to land
+    # inside it by chance.
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=1),
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=config.FRAMEBUFFER_BASE, width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 0
+    assert out["halt_reason"] == reference.HALT_NONE

@@ -547,8 +547,18 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{config.HALT_NONE})")
 
     active = f"(NOT {STOPPED})"
-    step_halts_now = f"({active} AND ({HALT_CODE}) != 0)"
-    step_retires = f"({active} AND ({HALT_CODE}) = 0)"
+    # B1 (#151): HALT_CODE is a large multiIf referenced many times
+    # downstream (directly here, and via step_retires's own 14 further
+    # references across step_tuple) -- each reference re-expanded its
+    # entire text (measured: 19 copies of a 14,760-char expression before
+    # this change). `HC` is a nested-lambda parameter (see step_tuple's
+    # arrayMap wrapper below) that HALT_CODE is bound to exactly once;
+    # every reference below is a cheap parameter read, not a re-expansion
+    # -- executor/bench/e1_cse's own n40_bound finding, applied to the
+    # actual bottleneck instead of a synthetic one.
+    HC = "hc"
+    step_halts_now = f"({active} AND ({HC}) != 0)"
+    step_retires = f"({active} AND ({HC}) = 0)"
 
     # halt_extra: the raw instruction word for ILLEGAL_INSN, the faulting
     # target for a misaligned jump/branch, or the faulting address for a
@@ -560,10 +570,10 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # halt_extra slot that carries the raw word for ILLEGAL_INSN and the
     # faulting address for the address faults, rather than a sixth tuple
     # element that every step would have to copy.
-    halt_extra_calc = (f"if(({HALT_CODE}) = {config.HALT_ILLEGAL_INSN}, {RAW},"
-                        f" if(({HALT_CODE}) = {config.HALT_EXIT}, {RS2V},"
+    halt_extra_calc = (f"if(({HC}) = {config.HALT_ILLEGAL_INSN}, {RAW},"
+                        f" if(({HC}) = {config.HALT_EXIT}, {RS2V},"
                         f" if({jump_misaligned}, {jump_target_if_taken},"
-                        f" if(({HALT_CODE}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0)))))")
+                        f" if(({HC}) IN ({config.HALT_BAD_ADDR}, {config.HALT_MISALIGNED}, {config.HALT_SELF_MODIFY}), {ADDR}, toUInt32(0)))))")
 
     # NOT is_mmio: an MMIO store's WA is `least((ADDR - RAM_BASE) >> 2, ...)`,
     # a meaningless clamped index. Letting it into the write-log would flush a
@@ -598,7 +608,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
               f" arrayPushBack(acc.3.3, acc.5 + 1)),"
               f" acc.3)")
     new_control = (f"multiIf({step_halts_now},"
-                   f" tuple(toUInt8(1), toUInt8(1), toUInt8({HALT_CODE}), {PC}, {halt_extra_calc}),"
+                   f" tuple(toUInt8(1), toUInt8(1), toUInt8({HC}), {PC}, {halt_extra_calc}),"
                    f" {hits_hwm}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5),"
                    f" acc.4)")
 
@@ -671,7 +681,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 
     new_mmio = f"tuple({new_console}, {new_keyq_pos}, {new_frame})"
 
-    step_tuple = ("tuple("
+    step_tuple_inner = ("tuple("
         f"if({step_retires}, {NEXT}, {PC}),"
         f"if({step_retires} AND {RD} != 0,"
         # 31-element, 1-indexed (regs[1]=x1..regs[31]=x31, sqlcpu's schema.sql):
@@ -691,6 +701,11 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"if({step_retires}, acc.5 + 1, acc.5),"
         f"{new_mmio},"
         f"{new_fbpal_wl})")
+    # Bind HALT_CODE once via a single-element arrayMap, per E1's n40_bound
+    # finding -- HC is now a real lambda parameter inside this one call,
+    # not a textual macro, so every {HC} reference above costs one name
+    # lookup instead of re-expanding HALT_CODE's full multiIf.
+    step_tuple = f"arrayMap({HC} -> {step_tuple_inner}, [{HALT_CODE}])[1]"
     return step_tuple
 
 

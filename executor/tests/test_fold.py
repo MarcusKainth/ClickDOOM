@@ -543,3 +543,55 @@ def test_framebuffer_store_does_not_trigger_self_modify():
     out = run_raw(insns, k=2)
     assert out["halted"] == 0
     assert out["halt_reason"] == reference.HALT_NONE
+
+
+def test_halt_exit_reachable():
+    # B1 (#151): HALT_CODE's EXIT arm had no test anywhere in this file
+    # before this one -- a real coverage gap, not new to B1's arrayMap
+    # binding, but exactly the kind of thing that change could turn from
+    # "correct but untested" into "correct but UNREACHABLE" without
+    # anyone noticing (team lead's call-site-reachability concern on
+    # wrapping step_tuple's entire construction in a nested lambda).
+    # SPEC §3: a word store to MMIO_EXIT's address is the ROM's clean
+    # stop, not a fault -- halt_reason=EXIT, halt_extra=the stored value
+    # (the exit code), not the faulting address the way BAD_ADDR/
+    # MISALIGNED/SELF_MODIFY use that same slot.
+    exit_addr = config.MMIO_BASE + config.MMIO_EXIT
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0xDEADBEEF),  # x1 = exit code
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=exit_addr,   # sw x1, MMIO_EXIT(x0)
+          width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    out = run_raw(insns, k=2)
+    assert out["halted"] == 1 and out["halt_reason"] == config.HALT_EXIT
+    assert out["halt_extra"] == 0xDEADBEEF, "halt_extra must be the stored value (exit code), not an address"
+
+
+def test_every_halt_reason_is_reachable_somewhere_in_this_file():
+    # Explicit cross-check, not implicit trust that "the suite happens to
+    # cover everything": every code in config.HALT_REASON_NAMES other than
+    # HALT_NONE (0, "did not halt") must be producible by *some* test in
+    # this file. Failing loudly here beats discovering a silently-
+    # unreachable arm only when a real divergence from refemu shows up.
+    covered = set()
+    for insns_fn in (
+        lambda: run_raw([I(op_id=config.OP_ILLEGAL, raw=0xBAD)], k=1),
+        lambda: run_raw([I(op_id=0, rd=1, rs1=0, rs2=0, imm=0xDEADBEEF),
+                          I(op_id=19, rd=0, rs1=0, rs2=1, imm=RAM_BASE,
+                            width_mask=0xFFFFFFFF, sign_bit=0)], k=2),  # SELF_MODIFY
+        lambda: run_raw([I(op_id=19, rd=0, rs1=0, rs2=0, imm=0, width_mask=0xFFFFFFFF, sign_bit=0)], k=1),  # BAD_ADDR
+        lambda: run_raw([I(op_id=19, rd=0, rs1=0, rs2=0, imm=RAM_BASE + 1,
+                            width_mask=0xFFFFFFFF, sign_bit=0)], k=1),  # MISALIGNED
+        lambda: run_raw([I(op_id=28)], k=1),  # ECALL
+        lambda: run_raw([I(op_id=29)], k=1),  # EBREAK
+        lambda: run_raw([I(op_id=30)], k=1),  # CSR
+        lambda: run_raw([I(op_id=0, rd=1, rs1=0, rs2=0, imm=1),
+                          I(op_id=19, rd=0, rs1=0, rs2=1,
+                            imm=config.MMIO_BASE + config.MMIO_EXIT,
+                            width_mask=0xFFFFFFFF, sign_bit=0)], k=2),  # EXIT
+    ):
+        out = insns_fn()
+        assert out["halted"] == 1, f"expected a halt, got {out}"
+        covered.add(out["halt_reason"])
+    expected = set(config.HALT_REASON_NAMES) - {config.HALT_NONE}
+    assert covered == expected, f"missing halt reasons: {expected - covered}"

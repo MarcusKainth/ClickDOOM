@@ -53,10 +53,24 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   full CI cycle on every PR stacked above. A four-deep stack cost four
   sequential rebase-and-recheck rounds. This is a throughput tax, not a
   correctness hazard — the rule above is what protects the PRs.
-- **Force-pushing does not reliably retrigger CI.** GitHub's
-  `pull_request` synchronize event is unreliable after a force-push, so a
-  rebased PR can sit with zero check-runs and look merge-blocked for no
-  reason. Push an empty commit to retrigger.
+- **Force-push CI retrigger: no confirmed remedy, as of 2026-08-26.**
+  What survived testing that day, on a real force-push-poisoned PR
+  (#148): a genuine content push reliably *creates* a run in general;
+  a force-push's own `synchronize` event is unreliable; the empty-commit
+  remedy this file used to prescribe was tried and failed; a real
+  content-touch commit was tried next and also failed, waiting 90+
+  seconds; closing and reopening the PR was reported as the fix — but a
+  controlled retest (two unrelated PRs, one with a fully completed run,
+  both closed/reopened, both polled for new runs afterward) found zero
+  retrigger effect either time. **Do not trust either remedy above; both
+  have failed at least once.** The likely confound, also unconfirmed:
+  the queue was carrying 7 open PRs against a `test-executor` job
+  measured at 33m29s (#159) — a run that was actually created can sit
+  `queued` for a long time, and that looks identical to "the event never
+  fired" from `gh run list` unless you check for a run *object* against
+  your head SHA (any status) rather than a *passing* one. If you hit
+  this: don't burn time cycling through the remedies above, check queue
+  depth first, and see the rule below.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow
@@ -102,3 +116,15 @@ is missing, add it in the same PR.
    Red checks are information.
 4. Divergences get filed with full repro fields even if you fix them in the
    same PR — the report history is the project's debugging memory.
+5. **A check that never ran is indistinguishable from one that passed —
+   require positive evidence, never infer success from the absence of
+   failure.** One shape, everywhere it shows up: `SELF_MODIFY` correct
+   but unreachable through both driver call sites, `HALT_EXIT` with zero
+   coverage anywhere, `tgt_mis=1` unreachable in a 53-row fixture, a gate
+   4 smoke test that never actually self-modifies, `gh pr checks`
+   reporting "no checks reported" reading identically to all-green if
+   your own check counts non-`pass` lines instead of requiring passes for
+   the commit you actually care about (see the CI entry above — that
+   near-miss is what surfaced this rule). Before trusting a check —
+   automated, in review, or in a PR's own evidence section — confirm it
+   actually ran against what you think it ran against.

@@ -301,8 +301,29 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # non-register MMIO. DOOM does not, and reproducing a byte-addressable
     # scratch region here would cost nodes on every step to serve nothing --
     # but the difference is real and is filed rather than left implicit.
-    is_mmio_load = f"({is_mmio} AND {ID} = {config.OP_LOAD})"
-    is_mmio_store = f"({is_mmio} AND {ID} = {config.OP_STORE})"
+    #
+    # `{DMKv}=4294967295` (word width): SPEC §3's registers are word-access
+    # only, matching refemu/src/refemu/mmio.py's own width gate (#87/#90).
+    # Without this, a narrow access exactly at a register's address hit the
+    # register's real semantics instead of reads-0/writes-ignored -- #152,
+    # found reading this file directly: a byte load at TICKS_MS/KEYQ
+    # returned the full 32-bit register value via MMIO_READ's address-only
+    # multiIf, and worse, a byte store to EXIT's address fired a full EXIT
+    # halt (a byte store is never `misaligned_cond` -- `_addr_and_align`'s
+    # `align_mask` is 0 for any width but halfword/word, so nothing else
+    # in this file caught it). Gating here, not inside `mmio_is()`, covers
+    # every call site below in one place: `HALT_CODE`'s EXIT arm and
+    # `retiring_mmio_store` (PUTCHAR, FRAME_COMMIT) all key off
+    # `is_mmio_store`; `new_keyq_pos` keys off `is_mmio_load`. A store that
+    # fails this gate already retires with no side effect for free --
+    # `is_retiring_store` (below) excludes `is_mmio` addresses from the RAM
+    # write-log regardless of width, so there is nothing further to guard
+    # on the write side. The read side needs one more change: LOADV's MMIO
+    # override reads `is_mmio` directly (not `is_mmio_load`, since it must
+    # also cover a narrow *load's* result), so it gets its own explicit
+    # width check below rather than inheriting this one.
+    is_mmio_load = f"({is_mmio} AND {ID} = {config.OP_LOAD} AND {DMKv}=4294967295)"
+    is_mmio_store = f"({is_mmio} AND {ID} = {config.OP_STORE} AND {DMKv}=4294967295)"
 
     # TICKS_MS: elastic time, SPEC §3.1. instructions_retired / IPMS. acc.5
     # is now the ABSOLUTE icount (see build_step()'s docstring on why it's
@@ -366,8 +387,18 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     JALR_TARGET = f"bitAnd(toUInt32({A} + {IMM}), 4294967294)"
 
     # A load from the MMIO window takes its value from the register file
-    # above, not from RAM/write-log.
-    LOADV = f"if({is_mmio}, {MMIO_READ}, {LOADV})"
+    # above, not from RAM/write-log. Own explicit `{DMKv}=4294967295` gate
+    # (not `is_mmio_load`, which already carries one -- see #152's comment
+    # above): this reads `is_mmio` directly because it must also produce
+    # the *result value* for a narrow load, not just gate whether one
+    # counts as "the MMIO load path" for HALT_CODE/write-log purposes.
+    # A word-width MMIO access takes MMIO_READ's per-register value
+    # (itself 0 for a non-register offset, unchanged); any other width at
+    # an MMIO address reads 0 outright, per SPEC §3 and refemu/mmio.py's
+    # own default -- deliberately not routed through MMIO_READ, since
+    # MMIO_READ's own multiIf only ever discriminates *which* register, it
+    # was never meant to also encode "and only if the width is right."
+    LOADV = f"multiIf({is_mmio} AND {DMKv}=4294967295, {MMIO_READ}, {is_mmio}, toUInt32(0), {LOADV})"
 
     # div/rem (id=14/16) widen to Int64 before intDiv/modulo -- #99, P0.
     # Int32 intDiv/modulo throws a hard ILLEGAL_DIVISION on the one

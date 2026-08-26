@@ -138,10 +138,27 @@ ch --multiquery <<< "$(python3 executor/commit.py cpu_state --db "$DATABASE")"
 
 TEXT_START=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_start'])")
 TEXT_END=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_end'])")
+LOAD_ADDR=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['load_addr'])")
 TEXT_START_WORD=$(( TEXT_START / 4 ))
 TEXT_END_WORD=$(( TEXT_END / 4 ))
 DECN=$(( TEXT_END_WORD - TEXT_START_WORD ))
 RAM_WORDS=6291456  # SPEC §2: 24 MiB / 4, same constant preflight uses
+
+# fold.py's text_start_widx/text_end_widx are compared directly against WA
+# (executor/fold.py:74's `wa_safe`), which is RAM_BASE-*relative* and
+# clamped to [0, RAM_WORDS-1] -- never an absolute word address.
+# TEXT_START_WORD/TEXT_END_WORD above are absolute (manifest byte offsets
+# / 4), correct for preflight's own decoded.word_addr density check (that
+# table IS keyed on absolute word_addr, per SPEC §2) but wrong for
+# fold.batch()'s SELF_MODIFY window -- passing them there makes
+# `WA >= text_start_widx` unconditionally false (WA can never reach ~536M),
+# silently disabling SELF_MODIFY detection for the whole run. Caught by
+# executor-2's review (#144) after the identical bug was found already
+# merged in preflight_milestone.sh's own gate 4 (#146). Subtract
+# RAM_BASE_WORD to get the RAM-relative window fold.py actually expects.
+RAM_BASE_WORD=$(( LOAD_ADDR / 4 ))
+TEXT_START_WIDX=$(( TEXT_START_WORD - RAM_BASE_WORD ))
+TEXT_END_WIDX=$(( TEXT_END_WORD - RAM_BASE_WORD ))
 
 read -r RESUME_BATCH RESUME_ICOUNT <<< "$(ch --query \
   "SELECT max(batch_id), max(icount) FROM cpu_state FINAL" | tr '\t' ' ')"
@@ -172,7 +189,7 @@ while [ "$stop_requested" -eq 0 ]; do
 import sys
 sys.path.insert(0, 'executor')
 import fold
-print(fold.batch($STEP_K, $TEXT_START_WORD, $TEXT_END_WORD, $DECN, $RAM_WORDS, $HWM, db='$DATABASE'))
+print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $HWM, db='$DATABASE'))
 ")
   # Via stdin, not --query: the fold's generated step is tens of thousands
   # of AST nodes as text, well past ARG_MAX -- same reasoning as every

@@ -132,6 +132,7 @@ def run_batch(db, K, decn, ram_words, hwm=20_000):
 
 def flush_all(db):
     ch(commit.ram_flush_sql(db))
+    ch(commit.fbpal_flush_sql(db))
     ch(commit.console_out_flush_sql(db))
     ch(commit.cpu_state_flush_sql(db))
 
@@ -151,6 +152,22 @@ def ram_hash(db, ram_words):
     words_expr = (f"(SELECT groupArray(value) FROM "
                   f"(SELECT value FROM {db}.ram FINAL "
                   f" WHERE word_addr >= {RAM_BASE_WORD} AND word_addr < {RAM_BASE_WORD + ram_words} "
+                  f" ORDER BY word_addr))")
+    return scalar(f"SELECT {checkpoint.hex64(checkpoint.word_array_hash(words_expr))}")
+
+
+def region_word_hash(db, table, size_words):
+    """Same oracle as ram_hash (#176), applied to `framebuffer`/`palette`'s
+    OWN word_addr domain -- region-relative, starting at 0 (fbpal_flush_sql's
+    docstring: no RAM_BASE-style rebasing on this side), not ram's absolute
+    domain. Unlike ram, these regions have no decode-positional-indexing
+    density requirement (#81), so no zero-fill is needed beforehand -- the
+    two hashes this test compares are only ever taken over the SAME set of
+    addresses written by the SAME sequence of stores, so density doesn't
+    matter for the equality check itself."""
+    words_expr = (f"(SELECT groupArray(value) FROM "
+                  f"(SELECT value FROM {db}.{table} FINAL "
+                  f" WHERE word_addr >= 0 AND word_addr < {size_words} "
                   f" ORDER BY word_addr))")
     return scalar(f"SELECT {checkpoint.hex64(checkpoint.word_array_hash(words_expr))}")
 
@@ -299,6 +316,119 @@ def test_crash_recovery_idempotent_flush():
     hash_before_redo = ram_hash(DB, ram_words)
     flush_all(DB)
     assert ram_hash(DB, ram_words) == hash_before_redo, "redoing an already-applied flush must be a no-op"
+
+
+def test_batch_populates_fbpal_write_log_lanes():
+    """#176: `batch()`'s own r.7.* projection (#130/#160) had zero coverage
+    -- the only prior check was #145's `select_only()` tests, which never
+    call `batch()` at all, and #174's manual PR-body verification. A real
+    `batch()` call with one FRAMEBUFFER store and one PALETTE store must
+    populate batch_commit's six fbpal write-log columns with the exact
+    addr/val/icount triples fold.py's acc.7 computes -- not just that acc.7
+    computes correctly inside the fold (already implied by select_only()'s
+    coverage), but that batch()'s INSERT actually carries it through to
+    batch_commit, which is the thing #174 changed and #145's tests can't
+    see.
+
+    fb_wa/pal_wa are each region's OWN word offset (fold.py: `(ADDR - BASE)
+    >> 2`), and wl_icount is the store's absolute post-retirement icount
+    (acc.5 + 1, same construction as ram's wl_icount, #101) -- with four
+    instructions retiring in order (ADDI, SW->FB, ADDI, SW->PAL), the FB
+    store is the 2nd retirement (icount 2) and the PAL store is the 4th
+    (icount 4)."""
+    decn, ram_words = 4, 8
+    FB_ADDR = config.FRAMEBUFFER_BASE  # word 0 of framebuffer's own domain
+    PAL_ADDR = config.PALETTE_BASE + 4  # word 1 of palette's own domain
+    decoded_rows = [
+        ADDI(rd=1, imm=0xCAFEBABE), SW(rs2=1, addr=FB_ADDR),
+        ADDI(rd=2, imm=0xFEEDFACE), SW(rs2=2, addr=PAL_ADDR),
+    ]
+    seed_decoded_and_ram(DB, decoded_rows, ram_words)
+    seed_batch_commit(DB, batch_id=0, pc=RAM_BASE, regs=[0] * 31, icount=0)
+    run_batch(DB, K=4, decn=decn, ram_words=ram_words)  # one batch, all 4 instructions
+
+    row = json.loads(ch(
+        f"SELECT fb_wl_addr, fb_wl_val, fb_wl_icount, "
+        f"pal_wl_addr, pal_wl_val, pal_wl_icount "
+        f"FROM {DB}.batch_commit WHERE batch_id = 1 FORMAT JSONEachRow"
+    ).strip())
+    assert [int(x) for x in row["fb_wl_addr"]] == [0]
+    assert [int(x) for x in row["fb_wl_val"]] == [0xCAFEBABE]
+    assert [int(x) for x in row["fb_wl_icount"]] == [2], "FB store is the 2nd retiring instruction"
+    assert [int(x) for x in row["pal_wl_addr"]] == [1]
+    assert [int(x) for x in row["pal_wl_val"]] == [0xFEEDFACE]
+    assert [int(x) for x in row["pal_wl_icount"]] == [4], "PAL store is the 4th retiring instruction"
+
+
+def test_fbpal_crash_recovery_idempotent_flush():
+    """Mirrors test_crash_recovery_idempotent_flush's shape, for #130/#160's
+    fbpal flush (#176): ADR-0003's atomicity claim applies identically here
+    -- fbpal_flush_sql() must be safe to skip (crash before it runs) and
+    safe to redo (recovery always re-runs it unconditionally), converging
+    to the same observable framebuffer/palette state either way. This had
+    zero automated coverage before -- only #174's manual PR-body
+    verification (a 3-row synthetic check, an idempotent-re-flush check, an
+    empty-lane check, and a 16,000-row real-scale spot-check), none of it
+    repeatable by a future change."""
+    decn, ram_words = 8, 12
+    FB_A, FB_B = config.FRAMEBUFFER_BASE, config.FRAMEBUFFER_BASE + 4
+    PAL_A, PAL_B = config.PALETTE_BASE, config.PALETTE_BASE + 4
+    decoded_rows = [
+        ADDI(rd=1, imm=0x11111111), SW(rs2=1, addr=FB_A),
+        ADDI(rd=2, imm=0x22222222), SW(rs2=2, addr=FB_B),
+        ADDI(rd=3, imm=0x33333333), SW(rs2=3, addr=PAL_A),
+        ADDI(rd=4, imm=0x44444444), SW(rs2=4, addr=PAL_B),
+    ]
+
+    def reset():
+        # Same reasoning as test_crash_recovery_idempotent_flush's reset():
+        # one shared database across both sub-runs, so everything each
+        # sub-run's batch_id=0 PREV lookup could pick up must be cleared.
+        ch(f"TRUNCATE TABLE {DB}.batch_commit; TRUNCATE TABLE {DB}.cpu_state; "
+           f"TRUNCATE TABLE {DB}.console_out; TRUNCATE TABLE {DB}.framebuffer; "
+           f"TRUNCATE TABLE {DB}.palette")
+        seed_decoded_and_ram(DB, decoded_rows, ram_words)
+
+    def hashes():
+        return region_word_hash(DB, "framebuffer", 2), region_word_hash(DB, "palette", 2)
+
+    def run_clean():
+        reset()
+        seed_batch_commit(DB, batch_id=0, pc=RAM_BASE, regs=[0] * 31, icount=0)
+        for _ in range(4):  # 4 batches x K=2 == all 8 instructions
+            run_batch(DB, K=2, decn=decn, ram_words=ram_words)
+            flush_all(DB)
+        return hashes()
+
+    def run_with_simulated_crash():
+        reset()
+        seed_batch_commit(DB, batch_id=0, pc=RAM_BASE, regs=[0] * 31, icount=0)
+        run_batch(DB, K=2, decn=decn, ram_words=ram_words)   # batch 1: FB_A
+        flush_all(DB)
+        run_batch(DB, K=2, decn=decn, ram_words=ram_words)   # batch 2: FB_B -- crash before flush
+        # (no flush_all here: the crash window)
+        # recovery: unconditionally redo the flush for the latest batch_commit
+        # row, exactly what the driver does on startup, before any new batch.
+        flush_all(DB)
+        run_batch(DB, K=2, decn=decn, ram_words=ram_words)   # batch 3: PAL_A, after recovery
+        flush_all(DB)
+        run_batch(DB, K=2, decn=decn, ram_words=ram_words)   # batch 4: PAL_B
+        flush_all(DB)
+        return hashes()
+
+    clean = run_clean()
+    recovered = run_with_simulated_crash()
+    assert clean == recovered, (
+        "a skipped-then-redone fbpal flush must converge to identical "
+        "framebuffer/palette state -- any difference means a batch was "
+        "observably half-applied, violating SPEC §6"
+    )
+
+    # And the redo itself must be a no-op on an ALREADY-flushed batch, same
+    # as ram's crash-recovery test checks.
+    hash_before_redo = hashes()
+    flush_all(DB)
+    assert hashes() == hash_before_redo, "redoing an already-applied fbpal flush must be a no-op"
 
 
 def test_retention_delete_does_not_underflow_early_in_a_run():

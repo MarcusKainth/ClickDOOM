@@ -9,28 +9,38 @@ rationale, what this deliberately does and doesn't cover, and how to
 regenerate (`just gen-reference-trace` from the repo root, after `just
 build-rom`).
 
-## `demo-boot-to-first-frame.tsv` / `.json`
+## Naming: `demo-boot-to-first-frame.<rom sha256 prefix>.tsv` / `.json`
 
-The real DOOM ROM (`rom/PINNED_HASH`), boot to icount 13,631,488 — past the
-first `FRAME_COMMIT` (icount 13,243,964, per issue #29) with one full
-`RAM_HASH_INTERVAL` checkpoint of margin. `.tsv` is the SPEC §7 trace
-itself (one line per `CHECKPOINT_INTERVAL`, `ramhash`/`fbhash` appended
-every `RAM_HASH_INTERVAL`); `.json` is generation metadata — ROM sha256,
-the exact command line, and two milestones that do **not** appear as
-`.tsv` lines because they don't fall on a periodic-interval boundary
-(`init_graphics_icount`, `frame_commit`).
+Each trace's filename carries a 12-hex-char prefix of the ROM's own sha256
+(matching `git`'s short-hash length) — not just the `.json` sidecar's
+`rom_sha256` field. This is deliberate, not decorative: this directory's
+first real trace was generated against the attract-mode ROM
+(`e133789d9cec…`) hours before issue #111 (wiring `-timedemo demo3` argv,
+README's actual victory-condition invocation) made that ROM obsolete and
+moved `PINNED_HASH`. A same-named file would have made the stale trace
+silently *look* current; a teammate happening to notice a mismatched
+instruction count in a status message is what actually caught it. The
+hash-in-filename convention is the fix that doesn't depend on a human
+noticing a second time.
 
-Independently cross-checked against issue #29's own reproduction (a
-different, ad hoc script, not this one) before being committed: both the
-`I_InitGraphics` icount and the full first-`FRAME_COMMIT` checkpoint line
-(icount, pc, reghash, ramhash, **fbhash `ce36be7a861e13e0`**) match
-exactly. `fbhash` is the number that matters most here — it is what
-"final-frame hash matches refemu" (README's victory condition) checks, and
-it is blind to nothing upstream of rendering the way `reghash`/`ramhash`
-alone would be (SPEC §7).
+`.tsv` is the SPEC §7 trace itself (one line per `CHECKPOINT_INTERVAL`,
+`ramhash`/`fbhash` appended every `RAM_HASH_INTERVAL`); `.json` is
+generation metadata — ROM sha256, the exact command line, and any
+milestones (e.g. `I_InitGraphics` reached, first `FRAME_COMMIT`) that
+don't fall on a periodic-interval boundary and so can't be `.tsv` lines.
 
-If a future ROM change moves `PINNED_HASH`, this trace goes stale —
-`gen_reference_trace.py` refuses to regenerate silently against a
-different binary (checks `rom/PINNED_HASH`, fails loudly on a mismatch)
-and refuses to report a milestone that disagrees with the `--expect-*`
-defaults baked into it without saying so.
+`gen_reference_trace.py` refuses to generate against a ROM that doesn't
+match `rom/PINNED_HASH` (fails loudly, not silently), and refuses to
+report a milestone that disagrees with its `--expect-*` defaults without
+saying so — a mismatch there means either the ROM genuinely changed
+(update the defaults) or refemu itself regressed (investigate before
+trusting the output).
+
+## Current status: no trace committed here yet
+
+Held pending #111 (`-timedemo demo3` argv). The attract-mode ROM's trace
+(generated, cross-checked against issue #29's independent reproduction,
+and then deliberately not merged — see PR #114) is not committed here
+because its ROM is about to stop being the one this project runs. Once
+#111 lands, regenerate against the timedemo ROM's real `PINNED_HASH` with
+`just gen-reference-trace`.

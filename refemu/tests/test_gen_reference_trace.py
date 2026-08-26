@@ -165,3 +165,71 @@ def test_init_graphics_milestone_distinguishes_needle_completion_from_last_chang
     needle_complete_instructions = 1 + 2 * len(needle)  # lui + (load+store) per byte
     needle_complete_icount = needle_complete_instructions
     assert ig_icount > needle_complete_icount
+
+
+def test_default_out_path_embeds_rom_sha256_prefix(tmp_path):
+    # Issue #96's own incident (see module docstring): a trace generated
+    # against one ROM was almost treated as current after the ROM changed
+    # underneath it. The filename itself carrying the hash is what makes
+    # that impossible to do silently.
+    sha = "e133789d9cece162bfb10b743ece66de12559d458d288d3c8acb3f2b98bda954"
+    path = gen_reference_trace.default_out_path(tmp_path, sha)
+    assert path.name == f"demo-boot-to-first-frame.{sha[:12]}.tsv"
+    assert path.parent == tmp_path / "refemu" / "reference_traces"
+
+
+def test_default_out_path_different_rom_gets_different_filename(tmp_path):
+    # The actual issue #96 scenario: two ROMs, two filenames -- never one
+    # file silently overwritten with a different binary's trace.
+    old_rom_path = gen_reference_trace.default_out_path(tmp_path, "e133789d9cece162")
+    new_rom_path = gen_reference_trace.default_out_path(tmp_path, "aabbccddeeff0011")
+    assert old_rom_path != new_rom_path
+
+
+def test_main_default_output_path_embeds_actual_rom_hash(tmp_path, monkeypatch):
+    # End-to-end through main() itself (not just default_out_path() in
+    # isolation): a synthetic "ROM", loaded and hashed for real, with no
+    # --out/--out-meta given, must land at the hash-embedded default path
+    # -- not the real repo's refemu/reference_traces/ (REPO_ROOT is
+    # monkeypatched to tmp_path so this test can never write there).
+    import hashlib
+    import json
+    import sys
+
+    from .asm import lui
+
+    words = [lui(1, 0x1000_0000 >> 12), addi(2, 0, 0), sw(1, 2, 0x10), ecall()]  # trivial FRAME_COMMIT then halt
+    image = b"".join(w.to_bytes(4, "little") for w in words)
+    image_path = tmp_path / "rom.bin"
+    image_path.write_bytes(image)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"text_start": None, "text_end": None}))
+    pinned_hash = hashlib.sha256(image).hexdigest()
+    pinned_hash_path = tmp_path / "PINNED_HASH"
+    pinned_hash_path.write_text(pinned_hash)
+
+    monkeypatch.setattr(gen_reference_trace, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gen_reference_trace",
+            "--image",
+            str(image_path),
+            "--manifest",
+            str(manifest_path),
+            "--pinned-hash",
+            str(pinned_hash_path),
+            "--max-instructions",
+            "10",
+            "--no-expect",
+        ],
+    )
+    exit_status = gen_reference_trace.main()
+    assert exit_status == 0
+
+    expected = tmp_path / "refemu" / "reference_traces" / f"demo-boot-to-first-frame.{pinned_hash[:12]}.tsv"
+    assert expected.exists()
+    assert expected.with_suffix(".json").exists()
+    written_meta = json.loads(expected.with_suffix(".json").read_text())
+    assert written_meta["rom_sha256"] == pinned_hash

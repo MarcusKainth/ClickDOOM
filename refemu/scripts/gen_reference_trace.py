@@ -12,11 +12,16 @@ script does not invoke the toolchain itself, since building the ROM is
 
     uv run --project refemu python refemu/scripts/gen_reference_trace.py
 
-Regenerate the committed trace with the default arguments below (this is
-what `refemu/reference_traces/demo-boot-to-first-frame.tsv`/`.json` were
-produced with -- see the `.json` file's own `generated_by` field for the
-exact command line and the resulting instruction count, for `just diff`-N
-callers who want a comparable in-between checkpoint).
+Output filenames default to `refemu/reference_traces/demo-boot-to-first-
+frame.<rom sha256 prefix>.tsv`/`.json` -- the ROM's own hash prefix is
+embedded in the filename itself, not only recorded inside the `.json`
+sidecar, so a trace generated against one ROM can never be mistaken for
+current after `rom/PINNED_HASH` moves (issue #96's own incident: this
+script's first real output was generated against the attract-mode ROM
+hours before the timedemo-argv ROM, #111, made it stale -- caught by a
+teammate noticing a number in a status message, not by anything in this
+repo, which is exactly the gap this convention closes). See the `.json`
+file's own `generated_by` field for the exact command line used.
 
 ## Why this generates its own periodic-checkpoint loop instead of calling
 ## `refemu.trace.iter_trace()` directly
@@ -87,6 +92,16 @@ from refemu.trace import (
 INIT_GRAPHICS_NEEDLE = b"I_InitGraphics: framebuffer"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def default_out_path(repo_root: Path, rom_sha256: str) -> Path:
+    """The trace file's own name records which ROM it was generated
+    against -- a 12-hex-char prefix of the ROM's sha256, the same prefix
+    length `git` uses for a short commit hash. Not decorative: this is
+    what stops a trace generated against one ROM from being silently
+    treated as current after `rom/PINNED_HASH` moves (see module
+    docstring)."""
+    return repo_root / "refemu" / "reference_traces" / f"demo-boot-to-first-frame.{rom_sha256[:12]}.tsv"
 
 
 def generate(image: bytes, manifest: dict, max_instructions: int) -> dict:
@@ -200,12 +215,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--out",
-        default=str(REPO_ROOT / "refemu" / "reference_traces" / "demo-boot-to-first-frame.tsv"),
+        default=None,
+        help=(
+            "default: refemu/reference_traces/demo-boot-to-first-frame.<rom sha256"
+            " prefix>.tsv -- computed after the ROM is hashed below (issue #96's"
+            " incident: a trace generated against one ROM getting silently treated"
+            " as current after the ROM changed underneath it -- embedding the hash"
+            " in the filename itself, not just the .json sidecar, means a stale"
+            " trace can never be mistaken for a fresh one by name alone)."
+        ),
     )
-    parser.add_argument(
-        "--out-meta",
-        default=str(REPO_ROOT / "refemu" / "reference_traces" / "demo-boot-to-first-frame.json"),
-    )
+    parser.add_argument("--out-meta", default=None, help="default: --out's path with .json instead of .tsv")
     # Cross-checked against issue #29's independently reproduced numbers by
     # default. Pass --no-expect to generate without asserting (e.g. against
     # a deliberately different ROM), but the default is to fail loudly on
@@ -238,6 +258,12 @@ def main() -> int:
         )
         return 1
     print(f"# ROM sha256 matches PINNED_HASH: {actual}", file=sys.stderr)
+
+    # Computed here, not as an argparse default, because it depends on
+    # `actual` -- the ROM's own hash, just verified above -- not on
+    # anything known before that check runs.
+    out_path = Path(args.out) if args.out else default_out_path(REPO_ROOT, actual)
+    out_meta_path = Path(args.out_meta) if args.out_meta else out_path.with_suffix(".json")
 
     result = generate(image, manifest, args.max_instructions)
     meta = result["meta"]
@@ -294,11 +320,9 @@ def main() -> int:
     if meta["init_graphics_icount"] is not None:
         print(f"# I_InitGraphics reached at icount={meta['init_graphics_icount']}", file=sys.stderr)
 
-    out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(result["lines"]) + "\n")
 
-    out_meta_path = Path(args.out_meta)
     full_meta = {
         "spec_version": manifest.get("spec_version"),
         "rom_sha256": actual,

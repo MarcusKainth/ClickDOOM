@@ -161,6 +161,30 @@ total either way. **Still well under ADR-0001's 10,000 threshold** -- an
 fold-in-isolation regression above because e2e adds the state-reload and
 write-log-flush round trips on top of the now-slower fold.
 
+### A third, unrelated cost landed on top of this: the groupArray capture fix
+
+Separately, sqlcpu found (PR #67) that `DECODE_WITH`'s per-column
+`groupArray(col)` idiom is not reliably safe against `word_addr` in
+ClickHouse 26.3 -- `optimize_read_in_order` can stream a column straight
+from physically-sorted storage, bypassing the subquery's `ORDER BY`, and
+silently misalign one column while its siblings stay correct. Could not
+reproduce it against this PR's own tables despite real effort (documented
+in the PR thread), but the fix -- one combined `groupArray(tuple(...))` per
+table instead of one per column -- is free of any correctness downside and
+removes a setting-dependent landmine, so it's applied regardless of whether
+it's currently biting this specific table's size/shape. Applied in the same
+pass as this ADR's other numbers.
+
+It is not free of throughput cost: fold-in-isolation at K=50,000 on the
+corrected (non-halting) mix went from a noisy 2,437-3,867 instr/sec to a
+stable 1,757-1,898 -- a further real regression, though also notably *more
+consistent* run to run, which may mean the earlier noise was itself an
+artifact of the vulnerable capture pattern rather than genuine variance in
+write-log-length-dependent cost. Not re-measured against ADR-0001's e2e
+threshold at time of writing; the conclusion (well under 10,000, argue for
+amending) is not in doubt given fold-in-isolation alone already sits an
+order of magnitude below it.
+
 One more thing this correction surfaced, not yet explained: fold-in-isolation
 itself was noisier across repeats with the corrected (non-halting) mix than
 before -- 2,437 and 3,867 instr/sec on the same K, same fixture, back to

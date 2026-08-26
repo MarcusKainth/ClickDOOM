@@ -109,21 +109,25 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # only for array lookups; PC itself is never rounded.
     IDX = f"(least(bitShiftRight(toUInt32(toUInt64({PC}) - {ram_base}), 2), {decn - 1}) + 1)"
 
-    ID = f"DID[{IDX}]"
-    RD = f"DRD[{IDX}]"
-    IMM = f"DIM[{IDX}]"
-    TGT = f"DTG[{IDX}]"
-    DMKv = f"DMK[{IDX}]"
-    DSGv = f"DSG[{IDX}]"
-    RAW = f"DRW[{IDX}]"
+    # DEC[i] is a tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw) -- one
+    # combined groupArray per table, not one per column. See DECODE_WITH's
+    # comment below for why (sqlcpu, PR #67: optimize_read_in_order can
+    # silently misalign a per-column groupArray against word_addr).
+    ID = f"DEC[{IDX}].1"
+    RD = f"DEC[{IDX}].2"
+    IMM = f"DEC[{IDX}].5"
+    TGT = f"DEC[{IDX}].6"
+    DMKv = f"DEC[{IDX}].7"
+    DSGv = f"DEC[{IDX}].8"
+    RAW = f"DEC[{IDX}].9"
 
     # Register file per sqlcpu's schema.sql (PR #42): `regs` is 31 elements,
     # 1-indexed, x1..x31 -- x0 has NO array slot (unlike the Phase 0 bench's
     # 32-element array with x0 pinned at position 1, which this PR initially
     # copied uncritically). Reading x0 must be an explicit 0, not an array
     # lookup; writing x0 must be discarded, not written to some slot.
-    R1 = f"DR1[{IDX}]"
-    R2 = f"DR2[{IDX}]"
+    R1 = f"DEC[{IDX}].3"
+    R2 = f"DEC[{IDX}].4"
     A = f"if({R1} = 0, toUInt32(0), acc.2[{R1}])"
     B = f"toUInt32(if({R2} = 0, toUInt32(0), acc.2[{R2}]) + {IMM})"
     # Raw rs2 (no +imm). B doubles as the ALU/branch second operand (ADR-0002's
@@ -141,8 +145,10 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     SH = f"(8 * bitAnd({ADDR}, 3))"
 
     # Write-log first (reverse order, last writer wins), then RAM.
+    # RAMT[i].1 -- see DECODE_WITH's comment: RAM is captured as a
+    # one-column tuple, same defensive pattern as decoded's columns.
     LW = (f"if(arrayLastIndex(z -> z = {WA}, acc.3.1) > 0,"
-          f" acc.3.2[arrayLastIndex(z -> z = {WA}, acc.3.1)], RAM[{WA} + 1])")
+          f" acc.3.2[arrayLastIndex(z -> z = {WA}, acc.3.1)], RAMT[{WA} + 1].1)")
 
     # sg is a boolean sign-extend flag (0/1), not a bit-mask value -- matches
     # sqlcpu's schema.sql/execute.py (`sg UInt8`) exactly, per their
@@ -316,17 +322,28 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 # sqlcpu's request to reconcile this in the same pass as the PC fix, so
 # switching from executor/schema_fixture.sql to the real decoded table
 # needs no changes here.
+# One combined groupArray(tuple(...)) per table, not one groupArray per
+# column. sqlcpu found (PR #67) that ClickHouse 26.3's
+# `optimize_read_in_order` (on by default) can stream a column straight
+# from its physically-sorted storage into groupArray without honoring the
+# subquery's ORDER BY -- silently misaligning that one column against
+# word_addr while sibling columns, captured the identical way in the same
+# query, stay correct. `SETTINGS optimize_read_in_order = 0` fixes it but
+# is a setting a future query can omit, not a structural fix. Capturing
+# every column of a table in ONE tuple, in ONE groupArray call, can't
+# misalign columns against each other, because they're read and packed
+# together -- there's no second independent read path for the optimizer to
+# diverge onto. Tried to reproduce this directly against fold.py's own
+# tables (single-part and multi-part) and couldn't, but the fix is free
+# (verified: no correctness or throughput difference either way) and
+# removes a setting-dependent landmine, so it's applied regardless of
+# whether it's currently biting this table's specific size/shape.
 DECODE_WITH = f"""
-  (SELECT groupArray(value) FROM (SELECT value FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAM,
-  (SELECT groupArray(id)  FROM (SELECT id,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DID,
-  (SELECT groupArray(rd)  FROM (SELECT rd,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRD,
-  (SELECT groupArray(rs1) FROM (SELECT rs1, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR1,
-  (SELECT groupArray(rs2) FROM (SELECT rs2, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DR2,
-  (SELECT groupArray(imm) FROM (SELECT imm, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DIM,
-  (SELECT groupArray(tgt) FROM (SELECT tgt, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DTG,
-  (SELECT groupArray(mk)  FROM (SELECT mk,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DMK,
-  (SELECT groupArray(sg)  FROM (SELECT sg,  word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DSG,
-  (SELECT groupArray(raw) FROM (SELECT raw, word_addr FROM {DB}.decoded ORDER BY word_addr)) AS DRW"""
+  (SELECT groupArray(tuple(value))
+     FROM (SELECT value, word_addr FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAMT,
+  (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw))
+     FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr
+           FROM {DB}.decoded ORDER BY word_addr)) AS DEC"""
 
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"

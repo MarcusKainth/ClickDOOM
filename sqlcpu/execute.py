@@ -238,14 +238,29 @@ def store_word_addr(a="A", imm="imm") -> str:
     return f"bitShiftRight(toUInt32({a} + {imm}), 2)"
 
 
-def store_value(loaded_word_expr: str, addr_expr: str, b="B", mk="mk") -> str:
-    # Read-modify-write over the containing word: keep the bytes outside the
-    # mask, splice in the low bits of B at the address's byte offset.
+def store_value(loaded_word_expr: str, addr_expr: str, rs2_value="rs2_value", mk="mk") -> str:
+    """Read-modify-write over the containing word: keep the bytes outside
+    the mask, splice in the low bits of `rs2_value` at the address's byte
+    offset.
+
+    `rs2_value` MUST be the raw register value (`regs[rs2]`, x0-guarded) --
+    NOT `operand_b()`'s collapsed `B` (`regs[rs2] + imm`). `imm` here is
+    the store's address offset, already spent computing `addr_expr`; it is
+    not part of the value being stored, and adding it in corrupts every
+    store whose immediate is nonzero. This is not a hypothetical: the exact
+    mistake was found in executor's fold.py (caught reviewing PR #48,
+    already fixed there) and independently reintroduced in this project's
+    own riscv-tests harness (#21) and its test_execute.py oracle -- the
+    oracle repeated the same wrong assumption the implementation made, so
+    it didn't catch it; real riscv-tests store fixtures did. Parameter
+    renamed from a bare `b` to make the distinction from `operand_b()`
+    impossible to miss at the call site.
+    """
     shift = f"(8 * bitAnd({addr_expr}, 3))"
     return (
         f"toUInt32(bitOr("
         f"bitAnd({loaded_word_expr}, bitXor(4294967295, toUInt32(bitShiftLeft({mk}, {shift})))),"
-        f"toUInt32(bitShiftLeft(bitAnd({b}, {mk}), {shift}))))"
+        f"toUInt32(bitShiftLeft(bitAnd({rs2_value}, {mk}), {shift}))))"
     )
 
 

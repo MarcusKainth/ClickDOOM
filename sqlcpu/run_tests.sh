@@ -120,14 +120,17 @@ if [ -f sqlcpu/test_execute.py ]; then
   execute_status="$execute_out"
 fi
 
-run_riscv_tests() {
-  # Placeholder until a real riscv-tests corpus is wired up (#21) -- decode
-  # (#18) and the full RV32IM execute expression, M-extension included
-  # (#19, #20), are both landed and covered by the checks above, but
-  # neither runs the actual upstream riscv-tests binaries yet. Reports zero
-  # rather than a pass count this script has no way to earn until then.
-  echo "0"
-}
+echo "# running riscv-tests (issue #21)..." >&2
+riscv_status=0
+riscv_out=$(python3 sqlcpu/run_riscv_tests.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
+  --password "$PASSWORD" --database "$DATABASE" --client "${CH_CMD[*]}" 2>&1) || riscv_status=$?
+echo "$riscv_out" >&2
+# Pulled by pattern, not position: stdout/stderr interleaving under `2>&1`
+# isn't guaranteed to preserve program order, and the script's own
+# "::error::failed: ..." line (stderr) prints after its summary (stdout).
+riscv_summary=$(echo "$riscv_out" | grep "^riscv-tests inside ClickHouse:")
 
-pass_count=$(run_riscv_tests)
-echo "riscv-tests inside ClickHouse: ${pass_count} passed (full riscv-tests corpus is #21). ${decode_status}. ${execute_status}"
+echo "${riscv_summary}. ${decode_status}. ${execute_status}"
+if [ "$riscv_status" -ne 0 ]; then
+  exit 1
+fi

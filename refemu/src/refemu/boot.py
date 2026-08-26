@@ -118,6 +118,7 @@ class BootReport:
     halt_pc: int | None = None
     halt_insn: int | None = None
     halt_addr: int | None = None
+    halt_exit_code: int | None = None
     frame_no: int | None = None
 
 
@@ -153,6 +154,7 @@ def boot(
                 halt_pc=h.pc,
                 halt_insn=h.insn,
                 halt_addr=h.addr,
+                halt_exit_code=h.exit_code,
             )
 
         # Safe to re-read here (unlike pre-fetching before step()): step()
@@ -192,6 +194,8 @@ def format_report(report: BootReport) -> str:
             lines.append(f"  instruction word: 0x{report.halt_insn:08x}")
         if report.halt_addr is not None:
             lines.append(f"  address: 0x{report.halt_addr:08x}")
+        if report.halt_exit_code is not None:
+            lines.append(f"  exit code: {report.halt_exit_code}")
     else:
         lines.append(f"BUDGET EXHAUSTED: no fault, no FRAME_COMMIT after icount={report.icount}")
 

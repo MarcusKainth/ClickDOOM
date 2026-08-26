@@ -111,6 +111,24 @@ def test_boot_reports_fault():
     assert report.histogram == {"addi": 1}
 
 
+def test_boot_reports_exit_code():
+    # EXIT (SPEC §3) is a clean stop, not a fault, but it's routed through
+    # the same "halt" outcome as ILLEGAL_INSN etc. (see cpu.HaltReason.EXIT)
+    # -- and it's the one halt reason where the exit code itself, not just
+    # the reason string, is the useful diagnostic.
+    from refemu.mmio import EXIT
+
+    words = [
+        asm.lui(1, MMIO_BASE >> 12),
+        asm.addi(2, 0, 7),
+        asm.sw(1, 2, EXIT),
+    ]
+    report = boot(_image(words), max_instructions=1000)
+    assert report.outcome == "halt"
+    assert report.halt_reason == "EXIT"
+    assert report.halt_exit_code == 7
+
+
 def test_boot_reports_budget_exhausted():
     words = [asm.jal(0, 0)]  # infinite self-loop, never halts or commits
     report = boot(_image(words), max_instructions=50)
@@ -137,6 +155,26 @@ def test_format_report_includes_key_fields():
     assert "0x00000073" in text
     assert "addi" in text and "ecall" in text
     assert "42" in text  # icount appears somewhere sensible
+
+
+def test_format_report_includes_exit_code_when_present():
+    report = BootReport(
+        outcome="halt",
+        icount=3,
+        halt_reason="EXIT",
+        halt_pc=RAM_BASE + 8,
+        halt_exit_code=7,
+    )
+    text = format_report(report)
+    assert "exit code: 7" in text
+
+
+def test_format_report_omits_exit_code_when_absent():
+    # ILLEGAL_INSN and friends have no exit code -- must not print a
+    # misleading "exit code: None" or similar.
+    report = BootReport(outcome="halt", icount=1, halt_reason="ILLEGAL_INSN", halt_pc=RAM_BASE)
+    text = format_report(report)
+    assert "exit code" not in text
 
 
 def test_format_report_frame_commit_outcome():

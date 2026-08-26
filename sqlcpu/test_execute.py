@@ -169,7 +169,16 @@ def load_vectors(path):
     rows = []
     with open(path) as f:
         for line in f:
-            wa, _word, id_, rd, rs1, rs2, imm, tgt, mk, sg, note = line.rstrip("\n").split("\t")
+            # m_sg1/m_sg2/m_hi/d_sg (issue #54's M-extension collapse flags,
+            # schema.sql's column-doc comment has the full rationale) are
+            # unpacked and discarded here -- this oracle computes M-ext
+            # results independently from `id_` alone (see the docstring
+            # above: "deliberately not sharing any code with execute.py"),
+            # so it has no use for the pre-decoded flags execute.py itself
+            # still doesn't consume either (only fold.py's future collapse
+            # will).
+            (wa, _word, id_, rd, rs1, rs2, imm, tgt, mk, sg,
+             _m_sg1, _m_sg2, _m_hi, _d_sg, note) = line.rstrip("\n").split("\t")
             id_ = int(id_)
             rows.append((int(wa), id_, int(rd), int(rs1), int(rs2), int(imm),
                          int(tgt) if tgt else 0, int(mk), int(sg), note))

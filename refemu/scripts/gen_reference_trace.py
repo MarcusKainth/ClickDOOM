@@ -70,7 +70,6 @@ printed loudly as a mismatch, never silently accepted.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 import time
@@ -89,6 +88,9 @@ from refemu.trace import (
     reg_hash,
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _rom_provenance import UnpinnedRomError, assert_pinned_hash, hashed_filename
+
 INIT_GRAPHICS_NEEDLE = b"I_InitGraphics: framebuffer"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -96,12 +98,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 def default_out_path(repo_root: Path, rom_sha256: str) -> Path:
     """The trace file's own name records which ROM it was generated
-    against -- a 12-hex-char prefix of the ROM's sha256, the same prefix
-    length `git` uses for a short commit hash. Not decorative: this is
-    what stops a trace generated against one ROM from being silently
-    treated as current after `rom/PINNED_HASH` moves (see module
-    docstring)."""
-    return repo_root / "refemu" / "reference_traces" / f"demo-boot-to-first-frame.{rom_sha256[:12]}.tsv"
+    against -- via `_rom_provenance.hashed_filename` (issue #129's follow-
+    up: this used to be its own inline `f"...{rom_sha256[:12]}..."`,
+    duplicating exactly the discipline `gen_demo3_trace.py` needed too;
+    now both scripts share one implementation, so they can't drift on the
+    hash-prefix length or the filename shape)."""
+    return repo_root / "refemu" / "reference_traces" / hashed_filename("demo-boot-to-first-frame", rom_sha256, ".tsv")
 
 
 def generate(image: bytes, manifest: dict, max_instructions: int) -> dict:
@@ -250,12 +252,11 @@ def main() -> int:
 
     image = image_path.read_bytes()
     manifest = json.loads(manifest_path.read_text())
-    pinned = pinned_hash_path.read_text().strip()
-    actual = hashlib.sha256(image).hexdigest()
-    if actual != pinned:
+    try:
+        actual = assert_pinned_hash(image, pinned_hash_path)
+    except UnpinnedRomError as e:
         print(
-            f"FATAL: {image_path} does not match {pinned_hash_path}\n"
-            f"  pinned: {pinned}\n  actual: {actual}\n"
+            f"FATAL: {e}\n"
             "Refusing to generate a reference trace against an unpinned ROM -- "
             "rebuild with `just build-rom` from a clean checkout, or pass "
             "--pinned-hash if this is deliberate (e.g. reviewing a ROM PR).",

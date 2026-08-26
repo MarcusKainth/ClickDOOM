@@ -40,6 +40,18 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   `bench`, `ci`, `docs`. Breaking contract change: `scope!: ...`.
 - Branch names: `scope/short-desc`.
 - Squash-merge only; the PR title becomes the commit. CI lints it.
+- **Never `--delete-branch` while another PR is based on that branch.**
+  GitHub *closes* a PR whose base branch disappears — it does not retarget
+  it. This has cost us three PRs (#36, #38, #64); each needed the base
+  branch recreated before GitHub would even reopen them, and one could not
+  be recovered at all. Merge, then retarget the dependent PR to `main`,
+  then delete. Squash-merge makes this worse: the dependent PR also needs a
+  rebase afterwards, because the squashed commit shares no history with the
+  branch it came from. Keep stacks shallow — one PR in flight, two at most.
+- **Force-pushing does not reliably retrigger CI.** GitHub's
+  `pull_request` synchronize event is unreliable after a force-push, so a
+  rebased PR can sit with zero check-runs and look merge-blocked for no
+  reason. Push an empty commit to retrigger.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow

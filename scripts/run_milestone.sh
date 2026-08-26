@@ -42,7 +42,7 @@
 # RAM_HASH_INTERVAL multiple, then resumes at full K past it. No fold.py
 # signature change -- this is entirely the runner's own choice of what K to
 # pass each call. A handful of short batches near each of the ~15 boundaries
-# this run crosses (target icount 15,653,137 / 1,048,576 ~= 14.9) costs
+# this run crosses (target icount 15,393,136 / 1,048,576 ~= 14.7) costs
 # nothing material against a 3-4 hour run.
 #
 # A batch can also stop early on the write-log high-water mark (or halt, or

@@ -12,7 +12,7 @@
 # ## The two windows, and why one number is not enough
 #
 # `rom/bench/e7_memfns`'s attribution against the frozen ROM identifies:
-#   - boot-phase:            icount [0, 15,653,137)       -- WAD load, init
+#   - boot-phase:            icount [0, 15,393,136)       -- WAD load, init
 #   - store-heavy gameplay:  icount [233,932,753, 392,488,489)  -- frames
 #     200->299 of real `-timedemo demo3` playback, the window
 #     e7_memfns/README.md calls out as the one that matters (R_DrawColumn/

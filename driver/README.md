@@ -24,7 +24,8 @@ stays in the tree as this module's own fast, isolated test path.
 Validated two ways, both against real evidence, not eyeballed:
 
 1. `frame_readout_sql()` against **real refemu data** at the milestone
-   icount (15,653,137) — `gen_frame_fixture.py` dumps refemu's actual
+   icount (15,393,136, as of #175's R_DrawColumn/R_DrawSpan unroll,
+   `PINNED_HASH 9a6a47d0…`) — `gen_frame_fixture.py` dumps refemu's actual
    FRAMEBUFFER/PALETTE bytes at that point (independently computing
    `fb_hash` itself, not trusting a cited number), `seed_frame_fixture.py`
    loads them into the fixture tables, and the readout reproduces

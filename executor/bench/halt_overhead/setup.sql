@@ -1,13 +1,17 @@
 -- #23 throughput evidence: same synthetic DOOM-shaped mix as
--- executor/bench/phase0/setup.sql (same fractions, same deterministic hash
--- of `number`, same 24 MiB RAM / 2 MiB text sizing), against the fixture
--- schema (executor/schema_fixture.sql, run.sh applies it first) so the
--- comparison is "same instruction stream, old fold vs. new fold with halt
--- semantics." Only INSERTs live here -- the table DDL is schema_fixture.sql's
--- alone now, not duplicated, so the two can't silently drift apart the way
--- they briefly did across the PC-representation rework (target went from a
--- word index to a byte address, and columns were renamed to match sqlcpu's
--- id/tgt/mk/sg).
+-- executor/bench/phase0/setup.sql and executor/bench/batch_overhead/setup.sql
+-- (same fractions, same deterministic hash of `number`, same 24 MiB RAM /
+-- 2 MiB text sizing, same load/store/jalr safety fixes below) -- three
+-- copies of the same mix now, not one, because each bench predates the
+-- next's isolated-database rework and none of them share a fixture file.
+-- Not attempting to de-duplicate here; flagging so a future edit to one
+-- knows to check the other two rather than assume this is the only copy.
+--
+-- `ram`/`decoded`/`batch_commit`/`cpu_state`/`console_out`/`input_queue`'s
+-- DDL all comes from the REAL sqlcpu/schema.sql (renamed onto this bench's
+-- private database by run.sh, via sed), same as batch_overhead's -- this
+-- file only adds the synthetic mix. `{{DB}}` is substituted by run.sh with
+-- the bench's private database name -- never run this file unsubstituted.
 --
 -- Not a correctness harness (see executor/bench/phase0/setup.sql's own
 -- disclaimer) -- and per Phase 0's finding that arrayFold's `if`/`multiIf`
@@ -43,13 +47,13 @@
 -- (not realistic RISC-V codegen for jalr specifically, but this harness
 -- doesn't need decode realism -- only "doesn't spuriously halt").
 
-TRUNCATE TABLE clickdoom_executor.ram;
-INSERT INTO clickdoom_executor.ram
+TRUNCATE TABLE {{DB}}.ram;
+INSERT INTO {{DB}}.ram (word_addr, value, version)
 SELECT toUInt32(2147483648 + number), toUInt32(number * 2654435761), 0
 FROM numbers(6291456);          -- 24 MiB / 4
 
-TRUNCATE TABLE clickdoom_executor.decoded;
-INSERT INTO clickdoom_executor.decoded
+TRUNCATE TABLE {{DB}}.decoded;
+INSERT INTO {{DB}}.decoded (word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg, raw)
 SELECT
     toUInt32(2147483648 + number) AS word_addr,
     id,
@@ -81,5 +85,7 @@ FROM (SELECT number, m,
                              toUInt8(10 + number % 8)) AS id
       FROM (SELECT number, (number * 2654435761) % 100 AS m FROM numbers(524288)));
 
-TRUNCATE TABLE clickdoom_executor.state;
-TRUNCATE TABLE clickdoom_executor.batch_out;
+TRUNCATE TABLE {{DB}}.batch_commit;
+TRUNCATE TABLE {{DB}}.cpu_state;
+TRUNCATE TABLE {{DB}}.console_out;
+TRUNCATE TABLE {{DB}}.input_queue;

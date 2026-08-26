@@ -238,6 +238,30 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # above, not from RAM/write-log.
     LOADV = f"if({is_mmio}, {MMIO_READ}, {LOADV})"
 
+    # div/rem (id=14/16) widen to Int64 before intDiv/modulo -- #99, P0.
+    # Int32 intDiv/modulo throws a hard ILLEGAL_DIVISION on the one
+    # representable-but-overflowing case, dividend=INT_MIN (-2^31) and
+    # divisor=-1: the mathematical quotient is +2^31, which does not fit
+    # back in Int32. ClickHouse traps instead of wrapping. RISC-V's M
+    # extension does not trap here -- DIV specifies exactly this case
+    # wraps to -2^31 (the same bit pattern, reinterpreted), REM specifies
+    # 0 -- and sqlcpu/execute.py already implements that; this matches it
+    # rather than re-deriving it. In Int64, -2^31 / -1 = +2^31 is
+    # representable with room to spare, so `toUInt32()` truncation at the
+    # end produces the spec'd wrapped bit pattern with NO extra branch --
+    # not a second guard alongside the existing `if({SB}=0, ...)` zero
+    # check, just widening the two operands already being divided. This
+    # arm runs unconditionally on every step regardless of the step's real
+    # op_id (multiIf/if never short-circuit inside arrayFold, ADR-0002),
+    # so a guard here would cost every instruction; the wider cast does
+    # not add a node, it changes two already-present toInt64 casts' target
+    # width for free.
+    # DIVU/REMU (id=15/17) need no equivalent: they operate on unsigned A/B
+    # throughout (no signed-overflow representation to escape in the first
+    # place), so they're untouched.
+    SA64 = f"toInt64({SA})"
+    SB64 = f"toInt64({SB})"
+
     RESULT = ("multiIf("
         f"{ID}=0, toUInt32({A} + {B}),"
         f"{ID}=1, toUInt32({A} - {B}),"
@@ -253,9 +277,9 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{ID}=11, toUInt32(bitShiftRight(toInt64({SA}) * toInt64({SB}), 32)),"
         f"{ID}=12, toUInt32(bitShiftRight(toInt64({SA}) * toInt64({B}), 32)),"
         f"{ID}=13, toUInt32(bitShiftRight(toUInt64({A}) * toUInt64({B}), 32)),"
-        f"{ID}=14, if({SB}=0, 4294967295, toUInt32(intDiv({SA}, {SB}))),"
+        f"{ID}=14, if({SB}=0, 4294967295, toUInt32(intDiv({SA64}, {SB64}))),"
         f"{ID}=15, if({B}=0, 4294967295, toUInt32(intDiv({A}, {B}))),"
-        f"{ID}=16, if({SB}=0, {A}, toUInt32(modulo({SA}, {SB}))),"
+        f"{ID}=16, if({SB}=0, {A}, toUInt32(modulo({SA64}, {SB64}))),"
         f"{ID}=17, if({B}=0, {A}, toUInt32(modulo({A}, {B}))),"
         f"{ID}={config.OP_LOAD}, {LOADV},"
         f"{LINK_VALUE})")
@@ -363,19 +387,29 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
-    # wl_icount must be this store's ABSOLUTE global icount (icount_base +
-    # this batch's retired-so-far + 1), not just the batch-relative rank --
-    # matching TICKS_MS's icount_base treatment above, and per SPEC's `ram`
+    # CONVENTION (binding on every reader of wl_icount, not just this
+    # function): wl_icount is ABSOLUTE -- icount_base + this batch's
+    # retired-so-far + 1 -- already includes icount_base. Any flush or
+    # other consumer that adds icount_base (or icount_before, the flush-
+    # side name for the same value) on top is double-counting and MUST NOT.
+    # This matches TICKS_MS's icount_base treatment above, and SPEC's `ram`
     # versioning note ("the individual store's own icount ... not the
-    # batch's final icount"). An earlier version of this line was
-    # `toUInt64(acc.5) + 1` alone: correct *within* one batch (PR #48 fixed
-    # the same-batch tie this way) but wrong *across* batches, since nothing
-    # consumed wl_icount across chained batches until #25's ram flush --
-    # icount_base=0 in every single-batch test let it slide uncaught. Two
-    # batches storing to the same address would then get versions that don't
-    # reflect execution order (a later batch's small relative rank losing to
-    # an earlier batch's large one under ram's ReplacingMergeTree FINAL) --
-    # silent, deterministic, wrong. See #101.
+    # batch's final icount").
+    #
+    # An earlier version of this line was `toUInt64(acc.5) + 1` alone:
+    # batch-relative, not absolute. That was NOT live corruption on `main`
+    # -- every flush site that read it (executor/bench/*_overhead/run.sh)
+    # already added `icount_before +` as compensation, and batch-relative +
+    # compensation is arithmetically identical to absolute. But it was a
+    # real SPEC violation (SPEC.md ~199 names `wl_icount[i]` ITSELF, the
+    # value stored in `batch_commit`, as "the individual store's own
+    # icount" -- batch-relative fails that regardless of what a downstream
+    # flush does about it) and a real landmine: it only worked because
+    # every flush site remembered the compensation, and #25's new flush
+    # (executor/commit.py) is exactly the kind of new site that could have
+    # forgotten it. Fixed here; every `icount_before +`/`icount_base +`
+    # compensation at every flush site was removed in the same change --
+    # see #101.
     new_wl = (f"if({is_retiring_store},"
               f" tuple(arrayPushBack(acc.3.1, {WA}), arrayPushBack(acc.3.2, {SVAL}),"
               f" arrayPushBack(acc.3.3, toUInt64({icount_base}) + toUInt64(acc.5) + 1)),"

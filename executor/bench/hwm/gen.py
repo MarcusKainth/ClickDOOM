@@ -16,6 +16,15 @@ def emit_schema():
     print("""CREATE TABLE clickdoom_executor.ram (word_addr UInt32, value UInt32, version UInt64)
 ENGINE = ReplacingMergeTree(version) ORDER BY word_addr;""")
     print(f"INSERT INTO clickdoom_executor.ram SELECT toUInt32(2147483648+number), 0, 0 FROM numbers({RAM_WORDS});")
+    # Missing until #25 found it (same gap as executor/schema_fixture.sql's
+    # test_fold.py fix): PR #88's MMIO plumbing added decode_with()'s KEYQT
+    # subquery (reads {db}.input_queue) to every select_only() call,
+    # including this one, but this bench's own schema never created the
+    # table -- it would have failed outright (UNKNOWN_TABLE) the next time
+    # anyone actually ran it, same as test_fold.py did.
+    print("DROP TABLE IF EXISTS clickdoom_executor.input_queue;")
+    print("""CREATE TABLE clickdoom_executor.input_queue (event_seq UInt64, key_event UInt16, consumed UInt8)
+ENGINE = MergeTree ORDER BY event_seq;""")
     print("DROP TABLE IF EXISTS clickdoom_executor.decoded;")
     # Column names match sqlcpu/schema.sql (id/tgt/mk/sg), not SPEC §5's prose.
     print("""CREATE TABLE clickdoom_executor.decoded

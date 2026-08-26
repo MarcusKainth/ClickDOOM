@@ -181,6 +181,47 @@ def test_wl_icount_absolute_across_batches():
     assert ver2 > ver1, "batch 2's version must strictly exceed batch 1's -- no tie"
 
 
+def test_wl_icount_three_real_chained_batches_same_address():
+    """Team lead's correction on #101's review: a two-batch same-address
+    test can pass even under a double-counting bug (fold emits absolute
+    wl_icount, but some flush site *also* adds icount_before on top) --
+    doubling a monotonically-increasing icount_base still preserves
+    relative order between batches chained through the real `PREV`
+    mechanism, so a 2-batch test can't tell "correct" from "wrong but
+    still-ordered" apart. Three REAL, naturally-chained batches (not
+    manually-seeded out-of-order icounts, like the test above -- this one
+    goes through fold.py's actual PREV/batch_commit progression, the same
+    path production traffic uses) all storing to the SAME address is the
+    shape that actually pins it: assert not just "the last write wins" but
+    that every intermediate version is present and strictly increasing,
+    which a uniform double-count would still show, but a wrong-source /
+    stale-icount_before bug would not.
+    """
+    decn, ram_words = 6, 10
+    addr = RAM_BASE + decn * 4  # outside text, no SELF_MODIFY
+    values = [0xAAAAAAAA, 0xBBBBBBBB, 0xCCCCCCCC]
+    decoded_rows = []
+    for v in values:
+        decoded_rows += [ADDI(rd=1, imm=v), SW(rs2=1, addr=addr)]
+    seed_decoded_and_ram(DB, decoded_rows, ram_words)
+    seed_batch_commit(DB, batch_id=0, pc=RAM_BASE, regs=[0] * 31, icount=0)
+
+    word_addr = RAM_BASE_WORD + (addr - RAM_BASE) // 4
+    versions = []
+    for v in values:
+        run_batch(DB, K=2, decn=decn, ram_words=ram_words)  # naturally chained via PREV
+        flush_all(DB)
+        val, ver = ram_value_version(DB, word_addr)
+        assert val == v, f"ram FINAL must reflect the write just made ({v:#x}), got {val:#x}"
+        versions.append(ver)
+
+    assert versions == sorted(versions), f"versions must be strictly increasing in write order: {versions}"
+    assert len(set(versions)) == 3, f"no two of the three writes may share a version: {versions}"
+    final_val, final_ver = ram_value_version(DB, word_addr)
+    assert final_val == values[-1], "after all three batches, ram FINAL must hold the LAST write"
+    assert final_ver == versions[-1]
+
+
 def test_crash_recovery_idempotent_flush():
     """Uses SPEC §7's own oracle (ramhash) to validate ADR-0003's atomicity
     claim: a batch_commit row can land with its flush skipped (simulating a

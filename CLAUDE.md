@@ -57,20 +57,19 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   `pull_request` synchronize event is unreliable after a force-push, so a
   rebased PR can sit with zero check-runs and look merge-blocked for no
   reason. Push an empty commit to retrigger.
-  **Note (2026-08-26):** several retrigger remedies (this one, a real
-  content-touch commit, closing and reopening the PR) each appeared to
-  fail in testing done this day — but every test ran after 15:11 UTC,
-  when GitHub Actions entered a confirmed platform-wide major outage
-  (githubstatus.com: "degraded availability for Actions" at 15:11 UTC,
-  Pages also degraded at 15:12 UTC, a database-primary failover at
-  15:23 UTC — verified directly against the status page, not relayed).
-  That contaminates every observation gathered that day about retrigger
-  mechanics: a run that never starts because the platform is down looks
-  identical, from `gh run list`, to one that never starts because an
-  event never fired. **The advice above is therefore unconfirmed, not
-  disproven** — treat it as the working default until someone verifies
-  it (or its replacement) outside an outage window, and see the rule
-  below regardless of which remedy you're trying.
+  **Note (2026-08-26):** CI evidence gathered this day after 15:11 UTC
+  is unreliable — GitHub Actions was in a confirmed platform-wide major
+  outage (incident opened 15:11 UTC "degraded availability for
+  Actions," Pages also degraded 15:12 UTC, database-primary failover
+  15:23 UTC — checked directly against githubstatus.com, not relayed).
+  Runs from that window show `startup_failure` and jobs wedged
+  indefinitely in `queued`, indistinguishable from "the event never
+  fired" via `gh run list`. Several retrigger remedies (this one, a
+  real content-touch commit, closing and reopening the PR) were tested
+  that afternoon; those results are contaminated and were **not** used
+  to change this entry — the advice above is unconfirmed, not
+  disproven. If you are re-testing retrigger behaviour, check
+  githubstatus.com first.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow

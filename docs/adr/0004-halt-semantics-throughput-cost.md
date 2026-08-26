@@ -27,6 +27,17 @@ would actually halt.
 mix (unchanged: same fractions, same deterministic hash-based fixture) through
 `fold.py` instead of `fold_predecoded.py`, same K values, same harness shape.
 
+**Caveat on the table immediately below**: these fold-in-isolation numbers
+were measured before the "End-to-end measurement" section's harness bugs
+were found and fixed (the mix halting after 1 instruction, addressed there
+in detail). Per Phase 0's own finding, `arrayFold`'s per-step cost doesn't
+depend on whether a step retires, so the *relative* progression across the
+three fixes below should still hold -- but the corrected, non-halting mix
+measured real run-to-run variance (2,437 vs 3,867 instr/sec, same K, back to
+back) that this table's numbers, frozen at a near-empty write-log
+throughout, don't show. Treat this table as directionally right and the
+End-to-end section's numbers as the ones actually re-verified after the fix.
+
 | K | Phase 0 baseline | #23, first cut | + x0/link-value fix | + byte-address PC / eager MISALIGNED | delta vs Phase 0 |
 |---:|---:|---:|---:|---:|---:|
 | 10,000 | 11,467 / 11,668 | 7,037 / 7,241 | 5,889 / 5,959 | 2,851 / 2,862 | ~-75% |
@@ -106,14 +117,58 @@ ratification) alongside the fold-only mode:
 
 | K | mode | seconds | instr/sec |
 |---:|---|---:|---:|
-| 50,000 | e2e (this PR) | 299.393 | **2,004** |
+| 50,000 | e2e (this PR, corrected -- see below) | 313.077 | **1,916** |
+| 50,000 | e2e (this PR, first measurement, invalid) | 299.393 | 2,004 |
 | 50,000 | e2e (Phase 0, `RESULTS.md`) | 50.444 | 11,894 |
 
-**Measured, not estimated, and well under ADR-0001's 10,000 threshold** --
-an ~83% regression against Phase 0's e2e baseline, worse than the ~68%
+**The first e2e measurement (2,004) was invalid, not just imprecise --
+found by checking `batch_out.retired` after the fact, not by trusting the
+wall-clock number.** Two real bugs in this PR's own benchmark harness (not
+in `fold.py`/#23's shipped design), both in `executor/bench/halt_overhead/`:
+
+1. **The synthetic mix halted on its first load/store, then stayed halted.**
+   Phase 0's mix used raw small `imm` values as load/store addresses,
+   correct only because Phase 0's fold had no bounds checking. #23 checks
+   `regs[rs1] + imm` against `[RAM_BASE, RAM_BASE + RAM_BYTES)`, and with
+   `regs[rs1]` starting at 0, an unadjusted `imm` in `[0, 4096)` is never
+   inside RAM -- `BAD_ADDR` on the very first load/store, every "batch"
+   after that re-hitting the same frozen halt instantly. `retired` was 1,
+   not 50,000, on every one of the 12 batches the harness ran. Fixed:
+   load/store (and separately, `jalr`, whose register-relative target
+   turned out to hit `MISALIGNED` about half the time given an otherwise-
+   unconstrained accumulated register value) now force `rs1 = 0` and use a
+   deterministically in-bounds, aligned, non-text address.
+2. **The `ram` flush query cross-joined instead of zipping.** Three
+   independent `arrayJoin(...)` calls on different expressions
+   (`arrayZip(wl_addr, wl_val)` twice, `wl_icount` separately) produce the
+   *Cartesian product* of the joined arrays in ClickHouse, not a parallel
+   walk, unless they're the textually identical expression. With ~6,400
+   stores in a full batch that's ~41 million wrong rows instead of 6,400
+   right ones. Fixed by zipping all three arrays together in one
+   `arrayZip(wl_addr, wl_val, wl_icount)` call, referenced identically three
+   times (`.1`/`.2`/`.3`) so ClickHouse recognizes it as one join.
+
+Both are fixed in `executor/bench/halt_overhead/{setup.sql,run.sh}`.
+**The corrected number, 1,916 instr/sec, is close to the invalid one** --
+confirming, rather than undermining, Phase 0's own finding that `arrayFold`
+evaluates every step's full expression cost regardless of whether the step
+actually retires. A batch that halts after 1 real instruction and one that
+completes all 50,000 pay nearly the same fold cost; the visible difference
+in this data is the flush/commit path scaling with write-log size (fixed
+bug #2 above), which turned out to be a comparatively small fraction of the
+total either way. **Still well under ADR-0001's 10,000 threshold** -- an
+~84% regression against Phase 0's e2e baseline, worse than the ~68%
 fold-in-isolation regression above because e2e adds the state-reload and
-write-log-flush round trips on top of the now-slower fold, and those scale
-with the same per-instruction cost this ADR documents.
+write-log-flush round trips on top of the now-slower fold.
+
+One more thing this correction surfaced, not yet explained: fold-in-isolation
+itself was noisier across repeats with the corrected (non-halting) mix than
+before -- 2,437 and 3,867 instr/sec on the same K, same fixture, back to
+back, versus the earlier halted-mix runs which agreed within a few percent.
+A write-log that actually grows to thousands of entries makes each load's
+`arrayLastIndex` scan genuinely data-dependent in a way a log frozen at
+length 0-6 never was. Not investigated further here -- worth knowing before
+anyone treats a single fold-in-isolation run as precise.
 
 ## Decision
 

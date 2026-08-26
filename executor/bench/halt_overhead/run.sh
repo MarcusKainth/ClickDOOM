@@ -60,9 +60,9 @@ for K in $KS; do
   for _ in $(seq 1 "$BATCHES"); do
     ch --multiquery < /tmp/clickdoom_executor_batch.sql
     ch --query "INSERT INTO clickdoom_executor.ram
-                SELECT arrayJoin(arrayZip(wl_addr, wl_val)).1,
-                       arrayJoin(arrayZip(wl_addr, wl_val)).2,
-                       icount_before + arrayJoin(wl_icount)
+                SELECT arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).1,
+                       arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).2,
+                       icount_before + arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).3
                 FROM clickdoom_executor.batch_out
                 WHERE batch_id = (SELECT max(batch_id) FROM clickdoom_executor.batch_out)
                   AND length(wl_addr) > 0"

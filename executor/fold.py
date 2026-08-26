@@ -77,13 +77,50 @@ def _addr_and_align(A, IMM, DMKv, RAM_BASE, RAM_WORDS):
 
 def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
                ram_base=config.RAM_BASE, hwm=config.WRITE_LOG_HIGH_WATER_MARK_DEFAULT,
-               icount_base="0", ipms=config.IPMS_DEFAULT):
+               ipms=config.IPMS_DEFAULT):
     """Returns the arrayFold lambda body: `(acc, i) -> tuple(...)`.
 
-    Accumulator (5-tuple): pc, regs[31], wl, control, retired, where pc is a
+    Accumulator (5-tuple): pc, regs[31], wl, control, icount, where pc is a
     byte address (matching cpu_state.pc, sqlcpu's schema.sql), regs is
     x1..x31 (no x0 slot), wl = tuple(addr[], val[], icount[]) and control =
     tuple(stopped, halted, halt_reason, halt_pc, halt_extra).
+
+    acc.5 is the ABSOLUTE icount (UInt64), not a per-batch retired count --
+    seeded from the batch's starting icount in INIT_ACC, incremented by 1
+    per retiring step. This is deliberate, not incidental: an earlier
+    version threaded a separate `icount_base` string into this function and
+    baked it into TICKS_MS/wl_icount's SQL text on every call. That value
+    changes every batch (`assumeNotNull(PREV.4)` in batch()), and a
+    per-batch-varying literal *inside the lambda body* is part of
+    ClickHouse's compiled-expression cache key (`compile_expressions`,
+    default on, warms after 3 executions) -- so the lambda text differed
+    every batch and the JIT never compiled, ever, silently. Discovered by
+    an external reviewer's hypothesis, corroborated independently via
+    `system.query_log`'s `CompileFunction`/`CompileExpressionsMicroseconds`
+    ProfileEvents reading zero on every batch() run. Seeding acc.5 from
+    PREV.4 instead keeps the lambda's own text byte-identical batch to
+    batch (only `range(K)`'s K and `{ipms}`/`{hwm}` vary, and those are
+    already per-run constants, not per-batch) -- the accumulator's INITIAL
+    VALUE is a runtime argument to arrayFold, not part of the compiled
+    lambda, so a varying value there costs nothing.
+
+    Real-fold measurement, not just the isolated microbenchmark that found
+    the bug: the reviewer's representative variant measured ~5.6x, but
+    that variant is small and simple next to this fold's full ~90k-node
+    expression (MMIO, halt semantics, decode dispatch, the write-log). On
+    six chained real-ROM batches (K=49,152, `PINNED_HASH e74cf575...`),
+    `system.query_log` confirms compilation triggers on the 4th batch
+    (`CompileFunction=3`, `CompileExpressionsMicroseconds=12652`) and stays
+    compiled after -- but the speedup on THIS query is ~1.23x (46.48s avg
+    over batches 1-3, 37.77s avg over batches 4-6), not 5.6x. Real,
+    verified by the compile counters actually firing (not just a faster
+    wall-clock, which could mean something else changed) -- just smaller
+    at this expression's size than the microbenchmark that found the bug.
+    Reported as measured, not extrapolated from the smaller case.
+
+    The outer SELECT (select_only()/batch(),
+    outside the lambda entirely) derives "retired this batch" as
+    `final_icount - starting_icount` where a varying value is harmless.
 
     Deliberately NOT an 11-flat-field tuple (an earlier version of this
     function was exactly that): every accumulator field needs its own
@@ -175,11 +212,13 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     is_mmio_load = f"({is_mmio} AND {ID} = {config.OP_LOAD})"
     is_mmio_store = f"({is_mmio} AND {ID} = {config.OP_STORE})"
 
-    # TICKS_MS: elastic time, SPEC §3.1. instructions_retired / IPMS, where
-    # `icount_base` is the batch's starting icount (a query-level constant)
-    # and acc.5 is what this batch has retired so far. Never wall clock --
-    # SPEC §8.1, and scripts/check_purity.sh greps for it.
-    TICKS_MS = f"toUInt32(intDiv(toUInt64({icount_base}) + toUInt64(acc.5), {ipms}))"
+    # TICKS_MS: elastic time, SPEC §3.1. instructions_retired / IPMS. acc.5
+    # is now the ABSOLUTE icount (see build_step()'s docstring on why it's
+    # not `icount_base + acc.5` anymore -- that form baked a per-batch-
+    # varying literal into this exact line and silently defeated ClickHouse's
+    # expression JIT). Never wall clock -- SPEC §8.1, and scripts/check_purity.sh
+    # greps for it.
+    TICKS_MS = f"toUInt32(intDiv(acc.5, {ipms}))"
 
     # KEYQ: SPEC §3.2. acc.6.2 is how many events this batch has already
     # popped; KEYQT is the queue captured in event_seq order. An empty-queue
@@ -387,32 +426,25 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
-    # CONVENTION (binding on every reader of wl_icount, not just this
-    # function): wl_icount is ABSOLUTE -- icount_base + this batch's
-    # retired-so-far + 1 -- already includes icount_base. Any flush or
-    # other consumer that adds icount_base (or icount_before, the flush-
-    # side name for the same value) on top is double-counting and MUST NOT.
-    # This matches TICKS_MS's icount_base treatment above, and SPEC's `ram`
-    # versioning note ("the individual store's own icount ... not the
-    # batch's final icount").
-    #
-    # An earlier version of this line was `toUInt64(acc.5) + 1` alone:
-    # batch-relative, not absolute. That was NOT live corruption on `main`
-    # -- every flush site that read it (executor/bench/*_overhead/run.sh)
-    # already added `icount_before +` as compensation, and batch-relative +
-    # compensation is arithmetically identical to absolute. But it was a
-    # real SPEC violation (SPEC.md ~199 names `wl_icount[i]` ITSELF, the
-    # value stored in `batch_commit`, as "the individual store's own
-    # icount" -- batch-relative fails that regardless of what a downstream
-    # flush does about it) and a real landmine: it only worked because
-    # every flush site remembered the compensation, and #25's new flush
-    # (executor/commit.py) is exactly the kind of new site that could have
-    # forgotten it. Fixed here; every `icount_before +`/`icount_base +`
-    # compensation at every flush site was removed in the same change --
-    # see #101.
+    # wl_icount is ABSOLUTE by construction, not by convention: acc.5 is
+    # already the running absolute icount (build_step()'s docstring), so
+    # this store's version is simply "acc.5 after this step retires" --
+    # acc.5 + 1, no batch offset to add and no way for a caller to forget
+    # to add one, unlike the earlier design where a `icount_base +` term
+    # had to be repeated correctly at both this line and every flush site.
+    # Matches SPEC's `ram` versioning note ("the individual store's own
+    # icount ... not the batch's final icount") -- #101's fix, now
+    # structural rather than a convention every reader had to honor
+    # separately. (#101 found this was batch-relative in an earlier
+    # version, `toUInt64(acc.5) + 1` with a *local* acc.5 that reset to 0
+    # each batch; not live corruption at the time, since every flush site
+    # added its own `icount_before +` compensation, but a real SPEC
+    # violation and a landmine for the next flush site that forgot to.
+    # That whole class of bug is gone now that acc.5 itself carries the
+    # absolute value -- there is no separate offset left to omit.)
     new_wl = (f"if({is_retiring_store},"
               f" tuple(arrayPushBack(acc.3.1, {WA}), arrayPushBack(acc.3.2, {SVAL}),"
-              f" arrayPushBack(acc.3.3, toUInt64({icount_base}) + toUInt64(acc.5) + 1)),"
+              f" arrayPushBack(acc.3.3, acc.5 + 1)),"
               f" acc.3)")
     new_control = (f"multiIf({step_halts_now},"
                    f" tuple(toUInt8(1), toUInt8(1), toUInt8({HALT_CODE}), {PC}, {halt_extra_calc}),"
@@ -459,7 +491,13 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f" acc.2),"
         f"{new_wl},"
         f"{new_control},"
-        f"if({step_retires}, toUInt32(acc.5 + 1), acc.5),"
+        # acc.5 stays UInt64 throughout (seeded from icount0 in INIT_ACC,
+        # see build_step()'s docstring) -- no toUInt32() cast here, unlike
+        # an earlier version: this is the batch's absolute icount, not a
+        # per-batch retired count, and truncating it to UInt32 would
+        # silently wrap on a long enough run (demo3's ~2.91B instructions
+        # is uncomfortably close to UInt32::MAX already).
+        f"if({step_retires}, acc.5 + 1, acc.5),"
         f"{new_mmio})")
     return step_tuple
 
@@ -514,7 +552,13 @@ def decode_with(db=DB):
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"
             " tuple(toUInt8(0), toUInt8(0), toUInt8(0), toUInt32(0), toUInt32(0)),"
-            " toUInt32(0),"
+            # acc.5: the batch's ABSOLUTE starting icount, not 0 -- this is
+            # the JIT fix (build_step()'s docstring): seeding acc.5 here,
+            # as arrayFold's initial-value argument, keeps a per-batch-
+            # varying value OUT of the lambda's own compiled text, unlike
+            # the earlier design that interpolated it into TICKS_MS/
+            # wl_icount inside the lambda body on every build_step() call.
+            " toUInt64({icount0}),"
             # acc.6, SPEC §3 MMIO: console bytes, keyq position, frame
             # number, frame-committed flag. keyq_pos starts at 0 each batch
             # and is *cumulative across batches* only via batch_commit --
@@ -525,19 +569,25 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
 
 def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None,
                 db=DB, icount0=0, keyq0=0, ipms=config.IPMS_DEFAULT):
-    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm,
-                      icount_base=str(icount0), ipms=ipms)
+    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm, ipms=ipms)
     # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
         "arrayResize(emptyArrayUInt32(), 31, toUInt32(0))"
     # pc0 default is RAM_BASE (SPEC §1's reset value 0x8000_0000), not 0 --
     # pc is a byte address now, not a word index relative to the text window.
     pc0 = config.RAM_BASE if pc0 is None else pc0
-    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql, keyq0=keyq0)
+    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql, keyq0=keyq0, icount0=icount0)
+    # r.5 is the fold's final ABSOLUTE icount (acc.5, seeded from icount0);
+    # `retired` (this call's own K-or-fewer count) is r.5 - icount0, computed
+    # here in the outer SELECT -- outside the lambda, where a per-call-
+    # varying icount0 costs nothing (see build_step()'s docstring on the
+    # JIT fix this mirrors). Kept as a UInt32 column, same type as before:
+    # a single select_only() call is bounded by K, which never approaches
+    # UInt32::MAX.
     return f"""WITH{decode_with(db)}
 SELECT r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason, r.4.4 AS halt_pc,
-       r.4.5 AS halt_extra, r.5 AS retired,
+       r.4.5 AS halt_extra, toUInt32(r.5 - toUInt64({icount0})) AS retired,
        r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1,
@@ -579,8 +629,10 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, db=DB,
 
     Column mapping from the fold's accumulator (`r`) to batch_commit's SPEC
     §5 columns, done here in the outer SELECT rather than inside the fold:
-    icount arithmetic (icount_before + retired) and the halt-reason
-    code->string transform are cheap outside the lambda and would cost
+    `icount` is `r.5` directly now (acc.5 is already the absolute icount,
+    seeded from PREV.4 -- see build_step()'s docstring on why that seeding
+    happens in INIT_ACC and not as a term added here) and the halt-reason
+    code->string transform is cheap outside the lambda and would cost
     per-step time inside it (ADR-0002's node-count model). `exit_code` is
     EXIT-only, not a general "halt extra" slot: SPEC §1 (#89, ratified this
     session) is explicit that "a fault never sets exit_code, and EXIT never
@@ -594,13 +646,18 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, db=DB,
     ratified schema (refemu doesn't persist it either -- `insn`/`addr` live
     only on the transient `Halted` exception), so it is computed but not
     flushed anywhere by this design."""
-    # TICKS_MS reads the *absolute* retired count, so the batch's starting
-    # icount has to reach the step expression. It is a query-level constant
-    # (one scalar subquery), not per-step work -- only acc.5 varies inside.
-    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm,
-                      icount_base="assumeNotNull(PREV.4)", ipms=ipms)
+    # PREV.4 (the batch's starting icount) reaches the fold only through
+    # INIT_ACC's seed for acc.5, never interpolated into the lambda body
+    # itself -- that placement is the fix for a real bug (build_step()'s
+    # docstring): a per-batch-varying value baked into the lambda's own SQL
+    # text defeats ClickHouse's compiled-expression cache (it never warms,
+    # since the cache key includes the lambda's literal text and that text
+    # changed every batch) -- ~1.23x on this real fold once fixed, measured
+    # (build_step()'s docstring has the full before/after and the
+    # system.query_log evidence that compilation actually engaged).
+    step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm, ipms=ipms)
     init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')",
-                           keyq0="assumeNotNull(PREV.5)")
+                           keyq0="assumeNotNull(PREV.5)", icount0="assumeNotNull(PREV.4)")
     halt_reason_expr = _halt_reason_transform("r.4.3")
     exit_code_expr = f"if(toUInt8(r.4.3) = {config.HALT_EXIT}, r.4.5, toUInt32(0))"
     # The fold goes in a subquery and every column is projected off `r`
@@ -621,7 +678,7 @@ WITH{decode_with(db)},
   (SELECT tuple(batch_id, pc, regs, icount, keyq_pos)
      FROM {db}.batch_commit ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
-       toUInt64(assumeNotNull(PREV.4)) + toUInt64(r.5) AS icount,
+       r.5 AS icount,
        r.1 AS pc, r.2 AS regs,
        r.4.2 AS halted, {halt_reason_expr} AS halt_reason, {exit_code_expr} AS exit_code,
        r.6.2 AS keyq_pos, r.6.3.2 AS has_frame, r.6.3.1 AS frame_no,

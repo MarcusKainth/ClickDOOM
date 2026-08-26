@@ -137,10 +137,18 @@ class Memory:
             self.mmio.write(addr - MMIO_BASE, width, value)
             return
         if FRAMEBUFFER_BASE <= addr and addr + width <= FRAMEBUFFER_BASE + FRAMEBUFFER_SIZE:
+            if width != 4:
+                # SPEC §2 clause 2: sub-word stores here have no correct
+                # value to write (clause 1 means there's nothing previously
+                # readable to blend against) -- BAD_ADDR, mandatory for both
+                # engines, not the discretionary read restriction above it.
+                raise BadAddr(addr)
             off = addr - FRAMEBUFFER_BASE
             self.framebuffer[off : off + width] = value.to_bytes(width, "little")
             return
         if PALETTE_BASE <= addr and addr + width <= PALETTE_BASE + PALETTE_SIZE:
+            if width != 4:
+                raise BadAddr(addr)
             off = addr - PALETTE_BASE
             self.palette[off : off + width] = value.to_bytes(width, "little")
             return

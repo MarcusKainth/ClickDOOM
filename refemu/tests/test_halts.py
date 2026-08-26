@@ -25,6 +25,8 @@ from .asm import (
     jal,
     jalr,
     lw,
+    sb,
+    sh,
     sw,
 )
 from .conftest import load
@@ -108,6 +110,39 @@ def test_non_ram_regions_are_not_bad_addr(cpu, region_base):
     # MMIO/FRAMEBUFFER/PALETTE are valid per SPEC §2, even though real MMIO
     # *semantics* land in issue #13 — a plain load/store there must not
     # fault the machine.
+    cpu.write_reg(1, region_base)
+    cpu.write_reg(2, 0x11223344)
+    load(cpu, [sw(1, 2, 0)])
+    cpu.step()  # must not raise
+    load(cpu, [lw(3, 1, 0)])
+    cpu.step()
+    assert cpu.read_reg(3) == 0x11223344
+
+
+@pytest.mark.parametrize("region_base", [FRAMEBUFFER_BASE, PALETTE_BASE])
+@pytest.mark.parametrize("store_insn, width", [(sb, 1), (sh, 2)])
+def test_framebuffer_palette_subword_store_is_bad_addr(cpu, region_base, store_insn, width):
+    # SPEC §2 clause 2: stores to FRAMEBUFFER/PALETTE must be word-width;
+    # a narrower store is BAD_ADDR, mandatory for both engines -- unlike
+    # clause 1's discretionary read restriction on the same two regions.
+    cpu.write_reg(1, region_base)
+    cpu.write_reg(2, 0xAB)
+    load(cpu, [store_insn(1, 2, 0)])
+    with pytest.raises(Halted) as exc:
+        cpu.step()
+    halt = exc.value
+    assert halt.reason == HaltReason.BAD_ADDR
+    assert halt.addr == region_base
+    # No partial effect: the halted store never landed.
+    load(cpu, [lw(3, 1, 0)])
+    cpu.step()
+    assert cpu.read_reg(3) == 0
+
+
+@pytest.mark.parametrize("region_base", [FRAMEBUFFER_BASE, PALETTE_BASE])
+def test_framebuffer_palette_word_store_still_lands(cpu, region_base):
+    # Word-width stores are the only valid write to these regions and must
+    # keep working -- this is the case clause 2 carves the exception for.
     cpu.write_reg(1, region_base)
     cpu.write_reg(2, 0x11223344)
     load(cpu, [sw(1, 2, 0)])

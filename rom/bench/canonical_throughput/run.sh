@@ -192,6 +192,49 @@ RAM_WORDS=6291456  # SPEC §2: 24 MiB / 4
 
 HERE="rom/bench/canonical_throughput"
 
+# --- generated-SQL shape (bytes + AST node count), not just wall-clock ---
+#
+# select_only()'s/batch()'s step-expression SQL depends only on
+# K/TEXT_START_WIDX/TEXT_END_WIDX/DECN/RAM_WORDS/HWM -- never on pc0/regs0
+# (those only substitute into the *initial accumulator*, not the lambda
+# body) -- so the SQL is byte-for-byte identical across every batch in
+# both windows. Computed once, not per-batch: repeating an EXPLAIN AST
+# round-trip 12 times for a query that never changes would be pure
+# overhead for no new information.
+#
+# Wall-clock alone isn't the only axis worth reporting: a cost driver that
+# scales with generated-SQL size/node count (e.g. a subexpression
+# referenced many times, not recomputed once) can show up here even when
+# throughput hasn't moved yet, or vice versa -- same "don't collapse two
+# different units into one number" reasoning ADR-0004 applies to fold-vs-
+# e2e. Same technique as executor/bench/e1_cse/run.sh: `EXPLAIN AST`,
+# `wc -l` for node count, byte length of the raw SQL text.
+report_sql_shape() {
+  local db="$1"
+  local fold_sql e2e_sql fold_bytes e2e_bytes fold_nodes e2e_nodes
+  fold_sql=$(python3 -c "
+import sys
+sys.path.insert(0, 'executor')
+import fold
+print(fold.select_only($K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $HWM,
+                        pc0=$LOAD_ADDR, db='$db'))
+")
+  e2e_sql=$(python3 -c "
+import sys
+sys.path.insert(0, 'executor')
+import fold
+print(fold.batch($K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $HWM, db='$db'))
+")
+  fold_bytes=$(printf '%s' "$fold_sql" | wc -c | tr -d ' ')
+  e2e_bytes=$(printf '%s' "$e2e_sql" | wc -c | tr -d ' ')
+  fold_nodes=$({ echo "EXPLAIN AST"; printf '%s' "$fold_sql"; } | ch "$db" --multiquery | wc -l | tr -d ' ')
+  e2e_nodes=$({ echo "EXPLAIN AST"; printf '%s' "$e2e_sql"; } | ch "$db" --multiquery | wc -l | tr -d ' ')
+  printf 'fold_sql_bytes\t%s\n' "$fold_bytes" >&2
+  printf 'fold_ast_nodes\t%s\n' "$fold_nodes" >&2
+  printf 'e2e_sql_bytes\t%s\n' "$e2e_bytes" >&2
+  printf 'e2e_ast_nodes\t%s\n' "$e2e_nodes" >&2
+}
+
 # --- one fold-alone batch, chained forward from the given pc/regs --------
 #
 # Chained (each batch's returned pc/regs feeds the next), not repeated
@@ -406,6 +449,11 @@ print(d['pc'], '[' + ','.join(str(r) for r in regs) + ']')
   trap cleanup EXIT
 
   decoded_rows=$(ch "$BOOT_DB" --query "SELECT count(DISTINCT word_addr) FROM decoded")
+
+  echo "" >&2
+  echo "# --- generated-SQL shape (identical across both windows/every batch;" >&2
+  echo "# computed once against the boot database) ---" >&2
+  report_sql_shape "$BOOT_DB"
 
   echo "" >&2
   printf 'window\tmode\tk\thwm\tretired\tinstr_per_sec\n'

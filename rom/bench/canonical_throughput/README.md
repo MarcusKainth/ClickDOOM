@@ -23,7 +23,7 @@ attribution against the current frozen ROM (`rom/PINNED_HASH`):
 
 | window | icount range | what's happening |
 |---|---|---|
-| boot-phase | `[0, 15,653,137)` | WAD load, `R_Init*`, `strncasecmp`-heavy lump lookups -- read/scan-dominated |
+| boot-phase | `[0, 15,393,136)` | WAD load, `R_Init*`, `strncasecmp`-heavy lump lookups -- read/scan-dominated |
 | store-heavy gameplay | `[233,932,753, 392,488,489)` | frames 200->299 of real `-timedemo demo3` playback -- `R_DrawColumn`/`R_DrawSpan` dominate, both pixel-store-bound rasterizers |
 
 One blended whole-run average would hide exactly the effect `executor`

@@ -94,12 +94,13 @@ def main() -> int:
     # instruction's own cpu.icount += 1 (cpu.py's step(): _execute() runs
     # -- which is what calls mmio.write() -- strictly before the
     # increment), so its stored value is one less than the conventionally
-    # cited milestone icount (#110's 15,653,137, e7_memfns's matching
-    # "boot: 0 -> first FRAME_COMMIT (15,653,137 instructions)" window
+    # cited milestone icount (#110's 15,393,136 as of #175's
+    # R_DrawColumn/R_DrawSpan unroll, e7_memfns's matching
+    # "boot: 0 -> first FRAME_COMMIT (15,393,136 instructions)" window
     # size -- both post-increment: total instructions retired so far,
     # including the commit instruction itself). Found empirically running
-    # this script (frame_commits[0] = (0, 15653136) against a target of
-    # 15653137), not assumed -- ROM's actual behaviour didn't change, only
+    # this script (frame_commits[0] = (0, 15393135) against a target of
+    # 15393136), not assumed -- ROM's actual behaviour didn't change, only
     # this check's convention needed fixing.
     frame_commits = cpu.memory.mmio.frame_commits
     matching = [fc for fc in frame_commits if fc[1] == args.target_icount - 1]

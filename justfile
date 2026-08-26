@@ -71,6 +71,17 @@ bench-e7-memfns:
 bench-e1-cse: up
     ./executor/bench/e1_cse/run.sh
 
+# The canonical real-ROM throughput benchmark for the optimisation sprint
+# (#147): boot-phase + store-heavy gameplay windows, fold-alone + e2e,
+# K at #80's optimum, contention-checked, full provenance. Coordinate with
+# whoever else might be using the shared container first -- see
+# rom/bench/canonical_throughput/README.md.
+bench-canonical-throughput: up
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    ./rom/bench/canonical_throughput/run.sh \
+        --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+        --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

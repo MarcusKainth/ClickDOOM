@@ -36,6 +36,8 @@ CLIENT="clickhouse-client"
 TARGET_ICOUNT=15393136
 EXPECTED_FBHASH="fe5d82c0f42d45f1"
 FIXTURE_CACHE="${TMPDIR:-/tmp}/clickdoom-frame-fixture/fixture.${TARGET_ICOUNT}.pkl"
+PPM_REAL_OUT="$(mktemp -t clickdoom-ppm-real.XXXXXX)"
+PPM_SYNTH_OUT="$(mktemp -t clickdoom-ppm-synth.XXXXXX)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,7 +62,10 @@ ch() {
 }
 
 TESTDB="driver_render_test_$$"
-cleanup() { ch default --query "DROP DATABASE IF EXISTS $TESTDB" 2>/dev/null || true; }
+cleanup() {
+  ch default --query "DROP DATABASE IF EXISTS $TESTDB" 2>/dev/null || true
+  rm -f "$PPM_REAL_OUT" "$PPM_SYNTH_OUT"
+}
 trap cleanup EXIT
 
 echo "# --- setting up fixture database ($TESTDB) ---" >&2
@@ -109,6 +114,57 @@ if [ "$ACTUAL_FBHASH" != "$EXPECTED_FBHASH" ]; then
 fi
 echo "  frame_readout_sql(): fb_hash=$ACTUAL_FBHASH == $EXPECTED_FBHASH -- OK (${READOUT_SECONDS}s)" >&2
 
+echo "# --- test 1b: ppm_render_sql() against the SAME real data, tied to fb_hash ---" >&2
+# ppm_render_sql()'s output is RGB bytes, a different representation than
+# fb_hash's own domain (raw indexed fb||palette, SPEC §7) -- there is no
+# hash value the two share directly. What ties them together instead: this
+# is the exact same frames_out row test 1 just proved has fb_hash
+# fe5d82c0f42d45f1, so an independent Python re-derivation of the expected
+# RGB bytes from that SAME fixture's raw fb/palette (not the SQL's own
+# logic, mirrored) is a genuine second check on the SAME known-correct
+# frame, not a tautology against the SQL under test.
+PPM_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver')
+sys.path.insert(0, 'sqlcpu')
+import render
+print(render.ppm_render_sql(db='$TESTDB'))
+")
+T0=$(python3 -c 'import time; print(time.time())')
+echo "$PPM_SQL" | ch "$TESTDB" --format TSVRaw > "$PPM_REAL_OUT"
+T1=$(python3 -c 'import time; print(time.time())')
+PPM_SECONDS=$(python3 -c "print(f'{$T1 - $T0:.3f}')")
+
+python3 -c "
+import pickle, struct, sys
+
+with open('$FIXTURE_CACHE', 'rb') as f:
+    state = pickle.load(f)
+fb, palette = state['framebuffer'], state['palette']
+assert len(fb) == 64_000 and len(palette) == 768
+
+expected = b'P6\n320 200\n255\n'
+pal_rgb = [palette[i * 3:i * 3 + 3] for i in range(256)]
+expected += b''.join(pal_rgb[idx] for idx in fb)
+
+# clickhouse-client --format TSVRaw appends a trailing row-terminator
+# newline that is not part of the query's own String result -- verified
+# separately via SELECT length(ppm_render_sql()) matching the PPM's true
+# byte count exactly, not assumed from this comparison alone.
+with open('$PPM_REAL_OUT', 'rb') as f:
+    actual = f.read()
+if actual.endswith(b'\n') and not expected.endswith(b'\n'):
+    actual = actual[:-1]
+
+if actual != expected:
+    sys.exit(f'ppm_render_sql() output ({len(actual)} bytes) did not match the independently-'
+              f'derived expected PPM ({len(expected)} bytes) for the same real, fb_hash-verified frame')
+print(f'{len(actual)}')
+" > /tmp/ppm_real_bytecount.txt || fail "$(cat /tmp/ppm_real_bytecount.txt 2>/dev/null || echo 'ppm_render_sql() real-data check failed')"
+PPM_REAL_BYTES=$(cat /tmp/ppm_real_bytecount.txt)
+echo "  ppm_render_sql(): $PPM_REAL_BYTES bytes, byte-exact match against an independent Python" >&2
+echo "    re-derivation from the same fb_hash-verified real fixture -- OK (${PPM_SECONDS}s)" >&2
+
 echo "# --- test 2: ansi_render_sql() against a hand-computed synthetic case ---" >&2
 ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
 # 2x2 image: top-left=red(idx0), top-right=green(idx1), bottom-left=blue(idx2), bottom-right=yellow(idx3).
@@ -143,12 +199,42 @@ if [ "$ACTUAL_ANSI" != "$EXPECTED_ANSI" ]; then
 fi
 echo "  ansi_render_sql(): byte-exact match on synthetic 2x2 case -- OK (${ANSI_SECONDS}s)" >&2
 
+echo "# --- test 3: ppm_render_sql() against the same hand-computed synthetic case ---" >&2
+# Same frames_out row test 2 just seeded -- ansi_render_sql() is a pure
+# SELECT, nothing to re-seed.
+PPM_SYNTH_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver')
+sys.path.insert(0, 'sqlcpu')
+import render
+print(render.ppm_render_sql(db='$TESTDB', width=2, height=2))
+")
+T0=$(python3 -c 'import time; print(time.time())')
+echo "$PPM_SYNTH_SQL" | ch "$TESTDB" --format TSVRaw > "$PPM_SYNTH_OUT"
+T1=$(python3 -c 'import time; print(time.time())')
+PPM_SYNTH_SECONDS=$(python3 -c "print(f'{$T1 - $T0:.3f}')")
+
+python3 -c "
+import sys
+expected = b'P6\n2 2\n255\n' + bytes([255,0,0, 0,255,0, 0,0,255, 255,255,0])
+with open('$PPM_SYNTH_OUT', 'rb') as f:
+    actual = f.read()
+if actual.endswith(b'\n') and not expected.endswith(b'\n'):
+    actual = actual[:-1]
+if actual != expected:
+    sys.exit(f'ppm_render_sql() synthetic output did not byte-match the hand-computed expected PPM\nexpected: {expected!r}\nactual:   {actual!r}')
+" || fail "ppm_render_sql() synthetic 2x2 case did not byte-match"
+echo "  ppm_render_sql(): byte-exact match on synthetic 2x2 case -- OK (${PPM_SYNTH_SECONDS}s)" >&2
+
 echo "" >&2
 echo "# --- provenance -----------------------------------------------" >&2
 printf 'expected_fbhash\t%s\n' "$EXPECTED_FBHASH" >&2
 printf 'target_icount\t%s\n' "$TARGET_ICOUNT" >&2
 printf 'frame_readout_seconds\t%s\n' "$READOUT_SECONDS" >&2
+printf 'ppm_render_real_seconds\t%s\n' "$PPM_SECONDS" >&2
+printf 'ppm_render_real_bytes\t%s\n' "$PPM_REAL_BYTES" >&2
 printf 'ansi_render_seconds\t%s\n' "$ANSI_SECONDS" >&2
+printf 'ppm_render_synth_seconds\t%s\n' "$PPM_SYNTH_SECONDS" >&2
 echo "# ---------------------------------------------------------------------" >&2
 echo "" >&2
 echo "ALL RENDER TESTS PASSED" >&2

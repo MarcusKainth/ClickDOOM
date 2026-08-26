@@ -1,4 +1,4 @@
-"""Frame readout — issue #29. Two SQL expressions, both computation that
+"""Frame readout — issue #29. Three SQL expressions, all computation that
 belongs entirely inside a SELECT (PURITY.md, "Frame readout: converting
 the 8bpp framebuffer + palette into the displayable form (RGB rows / ANSI
 string), inside a SELECT"):
@@ -10,6 +10,11 @@ string), inside a SELECT"):
      into a printable ANSI string the driver prints verbatim (PURITY.md:
      the driver may only "blit output: print/store the frame bytes exactly
      as SQL produced them").
+  3. `ppm_render_sql()` -- converts a `frames_out` row's `fb`/`palette`
+     into a complete binary PPM (P6) image, one String, for the driver to
+     write to a file unmodified (issue #204: an image of the first frame
+     for the sprint blog post -- ANSI escape codes aren't something to
+     commit to git or embed in a post).
 
 Builds SQL expression *text*, like sqlcpu/checkpoint.py and executor/
 fold.py -- does not execute anything itself, does not read from any
@@ -178,6 +183,80 @@ def ansi_render_sql(db: str = DB, width: int = FB_WIDTH, height: int = FB_HEIGHT
   ),
   '\n'
 ) AS ansi_frame
+FROM
+  (SELECT arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, {width * height} + 1)) AS px
+   FROM (SELECT fb FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1)) AS pixels,
+  (SELECT arrayMap(i -> tuple(
+      reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 1, 1)),
+      reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 2, 1)),
+      reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 3, 1))
+    ), range(1, 257)) AS pal_rgb
+   FROM (SELECT palette FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1)) AS palettes"""
+
+
+def ppm_render_sql(db: str = DB, width: int = FB_WIDTH, height: int = FB_HEIGHT) -> str:
+    """The latest `frames_out` row rendered as one complete binary PPM (P6)
+    image, as a single String -- issue #204: the human owner wants an
+    image of the first frame for the sprint blog post, and ANSI escape
+    codes (`ansi_render_sql()` above) aren't something to commit to git or
+    paste into a post.
+
+    PURITY.md decides the shape: `ansi_render_sql()` already does the
+    index-to-RGB palette lookup in SQL, with the driver only printing the
+    result verbatim. This does exactly the same -- the driver's only job
+    is to write these bytes to a path unmodified, never to touch a pixel
+    or a palette entry. No palette lookup in Python; that would move
+    computation into the driver and break the rule the whole project is
+    built on.
+
+    Binary PPM (P6) chosen because it needs no encoder and no dependency
+    -- a five-token ASCII header (`P6\\n{width} {height}\\n255\\n`)
+    followed by raw RGB triples, row-major, is the entire format, and SQL
+    can build both halves with string concatenation alone. Converting to
+    PNG for the actual blog post (`sips`/ImageMagick, one line) happens
+    *outside* the purity boundary, on the PPM bytes this function already
+    finished computing -- this function's job ends at valid PPM bytes,
+    not at PNG.
+
+    Same `px`/`pal_rgb` FROM clause as `ansi_render_sql()` above -- copied
+    verbatim, not reimplemented: computed once as array-typed columns via
+    the same two-way `CROSS JOIN` of two single-row subqueries, not a
+    correlated subquery re-executed per pixel. Same reasoning too:
+    computing a lookup structure once instead of per-reference is the
+    cost model this project rewards everywhere else (ADR-0002's decode
+    table, #80's per-batch-not-per-step accounting).
+
+    Per-pixel RGB bytes go through the same hex-encode / `arrayStringConcat`
+    / one-`unhex()` technique `region_bytes_sql()` above uses (cited from
+    `checkpoint.py`'s `word_array_hash()`, see module docstring) --
+    `arrayStringConcat` silently truncates the WHOLE result at the first
+    embedded null byte across any array element, and an R/G/B channel
+    byte being exactly 0x00 (black, one of the most common colors in
+    DOOM's palette) is not an edge case here, it is most of a typical
+    frame. Hex digits never contain a null byte, so each channel is
+    encoded to 2 hex chars before the array-join, and `unhex()` once
+    turns the whole 6-hex-chars-per-pixel string back into the actual 3
+    raw bytes per pixel.
+
+    The ASCII header is joined to the raw pixel bytes with a plain
+    `concat()`, not `arrayStringConcat` -- `concat()` on two complete
+    String values doesn't have the embedded-null problem described above.
+    `checkpoint.py`'s own `bytes_hash()` already relies on exactly this
+    for the real SPEC §7 `fb_hash` (`concat(framebuffer, palette)`, both
+    full of null bytes in practice), verified correct all session against
+    refemu's own hash on real data -- not a new assumption, the same one
+    this codebase already depends on everywhere `fb_hash` is computed.
+    """
+    header = f"P6\n{width} {height}\n255\n"
+    pixel_hex = (
+        f"arrayStringConcat(arrayMap("
+        f"i -> concat("
+        f"hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].1))),"
+        f"hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].2))),"
+        f"hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].3)))"
+        f"), range(1, {width * height} + 1)))"
+    )
+    return f"""SELECT concat('{header}', unhex({pixel_hex})) AS ppm
 FROM
   (SELECT arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, {width * height} + 1)) AS px
    FROM (SELECT fb FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1)) AS pixels,

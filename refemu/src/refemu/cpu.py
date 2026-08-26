@@ -176,12 +176,18 @@ class CPU:
     def _execute(self, pc: int, insn: int) -> int:
         """Decode and execute `insn` fetched from `pc`; return the next pc.
 
-        Jump/branch targets are *not* alignment-checked here: SPEC only
-        requires misaligned word/halfword *access* to fault, and the real
-        RISC-V behavior this mirrors is that a jump architecturally
-        completes (pc and rd both update) and it is the next instruction
-        *fetch* that faults if the target is misaligned or out of range —
-        `step()`'s fetch already does that check on the following call.
+        Jump/branch targets ARE alignment-checked here, eagerly, at the
+        transferring instruction (issue #37): the RISC-V unprivileged ISA
+        reports instruction-address-misaligned on the branch/jump that
+        computes a bad target, not on the target instruction. A prior
+        version of this file deferred the check to the next fetch,
+        reasoning the jump "architecturally completes" first -- that
+        reasoning was backwards (real hardware traps at the transferring
+        instruction), and it would have made refemu and sqlcpu agree on
+        `halt_reason` while disagreeing on `pc` by one instruction on this
+        path. So: on a misaligned target, halt with *this* instruction's
+        pc, and update neither pc nor rd -- nothing about the jump takes
+        effect.
         """
         opcode = insn & 0x7F
         rd = (insn >> 7) & 0x1F
@@ -207,6 +213,8 @@ class CPU:
                 21,
             )
             target = _u32(pc + imm)
+            if target % 4 != 0:
+                raise Halted(HaltReason.MISALIGNED, pc, insn=insn, addr=target)
             self.write_reg(rd, pc + 4)
             return target
 
@@ -215,6 +223,8 @@ class CPU:
                 raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
             imm = _sext(insn >> 20, 12)
             target = _u32((self.read_reg(rs1) + imm) & ~1)
+            if target % 4 != 0:
+                raise Halted(HaltReason.MISALIGNED, pc, insn=insn, addr=target)
             self.write_reg(rd, pc + 4)
             return target
 
@@ -237,7 +247,12 @@ class CPU:
             }.get(funct3)
             if taken is None:
                 raise Halted(HaltReason.ILLEGAL_INSN, pc, insn=insn)
-            return _u32(pc + imm) if taken else pc + 4
+            if not taken:
+                return pc + 4  # always aligned: pc is word-aligned by invariant
+            target = _u32(pc + imm)
+            if target % 4 != 0:
+                raise Halted(HaltReason.MISALIGNED, pc, insn=insn, addr=target)
+            return target
 
         if opcode == OP_LOAD:
             imm = _sext(insn >> 20, 12)

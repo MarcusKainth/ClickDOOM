@@ -4,7 +4,7 @@
 Cross-checks the SQL expressions execute.py generates against an
 independent, plain-Python RV32I oracle (deliberately not sharing any code
 with execute.py, so a bug in one is unlikely to be mirrored in the other),
-run over sqlcpu/fixtures/decode_vectors.tsv — the same 50 hand-encoded
+run over sqlcpu/fixtures/decode_vectors.tsv — the same 51 hand-encoded
 instructions sqlcpu/test_decode.sh already proves decode.sql handles
 correctly. M-extension rows (decoded.id 10..17) are skipped: execute.py
 leaves that arm a placeholder pending issue #20.
@@ -45,8 +45,15 @@ def read(r):
     return 0 if r == 0 else REGS[r - 1]
 
 
-def oracle(pcidx, id_, rd, rs1, rs2, imm, tgt, mk, sg):
-    """Independent RV32I reference: same inputs execute.py's expressions take."""
+def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
+    """Independent RV32I reference: same inputs execute.py's expressions take.
+
+    `pc` and `tgt` are both byte addresses here, matching execute.py's
+    current convention (fixed post-#37: an earlier word-indexed `pcidx`
+    convention silently discarded a set bit 1 -- a target that's 2-byte
+    but not 4-byte aligned -- instead of leaving it checkable as
+    MISALIGNED).
+    """
     A = read(rs1)
     B = u32(read(rs2) + imm)
 
@@ -66,17 +73,17 @@ def oracle(pcidx, id_, rd, rs1, rs2, imm, tgt, mk, sg):
     elif id_ == 7: result = u32(s32(A) >> (B & 31))
     elif id_ == 8: result = A | B
     elif id_ == 9: result = A & B
-    else: result = u32(pcidx * 4 + 4)  # jal/jalr link value
+    else: result = u32(pc + 4)  # jal/jalr link value
 
-    if id_ == 20: nxt = tgt if A == B else pcidx + 1
-    elif id_ == 21: nxt = tgt if A != B else pcidx + 1
-    elif id_ == 22: nxt = tgt if s32(A) < s32(B) else pcidx + 1
-    elif id_ == 23: nxt = tgt if s32(A) >= s32(B) else pcidx + 1
-    elif id_ == 24: nxt = tgt if A < B else pcidx + 1
-    elif id_ == 25: nxt = tgt if A >= B else pcidx + 1
+    if id_ == 20: nxt = tgt if A == B else pc + 4
+    elif id_ == 21: nxt = tgt if A != B else pc + 4
+    elif id_ == 22: nxt = tgt if s32(A) < s32(B) else pc + 4
+    elif id_ == 23: nxt = tgt if s32(A) >= s32(B) else pc + 4
+    elif id_ == 24: nxt = tgt if A < B else pc + 4
+    elif id_ == 25: nxt = tgt if A >= B else pc + 4
     elif id_ == 26: nxt = tgt
-    elif id_ == 27: nxt = (u32(A + imm) & 0xFFFFFFFE) >> 2
-    else: nxt = pcidx + 1
+    elif id_ == 27: nxt = u32(A + imm) & 0xFFFFFFFE
+    else: nxt = pc + 4
 
     new_regs = list(REGS)
     if rd != 0:
@@ -90,8 +97,8 @@ def oracle(pcidx, id_, rd, rs1, rs2, imm, tgt, mk, sg):
         shift = 8 * (addr & 3)
         st_val = u32((STORE_WORD & u32(~(mk << shift))) | ((B & mk) << shift))
 
-    halted = 1 if id_ in (254, 255) else 0
-    reason = "ECALL_EBREAK_CSR" if id_ == 254 else ("ILLEGAL_INSN" if id_ == 255 else "")
+    halted = 1 if 28 <= id_ <= 31 else 0
+    reason = {28: "ECALL", 29: "EBREAK", 30: "CSR", 31: "ILLEGAL_INSN"}.get(id_, "")
     return u32(nxt), new_regs, is_st, st_addr, st_val, halted, reason
 
 
@@ -111,8 +118,8 @@ def load_vectors(path):
 def build_query(rows):
     a_expr = ex.operand_a()
     b_expr = ex.operand_b()
-    result_expr = ex.alu_result("loaded_word", "addr_load", pcidx="pcidx")
-    next_expr = ex.next_pc(pcidx="pcidx")
+    result_expr = ex.alu_result("loaded_word", "addr_load", pc="pc")
+    next_expr = ex.next_pc(pc="pc")
     newregs_expr = ex.regs_write("rd", result_expr)
     isstore_expr = ex.is_store()
     staddr_expr = ex.store_word_addr()
@@ -123,8 +130,9 @@ def build_query(rows):
 
     parts = []
     for wa, id_, rd, rs1, rs2, imm, tgt, mk, sg, note in rows:
+        pc = wa * 4
         exp_next, exp_regs, exp_isst, exp_staddr, exp_stval, exp_halted, exp_reason = oracle(
-            wa, id_, rd, rs1, rs2, imm, tgt, mk, sg)
+            pc, id_, rd, rs1, rs2, imm, tgt, mk, sg)
         exp_regs_sql = "[" + ",".join(str(v) for v in exp_regs) + "]"
         # store address/value are only meaningful (and only oracle-checked) on
         # store rows -- on every other row the same expressions still compute
@@ -148,7 +156,7 @@ FROM
     WITH
         toUInt8({rs1}) AS rs1, toUInt8({rs2}) AS rs2, toUInt32({imm}) AS imm,
         toUInt8({id_}) AS id, toUInt8({rd}) AS rd, toUInt32({tgt}) AS tgt,
-        toUInt32({mk}) AS mk, toUInt8({sg}) AS sg, toUInt32({wa}) AS pcidx,
+        toUInt32({mk}) AS mk, toUInt8({sg}) AS sg, toUInt32({pc}) AS pc,
         {regs_sql} AS regs,
         toUInt32({LOAD_WORD}) AS loaded_word, toUInt32({STORE_WORD}) AS loaded_word_store,
         ({a_expr}) AS A, ({b_expr}) AS B,

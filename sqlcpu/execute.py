@@ -24,25 +24,36 @@ Scope and the interface with `executor`:
     commit, #23/#25), not in a per-instruction expression that has no access
     to that context. This module emits the store's address and value;
     executor's commit path is where SELF_MODIFY gets checked.
-  * Halt detection for the two decode-time sentinels (id 254 = ecall/ebreak/
-    CSR, id 255 = illegal) IS in scope: decode already knows these need a
+  * Halt detection for decode's four sentinels (id 28 = ecall, 29 = ebreak,
+    30 = csr, 31 = illegal) IS in scope: decode already knows these need a
     fatal halt (SPEC §1), so surfacing it here means executor's batch loop
     doesn't need to re-inspect the raw instruction word to find out.
+  * MISALIGNED (SPEC §1, agreed with refemu in #37) is explicitly OUT of
+    scope here, and this is a real correctness boundary, not a convenience
+    one: refemu's semantics are that a jump architecturally completes (pc
+    and rd both update) and the fault surfaces on the *next fetch*, with
+    the halt's pc equal to the misaligned target. Detecting that means
+    checking the incoming pc *before* it's used to look up a decoded row —
+    which is executor's fetch stage (#23), not a per-instruction execute
+    expression that only ever runs after a lookup has already succeeded.
+    What this module guarantees instead: every pc-producing expression
+    below (`next_pc()`, the jal/jalr link value) is a byte address that is
+    NEVER silently truncated to a word index, so a misaligned value is
+    still there, correct and checkable, for whoever looks at it next. An
+    earlier version of this file (and of decode.sql's `tgt`) rounded to a
+    word index internally, which discarded exactly the bit a MISALIGNED
+    check needs — fixed once refemu's #37 note surfaced it.
 
 Register file convention (matches sqlcpu/schema.sql): `regs` is a 31-element
 Array(UInt32), 1-indexed, regs[r] = x_r's value for r in 1..31. x0 (r = 0)
 is never stored; every register read/write below goes through an explicit
 r = 0 check rather than relying on an out-of-range array access.
 
-PC convention: `pcidx` is a WORD index (byte address >> 2), the same domain
-as `decoded.word_addr`/`decoded.tgt` and `ram.word_addr` — not the byte
-address SPEC §5 stores in `cpu_state.pc`. Converting between the two
-(`pcidx * 4` / `pc >> 2`) happens once at the accumulator's boundary
-(load and commit), executor's concern (#23/#25); working in word units
-inside the step avoids a shift on every single instruction. The one
-value that must NOT stay in word units is the jal/jalr link value written
-to rd — that becomes a real data value a program dereferences, so it is
-always computed as a byte address.
+PC convention: `pc` is the BYTE address, matching `cpu_state.pc` (SPEC §5)
+and `decoded.tgt` directly — no unit conversion at the accumulator boundary.
+An earlier version of this module used a word-indexed `pcidx` internally for
+one shift fewer per step; abandoned because it cannot represent a misaligned
+byte address at all, which a MISALIGNED check needs to be able to see.
 """
 
 # ---- register read/write ---------------------------------------------------
@@ -93,7 +104,7 @@ def load_value(loaded_word_expr: str, addr_expr: str, mk="mk", sg="sg") -> str:
 # ---- the result written to rd (RV32I arms; M-extension is #20) -------------
 
 def alu_result(loaded_word_expr: str, addr_expr: str, id_="id", a="A", b="B",
-                mk="mk", sg="sg", pcidx="pcidx") -> str:
+                mk="mk", sg="sg", pc="pc") -> str:
     lv = load_value(loaded_word_expr, addr_expr, mk, sg)
     return (
         "multiIf("
@@ -109,25 +120,30 @@ def alu_result(loaded_word_expr: str, addr_expr: str, id_="id", a="A", b="B",
         f"{id_} = 9, bitAnd({a}, {b}),"
         f"{id_} >= 10 AND {id_} <= 17, toUInt32(0),"  # M-extension: issue #20
         f"{id_} = 18, {lv},"
-        f"toUInt32({pcidx} * 4 + 4))"  # default arm: jal/jalr link value (byte address)
+        f"toUInt32({pc} + 4))"  # default arm: jal/jalr link value (byte address)
     )
 
 
-# ---- next pc (word index) ---------------------------------------------------
+# ---- next pc (byte address) -------------------------------------------------
 
-def next_pc(id_="id", a="A", b="B", tgt="tgt", imm="imm", pcidx="pcidx") -> str:
-    jalr_target = f"bitShiftRight(bitAnd(toUInt32({a} + {imm}), 4294967294), 2)"
+def next_pc(id_="id", a="A", b="B", tgt="tgt", imm="imm", pc="pc") -> str:
+    # jalr: (rs1 + imm) with bit 0 cleared, per spec -- NOT further shifted.
+    # A target with bit 1 set (2-byte but not 4-byte aligned) is left intact
+    # here rather than silently dropped, so it's checkable as MISALIGNED
+    # wherever that check actually happens (executor's fetch stage, #23 --
+    # see the module docstring).
+    jalr_target = f"bitAnd(toUInt32({a} + {imm}), 4294967294)"
     return (
         "multiIf("
-        f"{id_} = 20, if({a} = {b}, {tgt}, toUInt32({pcidx} + 1)),"
-        f"{id_} = 21, if({a} != {b}, {tgt}, toUInt32({pcidx} + 1)),"
-        f"{id_} = 22, if(toInt32({a}) < toInt32({b}), {tgt}, toUInt32({pcidx} + 1)),"
-        f"{id_} = 23, if(toInt32({a}) >= toInt32({b}), {tgt}, toUInt32({pcidx} + 1)),"
-        f"{id_} = 24, if({a} < {b}, {tgt}, toUInt32({pcidx} + 1)),"
-        f"{id_} = 25, if({a} >= {b}, {tgt}, toUInt32({pcidx} + 1)),"
+        f"{id_} = 20, if({a} = {b}, {tgt}, toUInt32({pc} + 4)),"
+        f"{id_} = 21, if({a} != {b}, {tgt}, toUInt32({pc} + 4)),"
+        f"{id_} = 22, if(toInt32({a}) < toInt32({b}), {tgt}, toUInt32({pc} + 4)),"
+        f"{id_} = 23, if(toInt32({a}) >= toInt32({b}), {tgt}, toUInt32({pc} + 4)),"
+        f"{id_} = 24, if({a} < {b}, {tgt}, toUInt32({pc} + 4)),"
+        f"{id_} = 25, if({a} >= {b}, {tgt}, toUInt32({pc} + 4)),"
         f"{id_} = 26, {tgt},"
         f"{id_} = 27, toUInt32({jalr_target}),"
-        f"toUInt32({pcidx} + 1))"
+        f"toUInt32({pc} + 4))"
     )
 
 
@@ -139,6 +155,10 @@ def is_store(id_="id") -> str:
 
 def store_word_addr(a="A", imm="imm") -> str:
     # decoded.imm already carries the store's SIMM offset (schema.sql).
+    # This IS shifted to a word index (unlike next_pc/tgt): a store address
+    # is where a value lands in `ram`, not a value a program branches to,
+    # so there's no MISALIGNED concern the shift could hide -- and `ram` is
+    # keyed by word_addr, so executor's write-log needs it in that domain.
     return f"bitShiftRight(toUInt32({a} + {imm}), 2)"
 
 
@@ -153,11 +173,17 @@ def store_value(loaded_word_expr: str, addr_expr: str, b="B", mk="mk") -> str:
     )
 
 
-# ---- halt detection (decode-time sentinels only; SELF_MODIFY is executor's) --
+# ---- halt detection (decode-time sentinels only; MISALIGNED and ---------
+# ---- SELF_MODIFY are executor's, see the module docstring) --------------
 
 def halted(id_="id") -> str:
-    return f"toUInt8({id_} = 254 OR {id_} = 255)"
+    return f"toUInt8({id_} >= 28 AND {id_} <= 31)"
 
 
 def halt_reason(id_="id") -> str:
-    return f"if({id_} = 254, 'ECALL_EBREAK_CSR', if({id_} = 255, 'ILLEGAL_INSN', ''))"
+    # Vocabulary agreed with refemu, issue #37: ECALL/EBREAK/CSR/ILLEGAL_INSN
+    # here; MISALIGNED and SELF_MODIFY are produced elsewhere (see above).
+    return (
+        f"multiIf({id_} = 28, 'ECALL', {id_} = 29, 'EBREAK', "
+        f"{id_} = 30, 'CSR', {id_} = 31, 'ILLEGAL_INSN', '')"
+    )

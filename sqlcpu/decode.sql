@@ -167,6 +167,14 @@ SELECT
         toUInt32(0)
     ) AS mk,
     multiIf(op = 3 AND f3 IN (0, 1), 1, 0) AS sg,
+    -- M-extension collapse flags (issue #54, schema.sql's column-doc
+    -- comment has the full rationale) -- meaningless (0) outside
+    -- op=51 AND f7=1 (mul/mulh/mulhsu/mulhu/div/divu/rem/remu), whose f3
+    -- values 0..7 are exactly this block's id-assignment order above.
+    multiIf(op = 51 AND f7 = 1 AND f3 IN (0, 1, 2), 1, 0) AS m_sg1,  -- mul/mulh/mulhsu signed rs1
+    multiIf(op = 51 AND f7 = 1 AND f3 IN (0, 1), 1, 0) AS m_sg2,     -- mul/mulh signed rs2
+    multiIf(op = 51 AND f7 = 1 AND f3 IN (1, 2, 3), 1, 0) AS m_hi,   -- mulh/mulhsu/mulhu want high bits
+    multiIf(op = 51 AND f7 = 1 AND f3 IN (4, 6), 1, 0) AS d_sg,      -- div/rem signed
     w AS raw
 FROM fields
 ORDER BY word_addr;

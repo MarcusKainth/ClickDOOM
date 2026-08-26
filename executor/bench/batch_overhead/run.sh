@@ -5,16 +5,17 @@
 #
 #   1. state-reload: the extra cost `batch()` pays over `select_only()` --
 #      the PREV (prior batch's pc/regs/icount) subquery plus materializing
-#      the fold's result into `batch_out` via INSERT ... SELECT, instead of
-#      returning it to the client as a bare SELECT. decode_with()'s RAM/DEC
-#      materialization is identical in both and so is NOT part of this
-#      number -- it's already inside both the "fold" and "e2e" figures in
-#      executor/bench/halt_overhead/run.sh's table, cancelling out of the
+#      the fold's result into `batch_commit` via INSERT ... SELECT, instead
+#      of returning it to the client as a bare SELECT. decode_with()'s
+#      RAM/DEC materialization is identical in both and so is NOT part of
+#      this number -- it's already inside both the "fold" and "e2e" figures
+#      in executor/bench/halt_overhead/run.sh's table, cancelling out of the
 #      subtraction that produced 325 us/instr in the first place.
 #   2. write-log flush: the two statements ADR-0001/Phase 0's e2e loop adds
 #      on top of the batch INSERT itself -- flushing wl_addr/wl_val/wl_icount
 #      into `ram` (arrayJoin over the write-log, scales with its length) and
-#      appending the new pc/regs/icount row into `state` (single row, O(1)).
+#      the derived `cpu_state` row (single row, O(1)), both via #25's
+#      executor/commit.py rather than a `batch_out`/`state` stand-in.
 #
 # Runs against a PRIVATE database, created and dropped by this script --
 # NOT executor/bench/halt_overhead's shared `clickdoom_executor`. A first
@@ -26,11 +27,11 @@
 # back short of K*BATCHES. Team lead's ruling: isolate onto a private
 # database rather than coordinate timing -- the benchmark measures us/instr,
 # which depends on schema shape and data size, not database name, so
-# isolation costs nothing. `ram`/`decoded`'s DDL is generated from the REAL
-# sqlcpu/schema.sql (renamed via sed), not a hand-copied approximation, so
-# it can't drift from what sqlcpu maintains -- see setup.sql for the rest
-# (state/batch_out, which aren't part of sqlcpu's schema, and the synthetic
-# mix, same as halt_overhead's).
+# isolation costs nothing. Every table's DDL -- `ram`/`decoded`/
+# `batch_commit`/`cpu_state`/`console_out`/`input_queue` -- is generated from
+# the REAL sqlcpu/schema.sql (renamed via sed), not a hand-copied
+# approximation, so it can't drift from what sqlcpu maintains; setup.sql only
+# adds the synthetic instruction mix (same as halt_overhead's).
 #
 # This also adds the pre-flight guard the team lead asked to generalize into
 # executor/bench.sh once #26 lands: before trusting a run, check
@@ -47,7 +48,6 @@ K="${CLICKDOOM_BENCH_K:-50000}"
 BATCHES="${CLICKDOOM_BENCH_BATCHES:-12}"
 HWM="${CLICKDOOM_BENCH_HWM:-20000}"
 BENCH_DB="${CLICKDOOM_BENCH_DB:-clickdoom_exec_bench}"
-RAM_BASE_WORD=536870912   # SPEC §2 RAM_BASE 0x8000_0000 >> 2
 
 ch() { docker exec -i "$CONTAINER" clickhouse-client "$@"; }
 
@@ -66,11 +66,19 @@ ch --query "DROP DATABASE IF EXISTS $BENCH_DB"
 sed -E "s/clickdoom([.;])/${BENCH_DB}\\1/g" ../../../sqlcpu/schema.sql | ch --multiquery
 sed "s/{{DB}}/$BENCH_DB/g" setup.sql | ch --multiquery
 
-ch --query "INSERT INTO $BENCH_DB.state
-            SELECT 0, 2147483648, arrayResize(emptyArrayUInt32(), 31, toUInt32(0)), 0, 0"
+# Seed batch_commit's batch_id=0 row via the real bootstrap.py, not a
+# hand-copied INSERT -- SPEC §1's reset state, same script the driver (#28)
+# will run once before its first batch.
+python3 ../../bootstrap.py --database "$BENCH_DB" \
+  --client "docker exec -i $CONTAINER clickhouse-client"
 
 python3 ../../fold.py "$K" --hwm "$HWM" --e2e --db "$BENCH_DB" > /tmp/clickdoom_batch_overhead.sql
 python3 ../../fold.py "$K" --hwm "$HWM" --db "$BENCH_DB" > /tmp/clickdoom_select_only.sql
+# The two flushes this bench measures, generated from the real
+# executor/commit.py -- not hand-copied SQL -- so this bench can't drift
+# from what #25's actual flush does either.
+python3 ../../commit.py ram --db "$BENCH_DB" > /tmp/clickdoom_ram_flush.sql
+python3 ../../commit.py cpu_state --db "$BENCH_DB" > /tmp/clickdoom_cpu_state_flush.sql
 
 # now64(6), not the second-resolution variant: whole-second granularity
 # lets this script's OWN setup DDL
@@ -86,47 +94,39 @@ RAM_FLUSH_TOTAL=0
 STATE_FLUSH_TOTAL=0
 RETIRED_TOTAL=0
 WL_LEN_TOTAL=0
+ICOUNT_PREV=0  # batch_commit carries cumulative icount, not a per-batch
+               # `retired` column (that was batch_out's shape, not SPEC
+               # §5's) -- retired-this-batch is derived as the delta.
 
 for _ in $(seq 1 "$BATCHES"); do
   S=$(mark); ch --multiquery < /tmp/clickdoom_batch_overhead.sql; E=$(mark)
   BATCH_TOTAL=$(python3 -c "print($BATCH_TOTAL + ($E - $S))")
 
-  RETIRED=$(ch --query "SELECT retired FROM $BENCH_DB.batch_out
-                         WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_out)")
-  WL_LEN=$(ch --query "SELECT length(wl_addr) FROM $BENCH_DB.batch_out
-                        WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_out)")
-  RETIRED_TOTAL=$(( RETIRED_TOTAL + RETIRED ))
+  ICOUNT_NOW=$(ch --query "SELECT icount FROM $BENCH_DB.batch_commit
+                            WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_commit)")
+  WL_LEN=$(ch --query "SELECT length(wl_addr) FROM $BENCH_DB.batch_commit
+                        WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_commit)")
+  RETIRED_TOTAL=$(( RETIRED_TOTAL + (ICOUNT_NOW - ICOUNT_PREV) ))
   WL_LEN_TOTAL=$(( WL_LEN_TOTAL + WL_LEN ))
+  ICOUNT_PREV=$ICOUNT_NOW
 
-  S=$(mark)
   # RAM_BASE_WORD + wl_addr, not bare wl_addr (#81): `wl_addr` is a
   # RAM_BASE-*relative* word index (fold.py's `wa_safe = (ADDR-RAM_BASE)>>2`),
   # while `ram.word_addr` is *absolute* (schema.sql: "byte address >> 2").
-  # Flushing one as the other lands every store ~536M words below the image,
-  # where it sorts ahead of everything and shifts the whole positionally-indexed
-  # RAMT array. Measured on the real ROM before the fix: 664 rows sorted ahead,
-  # RAMT[1] reading 0x00 instead of the ROM's first word 0x01800117.
-  ch --query "INSERT INTO $BENCH_DB.ram (word_addr, value, version)
-              SELECT $RAM_BASE_WORD + arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).1,
-                     arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).2,
-                     icount_before + arrayJoin(arrayZip(wl_addr, wl_val, wl_icount)).3
-              FROM $BENCH_DB.batch_out
-              WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_out)
-                AND length(wl_addr) > 0"
-  E=$(mark)
+  # commit.py's ram_flush_sql() already does this conversion, and (post-#101)
+  # wl_icount is already the store's absolute icount -- no more
+  # `icount_before +` patch-up needed here, unlike this bench's previous
+  # version.
+  S=$(mark); ch --multiquery < /tmp/clickdoom_ram_flush.sql; E=$(mark)
   RAM_FLUSH_TOTAL=$(python3 -c "print($RAM_FLUSH_TOTAL + ($E - $S))")
 
-  S=$(mark)
-  ch --query "INSERT INTO $BENCH_DB.state
-              SELECT batch_id, pc, regs, icount_before + retired, keyq_pos FROM $BENCH_DB.batch_out
-              WHERE batch_id = (SELECT max(batch_id) FROM $BENCH_DB.batch_out)"
-  E=$(mark)
+  S=$(mark); ch --multiquery < /tmp/clickdoom_cpu_state_flush.sql; E=$(mark)
   STATE_FLUSH_TOTAL=$(python3 -c "print($STATE_FLUSH_TOTAL + ($E - $S))")
 done
 
 # Isolated select_only() baseline, same K, same fixture (fresh RAM/decoded
-# state -- select_only doesn't touch `state`/`batch_out` at all so this is
-# safe to run after the loop above without re-seeding).
+# state -- select_only doesn't touch `batch_commit`/`cpu_state` at all so
+# this is safe to run after the loop above without re-seeding).
 SELECT_ONLY_TOTAL=0
 for _ in $(seq 1 "$BATCHES"); do
   S=$(mark); ch --multiquery < /tmp/clickdoom_select_only.sql > /dev/null; E=$(mark)
@@ -186,12 +186,12 @@ fi
 
 printf 'component\tK\tbatches\ttotal_seconds\tus_per_instr\n'
 printf 'select_only (fold, no INSERT)\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$SELECT_ONLY_TOTAL" "$(us_per_instr "$SELECT_ONLY_TOTAL")"
-printf 'batch() INSERT INTO batch_out\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$BATCH_TOTAL" "$(us_per_instr "$BATCH_TOTAL")"
+printf 'batch() INSERT INTO batch_commit\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$BATCH_TOTAL" "$(us_per_instr "$BATCH_TOTAL")"
 printf 'state-reload extra (batch - select_only)\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" \
   "$(python3 -c "print(f'{$BATCH_TOTAL - $SELECT_ONLY_TOTAL:.3f}')")" \
   "$(us_per_instr "$(python3 -c "print($BATCH_TOTAL - $SELECT_ONLY_TOTAL)")")"
 printf 'write-log flush: ram INSERT\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$RAM_FLUSH_TOTAL" "$(us_per_instr "$RAM_FLUSH_TOTAL")"
-printf 'write-log flush: state INSERT\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$STATE_FLUSH_TOTAL" "$(us_per_instr "$STATE_FLUSH_TOTAL")"
+printf 'write-log flush: cpu_state INSERT\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" "$STATE_FLUSH_TOTAL" "$(us_per_instr "$STATE_FLUSH_TOTAL")"
 printf 'sum of all three overhead components\t%s\t%s\t%s\t%s\n' "$K" "$BATCHES" \
   "$(python3 -c "print(f'{($BATCH_TOTAL - $SELECT_ONLY_TOTAL) + $RAM_FLUSH_TOTAL + $STATE_FLUSH_TOTAL:.3f}')")" \
   "$(us_per_instr "$(python3 -c "print(($BATCH_TOTAL - $SELECT_ONLY_TOTAL) + $RAM_FLUSH_TOTAL + $STATE_FLUSH_TOTAL)")")"

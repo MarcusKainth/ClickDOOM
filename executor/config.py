@@ -34,6 +34,12 @@ MMIO_FRAME_COMMIT = 0x10
 CHECKPOINT_INTERVAL = 4_096
 RAM_HASH_INTERVAL = 1_048_576
 
+# SPEC §5: batch_commit retention, in batch_id lag (not wall-clock time --
+# see ADR-0003's rejected-TTL writeup). "N=16 is generous headroom, not a
+# tight bound" per SPEC's own text; only the latest row's bulky columns are
+# ever read in normal operation.
+BATCH_COMMIT_RETENTION_N = 16
+
 SPEC_VERSION = "0.1.0"
 
 # --- Fixture-only (this PR's local test schema, not SPEC) -------------------

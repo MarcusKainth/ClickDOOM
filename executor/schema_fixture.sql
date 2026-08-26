@@ -1,17 +1,27 @@
--- Local test schema for #23, mirroring sqlcpu/schema.sql (PR #42/#46/#49)
--- exactly, not just SPEC §5's prose -- this file exists only so the fold in
--- fold.py can be built and tested before that PR merges, per #23's plan
--- ("build to spec, not to the fixture -- swap the moment schema.sql lands").
+-- Local test schema for #23/#25, mirroring sqlcpu/schema.sql exactly, not
+-- just SPEC §5's prose -- covers `ram`/`decoded`/`input_queue`, the tables
+-- executor/tests/test_fold.py's select_only()-based cases actually touch.
+-- `input_queue` was missing until #25 found it: PR #88's MMIO plumbing
+-- added decode_with()'s KEYQT subquery (reads `{db}.input_queue`) to every
+-- select_only()/batch() call, but never landed here, and
+-- `just test-executor` isn't wired into CI (no `test-executor` job in
+-- .github/workflows/ci.yml), so nothing ran select_only() against this
+-- fixture between #88 landing and now to catch it -- every test_fold.py
+-- case failed outright (UNKNOWN_TABLE) the first time this file's tests
+-- were run again. Loud and immediate here, not the silent-wrong-answer
+-- category this project usually has to watch for, but still worth fixing
+-- in the same pass rather than leaving `test_fold.py` broken.
 -- Column names (`id`/`tgt`/`mk`/`sg`, not SPEC §5's `op_id`/`target`/
 -- `width_mask`/`sign_bit`) and the byte-address `pc` convention match
--- sqlcpu's real table exactly, per their request to reconcile this in the
--- same pass as the word-index-PC fix (see fold.py's IDX/NEXT/LINK_VALUE).
+-- sqlcpu's real table exactly.
 --
--- One deliberate addition beyond sqlcpu's schema.sql: `state`/`batch_out`
--- are NOT part of SPEC §5 or sqlcpu's schema -- they're this fixture's
--- stand-in for "the previous batch's committed state" until #25
--- (batch_commit) is ratified, matching Phase 0's shape plus the new
--- halt/write-log-versioning fields.
+-- `state`/`batch_out` -- this fixture's former stand-in for "the previous
+-- batch's committed state" before batch_commit was ratified -- are gone:
+-- #25 landed the real thing (sqlcpu/schema.sql), test_fold.py never
+-- referenced either table (it only exercises select_only(), never batch()),
+-- and executor/tests/test_commit.py (batch()/commit.py's own tests) applies
+-- the real sqlcpu/schema.sql directly rather than a second, driftable copy
+-- of batch_commit/cpu_state/console_out's shape.
 --
 -- `word_addr` is absolute (byte_addr >> 2) per SPEC §5's parenthetical, not
 -- relative to RAM_BASE, matching what sqlcpu's real table contains.
@@ -45,31 +55,12 @@ CREATE TABLE clickdoom_executor.decoded
 ENGINE = MergeTree
 ORDER BY word_addr;
 
-DROP TABLE IF EXISTS clickdoom_executor.state;
-CREATE TABLE clickdoom_executor.state
+DROP TABLE IF EXISTS clickdoom_executor.input_queue;
+CREATE TABLE clickdoom_executor.input_queue
 (
-    batch_id UInt64,
-    pc       UInt32,  -- byte address, matching SPEC §5's cpu_state.pc
-    regs     Array(UInt32),
-    icount   UInt64
+    event_seq UInt64,
+    key_event UInt16,
+    consumed  UInt8
 )
-ENGINE = MergeTree ORDER BY batch_id;
-
-DROP TABLE IF EXISTS clickdoom_executor.batch_out;
-CREATE TABLE clickdoom_executor.batch_out
-(
-    batch_id      UInt64,
-    icount_before UInt64,
-    pc            UInt32,  -- byte address
-    regs          Array(UInt32),
-    wl_addr       Array(UInt32),
-    wl_val        Array(UInt32),
-    wl_icount     Array(UInt64),
-    stopped       UInt8,
-    halted        UInt8,
-    halt_reason   UInt8,
-    halt_pc       UInt32,  -- byte address
-    halt_extra    UInt32,
-    retired       UInt32
-)
-ENGINE = MergeTree ORDER BY batch_id;
+ENGINE = MergeTree
+ORDER BY event_seq;

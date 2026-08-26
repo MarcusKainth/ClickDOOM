@@ -1,7 +1,9 @@
 # ADR-0003: Batch commit atomicity via a single atomic row plus idempotent derivation
 
-**Status:** proposed — gated on human ratification of the accompanying
-`spec:` change (issue #35) and `sqlcpu` agreement on the `batch_commit` DDL.
+**Status:** accepted. The gating `spec:` change (issue #35, PR #39) is
+ratified on `main`; `sqlcpu` landed the agreed `batch_commit`/`cpu_state`
+DDL (PR #92); this design is implemented by #25 (`executor/commit.py`,
+`fold.py`'s `batch()` reshape).
 
 ## Context
 

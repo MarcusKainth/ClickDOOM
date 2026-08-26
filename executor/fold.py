@@ -363,9 +363,22 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
+    # wl_icount must be this store's ABSOLUTE global icount (icount_base +
+    # this batch's retired-so-far + 1), not just the batch-relative rank --
+    # matching TICKS_MS's icount_base treatment above, and per SPEC's `ram`
+    # versioning note ("the individual store's own icount ... not the
+    # batch's final icount"). An earlier version of this line was
+    # `toUInt64(acc.5) + 1` alone: correct *within* one batch (PR #48 fixed
+    # the same-batch tie this way) but wrong *across* batches, since nothing
+    # consumed wl_icount across chained batches until #25's ram flush --
+    # icount_base=0 in every single-batch test let it slide uncaught. Two
+    # batches storing to the same address would then get versions that don't
+    # reflect execution order (a later batch's small relative rank losing to
+    # an earlier batch's large one under ram's ReplacingMergeTree FINAL) --
+    # silent, deterministic, wrong. See #101.
     new_wl = (f"if({is_retiring_store},"
               f" tuple(arrayPushBack(acc.3.1, {WA}), arrayPushBack(acc.3.2, {SVAL}),"
-              f" arrayPushBack(acc.3.3, toUInt64(acc.5) + 1)),"
+              f" arrayPushBack(acc.3.3, toUInt64({icount_base}) + toUInt64(acc.5) + 1)),"
               f" acc.3)")
     new_control = (f"multiIf({step_halts_now},"
                    f" tuple(toUInt8(1), toUInt8(1), toUInt8({HALT_CODE}), {PC}, {halt_extra_calc}),"
@@ -503,13 +516,50 @@ SETTINGS max_threads = 1,
          max_ast_elements = 500000, max_expanded_ast_elements = 500000"""
 
 
-def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="batch_out", db=DB,
+def _halt_reason_transform(halt_code_expr):
+    """`transform(halt_code_expr, [1..8], ['ILLEGAL_INSN', ..., 'EXIT'], '')`,
+    generated from config.HALT_REASON_NAMES so the SQL mapping can't drift
+    from the Python one -- HALT_NONE (0) isn't in the from-array, so it (and
+    anything else unrecognized) falls through to the '' default, matching
+    HALT_REASON_NAMES[HALT_NONE] anyway. Evaluated once per batch, outside
+    the fold lambda (see batch()'s docstring on why that placement matters,
+    #86) -- config.py's own comment already anticipates this exact mapping
+    happening "outside the fold, once per batch, not once per step"."""
+    codes = [c for c in config.HALT_REASON_NAMES if c != config.HALT_NONE]
+    names = [config.HALT_REASON_NAMES[c] for c in codes]
+    from_arr = "[" + ",".join(str(c) for c in codes) + "]"
+    to_arr = "[" + ",".join(f"'{n}'" for n in names) + "]"
+    return f"transform(toUInt8({halt_code_expr}), {from_arr}, {to_arr}, '')"
+
+
+def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, db=DB,
           ipms=config.IPMS_DEFAULT):
-    """One full batch: reload prior state, fold up to K instructions, stage
-    the result (including the halt record and per-store icounts) into
-    `out_table`. Flushing wl_* into `ram` and cpu_state into the SPEC §5
-    table is a separate statement -- deliberately out of scope here; #25
-    owns the atomic-commit shape (batch_commit, pending ratification)."""
+    """One full batch: reload prior state (from `batch_commit`, SPEC §5/
+    ADR-0003 -- the only table `keyq_pos` lives on), fold up to K
+    instructions, and INSERT the SPEC §5-shaped `batch_commit` row directly
+    -- this INSERT *is* the batch's single atomic write (ADR-0003 point 1).
+    Flushing wl_*/console_bytes into `ram`/`console_out` and deriving
+    `cpu_state` are separate, idempotent statements (executor/commit.py,
+    #25) -- deliberately not here, since they must be safely re-runnable
+    independently of this INSERT ever having happened more than once.
+
+    Column mapping from the fold's accumulator (`r`) to batch_commit's SPEC
+    §5 columns, done here in the outer SELECT rather than inside the fold:
+    icount arithmetic (icount_before + retired) and the halt-reason
+    code->string transform are cheap outside the lambda and would cost
+    per-step time inside it (ADR-0002's node-count model). `exit_code` is
+    EXIT-only, not a general "halt extra" slot: SPEC §1 (#89, ratified this
+    session) is explicit that "a fault never sets exit_code, and EXIT never
+    sets a fault reason" -- refemu's `Halted` only ever passes `exit_code`
+    on the EXIT path (`raise Halted(HaltReason.EXIT, pc, insn=insn,
+    exit_code=e.code)`; every fault path leaves it at its `None` default,
+    i.e. sqlcpu/executor's 0). `r.4.5` (this fold's internal `halt_extra`)
+    still carries the raw word/faulting address for non-EXIT halts, same as
+    before -- that's a real, useful diagnostic value, just not one SPEC §5's
+    `cpu_state.exit_code` is the place for; it has no persisted slot in the
+    ratified schema (refemu doesn't persist it either -- `insn`/`addr` live
+    only on the transient `Halted` exception), so it is computed but not
+    flushed anywhere by this design."""
     # TICKS_MS reads the *absolute* retired count, so the batch's starting
     # icount has to reach the step expression. It is a query-level constant
     # (one scalar subquery), not per-step work -- only acc.5 varies inside.
@@ -517,27 +567,31 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="ba
                       icount_base="assumeNotNull(PREV.4)", ipms=ipms)
     init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')",
                            keyq0="assumeNotNull(PREV.5)")
-    # The fold goes in a subquery and the 13 columns are projected off `r`
+    halt_reason_expr = _halt_reason_transform("r.4.3")
+    exit_code_expr = f"if(toUInt8(r.4.3) = {config.HALT_EXIT}, r.4.5, toUInt32(0))"
+    # The fold goes in a subquery and every column is projected off `r`
     # outside it -- NOT `(arrayFold(...) AS r).1, r.2, ...` in one SELECT list.
     # ClickHouse does not common-subexpression the alias in that position: each
-    # of the 13 references re-runs the entire fold. Measured at K=1 on the real
-    # ROM, where the fold itself is nearly free and the number is almost pure
-    # overhead: 16.95s inline vs 1.70s wrapped, a 10x difference in fixed
-    # per-batch cost, with identical results.
-    #
-    # select_only() already had this shape, which is why the two disagreed so
-    # sharply on fixed cost (1.7s vs 17s) and why #80's "batch overhead" looked
-    # like an unavoidable property of INSERT ... SELECT. It was not; it was this.
-    return f"""INSERT INTO {db}.{out_table}
+    # reference re-runs the entire fold. Measured at K=1 on the real ROM, where
+    # the fold itself is nearly free and the number is almost pure overhead:
+    # 16.95s inline vs 1.70s wrapped, a 10x difference in fixed per-batch cost,
+    # with identical results (#86). This reshape adds more outer-SELECT
+    # references (halt_reason_expr, exit_code_expr, the icount sum) than the
+    # version #86 fixed -- still safe, because they all read the single `r`
+    # alias materialized by the subquery, same as every other column here;
+    # what #86 forbids is aliasing the fold call itself inside the SELECT list.
+    return f"""INSERT INTO {db}.batch_commit
+  (batch_id, icount, pc, regs, halted, halt_reason, exit_code,
+   keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes)
 WITH{decode_with(db)},
   (SELECT tuple(batch_id, pc, regs, icount, keyq_pos)
-     FROM {db}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
+     FROM {db}.batch_commit ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
-       toUInt64(assumeNotNull(PREV.4)) AS icount_before,
-       r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
-       r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason,
-       r.4.4 AS halt_pc, r.4.5 AS halt_extra, r.5 AS retired,
-       r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed
+       toUInt64(assumeNotNull(PREV.4)) + toUInt64(r.5) AS icount,
+       r.1 AS pc, r.2 AS regs,
+       r.4.2 AS halted, {halt_reason_expr} AS halt_reason, {exit_code_expr} AS exit_code,
+       r.6.2 AS keyq_pos, r.6.3.2 AS has_frame, r.6.3.1 AS frame_no,
+       r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount, r.6.1 AS console_bytes
 FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1,
          -- The step expression is generated, not hand-written, and MMIO (#24)

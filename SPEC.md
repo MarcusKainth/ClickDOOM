@@ -58,10 +58,22 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
   a write to text would silently invalidate that table. DOOM does not
   self-modify — if it appears to, that is a bug worth halting on.
 - Halt-reason vocabulary is closed and exact-match: `ILLEGAL_INSN`,
-  `BAD_ADDR`, `SELF_MODIFY`, `MISALIGNED`, `ECALL`, `EBREAK`, `CSR` — all
-  uppercase ASCII, no punctuation, no per-engine normalization. It is
+  `BAD_ADDR`, `SELF_MODIFY`, `MISALIGNED`, `ECALL`, `EBREAK`, `CSR`, `EXIT` —
+  all uppercase ASCII, no punctuation, no per-engine normalization. It is
   observable state (`cpu_state.halt_reason`, §5) that both `refemu` and
   `sqlcpu` must produce identically; agreed cross-engine in issue #37.
+  The first seven are **faults**; `EXIT` is not. It is the ROM's own clean
+  stop, written to §3's `EXIT` register, and it appears here because §5's
+  `cpu_state` routes every way the machine can stop through this one column.
+  "Halted normally" is therefore `halt_reason = 'EXIT'`, with the written
+  value in `exit_code` — not an empty string, which would be
+  indistinguishable from an unset column in a differential comparison.
+  A fault never sets `exit_code`, and `EXIT` never sets a fault reason, so
+  the two are always separable. This matters at exactly one moment and it is
+  an expensive one: `EXIT` is how `-timedemo demo3` terminates, so it is the
+  **last** value a victory run produces, and a cross-engine mismatch here
+  fails the §7 final-state comparison after everything else has already
+  agreed. No riscv-test writes that register.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).

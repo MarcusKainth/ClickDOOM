@@ -40,9 +40,31 @@
  * Word stores, not byte stores, for both: SPEC §2's whole rationale for
  * 8bpp-not-32bpp is "4x fewer store instructions per frame on the
  * emulated CPU" -- writing this loop byte-at-a-time would throw half of
- * that win away. Both region sizes are exact multiples of 4
- * (64,000 = 16,000 words; 768 = 192 words), so this covers every byte
- * with no remainder handling.
+ * that win away. Both region sizes are exact multiples of 32
+ * (64,000 = 2,000 x 8 words; 768 = 24 x 8 words), so the x8-unrolled
+ * copy loops below (issue #125) need no remainder handling either.
+ *
+ * Manual x8 unrolling, not SPEC §3: "MMIO registers (word access only)"
+ * is SPEC §3's header, and §3's table is exactly the five registers
+ * (TICKS_MS/KEYQ/EXIT/PUTCHAR/FRAME_COMMIT) -- FRAMEBUFFER/PALETTE are
+ * SPEC §2 regions with no mandated store structure. What actually
+ * protects this: `framebuffer_mmio`/`palette_mmio` stay `volatile
+ * uint32_t *`, so C's volatile-access rules (every volatile access is
+ * its own side effect, evaluated in program order, never merged or
+ * reordered relative to another volatile access) apply exactly the same
+ * to 8 separate sequenced statements as to 1 -- the compiler cannot
+ * combine two of these stores into a wider one (RV32IM has no
+ * wider-than-word store to do that with anyway) or reorder them. This
+ * changes the loop-control instructions (index/pointer bumps, compare,
+ * branch) paid once per 8 words instead of once per 1; it does not
+ * change which addresses get written, what values land there, or the
+ * order any of that happens in. Verified, not just argued: disassembly
+ * confirms 5 instr/word before this change vs 2.375 instr/word after
+ * (19 instructions -- 16 lw/sw + 2 pointer bumps + 1 branch -- per 8
+ * words), and a scratch build's first committed frame had a
+ * byte-for-byte identical `fb_hash` to the pre-unroll build's, with
+ * icount at first FRAME_COMMIT dropping by exactly the disassembly-
+ * predicted amount. Full evidence on issue #125.
  */
 #define FRAMEBUFFER_BASE 0x11000000u
 #define FRAMEBUFFER_SIZE 64000u
@@ -76,15 +98,29 @@ void DG_DrawFrame(void) {
       packed[i * 3 + 2] = colors[i].b;
     }
     const uint32_t *src = (const uint32_t *)packed;
-    for (unsigned i = 0; i < PALETTE_SIZE / 4; i++) {
-      palette_mmio[i] = src[i];
+    for (unsigned i = 0; i < PALETTE_SIZE / 4; i += 8) {
+      palette_mmio[i + 0] = src[i + 0];
+      palette_mmio[i + 1] = src[i + 1];
+      palette_mmio[i + 2] = src[i + 2];
+      palette_mmio[i + 3] = src[i + 3];
+      palette_mmio[i + 4] = src[i + 4];
+      palette_mmio[i + 5] = src[i + 5];
+      palette_mmio[i + 6] = src[i + 6];
+      palette_mmio[i + 7] = src[i + 7];
     }
     palette_changed = false;
   }
 
   const uint32_t *src = (const uint32_t *)DG_ScreenBuffer;
-  for (unsigned i = 0; i < FRAMEBUFFER_SIZE / 4; i++) {
-    framebuffer_mmio[i] = src[i];
+  for (unsigned i = 0; i < FRAMEBUFFER_SIZE / 4; i += 8) {
+    framebuffer_mmio[i + 0] = src[i + 0];
+    framebuffer_mmio[i + 1] = src[i + 1];
+    framebuffer_mmio[i + 2] = src[i + 2];
+    framebuffer_mmio[i + 3] = src[i + 3];
+    framebuffer_mmio[i + 4] = src[i + 4];
+    framebuffer_mmio[i + 5] = src[i + 5];
+    framebuffer_mmio[i + 6] = src[i + 6];
+    framebuffer_mmio[i + 7] = src[i + 7];
   }
 
   REG_FRAME_COMMIT = frame_no;

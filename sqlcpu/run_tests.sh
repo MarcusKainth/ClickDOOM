@@ -84,7 +84,7 @@ check_table batch_commit MergeTree
 check_table ram          ReplacingMergeTree
 check_table input_queue  MergeTree
 check_table frames_out   MergeTree
-check_table console_out  MergeTree
+check_table console_out  ReplacingMergeTree
 check_table decoded      MergeTree
 
 # Round-trip: every table accepts a row and reads it back with spec_version

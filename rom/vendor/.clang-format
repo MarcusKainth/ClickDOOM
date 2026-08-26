@@ -1,0 +1,7 @@
+# Vendored code is never reformatted -- see rom/vendor/README.md. clang-format
+# walks up from a file's directory to find the nearest .clang-format; this one
+# stops that search here so CI's "clang-format (rom C sources)" job (which
+# globs rom/**/*.c and rom/**/*.h with no vendor exclusion of its own) treats
+# everything under rom/vendor/ as already-formatted rather than flagging
+# pristine upstream C89-era source against our style.
+DisableFormat: true

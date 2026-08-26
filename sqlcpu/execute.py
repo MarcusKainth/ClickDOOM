@@ -28,21 +28,23 @@ Scope and the interface with `executor`:
     30 = csr, 31 = illegal) IS in scope: decode already knows these need a
     fatal halt (SPEC §1), so surfacing it here means executor's batch loop
     doesn't need to re-inspect the raw instruction word to find out.
-  * MISALIGNED (SPEC §1, agreed with refemu in #37) is explicitly OUT of
-    scope here, and this is a real correctness boundary, not a convenience
-    one: refemu's semantics are that a jump architecturally completes (pc
-    and rd both update) and the fault surfaces on the *next fetch*, with
-    the halt's pc equal to the misaligned target. Detecting that means
-    checking the incoming pc *before* it's used to look up a decoded row —
-    which is executor's fetch stage (#23), not a per-instruction execute
-    expression that only ever runs after a lookup has already succeeded.
-    What this module guarantees instead: every pc-producing expression
-    below (`next_pc()`, the jal/jalr link value) is a byte address that is
-    NEVER silently truncated to a word index, so a misaligned value is
-    still there, correct and checkable, for whoever looks at it next. An
-    earlier version of this file (and of decode.sql's `tgt`) rounded to a
-    word index internally, which discarded exactly the bit a MISALIGNED
-    check needs — fixed once refemu's #37 note surfaced it.
+  * MISALIGNED (SPEC §1) IS in scope, checked eagerly, here — the team
+    lead's ruling on #37 overrides refemu's original "fault surfaces on
+    the next fetch" proposal (and this module's own earlier docstring,
+    which deferred to that): the RISC-V ISA reports instruction-address-
+    misaligned on the branch/jump that computes the bad target, not on the
+    target. Concretely: for a taken branch, jal, or jalr whose target has
+    bit 1 set (2-byte aligned but not 4-byte aligned — only bit 0 is
+    forced to 0 by the encodings), the instruction halts with MISALIGNED,
+    its own pc as the halt record's pc (not the target), and neither pc
+    nor rd is updated — matching refemu's PR #51 exactly, including "not
+    taken" never faulting even if the untaken target would have been bad.
+    This is checkable here specifically because it's eager: the check
+    only needs values this expression already has (id, A, B, tgt, imm,
+    pc), not anything from a future fetch. What made it representable at
+    all is still the fix noted below: an earlier word-indexed `pc`
+    convention would have silently discarded the very bit this check
+    tests.
 
 Register file convention (matches sqlcpu/schema.sql): `regs` is a 31-element
 Array(UInt32), 1-indexed, regs[r] = x_r's value for r in 1..31. x0 (r = 0)
@@ -124,17 +126,64 @@ def alu_result(loaded_word_expr: str, addr_expr: str, id_="id", a="A", b="B",
     )
 
 
-# ---- next pc (byte address) -------------------------------------------------
+# ---- MISALIGNED (SPEC §1, eager per #37) ------------------------------------
+# is_misaligned() is used by next_pc(), halted(), halt_reason() and
+# rd_or_suppressed() below -- all four take an optional `misaligned=`
+# parameter so a caller can bind this expression once (e.g. a single
+# `(is_misaligned(...)) AS misaligned` in the surrounding WITH clause) and
+# pass the alias through, instead of each of the four re-deriving the same
+# ~9-arm multiIf independently. Not just style: four full inline copies in
+# one lambda is a real node-count cost under Phase 0's per-node model
+# (ADR-0002), and it's what first surfaced this to me -- sqlcpu/test_execute.py
+# hit ClickHouse's `AST is too big` query limit before this parameter existed,
+# from ~56 test rows each carrying four copies of the same expression.
 
-def next_pc(id_="id", a="A", b="B", tgt="tgt", imm="imm", pc="pc") -> str:
-    # jalr: (rs1 + imm) with bit 0 cleared, per spec -- NOT further shifted.
-    # A target with bit 1 set (2-byte but not 4-byte aligned) is left intact
-    # here rather than silently dropped, so it's checkable as MISALIGNED
-    # wherever that check actually happens (executor's fetch stage, #23 --
-    # see the module docstring).
-    jalr_target = f"bitAnd(toUInt32({a} + {imm}), 4294967294)"
+def _jalr_target(a="A", imm="imm") -> str:
+    return f"bitAnd(toUInt32({a} + {imm}), 4294967294)"
+
+
+def is_misaligned(id_="id", a="A", b="B", tgt="tgt", imm="imm") -> str:
+    """True iff this instruction is a taken branch/jal/jalr whose target
+    isn't 4-byte aligned. False (never faults) for every other id,
+    including an untaken branch even when its target would have been bad
+    (refemu's PR #51: `beq` that doesn't branch never evaluates its own
+    target's alignment)."""
+    jalr_target = _jalr_target(a, imm)
     return (
         "multiIf("
+        f"{id_} = 20, {a} = {b} AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 21, {a} != {b} AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 22, toInt32({a}) < toInt32({b}) AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 23, toInt32({a}) >= toInt32({b}) AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 24, {a} < {b} AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 25, {a} >= {b} AND bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 26, bitAnd({tgt}, 3) != 0,"
+        f"{id_} = 27, bitAnd({jalr_target}, 3) != 0,"
+        "toUInt8(0))"
+    )
+
+
+# ---- next pc (byte address) -------------------------------------------------
+
+def next_pc(id_="id", a="A", b="B", tgt="tgt", imm="imm", pc="pc", misaligned=None) -> str:
+    """`misaligned`: pass a WITH-bound alias (e.g. from a single
+    `(is_misaligned(...)) AS misaligned` computed once) to reuse across this,
+    halted(), halt_reason() and rd_or_suppressed() instead of each
+    re-deriving is_misaligned()'s ~9-arm multiIf independently — four full
+    copies of it in one lambda is a real node-count cost under Phase 0's
+    per-node model (ADR-0002), not just verbose SQL text. Omit it (the
+    default) to compute fresh inline, which is what every caller in this
+    file's own tests did before this parameter existed."""
+    is_misaligned_expr = misaligned if misaligned is not None else is_misaligned(id_, a, b, tgt, imm)
+    # A misaligned taken branch/jal/jalr freezes at ITS OWN pc (SPEC §1,
+    # eager per #37 — see is_misaligned() and the module docstring): pc
+    # never advances, matching refemu's "nothing about the jump takes
+    # effect". Checked first since it overrides every arm below, not just
+    # the ones that would otherwise transfer control.
+    jalr_target = _jalr_target(a, imm)
+    return (
+        "multiIf("
+        f"{is_misaligned_expr}, {pc},"
         f"{id_} = 20, if({a} = {b}, {tgt}, toUInt32({pc} + 4)),"
         f"{id_} = 21, if({a} != {b}, {tgt}, toUInt32({pc} + 4)),"
         f"{id_} = 22, if(toInt32({a}) < toInt32({b}), {tgt}, toUInt32({pc} + 4)),"
@@ -173,17 +222,39 @@ def store_value(loaded_word_expr: str, addr_expr: str, b="B", mk="mk") -> str:
     )
 
 
-# ---- halt detection (decode-time sentinels only; MISALIGNED and ---------
-# ---- SELF_MODIFY are executor's, see the module docstring) --------------
+# ---- halt detection (decode-time sentinels + eager MISALIGNED; ------------
+# ---- SELF_MODIFY is executor's, see the module docstring) -----------------
 
-def halted(id_="id") -> str:
-    return f"toUInt8({id_} >= 28 AND {id_} <= 31)"
+def halted(id_="id", a="A", b="B", tgt="tgt", imm="imm", misaligned=None) -> str:
+    is_misaligned_expr = misaligned if misaligned is not None else is_misaligned(id_, a, b, tgt, imm)
+    return f"toUInt8(({id_} >= 28 AND {id_} <= 31) OR ({is_misaligned_expr}))"
 
 
-def halt_reason(id_="id") -> str:
-    # Vocabulary agreed with refemu, issue #37: ECALL/EBREAK/CSR/ILLEGAL_INSN
-    # here; MISALIGNED and SELF_MODIFY are produced elsewhere (see above).
+def halt_reason(id_="id", a="A", b="B", tgt="tgt", imm="imm", misaligned=None) -> str:
+    # Vocabulary agreed with refemu, issue #37: ECALL/EBREAK/CSR/ILLEGAL_INSN/
+    # MISALIGNED here; SELF_MODIFY is produced elsewhere (see module docstring).
+    is_misaligned_expr = misaligned if misaligned is not None else is_misaligned(id_, a, b, tgt, imm)
     return (
         f"multiIf({id_} = 28, 'ECALL', {id_} = 29, 'EBREAK', "
-        f"{id_} = 30, 'CSR', {id_} = 31, 'ILLEGAL_INSN', '')"
+        f"{id_} = 30, 'CSR', {id_} = 31, 'ILLEGAL_INSN', "
+        f"{is_misaligned_expr}, 'MISALIGNED', '')"
     )
+
+
+def rd_or_suppressed(id_="id", a="A", b="B", tgt="tgt", imm="imm", rd="rd", misaligned=None) -> str:
+    """`rd`, unless this step is a misaligned taken jump (SPEC §1, #37) — in
+    which case rd must not be written at all, and passing this through
+    regs_write()'s existing `rd != 0` guard as a stand-in `rd` of 0 is a
+    write-suppression, not a real write to x0."""
+    is_misaligned_expr = misaligned if misaligned is not None else is_misaligned(id_, a, b, tgt, imm)
+    return f"if({is_misaligned_expr}, toUInt8(0), {rd})"
+
+
+def misaligned_target(id_="id", a="A", tgt="tgt", imm="imm") -> str:
+    """The bad (not 4-byte-aligned) target itself — jal/branch use `tgt`
+    directly, jalr computes it live. Only meaningful where is_misaligned()
+    is true; for executor's halt_extra (mirroring bad_addr/self_modify's
+    existing "report the address" convention in their fold.py) rather than
+    something this module consumes itself."""
+    jalr_target = _jalr_target(a, imm)
+    return f"if({id_} = 27, toUInt32({jalr_target}), {tgt})"

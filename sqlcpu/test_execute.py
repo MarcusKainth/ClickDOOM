@@ -9,10 +9,15 @@ instructions sqlcpu/test_decode.sh already proves decode.sql handles
 correctly. M-extension rows (decoded.id 10..17) are skipped: execute.py
 leaves that arm a placeholder pending issue #20.
 
-Also exercises the one case the fixture file doesn't happen to hit: writing
-to x0. SPEC §1 requires the write be discarded, not merely be harmless —
-tested directly against execute.py's regs_write(), not inferred from the
-fixture rows.
+Also exercises two cases the fixture file doesn't happen to hit, since it
+was written before either was in scope:
+  * Writing to x0. SPEC §1 requires the write be discarded, not merely be
+    harmless — tested directly against execute.py's regs_write().
+  * Eager MISALIGNED (SPEC §1, agreed with refemu on #37): the fixture's
+    branch/jal offsets are all multiples of 4 by construction, so none of
+    them exercise a misaligned target at all. misaligned_vectors() adds
+    dedicated jal/jalr/taken-branch/not-taken-branch cases mirroring
+    refemu's PR #51 test suite.
 
 This does not run inside arrayFold — each row is evaluated as an
 independent single-row SELECT with its own literal register file, which is
@@ -75,18 +80,28 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
     elif id_ == 9: result = A & B
     else: result = u32(pc + 4)  # jal/jalr link value
 
-    if id_ == 20: nxt = tgt if A == B else pc + 4
+    jalr_target = u32(A + imm) & 0xFFFFFFFE
+    taken_target = {20: A == B, 21: A != B, 22: s32(A) < s32(B), 23: s32(A) >= s32(B),
+                     24: A < B, 25: A >= B, 26: True, 27: True}.get(id_)
+    target = jalr_target if id_ == 27 else tgt
+    # Eager MISALIGNED (SPEC §1, #37): a TAKEN branch/jal/jalr whose target
+    # isn't 4-byte aligned halts at ITS OWN pc, updating neither pc nor rd.
+    misaligned = bool(taken_target) and (target & 3) != 0
+
+    if misaligned:
+        nxt = pc
+    elif id_ == 20: nxt = tgt if A == B else pc + 4
     elif id_ == 21: nxt = tgt if A != B else pc + 4
     elif id_ == 22: nxt = tgt if s32(A) < s32(B) else pc + 4
     elif id_ == 23: nxt = tgt if s32(A) >= s32(B) else pc + 4
     elif id_ == 24: nxt = tgt if A < B else pc + 4
     elif id_ == 25: nxt = tgt if A >= B else pc + 4
     elif id_ == 26: nxt = tgt
-    elif id_ == 27: nxt = u32(A + imm) & 0xFFFFFFFE
+    elif id_ == 27: nxt = jalr_target
     else: nxt = pc + 4
 
     new_regs = list(REGS)
-    if rd != 0:
+    if rd != 0 and not misaligned:
         new_regs[rd - 1] = result
 
     is_st = 1 if id_ == 19 else 0
@@ -97,8 +112,10 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
         shift = 8 * (addr & 3)
         st_val = u32((STORE_WORD & u32(~(mk << shift))) | ((B & mk) << shift))
 
-    halted = 1 if 28 <= id_ <= 31 else 0
+    halted = 1 if (28 <= id_ <= 31 or misaligned) else 0
     reason = {28: "ECALL", 29: "EBREAK", 30: "CSR", 31: "ILLEGAL_INSN"}.get(id_, "")
+    if misaligned:
+        reason = "MISALIGNED"
     return u32(nxt), new_regs, is_st, st_addr, st_val, halted, reason
 
 
@@ -115,17 +132,44 @@ def load_vectors(path):
     return rows
 
 
+def misaligned_vectors():
+    """Dedicated MISALIGNED (SPEC §1, eager per #37) test rows -- the decode
+    fixture's branch/jal offsets are all multiples of 4 by construction, so
+    none of them exercise this at all. Mirrors refemu's PR #51 test cases:
+    jal, jalr, a taken branch (all halt on their own pc), and a not-taken
+    branch whose target would have been bad if taken (must NOT halt)."""
+    wa = 2000
+    rows = [
+        # jal x5, target = pc+2 (misaligned)
+        (wa, 26, 5, 0, 0, 0, wa * 4 + 2, 0, 0, "jal to misaligned target"),
+        # jalr x6, x1, 2  -- x1 = REGS[0] = 100; (100+2) has bit1 set
+        (wa + 1, 27, 6, 1, 0, 2, 0, 0, 0, "jalr to misaligned target"),
+        # beq x1, x1, taken (trivially equal), target = pc+2 (misaligned)
+        (wa + 2, 20, 0, 1, 1, 0, (wa + 2) * 4 + 2, 0, 0, "taken beq to misaligned target"),
+        # bne x1, x2, taken (100 != 200), target = pc+2 (misaligned)
+        (wa + 3, 21, 0, 1, 2, 0, (wa + 3) * 4 + 2, 0, 0, "taken bne to misaligned target"),
+        # beq x1, x2, NOT taken (100 != 200) -- target would be misaligned
+        # if taken, but must not fault since the branch isn't taken.
+        (wa + 4, 20, 0, 1, 2, 0, (wa + 4) * 4 + 2, 0, 0, "untaken beq, bad target never checked"),
+    ]
+    return rows
+
+
 def build_query(rows):
     a_expr = ex.operand_a()
     b_expr = ex.operand_b()
     result_expr = ex.alu_result("loaded_word", "addr_load", pc="pc")
-    next_expr = ex.next_pc(pc="pc")
-    newregs_expr = ex.regs_write("rd", result_expr)
+    # Bound once per row via the WITH clause below (`misaligned`) and passed
+    # through to all four -- see execute.py's `misaligned=` parameter
+    # docstring: four independent copies of is_misaligned() per row is what
+    # blew ClickHouse's AST-size limit across ~56 UNION ALL'd test rows.
+    next_expr = ex.next_pc(pc="pc", misaligned="misaligned")
+    newregs_expr = ex.regs_write(ex.rd_or_suppressed(misaligned="misaligned"), result_expr)
     isstore_expr = ex.is_store()
     staddr_expr = ex.store_word_addr()
     stval_expr = ex.store_value("loaded_word_store", "addr_store")
-    halted_expr = ex.halted()
-    haltreason_expr = ex.halt_reason()
+    halted_expr = ex.halted(misaligned="misaligned")
+    haltreason_expr = ex.halt_reason(misaligned="misaligned")
     regs_sql = "[" + ",".join(str(v) for v in REGS) + "]"
 
     parts = []
@@ -160,7 +204,8 @@ FROM
         {regs_sql} AS regs,
         toUInt32({LOAD_WORD}) AS loaded_word, toUInt32({STORE_WORD}) AS loaded_word_store,
         ({a_expr}) AS A, ({b_expr}) AS B,
-        toUInt32(A + imm) AS addr_load, toUInt32(A + imm) AS addr_store
+        toUInt32(A + imm) AS addr_load, toUInt32(A + imm) AS addr_store,
+        ({ex.is_misaligned()}) AS misaligned
     SELECT
         ({next_expr}) AS next_val, ({newregs_expr}) AS regs_val,
         ({isstore_expr}) AS isstore_val, ({staddr_expr}) AS staddr_val,
@@ -198,7 +243,7 @@ def main():
     ap.add_argument("--fixture", default="sqlcpu/fixtures/decode_vectors.tsv")
     args = ap.parse_args()
 
-    rows = load_vectors(args.fixture)
+    rows = load_vectors(args.fixture) + misaligned_vectors()
     query = build_query(rows)
 
     client_cmd = args.client.split() + ["--host", args.host, "--port", str(args.port), "--user", args.user]
@@ -226,7 +271,8 @@ def main():
     if fail:
         print(f"execute.py: {total - fail}/{total} checks passed, {fail} FAILED", file=sys.stderr)
         return 1
-    print(f"execute.py: all {total} checks passed ({len(rows)} RV32I fixture rows + 2 dedicated x0 checks)")
+    print(f"execute.py: all {total} checks passed ({len(rows)} instruction rows "
+          f"(fixture + dedicated MISALIGNED cases) + 2 dedicated x0 checks)")
     return 0
 
 

@@ -97,6 +97,53 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
 
 Anything outside these regions: fatal halt, reason = `BAD_ADDR`.
 
+**Valid access to FRAMEBUFFER/PALETTE is narrower than the table above
+implies, in two ways that are different *kinds* of claim and are pinned
+differently on purpose:**
+
+1. **The ROM shall not read from FRAMEBUFFER or PALETTE.** An
+   implementation MAY treat such a read as a fatal halt, reason =
+   `BAD_ADDR` (reusing the reason from the sentence above, not a new one)
+   — but is not required to. This is an obligation on the ROM, not an
+   assertion that the memory itself is unreadable: FRAMEBUFFER/PALETTE are
+   ordinary, physically readable memory that this ROM simply chooses never
+   to read back (§2's own rationale already says why — display output is
+   read back through the SQL-side render query, never a CPU-side load).
+   `refemu`'s reference `Memory` keeps a faithful, well-defined read path
+   for both regions and remains conformant; `sqlcpu`/`executor` MAY
+   instead fatally halt on such a read, since a conformant ROM never
+   exercises that path, and a violation is still caught loudly — the
+   executor halts while `refemu` returns data, exactly the divergence
+   differential comparison (§7) exists to surface. Established
+   empirically, not asserted: `rom/src/dg_hooks.c` — the only code that
+   ever writes to either region — declares `framebuffer_mmio`/
+   `palette_mmio` as `static volatile uint32_t *const` (internal linkage:
+   no other translation unit can even name them) and uses both
+   exclusively as assignment targets; a repo-wide grep of `rom/src` and
+   `rom/vendor` for the regions' addresses and pointer names finds no
+   other occurrence anywhere, including the vendored DOOM engine and every
+   doomgeneric platform backend, which touch only `DG_ScreenBuffer` (heap)
+   and `colors[]` (RAM) and have no concept that either is MMIO at all. An
+   instrumented `refemu` run to icount 60,000,000 (72 committed frames,
+   well past boot and the first frame into real demo playback) observed
+   zero reads to either region (issue #130/#134).
+2. **Stores must be word-width: a byte or halfword store to either
+   region is a fatal halt, reason = `BAD_ADDR`, for both engines.** Unlike
+   clause 1, this is not about readability and is not optional for either
+   engine — a narrower store is normally a read-modify-write against the
+   word it lands in, and clause 1 means there is no previous value to
+   read: nothing has, or ever will, load from these regions to blend
+   against (whether or not a given engine's own memory model happens to
+   be capable of it). A sub-word store therefore has no correct value to
+   write in either engine; silently dropping it or writing a wrong word
+   are the only alternatives to halting, and neither is honest. This
+   extends an existing pattern rather than inventing one — §3's own
+   header is "MMIO registers (**word access only**)" — so §2 becomes
+   consistent with §3 instead of carrying a narrower rule than it. It also
+   makes a boundary overrun impossible for free: a word-aligned,
+   word-width store at an in-range address cannot spill past a region
+   whose size (64,000 and 768 bytes) is already a multiple of 4.
+
 Within RAM, the **text region** `[text_start, text_end)` is declared by the ROM
 manifest (§4) and is **read-only**: it is the region the executor pre-decodes,
 and a store into it is `SELF_MODIFY` (§1). The linker script places code and

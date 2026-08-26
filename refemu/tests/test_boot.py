@@ -5,13 +5,18 @@ encoder in `tests/asm.py` so the histogram vocabulary can't silently drift
 from what the interpreter actually executes.
 """
 
+from pathlib import Path
+
 import pytest
 
 from refemu.boot import BootReport, boot, classify, format_report
-from refemu.memory import MMIO_BASE, RAM_BASE
+from refemu.cpu import CPU, Halted
+from refemu.memory import MMIO_BASE, RAM_BASE, Memory
 from refemu.mmio import FRAME_COMMIT
 
 from . import asm
+
+RISCV_TESTS_FIXTURES_DIR = Path(__file__).parent / "fixtures" / "riscv_tests"
 
 
 def _image(words: list[int]) -> bytes:
@@ -145,3 +150,56 @@ def test_format_report_budget_exhausted_outcome():
     report = BootReport(outcome="budget_exhausted", icount=100)
     text = format_report(report)
     assert "BUDGET EXHAUSTED" in text
+
+
+def test_classify_agrees_with_cpu_dispatch_over_riscv_tests():
+    """Cross-check `classify()` against `cpu.py`'s real dispatch, not just
+    against `tests/asm.py`'s encoders in isolation (see
+    `test_classify_matches_every_encoder` above). `classify()` is
+    deliberately kept separate from `cpu.py` (see `boot.py`'s module
+    docstring: the oracle shouldn't be perturbed by its own diagnostics),
+    which means nothing stops the two decode tables from drifting apart
+    except this test.
+
+    Runs every one of the 48 riscv-tests fixtures (issue #14) through the
+    *real* interpreter and asserts `classify()` never calls a real,
+    successfully-retired instruction "illegal". If `cpu.py`'s dispatch
+    ever gains, loses, or narrows an opcode/funct3/funct7 arm without a
+    matching update to `classify()`, this fails on real instruction words
+    exercised by the official RISC-V ISA test suite -- not a hypothetical
+    one -- turning "kept in sync by discipline" into "kept in sync by CI",
+    per the team lead's review of #52.
+    """
+    fixtures = sorted(RISCV_TESTS_FIXTURES_DIR.glob("*.bin"))
+    assert fixtures, "no riscv-tests fixtures found -- did tests/fixtures/riscv_tests move?"
+
+    total_checked = 0
+    for fixture in fixtures:
+        cpu = CPU(memory=Memory())
+        cpu.memory.load_image(fixture.read_bytes(), base=RAM_BASE)
+        cpu.pc = RAM_BASE
+
+        for _ in range(200_000):
+            pc_before = cpu.pc
+            try:
+                cpu.step()
+            except Halted:
+                break
+            # Safe to re-read here: step() just proved this exact address
+            # fetches cleanly (same reasoning as boot.boot()).
+            insn = cpu.memory.read(pc_before, 4)
+            mnemonic = classify(insn)
+            assert mnemonic != "illegal", (
+                f"{fixture.stem}: cpu.py executed instruction 0x{insn:08x} at "
+                f"pc=0x{pc_before:08x} without halting, but classify() calls it "
+                f"'illegal' -- boot.classify() and cpu._execute() have drifted apart"
+            )
+            total_checked += 1
+
+    # Sanity check on the check itself: make sure the corpus was actually
+    # exercised, not silently skipped (e.g. an empty fixtures dir would
+    # otherwise pass this test vacuously).
+    assert total_checked > 10_000, (
+        f"only checked {total_checked} instructions across {len(fixtures)} fixtures "
+        f"-- suspiciously low, verify the fixtures actually ran"
+    )

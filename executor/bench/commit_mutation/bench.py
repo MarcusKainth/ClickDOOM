@@ -280,6 +280,17 @@ def main():
         prev = batches[-1]["icount"] if batches else 0
         rec["retired"] = rec["icount"] - prev
         rec["ran_retention"] = run_retention
+        # Write-log occupancy for this batch. `retired < K` with `halted = 0`
+        # means the fold stopped on the write-log high-water mark, not on K
+        # -- and then `arrayFold` still iterated the remaining `range(K)`
+        # elements as no-ops at full price. Recording the length is what
+        # turns "the batch was short" into "the batch was short BECAUSE the
+        # write log filled", which is the difference between a caveat and a
+        # cause.
+        wl = ch.scalar(f"SELECT length(wl_addr), length(console_bytes) FROM {args.db}.batch_commit "
+                       f"WHERE batch_id = {rec['batch_id']}")
+        rec["wl_len"], rec["console_len"] = (int(x) for x in wl.split("\t"))
+        rec["truncated_by_hwm"] = (rec["retired"] < args.k and rec["halted"] == 0)
         print(f"# {args.label} batch {b}: {rec['e2e_wall_s']:.2f}s retired={rec['retired']} "
               f"halted={halted} " +
               " ".join(f"{k}={v['wall_s']:.2f}" for k, v in rec["statements"].items()),
@@ -289,6 +300,27 @@ def main():
     probe_qids = ([r["query_id"] for r in ramt]
                   + [r["query_id"] for runs in captures.values() for r in runs]
                   + [r["query_id"] for r in setup_probe])
+    # --- does the setup cost drift as `ram` accumulates parts? ----------
+    #
+    # The pre-batch `RAMT` reading above was taken at whatever part count
+    # setup left behind. Every batch appends a part to `ram`, and `FINAL`
+    # merges across active parts at read time, so the same probe re-run
+    # after N batches is the direct test of this issue's degradation
+    # question -- and it is a different question from "did the fold get
+    # slower", because a fold that stayed flat while merges kept up says
+    # nothing about what happens when they stop keeping up.
+    ramt_after = []
+    for i in range(3):
+        secs, out, qid = ch.run(ramt_sql)
+        ramt_after.append({"i": i, "wall_s": secs, "rows": int(out.strip()), "query_id": qid})
+    ram_parts_after = int(ch.scalar(
+        f"SELECT count() FROM system.parts WHERE database='{args.db}' AND table='ram' AND active"))
+    ram_rows_after = int(ch.scalar(f"SELECT count() FROM {args.db}.ram"))
+    for r in ramt_after:
+        if r["rows"] != ram_rows_after:
+            raise RuntimeError("post-run RAMT did not materialise the whole table")
+    probe_qids += [r["query_id"] for r in ramt_after]
+
     log = query_log(ch, qids + probe_qids)
     for rec in batches:
         for name, st in rec["statements"].items():
@@ -299,6 +331,8 @@ def main():
         for r in runs:
             r["server"] = log.get(r["query_id"])
     for r in setup_probe:
+        r["server"] = log.get(r["query_id"])
+    for r in ramt_after:
         r["server"] = log.get(r["query_id"])
 
     # Verify retention actually bounded the table -- "the work happened",
@@ -328,6 +362,9 @@ def main():
         "ram_rows": ram_rows,
         "ram_active_parts_at_start": ram_parts,
         "ramt_standalone": ramt,
+        "ramt_after_batches": ramt_after,
+        "ram_active_parts_after": ram_parts_after,
+        "ram_rows_after": ram_rows_after,
         "captures_standalone": captures,
         "setup_probe": setup_probe,
         "batches": batches,

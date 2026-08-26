@@ -142,8 +142,11 @@ def test_div_by_zero_and_x0_discard():
     ]
     actual, expected = run_case(insns)
     assert actual == expected
-    assert actual["regs"][0] == 0
-    assert actual["regs"][2] == 0xFFFFFFFF
+    # regs[0] = x1 (31-element, 1-indexed x1..x31 -- sqlcpu's schema.sql,
+    # PR #42; no slot for x0 at all). x1 must be unaffected by the
+    # discarded x0 write; x2 (regs[1]) is the divu-by-zero result.
+    assert actual["regs"][0] == 7
+    assert actual["regs"][1] == 0xFFFFFFFF
 
 
 def test_store_then_load_shadows_ram():
@@ -161,7 +164,7 @@ def test_store_then_load_shadows_ram():
     ]
     actual, expected = run_case(insns, ram={8: 999}, ram_words=16)  # word 8 = byte offset 32
     assert actual == expected
-    assert actual["regs"][2] == 100  # write-log shadowed the stale RAM value
+    assert actual["regs"][1] == 100  # x2 (regs[1]) -- write-log shadowed the stale RAM value
     assert actual["wl_icount"] == [2]  # per-store icount, not batch icount
 
 
@@ -171,7 +174,7 @@ def test_load_byte_sign_extend():
     ]
     actual, expected = run_case(insns, ram={0: 0xFFFFFF80})  # low byte 0x80
     assert actual == expected
-    assert actual["regs"][1] == 0xFFFFFF80  # sign-extended -128
+    assert actual["regs"][0] == 0xFFFFFF80  # x1 (regs[0]) -- sign-extended -128
 
 
 def test_branches_and_jumps():
@@ -191,14 +194,20 @@ def test_branches_and_jumps():
 
 
 def test_jal_jalr():
+    # jump target (pre-decoded word index) and link value (pc+4 as a byte
+    # address, computed live) are independent -- conflating them into one
+    # decoded column was the bug this PR fixed (see LINK_VALUE in fold.py).
+    # target=99 is deliberately not RAM_BASE-derived and not 4-related, so
+    # a test that accidentally still reads `target` for the link value
+    # would produce 99, not RAM_BASE+4, and fail loudly.
     insns = [
-        I(op_id=26, rd=1, target=99, imm=99),   # jal x1, 99  (link value precomputed = 99)
+        I(op_id=26, rd=1, target=99, imm=0),   # jal x1, 99
         I(op_id=0, rd=9, rs1=0, rs2=0, imm=111),  # skipped
     ]
     actual, expected = run_case(insns, k=1)
     assert actual == expected
-    assert actual["pcidx"] == 99  # jal/jalr targets are pre-decoded absolute word
-    assert actual["regs"][1] == 99  # indices (ADR-0002) -- not masked, unlike fallthrough
+    assert actual["pcidx"] == 99  # jump target, from `target` (ADR-0002) -- not masked, unlike fallthrough
+    assert actual["regs"][0] == RAM_BASE + 4  # x1 (regs[0]) = link value: pc0(0)+1 word -> byte addr
 
 
 def test_halt_ecall_ebreak_csr_illegal():
@@ -211,7 +220,7 @@ def test_halt_ecall_ebreak_csr_illegal():
         assert actual["halted"] == 1 and actual["halt_reason"] == reason
         assert actual["halt_pc"] == 1          # frozen at the faulting insn
         assert actual["pcidx"] == 1            # did not advance past it
-        assert actual["regs"][1] == 1          # prior instruction still retired
+        assert actual["regs"][0] == 1          # x1 (regs[0]) -- prior instruction still retired
 
 
 def test_halt_illegal_carries_raw_word():
@@ -230,7 +239,7 @@ def test_halt_bad_addr():
     assert actual == expected
     assert actual["halted"] == 1 and actual["halt_reason"] == reference.HALT_BAD_ADDR
     assert actual["halt_extra"] == (RAM_BASE - 4) & 0xFFFFFFFF
-    assert actual["regs"][1] == 0  # load did not retire
+    assert actual["regs"][0] == 0  # x1 (regs[0]) -- load did not retire
 
 
 def test_halt_misaligned():
@@ -272,5 +281,5 @@ def test_stopped_step_is_a_no_op():
     insns = [I(op_id=28), I(op_id=0, rd=1, rs1=0, rs2=0, imm=42)]  # ecall, then something after
     actual, expected = run_case(insns, k=2)
     assert actual == expected
-    assert actual["regs"][1] == 0  # never reached
+    assert actual["regs"][0] == 0  # x1 (regs[0]) -- never reached
     assert actual["retired"] == 0

@@ -117,7 +117,8 @@ def run(insns, ram_base, ram_words, text_start_widx, text_end_widx,
             lw = mem_read_word(wa)
             result = None
         else:
-            result = _alu(ins.op_id, a, b, sa, sb, ins.target)
+            link_value = u32(ram_base + (pc + 1) * 4)
+            result = _alu(ins.op_id, a, b, sa, sb, link_value)
 
         nxt = _next_pc(ins, a, b, sa, sb, pc, text_end_widx)
 
@@ -136,12 +137,20 @@ def run(insns, ram_base, ram_words, text_start_widx, text_end_widx,
         if ins.op_id == OP_STORE and len(wl_addr) >= hwm:
             stopped = True
 
-    return dict(pcidx=pc, regs=regs, wl_addr=wl_addr, wl_val=wl_val, wl_icount=wl_icount,
+    # Internally this function keeps a 32-slot regs list (index 0 = x0,
+    # always 0, for read/write convenience -- `regs[ins.rs1]` etc. above).
+    # The output matches sqlcpu's schema.sql (PR #42): 31 elements, x1..x31,
+    # no x0 slot -- so index 0 of the returned list is x1, not x0.
+    return dict(pcidx=pc, regs=regs[1:], wl_addr=wl_addr, wl_val=wl_val, wl_icount=wl_icount,
                 stopped=int(stopped), halted=int(halted), halt_reason=halt_reason,
                 halt_pc=halt_pc, halt_extra=halt_extra, retired=retired)
 
 
-def _alu(op_id, a, b, sa, sb, target):
+def _alu(op_id, a, b, sa, sb, link_value):
+    # `link_value` is the fallback for the "everything else" case (jal/jalr
+    # writing pc+4 to rd) -- NOT the branch/jump target. See the LINK_VALUE
+    # note in fold.py; this mirrors that fix, not the target-reuse bug it
+    # replaced.
     if op_id == 0: return u32(a + b)
     if op_id == 1: return u32(a - b)
     if op_id == 2: return u32(a << (b & 31))
@@ -160,7 +169,7 @@ def _alu(op_id, a, b, sa, sb, target):
     if op_id == 15: return U32 if b == 0 else a // b
     if op_id == 16: return a if sb == 0 else u32(_mod(sa, sb))
     if op_id == 17: return a if b == 0 else a % b
-    return target
+    return link_value
 
 
 def _intdiv(a, b):

@@ -96,15 +96,22 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     DSGv = f"DSG[{IDX}]"
     RAW = f"DRW[{IDX}]"
 
-    A = f"acc.2[DR1[{IDX}] + 1]"
-    B = f"toUInt32(acc.2[DR2[{IDX}] + 1] + {IMM})"
+    # Register file per sqlcpu's schema.sql (PR #42): `regs` is 31 elements,
+    # 1-indexed, x1..x31 -- x0 has NO array slot (unlike the Phase 0 bench's
+    # 32-element array with x0 pinned at position 1, which this PR initially
+    # copied uncritically). Reading x0 must be an explicit 0, not an array
+    # lookup; writing x0 must be discarded, not written to some slot.
+    R1 = f"DR1[{IDX}]"
+    R2 = f"DR2[{IDX}]"
+    A = f"if({R1} = 0, toUInt32(0), acc.2[{R1}])"
+    B = f"toUInt32(if({R2} = 0, toUInt32(0), acc.2[{R2}]) + {IMM})"
     # Raw rs2 (no +imm). B doubles as the ALU/branch second operand (ADR-0002's
     # I-type/R-type collapse relies on +imm there), but a store's *value* is
     # regs[rs2] alone -- imm is the address offset, already spent computing
     # ADDR from A, and must not also land in the stored value. Using B for
     # SVAL here was a latent bug inherited from fold_predecoded.py, caught by
     # this PR's store/load round-trip test.
-    RS2V = f"acc.2[DR2[{IDX}] + 1]"
+    RS2V = f"if({R2} = 0, toUInt32(0), acc.2[{R2}])"
     SA = f"toInt32({A})"
     SB = f"toInt32({B})"
 
@@ -122,6 +129,16 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 
     SVAL = (f"toUInt32(bitOr(bitAnd({LW}, bitXor(4294967295, toUInt32(bitShiftLeft({DMKv}, {SH})))),"
             f" toUInt32(bitShiftLeft(bitAnd({RS2V}, {DMKv}), {SH}))))")
+
+    # jal/jalr's link value (written to rd) is pc+4 as a byte address --
+    # NOT `target` (sqlcpu's `tgt`/this file's TGT, the jump target word
+    # index). The Phase 0 prototype used the same column for both, which
+    # is only harmless in a benchmark that never executes its decode data
+    # (RESULTS.md §6) -- sqlcpu caught this reviewing PR #42's schema and
+    # this PR initially carried the bug forward from fold_predecoded.py.
+    # Computed live from the accumulator's own pc, not decoded, since it's
+    # simple pc-relative arithmetic with nothing to gain from precomputing.
+    LINK_VALUE = f"toUInt32({ram_base} + ({PC} + 1) * 4)"
 
     RESULT = ("multiIf("
         f"{ID}=0, toUInt32({A} + {B}),"
@@ -143,7 +160,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
         f"{ID}=16, if({SB}=0, {A}, toUInt32(modulo({SA}, {SB}))),"
         f"{ID}=17, if({B}=0, {A}, toUInt32(modulo({A}, {B}))),"
         f"{ID}={config.OP_LOAD}, {LOADV},"
-        f"{TGT})")
+        f"{LINK_VALUE})")
 
     NEXT = ("multiIf("
         f"{ID}=20, if({A} = {B},  {TGT}, toUInt32({PC}+1)),"
@@ -207,7 +224,11 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     step_tuple = ("tuple("
         f"if({step_retires}, {NEXT}, {PC}),"
         f"if({step_retires} AND {RD} != 0,"
-        f" arrayConcat(arraySlice(acc.2, 1, {RD}), [toUInt32({RESULT})], arraySlice(acc.2, {RD}+2)),"
+        # 31-element, 1-indexed (regs[1]=x1..regs[31]=x31, sqlcpu's schema.sql):
+        # register RD (guaranteed != 0 here) lives at array position RD
+        # directly, not RD+1 -- the old 32-element/x0-at-slot-1 scheme this
+        # replaced needed the +1.
+        f" arrayConcat(arraySlice(acc.2, 1, {RD} - 1), [toUInt32({RESULT})], arraySlice(acc.2, {RD} + 1)),"
         f" acc.2),"
         f"{new_wl},"
         f"{new_control},"
@@ -235,8 +256,9 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
 
 def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=0, regs0=None):
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
+    # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
-        "arrayResize(emptyArrayUInt32(), 32, toUInt32(0))"
+        "arrayResize(emptyArrayUInt32(), 31, toUInt32(0))"
     init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql)
     return f"""WITH{DECODE_WITH}
 SELECT r.1 AS pcidx, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,

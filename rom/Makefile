@@ -18,11 +18,29 @@ BUILD      := build
 BIN := $(BUILD)/doom-rv32im.bin
 ELF := $(BUILD)/doom-rv32im.elf
 
-# Sources for the current milestone. main_stub.c stands in for doomgeneric's
-# main (issues #7-#9 supply libc and the real DG_* hooks; see the header
-# comment in that file) — it exists so crt0's `call main` has a real symbol
-# and the build keeps producing something real to run.
-SRC := src/crt0.S src/main_stub.c
+# The real DOOM engine (issue #7), vendored pristine in #41. Excludes:
+# other platforms' doomgeneric_*.c ports (this ROM's own hooks are
+# src/dg_hooks_stub.c for now, the real ones land in #8) and their
+# audio backends (i_{allegro,sdl}{music,sound}.c — no sound device exists
+# here); icon.c (X11 window icon, doomgeneric_xlib.c-only); gusconf.c (GUS
+# MIDI config, SDL-sound-only); mus2mid.c (unused without FEATURE_SOUND —
+# upstream's own default Makefile omits it too, for the same reason).
+# Confirmed by actually linking: the resulting undefined-symbol list was
+# exactly newlib's syscall surface (syscalls.c) plus mkdir, nothing from a
+# missing engine file.
+DG_DIR := vendor/doomgeneric/doomgeneric
+DG_EXCLUDE := doomgeneric_allegro.c doomgeneric_emscripten.c \
+              doomgeneric_linuxvt.c doomgeneric_sdl.c doomgeneric_soso.c \
+              doomgeneric_sosox.c doomgeneric_win.c doomgeneric_xlib.c \
+              i_allegromusic.c i_allegrosound.c i_sdlmusic.c i_sdlsound.c \
+              icon.c gusconf.c mus2mid.c
+DOOM_SRCS := $(filter-out $(addprefix $(DG_DIR)/,$(DG_EXCLUDE)),$(wildcard $(DG_DIR)/*.c))
+
+# src/dg_hooks_stub.c is a TEMPORARY no-op stand-in for the real SPEC §3
+# MMIO-backed DG_* hooks (issue #8 replaces it, not extends it — see the
+# header comment in that file). src/main.c and src/syscalls.c are the real
+# thing, not placeholders.
+SRC := src/crt0.S src/syscalls.c src/main.c src/dg_hooks_stub.c $(DOOM_SRCS)
 LD  := toolchain/link.ld
 
 # SPEC §1: RV32IM, no compressed extension, strict alignment (keeps the SQL
@@ -35,17 +53,22 @@ LD  := toolchain/link.ld
 # toolchain/link.ld's .bss output section and crt0's zero loop silently
 # skipped it. Zeroing the threshold means everything lands in the plain
 # .data/.bss/.rodata this linker script actually accounts for.
-# -fno-builtin: freestanding means no libc, so gcc must never substitute a
-# builtin call (memset/memcpy/...) for a recognized loop pattern — there is
-# nothing behind that symbol yet. -ffile-prefix-map normalizes the
-# in-container mount path so debug/diagnostic strings never vary by host
-# checkout path.
+# No -fno-builtin any more: with real libc linked in (below), a builtin
+# memcpy/memset substitution resolves to a real symbol instead of an
+# undefined one, so there's no reason to forbid it. -ffile-prefix-map
+# normalizes the in-container mount path so debug/diagnostic strings never
+# vary by host checkout path.
 CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -mno-relax \
-           -msmall-data-limit=0 -ffreestanding -fno-pic -fno-builtin \
-           -O2 -g0 -fno-ident -ffile-prefix-map=/work=.
-# -nostdlib: no crt/libc/libgcc linked in. There is no OS here (rom/
-# charter); crt0 and libc shims are ours (issues #6, #7).
+           -msmall-data-limit=0 -ffreestanding -fno-pic \
+           -I$(DG_DIR) -O2 -g0 -fno-ident -ffile-prefix-map=/work=.
+# -nostdlib, then -lc -lm -lgcc explicitly: no crt/startfiles pulled in
+# implicitly (crt0 is ours — issue #6), but the DOOM engine's libc calls
+# (malloc, string.h, printf, ...) are resolved against the toolchain's
+# bundled newlib rather than reimplemented by hand. src/syscalls.c (issue
+# #7) is the small, well-known syscall surface newlib calls down into —
+# _sbrk/_read/_write/_open/... — not a from-scratch libc.
 LDFLAGS := -nostdlib -Wl,--build-id=none -T $(LD)
+LDLIBS  := -lc -lm -lgcc
 
 .PHONY: all toolchain-image clean
 
@@ -64,7 +87,7 @@ $(BIN): toolchain-image $(SRC) $(LD)
 	  -v $(CURDIR):/work -w /work \
 	  -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
 	  $(IMAGE):$(IMAGE_TAG) \
-	  sh -c 'riscv-none-elf-gcc $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC) && \
+	  sh -c 'riscv-none-elf-gcc $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC) $(LDLIBS) && \
 	         riscv-none-elf-objcopy -O binary --gap-fill=0x00 $(ELF) $(BIN)'
 
 clean:

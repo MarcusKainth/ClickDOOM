@@ -92,5 +92,16 @@ SECTIONS
     ASSERT(__text_end > __text_start, "text region is empty")
     ASSERT(__stack_top <= ORIGIN(RAM) + LENGTH(RAM), "stack overflows the 24 MiB RAM window")
 
-    /DISCARD/ : { *(.comment) *(.note.*) *(.riscv.attributes) *(.eh_frame) *(.eh_frame_hdr) }
+    /* .init_array/.fini_array: crtbegin.o registers register_fini here
+     * (C++/atexit-style destructor bookkeeping, pulled in by -lgcc even
+     * for a pure-C link) once the real DOOM engine got linked in (#7).
+     * crt0 goes straight from zeroing .bss to `call main` and never walks
+     * this array -- correct for a program that only ever stops via SPEC
+     * §3's EXIT register, not a graceful C-runtime shutdown. Discarding
+     * it here rather than silently leaving it unprocessed in .data is the
+     * honest version of the same decision. */
+    /DISCARD/ : {
+        *(.comment) *(.note.*) *(.riscv.attributes) *(.eh_frame) *(.eh_frame_hdr)
+        *(.init_array*) *(.fini_array*)
+    }
 }

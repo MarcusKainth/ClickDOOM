@@ -1,8 +1,8 @@
 # Commit-path attribution, mutation cost, and the fold's fixed setup
 
-The instrument behind **#182** (does the `batch_commit` retention mutation
-cost enough to be worth fixing?) and **#180** (is the fold's per-batch setup
-a fixed cost that a larger K would amortise?).
+The instrument behind **#180** (is the fold's per-batch setup a fixed cost
+that a larger K would amortise? — **no**, see that issue's verdict) and the
+baseline attribution on **#182**.
 
 Both questions need the same thing and neither could be answered by
 `rom/bench/canonical_throughput`, which reports one wall-clock number per
@@ -27,7 +27,7 @@ afterwards.
 |---|---|
 | `arm.sh` | runs **one arm** in a **fresh container**; prints the idle-core headroom it observed and refuses below 8 idle cores |
 | `setup_db.sh` | schema + ROM + decode + bootstrap (+ optional gameplay snapshot seed) into one isolated database |
-| `bench.py` | the measurement: N chained e2e batches, per-statement `query_id`, `part_log`/`system.mutations` dump, standalone `RAMT` timing; emits JSON |
+| `bench.py` | the measurement: N chained e2e batches, per-statement `query_id`, `part_log`/`system.mutations` dump, standalone `RAMT`/`DEC`/`KEYQ` timings, a direct `select_only(K=0)` reading of the fixed setup cost, write-log occupancy per batch; emits JSON |
 | `ksweep.sh` | #180's fixed-instruction-window K-sweep |
 | `fit.py` | summarises arms and fits `S` from adjacent sweep arms |
 
@@ -63,9 +63,13 @@ for every fold, so a number is always accompanied by the regime it was
 taken in.
 
 **The work is verified, not just the return.** The standalone `RAMT` timing
-wraps the `groupArray` in `length(...)` and asserts the result equals
-`ram`'s row count, so a materialised 6.29M-element array is proven rather
-than assumed. Retention arms read `batch_commit`'s live row count *and* its
+wraps the `groupArray` in `length(...)` and asserts the result equals `ram`'s
+row count, so a materialised 6.29M-element array is proven rather than
+assumed. After the batches it must be checked against `count() FROM ram
+FINAL`, not `count()` — every batch's flush appends a part, so the raw count
+grows with the number of stores while the deduplicated count stays at SPEC
+§2's 6,291,456; checking the raw count fails on a *correct* run. Retention
+arms read `batch_commit`'s live row count *and* its
 count at `apply_mutations_on_fly = 0`, plus `system.mutations`, because at
 `lightweight_deletes_sync = 0` a statement returning is not evidence the
 delete happened.
@@ -87,19 +91,21 @@ box** — check that first, per #182's protocol.
     # #180's sweep
     executor/bench/commit_mutation/ksweep.sh --window 120000
 
-    # #182's candidates
-    executor/bench/commit_mutation/arm.sh --label wide  -- --k 60000 --batches 20 --wide-parts
-    executor/bench/commit_mutation/arm.sh --label async -- --k 60000 --batches 20 --lightweight-deletes-sync 0
-    executor/bench/commit_mutation/arm.sh --label every16 -- --k 60000 --batches 20 --retention-every 16
-    executor/bench/commit_mutation/arm.sh --label none  -- --k 60000 --batches 20 --skip-retention
-
     # read the results
     python3 executor/bench/commit_mutation/fit.py /tmp/sq2-bench/*.json
 
-`--skip-retention` is not a candidate — it is the **upper bound** on what
-any of #182's four changes could possibly recover, and it is the number to
-look at first: if removing the statement outright is worth nothing, making
-it cheaper is worth less than nothing.
+or via `just bench-commit-attribution` / `just bench-ksweep`.
+
+`bench.py` also carries `--wide-parts`, `--lightweight-deletes-sync`,
+`--retention-every` and `--skip-retention`, which vary #182's retention
+candidates end to end. **They are the wrong instrument for that question**
+and are kept only for completeness: the retention DELETE measures 10-25 ms
+against a ~26,700 ms batch, and batch-to-batch fold variance is ~700 ms, so
+an end-to-end arm cannot resolve the effect at all — reporting a difference
+from one would be reading noise. #187 settled those candidates properly, by
+reading the `MutatePart` event's `read_bytes` out of `system.part_log`
+instead of timing anything. `--skip-retention` is the useful one of the
+four: it is the **upper bound** on what any retention change could recover.
 
 Add `--window gameplay --snapshot <file>` to `arm.sh` to measure the
 store-heavy gameplay window instead of boot; the snapshot is the one
@@ -107,7 +113,7 @@ store-heavy gameplay window instead of boot; the snapshot is the one
 
 ## Results
 
-Recorded on **#182** and **#180**, not here — a results file in-tree drifts
+Recorded on **#180** and **#182**, not here — a results file in-tree drifts
 from the issue that owns the decision. Provenance for every number
 (git SHA, ROM sha256, ClickHouse version, K/HWM, headroom, JIT regime) is in
 each arm's JSON.

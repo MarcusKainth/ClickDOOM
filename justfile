@@ -82,6 +82,25 @@ bench-canonical-throughput: up
         --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
+# #180/#182: per-statement attribution of the e2e batch. Breaks the batch
+# apart -- own query_id per statement, standalone RAMT/DEC/KEYQ timings, a
+# direct select_only(K=0) reading of the fixed per-batch setup cost, and a
+# part_log/mutations dump. Creates and destroys its OWN container per arm
+# (the compiled-expression cache is server-global, #166), so it does NOT
+# depend on `up` -- but nothing else should be running on the box.
+bench-commit-attribution LABEL="baseline" K="60000" BATCHES="4":
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    ./executor/bench/commit_mutation/arm.sh --label {{LABEL}} -- --k {{K}} --batches {{BATCHES}}
+
+# #180's fixed-instruction-window K-sweep: every arm executes the same
+# instruction window, cut into a different number of batches, so the arms
+# differ only by how many per-batch setups they pay. Same container-per-arm
+# rule as above.
+bench-ksweep WINDOW="120000":
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    ./executor/bench/commit_mutation/ksweep.sh --window {{WINDOW}}
+    python3 executor/bench/commit_mutation/fit.py /tmp/sq2-bench/K_sweep_*.json
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

@@ -156,6 +156,13 @@ def ram_hash(db, ram_words):
     return scalar(f"SELECT {checkpoint.hex64(checkpoint.word_array_hash(words_expr))}")
 
 
+def region_value(db, table, word_addr):
+    out = json.loads(ch(
+        f"SELECT value FROM {db}.{table} FINAL WHERE word_addr = {word_addr} FORMAT JSONEachRow"
+    ).strip())
+    return int(out["value"])
+
+
 def region_word_hash(db, table, size_words):
     """Same oracle as ram_hash (#176), applied to `framebuffer`/`palette`'s
     OWN word_addr domain -- region-relative, starting at 0 (fbpal_flush_sql's
@@ -417,6 +424,22 @@ def test_fbpal_crash_recovery_idempotent_flush():
         return hashes()
 
     clean = run_clean()
+
+    # #196 review (refemu-2, fail-before-fix on the flush_all() fix itself):
+    # the hash-equality check below passes VACUOUSLY if fbpal_flush_sql()
+    # never ran at all -- an empty framebuffer/palette in both run_clean()
+    # and run_with_simulated_crash() hashes equal too. This is exactly
+    # #190's own failure shape (a check that tests less than its name
+    # claims), recurring inside the regression test written to guard
+    # against it. Pin down that run_clean() actually populated real,
+    # distinguishable data -- not just that two paths agree with each other
+    # -- same shape as test_batch_populates_fbpal_write_log_lanes's exact-
+    # value assertions, not a bare equality.
+    assert region_value(DB, "framebuffer", 0) == 0x11111111, "framebuffer must actually be populated, not silently empty"
+    assert region_value(DB, "framebuffer", 1) == 0x22222222
+    assert region_value(DB, "palette", 0) == 0x33333333, "palette must actually be populated, not silently empty"
+    assert region_value(DB, "palette", 1) == 0x44444444
+
     recovered = run_with_simulated_crash()
     assert clean == recovered, (
         "a skipped-then-redone fbpal flush must converge to identical "

@@ -1,12 +1,19 @@
-"""MMIO register semantics (SPEC §3). Replaces `memory.NullMmio`'s plain
-byte storage with the five registers' real behavior.
+"""MMIO register semantics (SPEC §3): the five registers' real behavior,
+replacing `memory.NullMmio`'s plain byte storage.
 
 Word access only (SPEC §3's table header). DOOM's platform layer only ever
-declares these as `volatile uint32_t *`, so a non-word access to one of the
-five offsets below should never happen from compiled code; if it does, it
-falls through to plain byte storage rather than triggering a side effect
-partially -- SPEC §1 does not list a halt reason for it, so this file does
-not invent one.
+declares these as `volatile uint32_t *`, so a non-word access, or an access
+to an offset that isn't one of the five registers below, should never
+happen from compiled code. If it does: reads as 0, writes are ignored -- no
+side effect, no fatal halt (SPEC §3, pinned in issue #87/#90 to match
+`executor`, which cannot afford a byte-addressable scratch region here --
+`multiIf` has no short-circuit evaluation, so serving that would cost node
+budget on every retired instruction, not just the ones that touch MMIO).
+An earlier version of this file backed the whole window with plain byte
+storage instead, matching `memory.NullMmio`'s placeholder behavior; that
+was never a deliberate contract choice, just what a `Mmio` class looks
+like before anyone decided what "not one of the five registers" should
+mean, and it silently diverged from `executor`/`sqlcpu` -- see #87.
 
 Elastic time (SPEC §3.1): `TICKS_MS` is `instructions_retired / IPMS`,
 never wall clock. This module must never read any host clock or source of
@@ -19,8 +26,6 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-
-from .memory import MMIO_SIZE
 
 DEFAULT_IPMS = 10_000  # instructions per emulated millisecond (SPEC §3.1)
 
@@ -56,7 +61,6 @@ class Mmio:
     def __init__(self, ipms: int = DEFAULT_IPMS, icount_fn: Callable[[], int] | None = None):
         self.ipms = ipms
         self.icount_fn = icount_fn
-        self._backing = bytearray(MMIO_SIZE)  # fallback for width != 4
         self.key_queue: deque[tuple[int, int]] = deque()  # (pressed, doomkey), FIFO
         self.console_out = bytearray()
         self.frame_commits: list[tuple[int, int]] = []  # (frame_no, committed_icount)
@@ -76,7 +80,8 @@ class Mmio:
                 pressed, doomkey = self.key_queue.popleft()
                 return ((pressed << 8) | doomkey) & 0xFFFF_FFFF
             return 0
-        return int.from_bytes(self._backing[offset : offset + width], "little")
+        # SPEC §3 (issue #87/#90): non-register or non-word access -- reads 0.
+        return 0
 
     def write(self, offset: int, width: int, value: int) -> None:
         if width == 4 and offset == EXIT:
@@ -89,4 +94,5 @@ class Mmio:
                 raise RuntimeError("Mmio.icount_fn not wired up (use cpu.new_cpu)")
             self.frame_commits.append((value, self.icount_fn()))
             return
-        self._backing[offset : offset + width] = value.to_bytes(width, "little")
+        # SPEC §3 (issue #87/#90): non-register or non-word access -- ignored, no side effect.
+        return

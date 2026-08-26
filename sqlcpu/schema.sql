@@ -331,10 +331,14 @@ ORDER BY seq;
 --        very duplication this design removes. Measured 1.212x on the
 --        isolated comparison-collapse alone, JIT-warm (#128's PR has the
 --        harness and repro); real fold.py's win should be larger, since
---        would_jump's result is consumed via jump_misaligned at 5+
---        downstream reference sites (HALT_CODE alone is referenced 5
---        times), each of which a decode-time column pays for once, not
---        once per reference.
+--        would_jump's result is consumed via jump_misaligned at 19+
+--        downstream reference sites (HALT_CODE itself is referenced 5
+--        times directly, and step_retires -- one of those 5 -- is itself
+--        referenced 14 more times across step_tuple's per-field guards,
+--        each re-expanding HALT_CODE's text again; measured by
+--        executor-2 instrumenting build_step() directly, not counted a
+--        second time from source), each of which a decode-time column
+--        pays for once, not once per reference.
 --   tgt_mis  1 if `tgt` (the SAME column above, never re-derived or
 --        word-shifted -- word-shifting silently drops bit 1, exactly the
 --        bug this project already fixed once for `tgt` itself, see that

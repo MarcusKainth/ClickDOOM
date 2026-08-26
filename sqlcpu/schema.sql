@@ -115,9 +115,10 @@ ORDER BY seq;
 --
 -- Column semantics:
 --   id   dense collapsed opcode (dispatch key for the execute multiIf, see
---        below). PROPOSED numbering, carried forward from the Phase 0 bench
---        (executor/bench/phase0/fold_predecoded.py) — confirm with executor
---        before either side depends on the exact values.
+--        below). Agreed with executor (PR #48) — ids 0..27 are the Phase 0
+--        bench's numbering; 28..31 are new, added for SPEC §1's fatal-halt
+--        arms (ecall/ebreak/CSR/illegal), which the bench never needed
+--        since its decode table never halted anything.
 --   rd   destination register number, 0..31 (0 = no write; RD!=0 is checked
 --        at execute time regardless, since a real encoded rd of x0, e.g.
 --        `addi x0,x0,0` as nop, must also discard its write)
@@ -129,12 +130,17 @@ ORDER BY seq;
 --        (lui, auipc — see below) this holds the fully-precomputed constant
 --        each of those instructions writes to rd, computed at decode time
 --        from word_addr since pc is static per decoded row
---   tgt  absolute target word index for branches and jal — precomputed at
+--   tgt  absolute target BYTE ADDRESS for branches and jal — precomputed at
 --        decode time since both are pc-relative and pc is static per row.
---        NOT used for jalr (register-relative, computed live) and NOT a
---        link value: the link value jal/jalr write to rd is pc+4, which the
---        execute expression computes directly from the accumulator's live
---        pc (word_addr*4 + 4) rather than storing it here. (The Phase 0
+--        Deliberately NOT pre-shifted to a word index: an early version of
+--        this column stored `tgt >> 2`, which silently discards a set bit 1
+--        (a target that's 2-byte aligned but not 4-byte aligned — the
+--        encodings only force bit 0 to 0, not bit 1) instead of leaving it
+--        detectable as a SPEC §1 MISALIGNED condition (agreed with refemu,
+--        issue #37). NOT used for jalr (register-relative, computed live)
+--        and NOT a link value: the link value jal/jalr write to rd is
+--        pc + 4, which the execute expression computes directly from the
+--        accumulator's live pc rather than storing it here. (The Phase 0
 --        bench's placeholder `tgt` column conflated "jump target" and "link
 --        value" into one field for the same id — harmless there since the
 --        bench's decode table is synthetic and never executed, see
@@ -145,6 +151,10 @@ ORDER BY seq;
 --        only for id = 18 (load) and id = 19 (store)
 --   sg   sign-extend flag for loads (1 = sign-extend, 0 = zero-extend);
 --        meaningful only for id = 18 (load) — stores never sign-extend
+--   raw  the undecoded instruction word, kept only so an id = 31
+--        (ILLEGAL_INSN) halt record can report the actual bad instruction
+--        (SPEC §1) without re-reading `ram` at halt time. Added at
+--        executor's request (PR #48); unused for every other id.
 --
 -- Two collapses fold most of the opcode space onto fewer arms (ADR-0002):
 --   * I-type and R-type share one arm each: the decoder sets rs2 = 0 and
@@ -155,15 +165,22 @@ ORDER BY seq;
 --     and the constant each writes to rd precomputed into `imm` (auipc's
 --     constant is pc-relative, computable at decode time from word_addr).
 --
--- id assignment (proposed, pending executor sign-off):
+-- id assignment (agreed with executor, PR #48):
 --   0 add   1 sub   2 sll   3 slt   4 sltu  5 xor   6 srl   7 sra
 --   8 or    9 and   10 mul  11 mulh 12 mulhsu 13 mulhu
 --   14 div  15 divu 16 rem  17 remu
 --   18 load 19 store
 --   20 beq  21 bne  22 blt  23 bge  24 bltu 25 bgeu
 --   26 jal  27 jalr
+--   28 ecall  29 ebreak  30 csr  31 illegal/unimplemented
 -- lui/auipc carry no id of their own — they decode as id = 0 (add), per the
--- collapse above.
+-- collapse above. FENCE/FENCE.I likewise carry no id of their own — single
+-- in-order hart, no cache, so they decode as id = 0 too (rd forced to 0
+-- makes it a true no-op), agreed with refemu (#37) rather than treated as
+-- illegal.
+--
+-- Halt-reason strings for 28..31, agreed with refemu (#37): ECALL, EBREAK,
+-- CSR, ILLEGAL_INSN — produced by execute (#19), not stored here.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS clickdoom.decoded
 (
@@ -176,7 +193,8 @@ CREATE TABLE IF NOT EXISTS clickdoom.decoded
     imm          UInt32,
     tgt          UInt32,
     mk           UInt32,
-    sg           UInt8
+    sg           UInt8,
+    raw          UInt32
 )
 ENGINE = MergeTree
 ORDER BY word_addr;

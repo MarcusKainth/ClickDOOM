@@ -110,7 +110,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     IDX = f"(least(bitShiftRight(toUInt32(toUInt64({PC}) - {ram_base}), 2), {decn - 1}) + 1)"
 
     # DEC[i] is a tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw) -- one
-    # combined groupArray per table, not one per column. See DECODE_WITH's
+    # combined groupArray per table, not one per column. See decode_with()'s
     # comment below for why (sqlcpu, PR #67: optimize_read_in_order can
     # silently misalign a per-column groupArray against word_addr).
     ID = f"DEC[{IDX}].1"
@@ -145,7 +145,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     SH = f"(8 * bitAnd({ADDR}, 3))"
 
     # Write-log first (reverse order, last writer wins), then RAM.
-    # RAMT[i].1 -- see DECODE_WITH's comment: RAM is captured as a
+    # RAMT[i].1 -- see decode_with()'s comment: RAM is captured as a
     # one-column tuple, same defensive pattern as decoded's columns.
     LW = (f"if(arrayLastIndex(z -> z = {WA}, acc.3.1) > 0,"
           f" acc.3.2[arrayLastIndex(z -> z = {WA}, acc.3.1)], RAMT[{WA} + 1].1)")
@@ -338,12 +338,23 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 # (verified: no correctness or throughput difference either way) and
 # removes a setting-dependent landmine, so it's applied regardless of
 # whether it's currently biting this table's specific size/shape.
-DECODE_WITH = f"""
+def decode_with(db=DB):
+    """`db` is overridable (default: DB, the production database) so a
+    benchmark can point this at its own isolated database -- see #26/the
+    batch-overhead investigation on PR #78's thread: a throughput benchmark
+    that mutates the real `clickdoom_executor` tables collides silently with
+    anything else touching them concurrently (sqlcpu's riscv-tests harness,
+    another benchmark run), corrupting the measurement with no error on
+    either side. The SQL text this produces is otherwise byte-identical
+    regardless of `db` -- only the qualified table names change, never the
+    schema, engine, or query shape, so this costs nothing to the numbers a
+    benchmark against the real database would produce."""
+    return f"""
   (SELECT groupArray(tuple(value))
-     FROM (SELECT value, word_addr FROM {DB}.ram FINAL ORDER BY word_addr)) AS RAMT,
+     FROM (SELECT value, word_addr FROM {db}.ram FINAL ORDER BY word_addr)) AS RAMT,
   (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw))
      FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr
-           FROM {DB}.decoded ORDER BY word_addr)) AS DEC"""
+           FROM {db}.decoded ORDER BY word_addr)) AS DEC"""
 
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"
@@ -351,7 +362,7 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
             " toUInt32(0))")
 
 
-def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None):
+def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None, db=DB):
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
     # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
@@ -360,7 +371,7 @@ def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=Non
     # pc is a byte address now, not a word index relative to the text window.
     pc0 = config.RAM_BASE if pc0 is None else pc0
     init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql)
-    return f"""WITH{DECODE_WITH}
+    return f"""WITH{decode_with(db)}
 SELECT r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason, r.4.4 AS halt_pc,
        r.4.5 AS halt_extra, r.5 AS retired
@@ -368,7 +379,7 @@ FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1"""
 
 
-def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="batch_out"):
+def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="batch_out", db=DB):
     """One full batch: reload prior state, fold up to K instructions, stage
     the result (including the halt record and per-store icounts) into
     `out_table`. Flushing wl_* into `ram` and cpu_state into the SPEC §5
@@ -376,10 +387,10 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="ba
     owns the atomic-commit shape (batch_commit, pending ratification)."""
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
     init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')")
-    return f"""INSERT INTO {DB}.{out_table}
-WITH{DECODE_WITH},
+    return f"""INSERT INTO {db}.{out_table}
+WITH{decode_with(db)},
   (SELECT tuple(batch_id, pc, regs, icount)
-     FROM {DB}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
+     FROM {db}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
        toUInt64(assumeNotNull(PREV.4)) AS icount_before,
        (arrayFold((acc, i) -> {step}, range({K}), {init}) AS r).1 AS pc,
@@ -396,9 +407,12 @@ if __name__ == "__main__":
     p.add_argument("--text-words", type=int, default=config.TEXT_WORDS_DEFAULT)
     p.add_argument("--ram-words", type=int, default=config.RAM_WORDS_DEFAULT)
     p.add_argument("--e2e", action="store_true")
+    p.add_argument("--db", default=DB,
+                   help="database to generate SQL against (default: %(default)s). "
+                        "Override for a benchmark run isolated onto its own database.")
     args = p.parse_args()
 
     if args.e2e:
-        print(batch(args.K, 0, args.text_words, args.text_words, args.ram_words, args.hwm))
+        print(batch(args.K, 0, args.text_words, args.text_words, args.ram_words, args.hwm, db=args.db))
     else:
-        print(select_only(args.K, 0, args.text_words, args.text_words, args.ram_words, args.hwm))
+        print(select_only(args.K, 0, args.text_words, args.text_words, args.ram_words, args.hwm, db=args.db))

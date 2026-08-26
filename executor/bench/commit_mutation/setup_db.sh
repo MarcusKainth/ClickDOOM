@@ -25,7 +25,10 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
-[ -n "$CONTAINER" ] && [ -n "$DB" ] || { echo "::error::--container and --db are required" >&2; exit 1; }
+if [ -z "$CONTAINER" ] || [ -z "$DB" ]; then
+  echo "::error::--container and --db are required" >&2
+  exit 1
+fi
 
 CLIENT="docker exec -i $CONTAINER clickhouse-client"
 ch() { local db="$1"; shift; $CLIENT --host localhost --port 9000 --user default \
@@ -51,7 +54,10 @@ python3 executor/bootstrap.py --host localhost --port 9000 --user default \
     --password "$PASSWORD" --database "$DB" --client "$CLIENT" >&2
 
 if [ "$WINDOW" = "gameplay" ]; then
-  [ -n "$SNAPSHOT" ] && [ -f "$SNAPSHOT" ] || { echo "::error::--snapshot FILE required for --window gameplay" >&2; exit 1; }
+  if [ -z "$SNAPSHOT" ] || [ ! -f "$SNAPSHOT" ]; then
+    echo "::error::--snapshot FILE required for --window gameplay" >&2
+    exit 1
+  fi
   ch "$DB" --query "TRUNCATE TABLE ram"
   python3 rom/bench/canonical_throughput/seed_snapshot.py --snapshot "$SNAPSHOT" \
       --host localhost --port 9000 --user default --password "$PASSWORD" \

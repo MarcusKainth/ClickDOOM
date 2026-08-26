@@ -34,7 +34,10 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
-[ -n "$LABEL" ] || { echo "::error::--label is required" >&2; exit 1; }
+if [ -z "$LABEL" ]; then
+  echo "::error::--label is required" >&2
+  exit 1
+fi
 mkdir -p "$OUTDIR"
 
 # --- idle-core headroom, recorded with the number it qualifies -----------
@@ -60,7 +63,9 @@ docker exec -i "$CONTAINER" clickhouse-client --password "$PASSWORD" --query "SE
 
 DB="bench_${WINDOW}"
 SETUP=(--container "$CONTAINER" --db "$DB" --window "$WINDOW")
-[ -n "$SNAPSHOT" ] && SETUP+=(--snapshot "$SNAPSHOT")
+if [ -n "$SNAPSHOT" ]; then
+  SETUP+=(--snapshot "$SNAPSHOT")
+fi
 ./executor/bench/commit_mutation/setup_db.sh "${SETUP[@]}"
 
 python3 executor/bench/commit_mutation/bench.py --container "$CONTAINER" --db "$DB" \

@@ -160,19 +160,27 @@ def _main() -> int:  # pragma: no cover -- thin argument-parsing shell
     import argparse
     import sys
 
-    from .memory import Memory
+    from .cpu import new_cpu
+    from .mmio import DEFAULT_IPMS
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", help="flat binary, loaded verbatim at RAM_BASE (SPEC §4)")
     parser.add_argument("--max-instructions", type=int, default=10_000_000)
     parser.add_argument("--text-start", type=lambda s: int(s, 0), default=None)
     parser.add_argument("--text-end", type=lambda s: int(s, 0), default=None)
+    parser.add_argument("--ipms", type=int, default=DEFAULT_IPMS, help="SPEC §3.1 elastic-time constant")
     args = parser.parse_args()
 
-    memory = Memory(text_start=args.text_start, text_end=args.text_end)
+    # new_cpu() wires up real MMIO (SPEC §3) -- TICKS_MS, KEYQ, EXIT,
+    # PUTCHAR, FRAME_COMMIT. A bare `CPU(memory=Memory())` defaults to
+    # NullMmio (plain byte storage, no register semantics), which is right
+    # for riscv-tests fixtures but wrong here: this CLI is the interface a
+    # real differential run against sqlcpu/executor drives (see this
+    # function's docstring), and without real MMIO the ROM's own EXIT halt
+    # never fires (issue #94).
+    cpu = new_cpu(ipms=args.ipms, text_start=args.text_start, text_end=args.text_end)
     with open(args.image, "rb") as f:
-        memory.load_image(f.read())
-    cpu = CPU(memory=memory)
+        cpu.memory.load_image(f.read())
 
     try:
         for line in iter_trace(cpu, args.max_instructions):

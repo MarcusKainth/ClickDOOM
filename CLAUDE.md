@@ -70,6 +70,15 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   to change this entry — the advice above is unconfirmed, not
   disproven. If you are re-testing retrigger behaviour, check
   githubstatus.com first.
+  **`gh pr checks` renders a `cancelled` conclusion as `fail`** — verified
+  directly against the API (`gh api repos/.../actions/runs/<id>/jobs`) on
+  a run outage-wedged during this same window: raw `conclusion=cancelled`
+  on all six real jobs, `gh pr checks` printed `fail` for every one. A
+  wedged/cancelled run is indistinguishable from six genuine failures at
+  the CLI unless you check the raw conclusion. The mirror image of
+  Non-negotiable #5 below: a red check that never really ran isn't
+  evidence of a defect either, same as a green one that never ran isn't
+  evidence of success.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow

@@ -72,7 +72,14 @@ ch --query "INSERT INTO $BENCH_DB.state
 python3 ../../fold.py "$K" --hwm "$HWM" --e2e --db "$BENCH_DB" > /tmp/clickdoom_batch_overhead.sql
 python3 ../../fold.py "$K" --hwm "$HWM" --db "$BENCH_DB" > /tmp/clickdoom_select_only.sql
 
-RUN_START=$(ch --query "SELECT now('UTC')")
+# now64(6), not the second-resolution variant: whole-second granularity
+# lets this script's OWN setup DDL
+# fall inside the window when setup finishes in the same second RUN_START is
+# taken — a false-positive abort that fires only on fast runs (small K), which
+# is exactly when someone is iterating. Found by hand-auditing a "3 DDL
+# statements" abort whose three hits were this script's own schema.sql and
+# setup.sql, timestamped in the same second as RUN_START.
+RUN_START=$(ch --query "SELECT toString(now64(6, 'UTC'))")
 
 BATCH_TOTAL=0
 RAM_FLUSH_TOTAL=0
@@ -126,14 +133,15 @@ for _ in $(seq 1 "$BATCHES"); do
   SELECT_ONLY_TOTAL=$(python3 -c "print($SELECT_ONLY_TOTAL + ($E - $S))")
 done
 
-RUN_END=$(ch --query "SELECT now('UTC')")
+RUN_END=$(ch --query "SELECT toString(now64(6, 'UTC'))")
 
 # The pre-flight guard: query_log is the diagnostic that root-caused the
 # first corrupted run (system.query_log showed 101 TRUNCATE/CREATE/DROP
 # cycles against the shared database during this loop's window) -- made
 # into a guard here rather than left as a post-mortem tool, per the team
 # lead's ask to generalize this into executor/bench.sh once #26 lands.
-# Excludes this script's own setup (DROP/CREATE happened before RUN_START)
+# Excludes this script's own setup (DROP/CREATE happened before RUN_START --
+# compared at microsecond resolution, see RUN_START's note)
 # and its own loop body (INSERT only, no DDL) -- any DDL found here is
 # necessarily something else touching this supposedly-private database.
 # Matches on the DDL *statement forms* (`TRUNCATE TABLE`, not bare
@@ -148,8 +156,8 @@ RUN_END=$(ch --query "SELECT now('UTC')")
 INTERFERENCE=$(ch --query "
   SELECT count() FROM system.query_log
   WHERE type = 'QueryStart'
-    AND query_start_time >= toDateTime('$RUN_START', 'UTC')
-    AND query_start_time <= toDateTime('$RUN_END', 'UTC')
+    AND query_start_time_microseconds > toDateTime64('$RUN_START', 6, 'UTC')
+    AND query_start_time_microseconds <= toDateTime64('$RUN_END', 6, 'UTC')
     AND query ILIKE '%$BENCH_DB%'
     AND (query ILIKE '%CREATE TABLE%' OR query ILIKE '%DROP TABLE%'
          OR query ILIKE '%TRUNCATE TABLE%' OR query ILIKE '%ALTER TABLE%')")

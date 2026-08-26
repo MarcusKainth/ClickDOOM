@@ -207,6 +207,46 @@ def main():
     for i in range(3):
         secs, out, qid = ch.run(ramt_sql)
         ramt.append({"i": i, "wall_s": secs, "rows": int(out.strip()), "query_id": qid})
+
+    # --- the other two captures, timed the same way ----------------------
+    dec_sql = (f"SELECT length((SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw)) "
+               f"FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr "
+               f"FROM {args.db}.decoded ORDER BY word_addr))) AS n SETTINGS max_threads = 1")
+    keyq_sql = (f"SELECT length((SELECT groupArray(tuple(key_event)) FROM "
+                f"(SELECT key_event, event_seq FROM {args.db}.input_queue ORDER BY event_seq))) AS n "
+                f"SETTINGS max_threads = 1")
+    captures = {}
+    for name, sql in (("DEC", dec_sql), ("KEYQ", keyq_sql)):
+        runs = []
+        for i in range(3):
+            secs, out, qid = ch.run(sql)
+            runs.append({"i": i, "wall_s": secs, "rows": int(out.strip()), "query_id": qid})
+        captures[name] = runs
+
+    # --- S, measured directly rather than extrapolated -------------------
+    #
+    # `select_only(K=0)` folds over `range(0)`: ClickHouse still parses and
+    # analyses the identical ~58 KB / ~90k-node query, still evaluates all
+    # three `WITH` captures, and then runs the step lambda ZERO times. So
+    # its duration IS the per-batch fixed cost, with no extrapolation and no
+    # fit -- the intercept read off directly. `select_only`, not `batch()`,
+    # deliberately: a K=0 `batch()` would commit a real row and shift the
+    # chain the timed batches below run from.
+    #
+    # Verified rather than assumed to be doing the setup: the returned
+    # `retired` must be 0 and `pc` must equal the seed pc, which is what a
+    # fold over an empty range is required to produce.
+    setup_probe = []
+    for k_probe in (0, 0, 0, 1, 1, 1):
+        sql = fold.select_only(k_probe, text_start_widx, text_end_widx, decn, RAM_WORDS, args.hwm,
+                               db=args.db)
+        secs, out, qid = ch.run(sql, fmt="TSVWithNames")
+        lines = out.splitlines()
+        row = dict(zip(lines[0].split("\t"), lines[-1].split("\t")))
+        if k_probe == 0 and int(row["retired"]) != 0:
+            raise RuntimeError(f"select_only(K=0) retired {row['retired']}, expected 0")
+        setup_probe.append({"k": k_probe, "wall_s": secs, "retired": int(row["retired"]),
+                            "pc": row["pc"], "query_id": qid})
     ram_rows = int(ch.scalar(f"SELECT count() FROM {args.db}.ram"))
     ram_parts = int(ch.scalar(
         f"SELECT count() FROM system.parts WHERE database='{args.db}' AND table='ram' AND active"))
@@ -246,11 +286,19 @@ def main():
               file=sys.stderr)
         batches.append(rec)
 
-    log = query_log(ch, qids + [r["query_id"] for r in ramt])
+    probe_qids = ([r["query_id"] for r in ramt]
+                  + [r["query_id"] for runs in captures.values() for r in runs]
+                  + [r["query_id"] for r in setup_probe])
+    log = query_log(ch, qids + probe_qids)
     for rec in batches:
         for name, st in rec["statements"].items():
             st["server"] = log.get(st["query_id"])
     for r in ramt:
+        r["server"] = log.get(r["query_id"])
+    for runs in captures.values():
+        for r in runs:
+            r["server"] = log.get(r["query_id"])
+    for r in setup_probe:
         r["server"] = log.get(r["query_id"])
 
     # Verify retention actually bounded the table -- "the work happened",
@@ -280,6 +328,8 @@ def main():
         "ram_rows": ram_rows,
         "ram_active_parts_at_start": ram_parts,
         "ramt_standalone": ramt,
+        "captures_standalone": captures,
+        "setup_probe": setup_probe,
         "batches": batches,
         "batch_commit_live_rows": live_rows,
         "batch_commit_rows_ignoring_mutations": all_rows,

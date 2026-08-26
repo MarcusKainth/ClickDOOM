@@ -16,9 +16,9 @@ the 12-batch e2e run) -- not inferred from wall-clock alone. **1,159 is
 159 instr/sec above the human owner's standing 1,000 instr/sec e2e
 escalation floor** (team lead, no fallback reaching it triggers a report) --
 a real margin, but a thin one, given #24 and #25 both still add cost to the
-same paths. At 1,159 instr/sec, using refemu's measured ~1.35M
-instructions/tic: a 1,400-tic `demo3` is ~19 days, 2,100 tics ~28 days,
-3,000 tics ~41 days.
+same paths. `demo3` is 2,134 tics (read from the WAD directly, not
+estimated) at refemu's measured ~1.36M instructions/tic -- 2.91 billion
+instructions. At 1,159 instr/sec that run is **~29 days**.
 
 ## Context
 
@@ -268,10 +268,10 @@ understood, and before the correctness requirements were priced in, is the
 thing that should move, not the correctness.
 
 **Wall-clock consequence, stated plainly rather than left for discovery
-during the timelapse run:** at 1,159 instr/sec and refemu's measured
-~1.35M instructions/tic, a 1,400-tic `-timedemo demo3` run is ~19 days,
-scaling to ~41 days at 3,000 tics -- see the table at the top of this
-document. This is not proposed as the final number: §Consequences below
+during the timelapse run:** `-timedemo demo3` is 2,134 tics (read from the
+WAD directly) at refemu's measured ~1.36M instructions/tic -- 2.91 billion
+instructions. At 1,159 instr/sec that run is **~29 days** -- see the top of
+this document. This is not proposed as the final number: §Consequences below
 names the concrete, understood optimization (consolidating
 `RESULT`/`NEXT`/`HALT_CODE` into one dispatch) that should be attempted
 before this becomes the number DOOM actually runs at, and the batch-commit

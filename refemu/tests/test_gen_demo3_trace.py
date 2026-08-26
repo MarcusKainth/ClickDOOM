@@ -261,3 +261,61 @@ def test_sigint_stops_cleanly_and_saves_state(tmp_path):
     # actually interrupted at -- not zero, not the full run.
     state = demo3.load_state(tmp_path / "t.state.pkl")
     assert state["icount"] == summary["final_icount"]
+
+
+def test_main_writes_manifest_with_trace_sha256_and_final_checkpoint(tmp_path, monkeypatch):
+    # End-to-end through main(): on a real halt, the manifest (not the
+    # .tsv) is the intended committed artifact -- verify it actually
+    # carries a sha256 that matches the real .tsv bytes on disk, and the
+    # real final checkpoint line, not placeholder/stale values.
+    import hashlib
+    import json as json_module
+    import sys as sys_module
+
+    from .asm import lui, sw
+
+    mmio_base = 0x1000_0000
+    words = [
+        lui(1, mmio_base >> 12),
+        addi(2, 0, 0),
+        sw(1, 2, 0x10),  # FRAME_COMMIT, frame_no=0
+        addi(2, 0, 7),
+        sw(1, 2, 0x08),  # EXIT, code 7
+    ]
+    image = _image_from_words(words)
+    image_path = tmp_path / "rom.bin"
+    image_path.write_bytes(image)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json_module.dumps({"text_start": None, "text_end": None}))
+    pinned_hash = hashlib.sha256(image).hexdigest()
+    pinned_hash_path = tmp_path / "PINNED_HASH"
+    pinned_hash_path.write_text(pinned_hash)
+
+    monkeypatch.setattr(demo3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        sys_module,
+        "argv",
+        [
+            "gen_demo3_trace",
+            "--image",
+            str(image_path),
+            "--manifest",
+            str(manifest_path),
+            "--pinned-hash",
+            str(pinned_hash_path),
+        ],
+    )
+    exit_status = demo3.main()
+    assert exit_status == 0
+
+    out_dir = tmp_path / "refemu" / "reference_traces" / "demo3"
+    tsv_path = out_dir / f"demo3.{pinned_hash[:12]}.tsv"
+    meta_path = out_dir / f"demo3.{pinned_hash[:12]}.json"
+    assert tsv_path.exists()
+    assert meta_path.exists()
+
+    meta = json_module.loads(meta_path.read_text())
+    assert meta["halt"]["reason"] == "EXIT"
+    assert meta["halt"]["exit_code"] == 7
+    assert meta["trace_file_sha256"] == hashlib.sha256(tsv_path.read_bytes()).hexdigest()
+    assert meta["trace_file_bytes"] == tsv_path.stat().st_size

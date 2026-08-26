@@ -95,11 +95,32 @@ running in the middle of a state save would corrupt it) -- the loop
 finishes its current step, saves state and the progress file one last
 time, and exits 0. An operator-requested stop should never cost more
 progress than an actual crash would.
+
+## What gets committed: the manifest, not the trace
+
+The completed `.tsv` (~700K-766K lines across the estimated instruction
+range, ~20-30 MB) is **not** meant to be committed -- derived data that
+changes with every ROM doesn't belong in a source repo, and regenerating
+it is a ~50-minute `just` recipe away, not a multi-day job. What's durable
+is the *answer*, not the bytes: on halt, this script writes `<out>.json`
+(alongside the `.tsv`, git-ignored) containing the final icount, the
+final checkpoint line (`fb_hash` included), the halt reason and
+`exit_code`, the `PINNED_HASH` it ran against, and the `.tsv` file's own
+sha256 -- so regeneration is independently verifiable (rebuild, compare
+the manifest) without the trace bytes themselves living in git. Only the
+manifest is intended to be committed once a real run completes.
+
+Contrast with `gen_reference_trace.py`'s (#114) boot-to-first-frame trace,
+which **is** committed in full: that one is 3,328 lines / 112 KB, small
+enough that the convenience of having it in the repo outright outweighs
+the derived-data argument. Different sizes crossing a considered
+threshold, not an inconsistency between the two scripts.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pickle
@@ -505,12 +526,32 @@ def main() -> int:
         else:
             print(f"# NOT a clean EXIT -- halted on {h['reason']}, this is a fault, not Victory", file=sys.stderr)
 
+        # The .tsv itself is NOT committed (team lead's call on #129): ~700K-
+        # 766K lines / 20-30 MB of derived data that changes with every ROM
+        # doesn't belong in a source repo, and it's cheaply regenerable (the
+        # whole point of the ~50 minute estimate). What's durable is the
+        # *answer*: this manifest -- final icount, final fb_hash, exit_code,
+        # the PINNED_HASH it was generated against, and the trace file's own
+        # sha256, so regeneration is verifiable (rebuild in ~50 minutes,
+        # compare the manifest) without needing the bytes themselves in git.
+        # Contrast with #114's boot-to-first-frame trace, which IS committed
+        # -- that one is 3,328 lines / 112 KB, small enough that the
+        # convenience wins. Different sizes, same discipline applied
+        # consistently, not an inconsistency between the two scripts.
+        trace_bytes = tsv_path.read_bytes()
+        trace_sha256 = hashlib.sha256(trace_bytes).hexdigest()
+        stripped = trace_bytes.rstrip(b"\n")
+        final_checkpoint = stripped.rsplit(b"\n", 1)[-1].decode() if stripped else None
+
         full_meta = {
             "spec_version": manifest.get("spec_version"),
             "rom_sha256": rom_sha256,
             "rom_manifest": manifest,
             "generated_by": "refemu/scripts/gen_demo3_trace.py " + " ".join(sys.argv[1:]),
             "trace_file": tsv_path.name,
+            "trace_file_sha256": trace_sha256,
+            "trace_file_bytes": tsv_path.stat().st_size,
+            "final_checkpoint_line": final_checkpoint,
             "final_icount": summary["final_icount"],
             "halt": summary["halt"],
             "elapsed_seconds": summary["elapsed_seconds"],
@@ -518,7 +559,7 @@ def main() -> int:
             "ram_hash_interval": RAM_HASH_INTERVAL,
         }
         meta_path.write_text(json.dumps(full_meta, indent=2) + "\n")
-        print(f"# wrote {meta_path}", file=sys.stderr)
+        print(f"# wrote {meta_path} (manifest only -- .tsv is not committed, see script docstring)", file=sys.stderr)
 
     return 0
 

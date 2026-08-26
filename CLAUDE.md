@@ -53,24 +53,24 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   full CI cycle on every PR stacked above. A four-deep stack cost four
   sequential rebase-and-recheck rounds. This is a throughput tax, not a
   correctness hazard — the rule above is what protects the PRs.
-- **Force-push CI retrigger: no confirmed remedy, as of 2026-08-26.**
-  What survived testing that day, on a real force-push-poisoned PR
-  (#148): a genuine content push reliably *creates* a run in general;
-  a force-push's own `synchronize` event is unreliable; the empty-commit
-  remedy this file used to prescribe was tried and failed; a real
-  content-touch commit was tried next and also failed, waiting 90+
-  seconds; closing and reopening the PR was reported as the fix — but a
-  controlled retest (two unrelated PRs, one with a fully completed run,
-  both closed/reopened, both polled for new runs afterward) found zero
-  retrigger effect either time. **Do not trust either remedy above; both
-  have failed at least once.** The likely confound, also unconfirmed:
-  the queue was carrying 7 open PRs against a `test-executor` job
-  measured at 33m29s (#159) — a run that was actually created can sit
-  `queued` for a long time, and that looks identical to "the event never
-  fired" from `gh run list` unless you check for a run *object* against
-  your head SHA (any status) rather than a *passing* one. If you hit
-  this: don't burn time cycling through the remedies above, check queue
-  depth first, and see the rule below.
+- **Force-pushing does not reliably retrigger CI.** GitHub's
+  `pull_request` synchronize event is unreliable after a force-push, so a
+  rebased PR can sit with zero check-runs and look merge-blocked for no
+  reason. Push an empty commit to retrigger.
+  **Note (2026-08-26):** several retrigger remedies (this one, a real
+  content-touch commit, closing and reopening the PR) each appeared to
+  fail in testing done this day — but every test ran after 15:11 UTC,
+  when GitHub Actions entered a confirmed platform-wide major outage
+  (githubstatus.com: "degraded availability for Actions" at 15:11 UTC,
+  Pages also degraded at 15:12 UTC, a database-primary failover at
+  15:23 UTC — verified directly against the status page, not relayed).
+  That contaminates every observation gathered that day about retrigger
+  mechanics: a run that never starts because the platform is down looks
+  identical, from `gh run list`, to one that never starts because an
+  event never fired. **The advice above is therefore unconfirmed, not
+  disproven** — treat it as the working default until someone verifies
+  it (or its replacement) outside an outage window, and see the rule
+  below regardless of which remedy you're trying.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow

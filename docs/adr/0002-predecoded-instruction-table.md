@@ -42,7 +42,10 @@ were verified rather than assumed:
   guard; a literal `false` guard is constant-folded away and proves nothing).
   A standing constraint on every fold expression written after this ADR, not
   just this decision's own justification — see that issue before adding a
-  guarded division, modulo, or array index inside a fold.
+  guarded **division, modulo, or array index** inside a fold: each is an
+  *unconditional* fault, not a conditional one, once it's inside the lambda.
+  `intDiv(INT_MIN, -1)` behind a guard that's always false for real data is
+  exactly this shape (#99) — it stalled a multi-day run permanently.
 
 So the only lever on throughput is the total node count of the fold body. The
 obvious implementation — fetch the word, pull fields apart with bit ops,

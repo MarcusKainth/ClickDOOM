@@ -209,9 +209,10 @@ def main() -> int:
     parser.add_argument(
         "--max-instructions",
         type=int,
-        default=13_631_488,  # 13 * RAM_HASH_INTERVAL: one full ram/fb-hash
-        # checkpoint past the first FRAME_COMMIT (icount 13,243,964, #29),
-        # for margin -- not a magic number, see module docstring.
+        default=15_728_640,  # 15 * RAM_HASH_INTERVAL: the first full
+        # ram/fb-hash checkpoint at or past the first FRAME_COMMIT (icount
+        # 15,695,836, #29/#111's timedemo ROM), for margin -- not a magic
+        # number, see module docstring.
     )
     parser.add_argument(
         "--out",
@@ -231,10 +232,10 @@ def main() -> int:
     # a deliberately different ROM), but the default is to fail loudly on
     # a mismatch, not silently accept a different reference than the one
     # this script's docstring claims to produce.
-    parser.add_argument("--expect-init-graphics-icount", type=int, default=9_788_180)
-    parser.add_argument("--expect-frame-commit-icount", type=int, default=13_243_964)
+    parser.add_argument("--expect-init-graphics-icount", type=int, default=11_016_543)
+    parser.add_argument("--expect-frame-commit-icount", type=int, default=15_695_836)
     parser.add_argument(
-        "--expect-frame-commit-fbhash", default="ce36be7a861e13e0", help="hex, no 0x prefix"
+        "--expect-frame-commit-fbhash", default="fe5d82c0f42d45f1", help="hex, no 0x prefix"
     )
     parser.add_argument("--no-expect", action="store_true", help="skip the issue-#29 cross-check")
     args = parser.parse_args()

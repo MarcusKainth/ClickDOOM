@@ -36,11 +36,26 @@ saying so — a mismatch there means either the ROM genuinely changed
 (update the defaults) or refemu itself regressed (investigate before
 trusting the output).
 
-## Current status: no trace committed here yet
+## `demo-boot-to-first-frame.e74cf575f931.tsv` / `.json`
 
-Held pending #111 (`-timedemo demo3` argv). The attract-mode ROM's trace
-(generated, cross-checked against issue #29's independent reproduction,
-and then deliberately not merged — see PR #114) is not committed here
-because its ROM is about to stop being the one this project runs. Once
-#111 lands, regenerate against the timedemo ROM's real `PINNED_HASH` with
-`just gen-reference-trace`.
+The real DOOM ROM, `-timedemo demo3` argv wired (#111,
+`PINNED_HASH e74cf575f931c0492eb09eb16f58d99d84b2b6442b8c7bec8e593fd1c72e6443`),
+boot to icount 15,728,640 — the first full `RAM_HASH_INTERVAL` checkpoint
+at or past the first `FRAME_COMMIT` (icount 15,695,836, #29/#111).
+
+Independently cross-checked against issue #29's own reproduction before
+being committed: `I_InitGraphics` reached at icount 11,016,543, and the
+full first-`FRAME_COMMIT` checkpoint line (icount, pc, reghash, ramhash,
+**`fbhash fe5d82c0f42d45f1`**) match exactly. This ROM's first committed
+frame is a screen wipe caught mid-transition (19 distinct palette indices,
+climbing to a steady 76 by frame ~10 — verified by rendering the actual
+frame sequence to PNG during PR #111's review, not just asserted): a
+genuinely different point in the engine than the superseded attract-mode
+ROM's title screen, not the same milestone re-measured with a worse
+result.
+
+This is the second ROM this directory has held a trace for
+(`e133789d9cec…`, attract-mode, superseded by #111 before its trace was
+ever merged — see PR #114's history). The hash-in-filename convention
+above is exactly what makes that transition safe rather than a repeat of
+the near-miss it was built to prevent.

@@ -54,10 +54,10 @@ HALT_EBREAK = 6
 HALT_CSR = 7
 # Not a SPEC §1 *fault* -- the ROM's own clean stop via SPEC §3's EXIT
 # register. It travels through the same halted/halt_reason/exit_code columns
-# as every fault (SPEC §5), so it needs a code here. The *string* it maps to
-# is the open question in #37: SPEC §1's vocabulary is closed and does not
-# contain EXIT, while refemu emits "EXIT". Resolving #37 changes the entry
-# below and nothing in the fold.
+# as every fault (SPEC §5), so it needs a code here. SPEC §1's vocabulary now
+# names it explicitly (#37), and "halted normally" is halt_reason = 'EXIT'
+# with the written value in exit_code -- deliberately not an empty string,
+# which a differential comparison could not tell from an unset column.
 HALT_EXIT = 8
 
 HALT_REASON_NAMES = {
@@ -69,7 +69,7 @@ HALT_REASON_NAMES = {
     HALT_ECALL: "ECALL",
     HALT_EBREAK: "EBREAK",
     HALT_CSR: "CSR",
-    HALT_EXIT: "EXIT",   # pending #37 -- see HALT_EXIT above
+    HALT_EXIT: "EXIT",   # SPEC §1's vocabulary, per #37
 }
 
 # Collapsed op_id space. 0-27 match ADR-0002 exactly (fold_predecoded.py);

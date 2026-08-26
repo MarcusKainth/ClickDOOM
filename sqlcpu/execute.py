@@ -11,9 +11,15 @@ either way: this module computes nothing itself, it only builds the SQL text
 that ClickHouse evaluates.
 
 Scope and the interface with `executor`:
-  * M-extension (decoded.id 10..17) is issue #20's arms, not this one's —
-    RESULT leaves them as a placeholder (0) rather than reaching ahead into
-    that issue's scope. #20 replaces just that multiIf branch.
+  * M-extension (decoded.id 10..17, issue #20) matches refemu's cpu.py
+    edge cases exactly (issue #12, closed): division by zero returns
+    all-ones for div/divu and the dividend for rem/remu, no trap; signed
+    overflow (INT_MIN / -1) returns INT_MIN for div and 0 for rem;
+    mulhsu is signed rs1 x unsigned rs2, not the other way around.
+    ClickHouse's intDiv()/modulo() truncate toward zero on Int32
+    (verified against negative operands, not assumed), matching RISC-V's
+    div/rem and refemu's `_trunc_div`/`_trunc_rem` -- no custom
+    truncation logic needed, unlike Python's floor-dividing `//`.
   * Loads need the raw word at the computed address, which requires
     checking the write-log before RAM (ADR-0001) — that's executor's memory
     model (#23), not this module's. `alu_result()` takes the loaded word as
@@ -120,7 +126,28 @@ def alu_result(loaded_word_expr: str, addr_expr: str, id_="id", a="A", b="B",
         f"{id_} = 7, toUInt32(bitShiftRight(toInt32({a}), bitAnd({b}, 31))),"
         f"{id_} = 8, bitOr({a}, {b}),"
         f"{id_} = 9, bitAnd({a}, {b}),"
-        f"{id_} >= 10 AND {id_} <= 17, toUInt32(0),"  # M-extension: issue #20
+        # M-extension (issue #20), matching refemu's cpu.py (#12) edge cases:
+        # mul's low 32 bits are sign-independent (two's complement
+        # multiplication mod 2^32 doesn't care whether the operands were
+        # sign- or zero-extended before multiplying), so {a}*{b} (unsigned)
+        # is fine even though the widened variants below need to pick a
+        # width carefully -- only mulh/mulhsu/mulhu's *high* bits depend on
+        # signedness, not mul's low ones.
+        f"{id_} = 10, toUInt32({a} * {b}),"
+        f"{id_} = 11, toUInt32(bitShiftRight(toInt64(toInt32({a})) * toInt64(toInt32({b})), 32)),"
+        # mulhsu: signed rs1 x UNSIGNED rs2 -- {b} stays toUInt64 (zero-extend),
+        # not toInt64(toInt32(b)) (sign-extend) -- getting this operand
+        # backwards is exactly the bug issue #12/#20 both call out by name.
+        f"{id_} = 12, toUInt32(bitShiftRight(toInt64(toInt32({a})) * toInt64({b}), 32)),"
+        f"{id_} = 13, toUInt32(bitShiftRight(toUInt64({a}) * toUInt64({b}), 32)),"
+        f"{id_} = 14, if({b} = 0, 4294967295,"
+        f" if(toInt32({a}) = -2147483648 AND toInt32({b}) = -1, 2147483648,"
+        f" toUInt32(intDiv(toInt32({a}), toInt32({b}))))),"
+        f"{id_} = 15, if({b} = 0, 4294967295, intDiv({a}, {b})),"
+        f"{id_} = 16, if({b} = 0, {a},"
+        f" if(toInt32({a}) = -2147483648 AND toInt32({b}) = -1, toUInt32(0),"
+        f" toUInt32(modulo(toInt32({a}), toInt32({b}))))),"
+        f"{id_} = 17, if({b} = 0, {a}, modulo({a}, {b})),"
         f"{id_} = 18, {lv},"
         f"toUInt32({pc} + 4))"  # default arm: jal/jalr link value (byte address)
     )

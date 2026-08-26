@@ -121,11 +121,13 @@ if [ -f sqlcpu/test_execute.py ]; then
 fi
 
 run_riscv_tests() {
-  # Placeholder until M-extension (#20) lands and a real riscv-tests corpus
-  # is wired up. Reports zero rather than a pass count this script has no
-  # way to earn yet.
+  # Placeholder until a real riscv-tests corpus is wired up (#21) -- decode
+  # (#18) and the full RV32IM execute expression, M-extension included
+  # (#19, #20), are both landed and covered by the checks above, but
+  # neither runs the actual upstream riscv-tests binaries yet. Reports zero
+  # rather than a pass count this script has no way to earn until then.
   echo "0"
 }
 
 pass_count=$(run_riscv_tests)
-echo "riscv-tests inside ClickHouse: ${pass_count} passed (M-extension not landed yet — see #20; full riscv-tests corpus is #21). ${decode_status}. ${execute_status}"
+echo "riscv-tests inside ClickHouse: ${pass_count} passed (full riscv-tests corpus is #21). ${decode_status}. ${execute_status}"

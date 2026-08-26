@@ -27,6 +27,16 @@ test-refemu:
 build-riscv-tests-fixtures:
     ./refemu/scripts/build_riscv_tests.sh
 
+# Regenerate refemu's committed SPEC §7 reference trace (maintenance only,
+# not part of CI). Needs rom/build/doom-rv32im.bin + manifest.json (`just
+# build-rom` first) matching rom/PINNED_HASH — the script refuses to run
+# against an unpinned ROM. Cross-checks its own output against issue #29's
+# independently reproduced milestones by default; a mismatch is either a
+# real ROM change (update the script's --expect-* defaults) or a genuine
+# refemu regression (investigate, don't suppress).
+gen-reference-trace:
+    cd refemu && uv run python scripts/gen_reference_trace.py
+
 # riscv-tests INSIDE ClickHouse — sqlcpu workstream
 test-sqlcpu: up
     @test -f sqlcpu/schema.sql || { echo "sqlcpu/ not landed yet"; exit 1; }

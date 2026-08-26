@@ -319,3 +319,86 @@ def test_main_writes_manifest_with_trace_sha256_and_final_checkpoint(tmp_path, m
     assert meta["halt"]["exit_code"] == 7
     assert meta["trace_file_sha256"] == hashlib.sha256(tsv_path.read_bytes()).hexdigest()
     assert meta["trace_file_bytes"] == tsv_path.stat().st_size
+
+    # final_state_at_halt: the fix for #129's own finding -- the halt
+    # icount rarely lands on a RAM_HASH_INTERVAL boundary, so the .tsv's
+    # last hash-bearing line can be stale by up to one interval. This
+    # program's own EXIT lands at icount 5, nowhere near a
+    # RAM_HASH_INTERVAL multiple, so if final_state_at_halt were being
+    # read off the .tsv instead of computed fresh from the halted cpu,
+    # it would be missing (no ramhash/fbhash on that line) exactly like
+    # the real run that motivated this fix.
+    from refemu.trace import fb_hash, ram_hash
+
+    fs = meta["final_state_at_halt"]
+    # 4, not 5: SPEC §1's fatal-halt-doesn't-retire rule -- the 5th
+    # (EXIT) instruction never increments icount.
+    assert fs["icount"] == 4
+    # RAM is the loaded image followed by zeros; framebuffer/palette are
+    # untouched (empty) in this synthetic run -- confirms the manifest's
+    # hashes are independently reproducible from the real expected
+    # content, not just "some string", by recomputing with the real hash
+    # functions and comparing.
+    expected_ram = bytearray(24 * 1024 * 1024)
+    expected_ram[: len(image)] = image
+    assert fs["ramhash"] == f"{ram_hash(bytes(expected_ram)):016x}"
+    assert fs["fbhash"] == f"{fb_hash(bytes(64_000), bytes(768)):016x}"
+    assert meta["frame_commit_count"] == 1
+    assert meta["last_frame_commit"] == {"frame_no": 0, "committed_icount": 2}
+
+    # --image/--manifest/--pinned-hash were all passed as absolute paths
+    # under the monkeypatched REPO_ROOT (tmp_path) -- generated_by should
+    # still render them repo-relative, not as REPO_ROOT-specific absolute
+    # paths (see test_generated_by_substitutes_out_of_repo_pinned_hash_path
+    # for the case where a path is NOT under REPO_ROOT at all).
+    assert str(tmp_path) not in meta["generated_by"]
+    assert "--image rom.bin" in meta["generated_by"]
+    assert "--manifest manifest.json" in meta["generated_by"]
+    assert "--pinned-hash PINNED_HASH" in meta["generated_by"]
+
+
+def test_generated_by_substitutes_out_of_repo_pinned_hash_path(tmp_path, monkeypatch, tmp_path_factory):
+    # Regression for #149's review: a run had used a scratch --pinned-hash
+    # file living outside the repo (to dodge a mid-run git rebase
+    # conflict without touching branch state), and the manifest's
+    # generated_by faithfully echoed that sandbox path verbatim -- a
+    # provenance field whose whole job is letting someone else reproduce
+    # the command, recording a path that resolves for nobody. The fix:
+    # a --pinned-hash (or --image/--manifest) value that doesn't resolve
+    # under REPO_ROOT is rendered as that flag's own repo-relative
+    # default instead -- truthful because assert_pinned_hash() already
+    # enforces the pointed-at file has the same content as the default,
+    # and that shared value (rom_sha256) is recorded separately anyway.
+    import hashlib
+    import json as json_module
+    import sys as sys_module
+
+    from .asm import ecall
+
+    image = _image_from_words([ecall()])
+    image_path = tmp_path / "rom.bin"
+    image_path.write_bytes(image)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json_module.dumps({"text_start": None, "text_end": None}))
+    pinned_hash = hashlib.sha256(image).hexdigest()
+
+    # A pinned-hash file OUTSIDE tmp_path (REPO_ROOT), same as the real
+    # scratch-file scenario that produced the #149 diff.
+    outside_dir = tmp_path_factory.mktemp("outside-repo-root")
+    pinned_hash_path = outside_dir / "PINNED_HASH_frozen"
+    pinned_hash_path.write_text(pinned_hash)
+
+    monkeypatch.setattr(demo3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        sys_module,
+        "argv",
+        ["gen_demo3_trace", "--image", str(image_path), "--manifest", str(manifest_path), "--pinned-hash", str(pinned_hash_path)],
+    )
+    assert demo3.main() == 0
+
+    meta_path = tmp_path / "refemu" / "reference_traces" / "demo3" / f"demo3.{pinned_hash[:12]}.json"
+    meta = json_module.loads(meta_path.read_text())
+    assert meta["rom_sha256"] == pinned_hash  # the value that actually matters, verified regardless
+    assert str(outside_dir) not in meta["generated_by"]
+    assert str(pinned_hash_path) not in meta["generated_by"]
+    assert "--pinned-hash rom/PINNED_HASH" in meta["generated_by"]

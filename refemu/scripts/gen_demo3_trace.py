@@ -393,6 +393,46 @@ def run(
     }
 
 
+def _reproducible_generated_by(argv: list[str], parser: argparse.ArgumentParser) -> str:
+    """Render this run's invocation for the manifest's `generated_by`
+    field, substituting any of --image/--manifest/--pinned-hash pointed
+    outside REPO_ROOT (e.g. a throwaway scratch file used to dodge a
+    mid-run git rebase -- see #149's review, which caught this landing
+    verbatim in the committed demo3 manifest) with that flag's own
+    default, rendered repo-relative.
+
+    `generated_by`'s whole job is letting someone else reproduce the
+    exact command; an absolute path into a sandbox that no longer exists
+    resolves for nobody. The substitution is truthful even when a flag
+    really was overridden: each of these three flags' *content* is
+    already captured verbatim elsewhere in this same manifest
+    (`rom_sha256`, `rom_manifest`) or enforced content-equal to the
+    default by `assert_pinned_hash()` -- the literal filesystem path that
+    held it during generation was never part of the answer. An in-repo
+    override is kept, but rendered repo-relative rather than absolute,
+    since REPO_ROOT itself is a path specific to one machine's checkout.
+    """
+    substitutable = {"--image", "--manifest", "--pinned-hash"}
+    out = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in substitutable and i + 1 < len(argv):
+            dest = token[2:].replace("-", "_")
+            default = parser.get_default(dest)
+            value = argv[i + 1]
+            try:
+                rendered = str(Path(value).resolve().relative_to(REPO_ROOT))
+            except ValueError:
+                rendered = str(Path(default).resolve().relative_to(REPO_ROOT))
+            out.extend([token, rendered])
+            i += 2
+            continue
+        out.append(token)
+        i += 1
+    return "refemu/scripts/gen_demo3_trace.py " + " ".join(out)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", default=str(REPO_ROOT / "rom" / "build" / "doom-rv32im.bin"))
@@ -543,16 +583,43 @@ def main() -> int:
         stripped = trace_bytes.rstrip(b"\n")
         final_checkpoint = stripped.rsplit(b"\n", 1)[-1].decode() if stripped else None
 
+        # The halt icount does NOT generally land on a RAM_HASH_INTERVAL
+        # boundary (EXIT can fire anywhere), so the .tsv's own last
+        # hash-bearing line can be stale by up to one interval -- exactly
+        # what happened on the first real run this was used for (#129):
+        # the .tsv's final line had no ramhash/fbhash at all, and manually
+        # recomputing from the saved state was the only way to get README's
+        # actual "final frame hash". Computed here directly from `cpu`
+        # (still holds the exact halt-time state -- `run()` mutates it in
+        # place, it isn't reloaded from disk) so every future run gets this
+        # for free instead of requiring the same manual recovery.
+        final_state = {
+            "icount": cpu.icount,
+            "pc": cpu.pc,
+            "reghash": f"{reg_hash(cpu.pc, cpu.regs):016x}",
+            "ramhash": f"{ram_hash(cpu.memory.ram):016x}",
+            "fbhash": f"{fb_hash(cpu.memory.framebuffer, cpu.memory.palette):016x}",
+        }
+        frame_commits = cpu.memory.mmio.frame_commits
+        last_frame_commit = (
+            {"frame_no": frame_commits[-1][0], "committed_icount": frame_commits[-1][1]}
+            if frame_commits
+            else None
+        )
+
         full_meta = {
             "spec_version": manifest.get("spec_version"),
             "rom_sha256": rom_sha256,
             "rom_manifest": manifest,
-            "generated_by": "refemu/scripts/gen_demo3_trace.py " + " ".join(sys.argv[1:]),
+            "generated_by": _reproducible_generated_by(sys.argv[1:], parser),
             "trace_file": tsv_path.name,
             "trace_file_sha256": trace_sha256,
             "trace_file_bytes": tsv_path.stat().st_size,
             "final_checkpoint_line": final_checkpoint,
             "final_icount": summary["final_icount"],
+            "final_state_at_halt": final_state,
+            "frame_commit_count": len(frame_commits),
+            "last_frame_commit": last_frame_commit,
             "halt": summary["halt"],
             "elapsed_seconds": summary["elapsed_seconds"],
             "checkpoint_interval": CHECKPOINT_INTERVAL,
@@ -560,6 +627,7 @@ def main() -> int:
         }
         meta_path.write_text(json.dumps(full_meta, indent=2) + "\n")
         print(f"# wrote {meta_path} (manifest only -- .tsv is not committed, see script docstring)", file=sys.stderr)
+        print(f"# final_state_at_halt: {final_state}", file=sys.stderr)
 
     return 0
 

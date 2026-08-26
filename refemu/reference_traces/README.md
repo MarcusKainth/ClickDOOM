@@ -60,3 +60,39 @@ ever merged) → `e74cf575f931…` (`-timedemo demo3`, superseded by #127) →
 `eabb12ed4f18…` (current, frozen). The hash-in-filename convention is
 exactly what makes each transition safe rather than a repeat of the
 near-miss it was built to prevent after the first one.
+
+## `demo3/demo3.eabb12ed4f18.json`
+
+The full `-timedemo demo3` run, issue #129's harness (`../scripts/
+gen_demo3_trace.py`), against the same frozen `eabb12ed…` ROM. **Only the
+manifest is committed** — the `.tsv` trace itself (2,836,207,097
+instructions, ~700K `CHECKPOINT_INTERVAL` lines, ~25 MB) is derived data,
+gitignored, regenerable with `uv run python scripts/gen_demo3_trace.py`
+in ~47 minutes on this machine (team lead's call, same reasoning as the
+`demo-boot-to-first-frame` vs. this file's size difference above, just
+applied at the far end of the scale).
+
+**What this run established, none of it known before:**
+
+- **The true `demo3` instruction count: 2,836,207,097** — replacing the
+  extrapolation (2,134 tics × ADR-0004's ~1.36M/tic ≈ 2.90B, or × the E7
+  subagent's ~1.47M/tic ≈ 3.14B) every planning figure in #104/#110/#147
+  had been reasoning from. The measured figure is *below* both estimates
+  (≈1.33M instructions/tic against 2,134 tics).
+- **Termination is a clean `EXIT`, `exit_code = 4294967295`** — confirmed
+  after a *full* demo, not just the isolated probe #107/#111 verified the
+  mechanism with. Matches issue #121's proposed pinned value exactly.
+- **The final frame hash: `fbhash d303721d8116e877`** — the literal
+  artifact README's Definition of Victory requires the SQL CPU to
+  reproduce. This is `final_state_at_halt` in the manifest, computed
+  directly from the CPU state at the instant `EXIT` fired (icount
+  2,836,207,097, `pc 0x800006b0` — the same `_exit` MMIO-write-then-spin
+  address the #107/#111 probe found), **not** read off the `.tsv`'s own
+  periodic cadence: the halt icount doesn't land on a `RAM_HASH_INTERVAL`
+  boundary, so the trace's last hash-bearing line is stale by up to one
+  interval. `gen_demo3_trace.py` computes and records this explicitly now
+  (it didn't on the first real run — recovered manually from the saved
+  resume-state, then fixed in the harness so future runs don't need that).
+  2,172 frames were committed total; the last real `FRAME_COMMIT` was
+  18,014 instructions before `EXIT`, with nothing writing to FRAMEBUFFER/
+  PALETTE in between, so this `fbhash` is the last rendered frame's.

@@ -6,11 +6,10 @@ independent, plain-Python RV32I oracle (deliberately not sharing any code
 with execute.py, so a bug in one is unlikely to be mirrored in the other),
 run over sqlcpu/fixtures/decode_vectors.tsv — the same 51 hand-encoded
 instructions sqlcpu/test_decode.sh already proves decode.sql handles
-correctly. M-extension rows (decoded.id 10..17) are skipped: execute.py
-leaves that arm a placeholder pending issue #20.
+correctly, including its 8 M-extension rows (id 10..17).
 
-Also exercises two cases the fixture file doesn't happen to hit, since it
-was written before either was in scope:
+Also exercises cases the fixture file doesn't happen to hit, since it was
+written before some of these were in scope:
   * Writing to x0. SPEC §1 requires the write be discarded, not merely be
     harmless — tested directly against execute.py's regs_write().
   * Eager MISALIGNED (SPEC §1, agreed with refemu on #37): the fixture's
@@ -18,6 +17,12 @@ was written before either was in scope:
     them exercise a misaligned target at all. misaligned_vectors() adds
     dedicated jal/jalr/taken-branch/not-taken-branch cases mirroring
     refemu's PR #51 test suite.
+  * M-extension edge cases (issue #20/#12): division by zero, INT_MIN/-1
+    signed overflow, and mulhsu's signed/unsigned operand asymmetry. The
+    fixture's mul/mulh/.../remu rows use rs1=1, rs2=2 (values 100, 200) —
+    neither negative nor zero — so none of these ever come up there.
+    m_extension_edge_case_vectors() patches specific registers via
+    build_query()'s per-row register-override support to force them.
 
 This does not run inside arrayFold — each row is evaluated as an
 independent single-row SELECT with its own literal register file, which is
@@ -50,7 +55,18 @@ def read(r):
     return 0 if r == 0 else REGS[r - 1]
 
 
-def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
+def _trunc_div(a, b):
+    """C-style division truncated toward zero -- matches refemu's cpu.py
+    (issue #12) and RISC-V div/rem, not Python's floor-dividing `//`."""
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def _trunc_rem(a, b):
+    return a - _trunc_div(a, b) * b
+
+
+def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg, regs=None):
     """Independent RV32I reference: same inputs execute.py's expressions take.
 
     `pc` and `tgt` are both byte addresses here, matching execute.py's
@@ -58,9 +74,18 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
     convention silently discarded a set bit 1 -- a target that's 2-byte
     but not 4-byte aligned -- instead of leaving it checkable as
     MISALIGNED).
+
+    `regs`: the register file to read/write against, default REGS -- M-ext
+    edge cases (issue #20) need specific registers (zero, INT_MIN, -1, a
+    top-bit-set unsigned value) REGS's plain 100/200/300... sequence never
+    produces.
     """
-    A = read(rs1)
-    B = u32(read(rs2) + imm)
+    if regs is None:
+        regs = REGS
+    def read_(r):
+        return 0 if r == 0 else regs[r - 1]
+    A = read_(rs1)
+    B = u32(read_(rs2) + imm)
 
     if id_ == 18:
         addr = u32(A + imm)
@@ -78,6 +103,23 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
     elif id_ == 7: result = u32(s32(A) >> (B & 31))
     elif id_ == 8: result = A | B
     elif id_ == 9: result = A & B
+    # M-extension (issue #20): matches refemu's cpu.py (#12) edge cases --
+    # no trap on div-by-zero or INT_MIN/-1 overflow, mulhsu is signed rs1 x
+    # UNSIGNED rs2 (B stays unsigned, not sign-extended via s32()).
+    elif id_ == 10: result = u32(A * B)
+    elif id_ == 11: result = u32((s32(A) * s32(B)) >> 32)
+    elif id_ == 12: result = u32((s32(A) * B) >> 32)
+    elif id_ == 13: result = u32((A * B) >> 32)
+    elif id_ == 14:
+        if B == 0: result = 0xFFFFFFFF
+        elif s32(A) == -0x80000000 and s32(B) == -1: result = 0x80000000
+        else: result = u32(_trunc_div(s32(A), s32(B)))
+    elif id_ == 15: result = 0xFFFFFFFF if B == 0 else A // B
+    elif id_ == 16:
+        if B == 0: result = A
+        elif s32(A) == -0x80000000 and s32(B) == -1: result = 0
+        else: result = u32(_trunc_rem(s32(A), s32(B)))
+    elif id_ == 17: result = A if B == 0 else A % B
     else: result = u32(pc + 4)  # jal/jalr link value
 
     jalr_target = u32(A + imm) & 0xFFFFFFFE
@@ -100,7 +142,7 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg):
     elif id_ == 27: nxt = jalr_target
     else: nxt = pc + 4
 
-    new_regs = list(REGS)
+    new_regs = list(regs)
     if rd != 0 and not misaligned:
         new_regs[rd - 1] = result
 
@@ -125,11 +167,35 @@ def load_vectors(path):
         for line in f:
             wa, _word, id_, rd, rs1, rs2, imm, tgt, mk, sg, note = line.rstrip("\n").split("\t")
             id_ = int(id_)
-            if 10 <= id_ <= 17:
-                continue  # M-extension: issue #20
             rows.append((int(wa), id_, int(rd), int(rs1), int(rs2), int(imm),
                          int(tgt) if tgt else 0, int(mk), int(sg), note))
     return rows
+
+
+M_EXT_REG_OVERRIDES = {3: 0, 4: 0x80000000, 5: 0xFFFFFFFF, 6: 0xFFFFFF9C, 7: 0x80000001}
+# x3=0 (div-by-zero), x4=INT_MIN, x5=-1 (overflow), x6=-100 (mulhsu's signed
+# operand), x7=a value with the top bit set (mulhsu's UNSIGNED operand --
+# chosen so treating it as signed instead would flip the product's sign).
+
+
+def m_extension_edge_case_vectors():
+    """M-extension edge cases (issue #20/#12) the fixture's happy-path mul/
+    mulh/.../remu rows (rs1=1, rs2=2 -> 100, 200, neither negative nor zero)
+    don't exercise at all: division by zero, INT_MIN/-1 signed overflow, and
+    mulhsu's signed-rs1/unsigned-rs2 asymmetry. Uses M_EXT_REG_OVERRIDES via
+    build_query's per-row regs support -- REGS's plain 100/200/300...
+    sequence has no zero, negative, or top-bit-set values to test with."""
+    wa = 3000
+    rows = [
+        (wa,     14, 5, 1, 3, 0, 0, 0, 0, "div by zero -> all-ones, no trap"),      # rs2=x3=0
+        (wa + 1, 15, 5, 1, 3, 0, 0, 0, 0, "divu by zero -> all-ones, no trap"),
+        (wa + 2, 16, 5, 1, 3, 0, 0, 0, 0, "rem by zero -> dividend, no trap"),
+        (wa + 3, 17, 5, 1, 3, 0, 0, 0, 0, "remu by zero -> dividend, no trap"),
+        (wa + 4, 14, 5, 4, 5, 0, 0, 0, 0, "div INT_MIN/-1 overflow -> INT_MIN"),    # x4=INT_MIN, x5=-1
+        (wa + 5, 16, 5, 4, 5, 0, 0, 0, 0, "rem INT_MIN/-1 overflow -> 0"),
+        (wa + 6, 12, 5, 6, 7, 0, 0, 0, 0, "mulhsu: signed rs1 x UNSIGNED rs2"),     # x6 negative, x7 top-bit set
+    ]
+    return [row + (M_EXT_REG_OVERRIDES,) for row in rows]
 
 
 def misaligned_vectors():
@@ -155,14 +221,17 @@ def misaligned_vectors():
     return rows
 
 
-def build_query(rows):
+def _row_parts(rows):
+    """One SELECT-block string per row (no UNION ALL / FORMAT -- that's
+    build_queries()'s job, so it can batch these into AST-size-limited
+    chunks instead of one query per test run)."""
     a_expr = ex.operand_a()
     b_expr = ex.operand_b()
     result_expr = ex.alu_result("loaded_word", "addr_load", pc="pc")
     # Bound once per row via the WITH clause below (`misaligned`) and passed
     # through to all four -- see execute.py's `misaligned=` parameter
     # docstring: four independent copies of is_misaligned() per row is what
-    # blew ClickHouse's AST-size limit across ~56 UNION ALL'd test rows.
+    # first blew ClickHouse's AST-size limit here.
     next_expr = ex.next_pc(pc="pc", misaligned="misaligned")
     newregs_expr = ex.regs_write(ex.rd_or_suppressed(misaligned="misaligned"), result_expr)
     isstore_expr = ex.is_store()
@@ -170,13 +239,26 @@ def build_query(rows):
     stval_expr = ex.store_value("loaded_word_store", "addr_store")
     halted_expr = ex.halted(misaligned="misaligned")
     haltreason_expr = ex.halt_reason(misaligned="misaligned")
-    regs_sql = "[" + ",".join(str(v) for v in REGS) + "]"
 
     parts = []
-    for wa, id_, rd, rs1, rs2, imm, tgt, mk, sg, note in rows:
+    for row in rows:
+        # 10-tuple: default REGS. 11-tuple: an extra {reg_num: value}
+        # override dict (see M_EXT_REG_OVERRIDES) -- REGS's plain
+        # 100/200/300... sequence can't exercise zero/negative/overflow
+        # edge cases, so a few dedicated vectors need a patched register file.
+        if len(row) == 11:
+            wa, id_, rd, rs1, rs2, imm, tgt, mk, sg, note, overrides = row
+        else:
+            wa, id_, rd, rs1, rs2, imm, tgt, mk, sg, note = row
+            overrides = {}
+        regs = list(REGS)
+        for reg_num, value in overrides.items():
+            regs[reg_num - 1] = value
+        regs_sql = "[" + ",".join(str(v) for v in regs) + "]"
+
         pc = wa * 4
         exp_next, exp_regs, exp_isst, exp_staddr, exp_stval, exp_halted, exp_reason = oracle(
-            pc, id_, rd, rs1, rs2, imm, tgt, mk, sg)
+            pc, id_, rd, rs1, rs2, imm, tgt, mk, sg, regs=regs)
         exp_regs_sql = "[" + ",".join(str(v) for v in exp_regs) + "]"
         # store address/value are only meaningful (and only oracle-checked) on
         # store rows -- on every other row the same expressions still compute
@@ -217,20 +299,35 @@ FROM
     # rd=0 via a real ALU op), so it gets its own dedicated pair of checks:
     # read-as-zero, and write-discarded (array unchanged), straight from
     # execute.py's own helpers rather than the fixture-driven path above.
+    default_regs_sql = "[" + ",".join(str(v) for v in REGS) + "]"
     x0_read = ex.reg_read("0")
     x0_write = ex.regs_write("0", "999999")
     parts.append(f"""SELECT
     -1 AS word_addr, 'x0 read is always zero' AS note,
     ({x0_read}) = 0 AS next_ok, 1 AS regs_ok, 1 AS isstore_ok, 1 AS staddr_ok,
     1 AS stval_ok, 1 AS halted_ok, 1 AS haltreason_ok
-FROM (SELECT {regs_sql} AS regs)""")
+FROM (SELECT {default_regs_sql} AS regs)""")
     parts.append(f"""SELECT
     -2 AS word_addr, 'x0 write is discarded' AS note,
     1 AS next_ok, ({x0_write}) = regs AS regs_ok, 1 AS isstore_ok, 1 AS staddr_ok,
     1 AS stval_ok, 1 AS halted_ok, 1 AS haltreason_ok
-FROM (SELECT {regs_sql} AS regs)""")
+FROM (SELECT {default_regs_sql} AS regs)""")
+    return parts
 
-    return "\nUNION ALL\n".join(parts) + "\nORDER BY word_addr\nFORMAT TSVWithNames"
+
+def build_queries(rows, batch_size=8):
+    """A list of complete queries, each a UNION ALL of at most `batch_size`
+    row-checks. M-extension's wider alu_result() plus the shared
+    `misaligned` condition pushed a single all-rows UNION ALL past
+    ClickHouse's AST-size limit (50,000 nodes) well before all ~65 rows
+    were included -- batching keeps each query comfortably under that
+    regardless of how large any individual row's expressions grow."""
+    parts = _row_parts(rows)
+    queries = []
+    for i in range(0, len(parts), batch_size):
+        batch = parts[i:i + batch_size]
+        queries.append("\nUNION ALL\n".join(batch) + "\nORDER BY word_addr\nFORMAT TSVWithNames")
+    return queries
 
 
 def main():
@@ -243,36 +340,39 @@ def main():
     ap.add_argument("--fixture", default="sqlcpu/fixtures/decode_vectors.tsv")
     args = ap.parse_args()
 
-    rows = load_vectors(args.fixture) + misaligned_vectors()
-    query = build_query(rows)
+    rows = load_vectors(args.fixture) + misaligned_vectors() + m_extension_edge_case_vectors()
+    queries = build_queries(rows)
 
     client_cmd = args.client.split() + ["--host", args.host, "--port", str(args.port), "--user", args.user]
     if args.password:
         client_cmd += ["--password", args.password]
 
-    result = subprocess.run(client_cmd, input=query, text=True, capture_output=True)
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        return result.returncode
-
-    lines = result.stdout.strip("\n").split("\n")
-    header, data = lines[0].split("\t"), lines[1:]
+    total = 0
     fail = 0
-    for line in data:
-        cols = dict(zip(header, line.split("\t")))
-        if not all(cols[c] == "1" for c in ("next_ok", "regs_ok", "isstore_ok",
-                                              "staddr_ok", "stval_ok", "halted_ok",
-                                              "haltreason_ok")):
-            fail += 1
-            print(f"::error::execute mismatch on word_addr={cols['word_addr']} ({cols['note']}): {cols}",
-                  file=sys.stderr)
+    for query in queries:
+        result = subprocess.run(client_cmd, input=query, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(result.stderr, file=sys.stderr)
+            return result.returncode
 
-    total = len(data)
+        lines = result.stdout.strip("\n").split("\n")
+        header, data = lines[0].split("\t"), lines[1:]
+        total += len(data)
+        for line in data:
+            cols = dict(zip(header, line.split("\t")))
+            if not all(cols[c] == "1" for c in ("next_ok", "regs_ok", "isstore_ok",
+                                                  "staddr_ok", "stval_ok", "halted_ok",
+                                                  "haltreason_ok")):
+                fail += 1
+                print(f"::error::execute mismatch on word_addr={cols['word_addr']} ({cols['note']}): {cols}",
+                      file=sys.stderr)
+
     if fail:
         print(f"execute.py: {total - fail}/{total} checks passed, {fail} FAILED", file=sys.stderr)
         return 1
-    print(f"execute.py: all {total} checks passed ({len(rows)} instruction rows "
-          f"(fixture + dedicated MISALIGNED cases) + 2 dedicated x0 checks)")
+    print(f"execute.py: all {total} checks passed across {len(queries)} batched queries "
+          f"({len(rows)} instruction rows (fixture + dedicated MISALIGNED/M-extension edge "
+          f"cases) + 2 dedicated x0 checks)")
     return 0
 
 

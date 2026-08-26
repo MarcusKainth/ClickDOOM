@@ -30,6 +30,14 @@ must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
 - Reset state: `pc = 0x8000_0000`, all `x1..x31 = 0`. `crt0` sets `sp`, zeroes
   `.bss`, and jumps to `main`. `x0` hardwired to 0 (obviously — but the SQL
   register file must enforce writes to x0 being discarded).
+- A fatal-halt instruction (any of the above) does **not** retire: the
+  instruction that triggers a halt is never counted toward `icount` (§7's
+  checkpoint trace and §3.1's elastic time both key on `icount`, so this is
+  load-bearing, not cosmetic). `icount` at halt equals the number of
+  instructions that completed normally *before* it, matching the halt
+  record's `pc` (the halting instruction's own address, never advanced past
+  it). Ruled on in #72 after sqlcpu's riscv-tests harness and refemu/executor
+  disagreed by exactly one on every fixture.
 
 ## 2. Memory map
 

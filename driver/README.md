@@ -12,11 +12,14 @@ converts a committed frame into a printable half-block-truecolor ANSI
 string, ready for the driver to print verbatim (PURITY.md: all of this is
 SQL-side computation, the driver only blits the result).
 
-**Built and validated against a fixture** (`fixture_schema.sql`), not the
-real tables: #160 (the real FRAMEBUFFER/PALETTE persistence) is filed,
-human-gated, not started. The fixture mirrors sqlcpu's proposed shape
-exactly (confirmed with `sqlcpu-2`, see issue #29's plan comment) and gets
-re-pointed once #160 lands, same pattern #130 used before #145.
+**Originally built and validated against a fixture** (`fixture_schema.sql`),
+before the real FRAMEBUFFER/PALETTE persistence (#160) ratified and landed
+(#174). The fixture mirrors sqlcpu's proposed shape exactly (confirmed
+with `sqlcpu-2`, see issue #29's plan comment), and #174's real
+`sqlcpu/schema.sql` now matches it byte-for-byte — `refemu-2` independently
+confirmed this module's queries work unmodified against the real,
+persisted tables, reproducing `fb_hash fe5d82c0f42d45f1`. The fixture
+stays in the tree as this module's own fast, isolated test path.
 
 Validated two ways, both against real evidence, not eyeballed:
 
@@ -33,10 +36,10 @@ Validated two ways, both against real evidence, not eyeballed:
 
 Run both: `driver/test_render.sh` (or `just test-render`).
 
-### Why this is not wired to a real run
+### Why this isn't wired into the milestone runner yet
 
-#160's persistence pipeline doesn't exist yet — `batch()` doesn't project
-the framebuffer/palette write-log lanes, and `batch_commit` has no columns
-for them (SPEC §5 needs an additive, human-ratified change first). This is
-the query, proven correct against the real oracle number; it points at
-real tables the moment #160 lands.
+#174 lands the persistence tables/columns, and `refemu-2` confirmed the
+composition works against them — but `scripts/run_milestone.sh` (#144)
+doesn't yet call `frame_readout_sql()`/`ansi_render_sql()` as part of its
+loop. That wiring is a separate, small follow-up, not part of this PR's
+scope.

@@ -17,13 +17,20 @@ particular table beyond the names/shapes documented per function.
 
 ## The fixture this is built and validated against
 
-#160 (the real persistence: `batch_commit` gaining six write-log columns,
-`framebuffer`/`palette` tables) is filed, human-gated, not started. This
-module is built against a fixture matching #160's proposed shape --
-`fixture_schema.sql` in this directory -- and gets re-pointed once #160
-ratifies and lands, same pattern #130 used before #145 landed the fold
-half. Confirmed the fixture shape with `sqlcpu-2` before implementing
-(issue #29's plan comment).
+Originally built against a fixture (`fixture_schema.sql` in this
+directory) matching sqlcpu's proposed persistence shape, since #160 (the
+real persistence: `batch_commit` gaining six write-log columns,
+`framebuffer`/`palette` tables) was filed and human-gated at the time --
+same pattern #130 used before #145 landed the fold half. Confirmed the
+fixture shape with `sqlcpu-2` before implementing (issue #29's plan
+comment). **#160 has since ratified and landed** (`sqlcpu/schema.sql`),
+matching the fixture byte-for-byte -- `refemu-2` independently confirmed
+this module's two queries work unmodified against the real tables
+(real-seeded `batch_commit`, `commit.py`'s real `fbpal_flush_sql()`,
+this module's real `frame_readout_sql()`/`ansi_render_sql()`, reproducing
+`fb_hash fe5d82c0f42d45f1`). The fixture stays in the tree as a fast,
+isolated test path rather than requiring the full shared schema for every
+test run.
 
 ## Why the word->bytes technique isn't imported from checkpoint.py
 

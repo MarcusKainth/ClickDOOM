@@ -1,9 +1,11 @@
--- Isolated fixture for driver/render.py's tests (issue #29), mirroring
--- SPEC §5's frames_out (sqlcpu/schema.sql, unchanged) and sqlcpu's #130
--- design comment for framebuffer/palette (the shape #160's real,
--- human-gated persistence PR will eventually land -- see render.py's
--- module docstring for why this is a fixture, not the real tables).
--- Confirmed with sqlcpu-2 before use (issue #29's plan comment).
+-- Isolated fixture for driver/render.py's tests (issue #29). Written
+-- against sqlcpu's #130 design comment for framebuffer/palette, confirmed
+-- with sqlcpu-2 before use (issue #29's plan comment) -- #174 has since
+-- landed that exact shape for real in sqlcpu/schema.sql (framebuffer,
+-- palette, and batch_commit's six fb_wl_*/pal_wl_* columns all match
+-- byte-for-byte). This file still exists as a fast, isolated fixture for
+-- render.py's own tests rather than requiring the real, shared schema --
+-- see render.py's module docstring.
 --
 -- {{DB}} is substituted by the caller (same convention as sqlcpu/
 -- schema.sql's `clickdoom` placeholder database name, substituted the
@@ -63,6 +65,20 @@ CREATE TABLE {{DB}}.batch_commit
     wl_addr      Array(UInt32),
     wl_val       Array(UInt32),
     wl_icount    Array(UInt64),
+    -- #174's real six FRAMEBUFFER/PALETTE write-log columns -- added here
+    -- so this fixture stays a byte-exact mirror of sqlcpu/schema.sql now
+    -- that #174 landed, even though frame_readout_sql() doesn't read them
+    -- (it reads framebuffer/palette directly, not via this write-log).
+    -- Omitted from seed_frame_fixture.py's explicit-column INSERT, same as
+    -- wl_addr/wl_val/wl_icount already were -- ClickHouse fills an
+    -- unlisted Array column with [] by default, which is the right seed
+    -- value here regardless.
+    fb_wl_addr    Array(UInt32),
+    fb_wl_val     Array(UInt32),
+    fb_wl_icount  Array(UInt64),
+    pal_wl_addr   Array(UInt32),
+    pal_wl_val    Array(UInt32),
+    pal_wl_icount Array(UInt64),
     console_bytes Array(UInt8)
 )
 ENGINE = MergeTree

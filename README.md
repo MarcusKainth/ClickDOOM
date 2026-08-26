@@ -54,11 +54,11 @@ benchmark and SPEC's open questions — is done; `SPEC_VERSION` is no longer
 ClickHouse and the ROM boots in refemu — is **complete**. Phase 2 —
 integration and executor performance, closing at DOOM's first
 `FRAME_COMMIT` inside ClickHouse — is **in progress**: the SQL CPU executes
-the real DOOM ROM, boots through crt0, and prints DOOM's startup banner
-from inside ClickHouse, byte-identical to refemu with `pc` and all 31
-registers matching at icount 240,000; MMIO (SPEC §3) is implemented. The
-throughput gap remaining before a full `-timedemo demo3` run is practical
-is tracked in [#104](https://github.com/MarcusKainth/ClickDOOM/issues/104).
+the real DOOM ROM and boots through crt0; [PR #88](https://github.com/MarcusKainth/ClickDOOM/pull/88)
+demonstrated byte-for-byte parity with refemu through crt0 and MMIO init
+(`pc` and all 31 registers cross-checked), and MMIO (SPEC §3) is
+implemented. The throughput gap remaining before a full `-timedemo demo3`
+run is practical is tracked in [#104](https://github.com/MarcusKainth/ClickDOOM/issues/104).
 Phase 3 is the divergence hunt against `-timedemo demo3` described below.
 All four workstreams have landed substantial code, and the `just` recipes
 below work. The phase plan and workstream charters live in

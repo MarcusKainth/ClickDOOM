@@ -387,16 +387,27 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, out_table="ba
     owns the atomic-commit shape (batch_commit, pending ratification)."""
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm)
     init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')")
+    # The fold goes in a subquery and the 13 columns are projected off `r`
+    # outside it -- NOT `(arrayFold(...) AS r).1, r.2, ...` in one SELECT list.
+    # ClickHouse does not common-subexpression the alias in that position: each
+    # of the 13 references re-runs the entire fold. Measured at K=1 on the real
+    # ROM, where the fold itself is nearly free and the number is almost pure
+    # overhead: 16.95s inline vs 1.70s wrapped, a 10x difference in fixed
+    # per-batch cost, with identical results.
+    #
+    # select_only() already had this shape, which is why the two disagreed so
+    # sharply on fixed cost (1.7s vs 17s) and why #80's "batch overhead" looked
+    # like an unavoidable property of INSERT ... SELECT. It was not; it was this.
     return f"""INSERT INTO {db}.{out_table}
 WITH{decode_with(db)},
   (SELECT tuple(batch_id, pc, regs, icount)
      FROM {db}.state ORDER BY batch_id DESC LIMIT 1) AS PREV
 SELECT toUInt64(assumeNotNull(PREV.1) + 1) AS batch_id,
        toUInt64(assumeNotNull(PREV.4)) AS icount_before,
-       (arrayFold((acc, i) -> {step}, range({K}), {init}) AS r).1 AS pc,
-       r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
+       r.1 AS pc, r.2 AS regs, r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,
        r.4.1 AS stopped, r.4.2 AS halted, r.4.3 AS halt_reason,
        r.4.4 AS halt_pc, r.4.5 AS halt_extra, r.5 AS retired
+FROM (SELECT arrayFold((acc, i) -> {step}, range({K}), {init}) AS r)
 SETTINGS max_threads = 1"""
 
 

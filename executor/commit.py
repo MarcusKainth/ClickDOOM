@@ -152,9 +152,42 @@ def retention_sql(db=DB, n=config.BATCH_COMMIT_RETENTION_N):
     would delete everything it was supposed to protect, on the very first
     batches of every run. Doing the subtraction in Int64, flooring at 0 with
     `greatest`, then casting back to UInt64 for the comparison avoids the
-    wraparound entirely."""
+    wraparound entirely.
+
+    `SETTINGS lightweight_deletes_sync = 0` (#185): a lightweight DELETE
+    defaults to blocking the issuing connection until the mutation
+    completes. Nothing downstream of this call reads what retention
+    touches before the next batch starts -- every flush (ram/fbpal/
+    console_out/cpu_state) reads `batch_id = max(batch_id)`, never a
+    retention-eligible (old) row -- so synchronous completion buys
+    nothing but wall-clock time on the driver's critical path. Async
+    means the mutation can still be *in progress* when the next DELETE
+    is issued; ClickHouse queues mutations per table and applies them in
+    order regardless, so a still-running prior mutation never causes a
+    later one to see stale state or run out of order -- only the driver
+    stops waiting on a result it never needed."""
     return f"""DELETE FROM {db}.batch_commit
-WHERE batch_id < toUInt64(greatest(toInt64(0), toInt64((SELECT max(batch_id) FROM {db}.batch_commit)) - {n}))"""
+WHERE batch_id < toUInt64(greatest(toInt64(0), toInt64((SELECT max(batch_id) FROM {db}.batch_commit)) - {n}))
+SETTINGS lightweight_deletes_sync = 0"""
+
+
+def should_run_retention(batch_id, cadence=config.BATCH_COMMIT_RETENTION_N):
+    """#185: retention's WINDOW (how far back to keep, N=16) and its
+    CADENCE (how often to run the DELETE) are independent -- reusing N for
+    both is a choice, not a coincidence, made here explicitly rather than
+    left for the caller to notice or miss. Running every batch was 16x
+    more mutations than the N=16 bound needs: the DELETE recomputes
+    `max(batch_id) - N` fresh every time it runs, so running it every
+    Nth batch instead still enforces the exact same window (never more
+    than N-1 batches of extra rows accumulate between runs) at 1/N the
+    mutation count. `batch_id % cadence == 0` -- a cheap modulo on a
+    value the caller already read from SQL (the same shape as this
+    project's checkpoint-cadence check, scripts/run_milestone.sh's
+    `ICOUNT % RAM_HASH_INTERVAL`), not a new computation smuggled into
+    the driver: PURITY.md's housekeeping allowance covers deciding
+    *whether* to run an already-computed statement based on a value SQL
+    already produced, same as that existing checkpoint gate."""
+    return batch_id % cadence == 0
 
 
 if __name__ == "__main__":

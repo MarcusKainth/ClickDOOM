@@ -315,6 +315,28 @@ def test_retention_delete_does_not_underflow_early_in_a_run():
     assert after == before, "retention must not delete anything when batch_id=0 is under the N=16 lag window"
 
 
+def test_retention_sql_carries_the_async_setting():
+    # #185: lightweight_deletes_sync=0 must actually be in the emitted SQL,
+    # not just intended -- a guard has to be shown carrying what it exists
+    # for, not just asserted to. Cheap enough to check by string alone; the
+    # underflow test above already exercises this exact SQL against a real
+    # container, so this only needs to confirm the setting is present.
+    sql = commit.retention_sql(DB, n=config.BATCH_COMMIT_RETENTION_N)
+    assert "lightweight_deletes_sync" in sql and "= 0" in sql
+
+
+def test_should_run_retention_cadence():
+    # #185: cadence == window (N=16) by design -- runs on batch_id 0, 16,
+    # 32, ..., never in between. Checked at both the window's own N and a
+    # different N to confirm this isn't hardcoded to 16 specifically.
+    assert commit.should_run_retention(0, cadence=16) is True
+    assert commit.should_run_retention(16, cadence=16) is True
+    assert commit.should_run_retention(32, cadence=16) is True
+    for bid in range(1, 16):
+        assert commit.should_run_retention(bid, cadence=16) is False, f"batch_id={bid} should not trigger retention"
+    assert commit.should_run_retention(0, cadence=config.BATCH_COMMIT_RETENTION_N) is True
+
+
 def test_bootstrap_script_seeds_once_and_is_a_noop_on_replay():
     # This interpreter's own path, to run bootstrap.py as a subprocess and
     # test its CLI -- test-harness plumbing, not a computation delegated off

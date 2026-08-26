@@ -337,3 +337,99 @@ can't cause a `refemu`/`sqlcpu` divergence (both engines just store
 whatever bytes the ROM writes, gamma-applied or not), but the render
 query turning `PALETTE` bytes into displayable RGB must not apply gamma a
 second time.
+
+## manifest.json and PINNED_HASH (issue #10)
+
+Closes the ROM contract SPEC §4 defines: `manifest.json` and
+`rom/PINNED_HASH`, both emitted by the build, not hand-written.
+
+`toolchain/gen_manifest.sh` runs inside the pinned container immediately
+after the ELF/flat-binary build and reads every field from the actual
+build artifacts:
+
+- `entry`, `load_addr` — from `readelf -h`/`readelf -l`'s real entry point
+  and first `LOAD` segment address (both `0x8000_0000` = `2147483648` by
+  design, but read from the ELF rather than assumed).
+- `text_start`, `text_end` — from `nm`'s `__text_start`/`__text_end`
+  symbols, the same `toolchain/link.ld` symbols that delimit the
+  `SELF_MODIFY`-protected region (SPEC §1/§2, ADR-0002). This is the field
+  pair SPEC §4 specifically calls out as build-emitted rather than
+  hand-transcribed — a hand-copied bound that drifted from the linker
+  script would silently disable that protection, the worst failure mode
+  for a check whose entire purpose is catching silent corruption.
+- `size`, `sha256` — computed directly from the built `.bin`.
+- `spec_version` — the one field that isn't derived from the build; it's a
+  Makefile constant (`SPEC_VERSION`) kept in sync with `SPEC.md`'s own
+  version by hand, per `SPEC.md`'s own instruction ("must update
+  SPEC_VERSION here and the `spec_version` constants in code").
+
+Verified end to end: `manifest.json` is byte-identical across a plain
+rebuild and a full cache-evicted rebuild, same as `doom-rv32im.bin`
+always has been.
+
+`rom/PINNED_HASH` is the current build's sha256
+(`22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed`).
+`make check-pinned-hash` mirrors the verification CI's own (already
+present, human-gated `ci.yml`) hash-check step runs once this file exists
+— tested both directions locally: passes against the real build, and
+fails loudly with the exact "P0 or update the pin" message when the
+committed hash doesn't match (simulated with a corrupted `PINNED_HASH`,
+restored before committing). From this point on, **any ROM-affecting
+change must update `rom/PINNED_HASH` in the same PR** — CLAUDE.md's third
+non-negotiable is that a mismatch elsewhere is information (a
+nondeterminism P0), never something to "fix" by editing the pin.
+
+### A real P0, found by this exact check on its first real run
+
+`PINNED_HASH` failed CI the moment it landed — not a flake. CI's build
+(`22113f55...`) didn't match the hash I'd pinned locally on an Apple
+Silicon Mac (`67fa83e1...`). Every previous "verified reproducible" claim
+in this workstream's history (every prior PR back to #5) had only ever
+compared a build against *itself*, repeatedly, on the same machine —
+same host, same filesystem, every time. `PINNED_HASH` was the first check
+that ever compared a build from one host against a build from a
+genuinely different one, and it found two real, independent bugs sitting
+underneath a reproducibility claim that had looked solid for five PRs:
+
+1. **`$(wildcard $(DG_DIR)/*.c)` has host-filesystem-dependent order.**
+   `make` expands `$(wildcard)` once, on whatever OS invoked it, *before*
+   the file list ever reaches the container — it was never a
+   container-side concern. macOS happened to return these sorted; Linux
+   (every CI runner, and a QEMU-emulated Linux container tried locally)
+   does not. Different source order changes where each translation unit's
+   compiled code/data lands in the linked binary. Fixed with `$(sort
+   ...)` (`rom/Makefile`) — a one-line fix for a difference that would
+   otherwise have been invisible on any single developer's machine
+   forever, only ever surfacing as "CI disagrees with my local build" with
+   no other symptom.
+2. **xpack's linux-arm64 and linux-x64 toolchain packages are not
+   byte-identical, even after (1).** With source order fixed, an
+   arm64-hosted build and an amd64-hosted build of the *identical* file
+   set still differed — 182 bytes, in one place. Isolated by diffing the
+   two `.bin` files directly: the difference is an embedded `__FILE__`
+   path from an `assert()` in newlib's `dtoa.c` (double-to-string
+   conversion), baked into the prebuilt `libc.a` each toolchain package
+   ships — literally `.../build/linux-arm64/sources/newlib-.../dtoa.c` vs
+   `.../build/linux-x64/sources/newlib-.../dtoa.c`, xpack's own build-host
+   path from when *they* compiled each platform's release. Inert (the
+   `assert()` never fires in this program) but real: two different
+   physical `libc.a` files, embedding two different diagnostic strings,
+   linked into our binary. No amount of sorting our own file list fixes
+   this — it's not our nondeterminism, it's a fact about which prebuilt
+   library gets linked. Fixed by pinning the **container platform**, not
+   just the image digest: `rom/Makefile`'s `PLATFORM := linux/amd64` and
+   `--platform $(PLATFORM)` on every `docker build`/`docker run` means the
+   ROM is always compiled against the literal same `libc.a`, regardless of
+   which CPU architecture `docker` itself is running on. Slower under
+   emulation (e.g. on Apple Silicon, via QEMU) than a native build would
+   be; never wrong, which is the actual requirement.
+
+Verified the fix closes both gaps, not just CI's specific symptom: same
+sha256 from a native arm64-macOS-invoked build, a QEMU-emulated-amd64
+build on the same Mac, and CI's real amd64 runner — three genuinely
+different execution environments, one hash. This is also why the
+top-of-file comment in `rom/Makefile` no longer claims "reproduces
+byte-for-byte on any host with Docker" as a blanket statement without the
+platform pin backing it — the claim is true now because something
+specific (host, arch, container platform) makes it true, not because nothing
+had yet contradicted it.

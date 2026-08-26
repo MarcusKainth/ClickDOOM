@@ -171,25 +171,6 @@ WHERE batch_id < toUInt64(greatest(toInt64(0), toInt64((SELECT max(batch_id) FRO
 SETTINGS lightweight_deletes_sync = 0"""
 
 
-def should_run_retention(batch_id, cadence=config.BATCH_COMMIT_RETENTION_N):
-    """#185: retention's WINDOW (how far back to keep, N=16) and its
-    CADENCE (how often to run the DELETE) are independent -- reusing N for
-    both is a choice, not a coincidence, made here explicitly rather than
-    left for the caller to notice or miss. Running every batch was 16x
-    more mutations than the N=16 bound needs: the DELETE recomputes
-    `max(batch_id) - N` fresh every time it runs, so running it every
-    Nth batch instead still enforces the exact same window (never more
-    than N-1 batches of extra rows accumulate between runs) at 1/N the
-    mutation count. `batch_id % cadence == 0` -- a cheap modulo on a
-    value the caller already read from SQL (the same shape as this
-    project's checkpoint-cadence check, scripts/run_milestone.sh's
-    `ICOUNT % RAM_HASH_INTERVAL`), not a new computation smuggled into
-    the driver: PURITY.md's housekeeping allowance covers deciding
-    *whether* to run an already-computed statement based on a value SQL
-    already produced, same as that existing checkpoint gate."""
-    return batch_id % cadence == 0
-
-
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("which", choices=["ram", "fbpal", "console_out", "cpu_state", "retention"])

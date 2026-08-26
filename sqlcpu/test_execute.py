@@ -85,7 +85,8 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg, regs=None):
     def read_(r):
         return 0 if r == 0 else regs[r - 1]
     A = read_(rs1)
-    B = u32(read_(rs2) + imm)
+    rs2_value = read_(rs2)  # raw, NOT +imm -- see store_value's docstring
+    B = u32(rs2_value + imm)
 
     if id_ == 18:
         addr = u32(A + imm)
@@ -152,7 +153,10 @@ def oracle(pc, id_, rd, rs1, rs2, imm, tgt, mk, sg, regs=None):
     st_val = None
     if is_st:
         shift = 8 * (addr & 3)
-        st_val = u32((STORE_WORD & u32(~(mk << shift))) | ((B & mk) << shift))
+        # rs2_value, NOT B: B has the store's address-offset imm folded in
+        # (ADR-0002's collapse, correct for computing the address from A),
+        # which is not part of the value being stored.
+        st_val = u32((STORE_WORD & u32(~(mk << shift))) | ((rs2_value & mk) << shift))
 
     halted = 1 if (28 <= id_ <= 31 or misaligned) else 0
     reason = {28: "ECALL", 29: "EBREAK", 30: "CSR", 31: "ILLEGAL_INSN"}.get(id_, "")
@@ -236,7 +240,7 @@ def _row_parts(rows):
     newregs_expr = ex.regs_write(ex.rd_or_suppressed(misaligned="misaligned"), result_expr)
     isstore_expr = ex.is_store()
     staddr_expr = ex.store_word_addr()
-    stval_expr = ex.store_value("loaded_word_store", "addr_store")
+    stval_expr = ex.store_value("loaded_word_store", "addr_store", rs2_value="rs2_value")
     halted_expr = ex.halted(misaligned="misaligned")
     haltreason_expr = ex.halt_reason(misaligned="misaligned")
 
@@ -286,6 +290,7 @@ FROM
         {regs_sql} AS regs,
         toUInt32({LOAD_WORD}) AS loaded_word, toUInt32({STORE_WORD}) AS loaded_word_store,
         ({a_expr}) AS A, ({b_expr}) AS B,
+        ({ex.reg_read('rs2')}) AS rs2_value,
         toUInt32(A + imm) AS addr_load, toUInt32(A + imm) AS addr_store,
         ({ex.is_misaligned()}) AS misaligned
     SELECT

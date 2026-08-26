@@ -4,12 +4,15 @@
 # sqlcpu/fixtures/decode_vectors.tsv is 50 hand-encoded RV32IM instructions
 # (every dispatch id 0..27, both sentinel ids 254/255, FENCE-as-no-op, and a
 # reserved-funct3 case), one per line:
-#   word_addr  word  id  rd  rs1  rs2  imm  tgt  mk  sg  note
-# The first two columns are the raw ROM content to decode; the next eight are
-# the hand-verified expected sqlcpu.decoded row; `note` is a human label, not
-# loaded anywhere. This is a correctness check for sqlcpu/decode.sql, not a
-# substitute for riscv-tests (#21) — it validates decode's dispatch and field
-# extraction against known encodings without needing execute (#19) to exist.
+#   word_addr  word  id  rd  rs1  rs2  imm  tgt  mk  sg  m_sg1  m_sg2  m_hi  d_sg  note
+# The first two columns are the raw ROM content to decode; the next twelve
+# are the hand-verified expected sqlcpu.decoded row (m_sg1/m_sg2/m_hi/d_sg
+# added for issue #54's M-extension collapse -- non-zero only on the eight
+# mul/mulh/mulhsu/mulhu/div/divu/rem/remu rows, per schema.sql's column-doc
+# comment); `note` is a human label, not loaded anywhere. This is a
+# correctness check for sqlcpu/decode.sql, not a substitute for riscv-tests
+# (#21) — it validates decode's dispatch and field extraction against known
+# encodings without needing execute (#19) to exist.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -60,8 +63,8 @@ cut -f1,2 "$FIXTURE" | awk -F'\t' '{print $1"\t"$2"\t0"}' \
 echo "# running sqlcpu/decode.sql..." >&2
 ch --param_text_start_word="$FIRST_WORD" --param_text_end_word="$END_WORD" --multiquery < sqlcpu/decode.sql
 
-actual=$(ch --query "SELECT word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg FROM decoded ORDER BY word_addr FORMAT TSV")
-expected=$(cut -f1,3,4,5,6,7,8,9,10 "$FIXTURE")
+actual=$(ch --query "SELECT word_addr, id, rd, rs1, rs2, imm, tgt, mk, sg, m_sg1, m_sg2, m_hi, d_sg FROM decoded ORDER BY word_addr FORMAT TSV")
+expected=$(cut -f1,3,4,5,6,7,8,9,10,11,12,13,14 "$FIXTURE")
 
 if [ "$actual" = "$expected" ]; then
   echo "decode.sql: all $(wc -l < "$FIXTURE" | tr -d ' ') vectors match"

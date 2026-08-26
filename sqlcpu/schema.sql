@@ -221,6 +221,35 @@ ORDER BY seq;
 --        only for id = 18 (load) and id = 19 (store)
 --   sg   sign-extend flag for loads (1 = sign-extend, 0 = zero-extend);
 --        meaningful only for id = 18 (load) — stores never sign-extend
+--   m_sg1 1 if rs1 is a SIGNED operand for this multiply, meaningful only
+--        for id IN (10, 11, 12) -- mul/mulh/mulhsu; 0 (unsigned) for
+--        id = 13 (mulhu) and for every non-multiply id
+--   m_sg2 1 if rs2 is a SIGNED operand for this multiply, meaningful only
+--        for id IN (10, 11) -- mul/mulh; 0 (unsigned) for id IN (12, 13)
+--        -- mulhsu/mulhu -- and for every non-multiply id
+--   m_hi  1 if the result is the HIGH 32 bits of the 64-bit product,
+--        meaningful only for id IN (11, 12, 13) -- mulh/mulhsu/mulhu; 0
+--        (low 32 bits) for id = 10 (mul) and for every non-multiply id.
+--        m_sg1/m_sg2/m_hi (issue #54) exist so the execute expression's
+--        mul/mulh/mulhsu/mulhu arms -- currently four separate arms, each
+--        paying its own 64-bit cast+multiply on EVERY step regardless of
+--        which id is live, since neither multiIf nor if short-circuits
+--        inside arrayFold (ADR-0002) -- can collapse to one shared 64-bit
+--        multiply selected by these three decode-time flags instead of
+--        four independently-evaluated subexpressions.
+--   d_sg  1 if this div/rem is SIGNED, meaningful only for id IN (14, 16)
+--        -- div/rem; 0 (unsigned) for id IN (15, 17) -- divu/remu -- and
+--        for every non-div/rem id. Same collapse motivation as m_sg1/m_sg2/
+--        m_hi above: div/divu/rem/remu (four arms) become one shared
+--        Int64 division selected by this flag (issue #54). Doing that
+--        division in Int64 rather than Int32/UInt32 is also what avoids
+--        the crash in issue #99: ClickHouse's intDiv()/modulo() raise
+--        ILLEGAL_DIVISION on `INT_MIN / -1` in 32-bit arithmetic, but
+--        `-2147483648` widened to Int64 and divided by `-1` doesn't
+--        overflow Int64 at all, and truncating the Int64 result back to
+--        UInt32 gives exactly RISC-V's spec'd INT_MIN result for div (and
+--        `modulo` correspondingly gives 0 for rem) with no separate
+--        overflow branch needed.
 --   raw  the undecoded instruction word, kept only so an id = 31
 --        (ILLEGAL_INSN) halt record can report the actual bad instruction
 --        (SPEC §1) without re-reading `ram` at halt time. Added at
@@ -264,6 +293,10 @@ CREATE TABLE IF NOT EXISTS clickdoom.decoded
     tgt          UInt32,
     mk           UInt32,
     sg           UInt8,
+    m_sg1        UInt8,
+    m_sg2        UInt8,
+    m_hi         UInt8,
+    d_sg         UInt8,
     raw          UInt32
 )
 ENGINE = MergeTree

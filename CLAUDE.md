@@ -57,6 +57,28 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
   `pull_request` synchronize event is unreliable after a force-push, so a
   rebased PR can sit with zero check-runs and look merge-blocked for no
   reason. Push an empty commit to retrigger.
+  **Note (2026-08-26):** CI evidence gathered this day after 15:11 UTC
+  is unreliable — GitHub Actions was in a confirmed platform-wide major
+  outage (incident opened 15:11 UTC "degraded availability for
+  Actions," Pages also degraded 15:12 UTC, database-primary failover
+  15:23 UTC — checked directly against githubstatus.com, not relayed).
+  Runs from that window show `startup_failure` and jobs wedged
+  indefinitely in `queued`, indistinguishable from "the event never
+  fired" via `gh run list`. Several retrigger remedies (this one, a
+  real content-touch commit, closing and reopening the PR) were tested
+  that afternoon; those results are contaminated and were **not** used
+  to change this entry — the advice above is unconfirmed, not
+  disproven. If you are re-testing retrigger behaviour, check
+  githubstatus.com first.
+  **`gh pr checks` renders a `cancelled` conclusion as `fail`** — verified
+  directly against the API (`gh api repos/.../actions/runs/<id>/jobs`) on
+  a run outage-wedged during this same window: raw `conclusion=cancelled`
+  on all six real jobs, `gh pr checks` printed `fail` for every one. A
+  wedged/cancelled run is indistinguishable from six genuine failures at
+  the CLI unless you check the raw conclusion. The mirror image of
+  Non-negotiable #5 below: a red check that never really ran isn't
+  evidence of a defect either, same as a green one that never ran isn't
+  evidence of success.
 - Merging: author merges after (a) CI green and (b) one approval from a
   different agent — preferably your contract counterpart (`rom`↔`refemu`,
   `sqlcpu`↔`executor`). Never approve your own PR. SPEC/PURITY/workflow
@@ -102,3 +124,18 @@ is missing, add it in the same PR.
    Red checks are information.
 4. Divergences get filed with full repro fields even if you fix them in the
    same PR — the report history is the project's debugging memory.
+5. **A check that never ran is indistinguishable from one that passed —
+   require positive evidence, never infer success from the absence of
+   failure.** One shape, everywhere it shows up: `SELF_MODIFY` correct
+   but unreachable through both driver call sites, `HALT_EXIT` untested
+   on the `sqlcpu` side specifically (`refemu` already covers it —
+   `refemu/tests/test_mmio.py::test_exit_halts_with_reason_and_code`),
+   `tgt_mis=1` caught unreachable and fixed within the same PR (#161) that
+   introduced its regression fixture, a gate 4 smoke test that never
+   actually self-modifies, `gh pr checks` reporting "no checks reported"
+   reading identically to all-green if your own check counts non-`pass`
+   lines instead of requiring passes for the commit you actually care
+   about (see the CI entry above — that near-miss is what surfaced this
+   rule). Before trusting a check —
+   automated, in review, or in a PR's own evidence section — confirm it
+   actually ran against what you think it ran against.

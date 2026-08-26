@@ -147,9 +147,11 @@ sitting in `.data`.
 
 `src/dg_hooks_stub.c` was the "temporary, issue-#8-will-replace-this" file
 — every `DG_*` hook a no-op standing in for the real SPEC §3 MMIO wiring.
-`src/main.c` is not a placeholder: `doomgeneric_Create(0, 0)` is genuinely
-what this ROM's `main` does (doomgeneric's own documented usage pattern),
-since `D_DoomMain()` never returns.
+`src/main.c` is not a placeholder: `doomgeneric_Create(0, 0)` followed by
+`doomgeneric_Tick()` in a loop is genuinely what this ROM's `main` does
+(doomgeneric's own documented usage pattern). Issue #9's "corrected below"
+section explains why that second half was missing until a real WAD made
+the bug visible.
 
 ## DG_* platform hooks (issue #8)
 
@@ -214,3 +216,124 @@ palette matches expected pattern: True     # byte-exact, all 768 bytes
 
 Every hook, exercised, MMIO trace matching SPEC §3 exactly — not asserted,
 read back from the emulator's own memory after the run.
+
+## Embedding the WAD (issue #9), and a real bug it uncovered
+
+`src/wad_embed.S` embeds `rom/wad/doom1.wad` (vendored in #60) as a rodata
+blob via `.incbin` — `_wad_doom1_start`/`_wad_doom1_end` bracket it.
+`src/wad_embed.c`'s `wad_embed_register()` hands that range to
+`syscalls.c`'s virtual filesystem (`rom_vfs_register`, the seam #7 built
+for exactly this); `src/main.c` calls it before `doomgeneric_Create()`,
+since `D_DoomMain`'s IWAD search happens synchronously inside that call.
+Explicit call, not a constructor — see `wad_embed.h` for why (crt0 never
+processes `.init_array`; verified empirically before this landed).
+
+**Corrected a real bug in `src/main.c`, found by actually booting with a
+real WAD for the first time.** The previous version called
+`doomgeneric_Create()` alone, on the assumption (stated in its own
+comment) that `D_DoomMain()` "ends in `D_DoomLoop()`, which never
+returns." That's true of *vanilla* DOOM's `D_DoomLoop` — not of
+doomgeneric's redesigned one (`d_main.c`): it runs one-time graphics setup
+plus exactly **one** `doomgeneric_Tick()` and returns, on the (correct,
+and documented) assumption that the platform's own loop calls
+`doomgeneric_Tick()` again for every tic after that. Without a WAD,
+`D_DoomMain` halts at the IWAD search (issue #7's finding) long before
+ever reaching `D_DoomLoop`, so the missing loop was invisible until now.
+
+Caught by booting the built ELF in refemu and finding `pc` parked at
+`main`'s own safety `for(;;)` after exactly one `FRAME_COMMIT`, instead of
+climbing past it:
+
+```
+frame_commits: [(0, 13243948)]      # one tic ran, then D_DoomLoop returned
+# pc == main+0x20 (this file's own for(;;)) at both 30M and 80M instructions
+# -- not "slow", genuinely stuck: identical pc at two very different icounts
+```
+
+Fixed by adding the missing loop (`for (;;) { doomgeneric_Tick(); }`).
+Rebuilt and re-booted the same way:
+
+```
+$ uv run python3 -c '<boot rom/build/doom-rv32im.bin through refemu new_cpu(), run 60M instructions>'
+did not halt within 60000000: icount=60000000 pc=0x80037aa4
+total frame_commits: 100
+first 10: [(0, 13243964), (1, 13715122), (2, 14185231), (3, 14656377), (4, 15127523), ...]
+last 5:   [(95, 57969584), (96, 58439699), (97, 58910869), (98, 59382027), (99, 59852142)]
+```
+
+100 frames, steadily advancing `pc`, a stable ≈470K instructions per tic
+after the (much heavier, one-time) first frame's graphics/game-state
+setup. The console log along the way shows the shareware WAD loading, the
+DOOM Shareware banner, and the full engine init sequence
+(`R_Init`/`P_Init`/`S_Init`/`I_InitGraphics: ... 320 x 200, bpp: 8 ...
+Auto-scaling factor: 1`) — confirming issue #8's `CMAP256` sizing
+computed exactly the 1:1 scaling it was designed for. This is the first
+time the real DOOM engine has run past its own startup sequence anywhere
+in this project.
+
+### ROM size, against SPEC §2's 24 MiB RAM window (post-wiring, real numbers)
+
+Computed from the actual linked ELF's symbols, not estimated:
+
+| region | bytes | |
+|---|---:|---|
+| `.text` | 395,196 | 385.9 KiB |
+| `.rodata`/`.data` | 4,394,116 | 4.19 MiB |
+| — of which the WAD | 4,196,020 | 4.00 MiB |
+| — other rodata/data | 198,096 | 193.5 KiB |
+| `.bss` | 245,384 | 239.6 KiB |
+| heap (free) | 19,082,552 | **18.20 MiB** |
+| stack (reserved) | 1,048,576 | 1.00 MiB |
+| **total** | 25,165,824 | **24.00 MiB**, exact |
+
+18.20 MiB of headroom for whatever the running engine allocates at
+runtime (zone memory, level data, ...) — healthy, and slightly less than
+#60's pre-wiring 19.43 MiB estimate (that estimate didn't account for
+`.bss`, the 1 MiB stack reservation, or the ~193 KiB of non-WAD
+rodata/data the full link adds).
+
+### Does `-timedemo` pay `DG_SleepMs`'s elastic-time tax?
+
+Raised during #59's review: `DG_SleepMs`'s busy-poll on `TICKS_MS` is the
+only correct implementation (SPEC §3.1's elastic time means "waiting" is
+retiring instructions, not blocking on a real clock — see the "DG_*
+platform hooks" section above), but under that model a sleep is never
+free: waiting N ms costs N × `IPMS` instructions (10,000/ms by default)
+doing no game work. If interactive play sleeps ~28ms between tics at 35
+fps, that's real overhead — the question was whether Phase 3's
+`-timedemo demo3` run pays it too.
+
+Read `d_loop.c`/`g_game.c` rather than assuming. It doesn't, and not by
+luck:
+
+- `G_TimeDemo` (`g_game.c`, what `-timedemo` calls) sets `singletics =
+  true`.
+- `d_loop.c`'s only two `I_Sleep`/`DG_SleepMs` call sites: one
+  (`BlockUntilStart`, networking-only) is wrapped in `#if ORIGCODE`, and
+  `config.h` permanently `#undef`s `ORIGCODE` — that call site isn't even
+  compiled into this ROM. The other is `TryRunTics`'s wait-for-more-tics
+  loop, reached only if `lowtic < gametic/ticdup + counts` — but in
+  singletics mode, `BuildNewTic()` (called unconditionally, first thing in
+  `TryRunTics`) synchronously advances `maketic` by exactly one tic before
+  that condition is even checked, and `counts` is derived from the same
+  freshly-advanced `lowtic`. The wait condition can't be true by
+  construction: singletics mode is specifically designed to never wait,
+  which is the entire point of a throughput-measuring timedemo.
+
+So: `DG_SleepMs` costs nothing on the path that is this project's
+Definition of Victory. It only matters for interactive play (the stretch
+goal), where pacing at 35 tics/sec is the actual intent, not a cost to
+avoid. Doesn't change `IPMS` (still SPEC §9's deliberately-unratified
+open question, owned by `refemu` per SPEC §9), but rules out one way the
+elastic-time model could have quietly taxed the multi-week timedemo run.
+
+### Palette gamma (a note for whoever writes the render query, #29)
+
+`colors[]` (the `CMAP256` extern this file reads for the `PALETTE`
+region) is gamma-corrected — `I_SetPalette` applies
+`gammatable[usegamma]` to the raw WAD palette before storing it there.
+What lands in SPEC §2's `PALETTE` region is already post-gamma. This
+can't cause a `refemu`/`sqlcpu` divergence (both engines just store
+whatever bytes the ROM writes, gamma-applied or not), but the render
+query turning `PALETTE` bytes into displayable RGB must not apply gamma a
+second time.

@@ -238,6 +238,20 @@ instructions at a time.
 About five hours, not fifteen days. The long run is still ahead of us. But the
 machine draws now.
 
+We let it keep going. DOOM opens with a screen wipe, so the first frame is
+almost entirely one colour. Twenty-five frames later the wipe has finished and
+the game is showing a normal view:
+
+![A DOOM screenshot: a corridor with wooden walls, a lit column in the centre, and the full status bar showing 100% health and ammo counts](images/frame25-clickdoom.png)
+
+*Frame 25 of `demo3`, at instruction 22,188,003. Every pixel here was computed
+inside ClickHouse. The status bar, the lighting on the walls, the text at the
+top: all of it produced by a CPU written in SQL, then converted from DOOM's
+8-bit palette to RGB by another SQL query.*
+
+We checked this one too. Its hash is `e7cff1ed07d8821c`, and the reference
+emulator produces the same value from its own separate run.
+
 One more result came out of that run, and it matters more than the picture. We
 had been worried the fold would slow down as data piled up, which would have
 made a fifteen-day run much longer. Across 264 batches it did not. The second

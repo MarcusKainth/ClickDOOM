@@ -156,7 +156,15 @@ fi
 echo "# --- bootstrap (idempotent -- no-op if already seeded) -------------" >&2
 python3 executor/bootstrap.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
     --password "$PASSWORD" --database "$DATABASE" --client "$CLIENT" >&2
-ch --multiquery <<< "$(python3 executor/commit.py cpu_state --db "$DATABASE")"
+# Checked assignment, not `ch --multiquery <<< "$(...)"` directly: a
+# command substitution feeding a here-string discards its exit status even
+# under `set -euo pipefail` (#228) -- if commit.py raises, `ch` would be
+# handed empty stdin, accept it, and exit 0 as though the flush committed.
+# Assigning to a variable first makes the substitution's own failure a
+# checked simple command, so `set -e` fires -- same pattern as `BATCH_SQL=`
+# below.
+CPU_STATE_SQL=$(python3 executor/commit.py cpu_state --db "$DATABASE")
+ch --multiquery <<< "$CPU_STATE_SQL"
 
 TEXT_START=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_start'])")
 TEXT_END=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_end'])")
@@ -182,8 +190,15 @@ RAM_BASE_WORD=$(( LOAD_ADDR / 4 ))
 TEXT_START_WIDX=$(( TEXT_START_WORD - RAM_BASE_WORD ))
 TEXT_END_WIDX=$(( TEXT_END_WORD - RAM_BASE_WORD ))
 
-read -r RESUME_BATCH RESUME_ICOUNT <<< "$(ch --query \
-  "SELECT max(batch_id), max(icount) FROM cpu_state FINAL" | tr '\t' ' ')"
+# Checked assignment before the `read`, for the same reason as
+# CPU_STATE_SQL above (#228) -- and worse here if skipped: `<<< "$(...)"`
+# discards a failed query's exit status, so RESUME_ICOUNT would come back
+# "", which bash arithmetic evaluates as 0. A transient query failure on
+# resume would then silently restart a multi-day run from icount 0 instead
+# of failing loudly.
+RESUME_LINE=$(ch --query \
+  "SELECT max(batch_id), max(icount) FROM cpu_state FINAL" | tr '\t' ' ')
+read -r RESUME_BATCH RESUME_ICOUNT <<< "$RESUME_LINE"
 echo "# resuming from batch_id=$RESUME_BATCH icount=$RESUME_ICOUNT" >&2
 ICOUNT="$RESUME_ICOUNT"
 
@@ -225,16 +240,28 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   # other script here that touches fold.py's output.
   echo "$BATCH_SQL" | ch --multiquery
 
-  ch --multiquery <<< "$(python3 executor/commit.py ram --db "$DATABASE")"
-  ch --multiquery <<< "$(python3 executor/commit.py fbpal --db "$DATABASE")"
-  ch --multiquery <<< "$(python3 executor/commit.py console_out --db "$DATABASE")"
-  ch --multiquery <<< "$(python3 executor/commit.py cpu_state --db "$DATABASE")"
+  # Checked assignment before each flush, not `ch --multiquery <<< "$(...)"`
+  # directly (#228): a command substitution feeding a here-string discards
+  # its exit status even under `set -euo pipefail`, so a raising commit.py
+  # would hand `ch` empty stdin -- accepted, exit 0 -- and the loop would
+  # continue as though the flush committed. Assigning to a variable first
+  # makes the substitution's own failure a checked simple command, so
+  # `set -e` fires. Same pattern as `BATCH_SQL=` above.
+  RAM_SQL=$(python3 executor/commit.py ram --db "$DATABASE")
+  ch --multiquery <<< "$RAM_SQL"
+  FBPAL_SQL=$(python3 executor/commit.py fbpal --db "$DATABASE")
+  ch --multiquery <<< "$FBPAL_SQL"
+  CONSOLE_OUT_SQL=$(python3 executor/commit.py console_out --db "$DATABASE")
+  ch --multiquery <<< "$CONSOLE_OUT_SQL"
+  CPU_STATE_SQL=$(python3 executor/commit.py cpu_state --db "$DATABASE")
+  ch --multiquery <<< "$CPU_STATE_SQL"
   # SPEC §5: "the driver issues [retention] unconditionally every batch" --
   # every batch, not on a cadence (#193: #187 shipped a cadence gate here
   # that contradicted this line; reverted, since the throughput case for it
   # didn't clear the bar for a spec-change ratification -- retention was
   # measured at 0.05-0.13% of batch time, below the fold noise floor).
-  ch --multiquery <<< "$(python3 executor/commit.py retention --db "$DATABASE")"
+  RETENTION_SQL=$(python3 executor/commit.py retention --db "$DATABASE")
+  ch --multiquery <<< "$RETENTION_SQL"
 
   # Never trust STEP_K as what actually retired -- a batch can stop early
   # on the write-log high-water mark, a halt, or FRAME_COMMIT. Re-read the

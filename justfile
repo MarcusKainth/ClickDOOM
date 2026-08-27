@@ -144,12 +144,18 @@ preflight-milestone: up
 # PINNED_HASH 9a6a47d0...; the fb_hash at that icount, fe5d82c0f42d45f1,
 # is unchanged by #175 -- re-derived directly from a live refemu run
 # against the current PINNED_HASH, not carried over by arithmetic on the
-# pre-unroll number). Calls preflight_milestone.sh internally and refuses
-# to start if it fails -- do not run preflight-milestone separately first,
-# it is redundant. **Do not run this against the shared `clickdoom`
-# database for real without team-lead sign-off** -- #25/#29 gate the
-# actual milestone run (#110); this recipe exists so the instrument itself
-# is one command, not so it is safe to fire at any time.
+# pre-unroll number). `--stop-at-frame 0` pins this recipe to #110's actual
+# milestone (stop at the FIRST FRAME_COMMIT) rather than relying on the
+# coincidence that the default target icount happens to equal it -- #210
+# made run_milestone.sh run straight through FRAME_COMMITs to the target
+# icount by default, so a later change to CLICKDOOM_TARGET_ICOUNT alone
+# would otherwise silently run this recipe past frame 0. Calls
+# preflight_milestone.sh internally and refuses to start if it fails -- do
+# not run preflight-milestone separately first, it is redundant. **Do not
+# run this against the shared `clickdoom` database for real without
+# team-lead sign-off** -- #25/#29 gate the actual milestone run (#110);
+# this recipe exists so the instrument itself is one command, not so it is
+# safe to fire at any time.
 run-milestone: up
     ./scripts/run_milestone.sh \
         --bin "${CLICKDOOM_ROM_BIN:-rom/build/doom-rv32im.bin}" \
@@ -159,25 +165,7 @@ run-milestone: up
         --database "${CLICKDOOM_DATABASE:-clickdoom}" \
         --trace "${CLICKDOOM_REFERENCE_TRACE:-refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv}" \
         --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15393136}" \
-        --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
-
-# Same as run-milestone, but for a target icount past the first
-# FRAME_COMMIT. run_milestone.sh stops at every FRAME_COMMIT, not just at
-# --target-icount (#210) -- reaching a later frame means re-invoking it
-# once per intervening frame. This recipe does that via
-# scripts/run_milestone_through_frames.sh, a pure driver loop with no
-# logic beyond "re-run the same command, read the icount it already
-# printed" -- see that script's header for the full story. Same
-# CLICKDOOM_* overrides as run-milestone above; same sign-off requirement.
-run-milestone-through-frames: up
-    ./scripts/run_milestone_through_frames.sh \
-        --bin "${CLICKDOOM_ROM_BIN:-rom/build/doom-rv32im.bin}" \
-        --manifest "${CLICKDOOM_ROM_MANIFEST:-rom/build/manifest.json}" \
-        --k "${CLICKDOOM_RUN_K:-60000}" \
-        --hwm "${CLICKDOOM_RUN_HWM:-20000}" \
-        --database "${CLICKDOOM_DATABASE:-clickdoom}" \
-        --trace "${CLICKDOOM_REFERENCE_TRACE:-refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv}" \
-        --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15393136}" \
+        --stop-at-frame 0 \
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
 # All linters + purity check (what CI runs)

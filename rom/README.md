@@ -367,17 +367,54 @@ Verified end to end: `manifest.json` is byte-identical across a plain
 rebuild and a full cache-evicted rebuild, same as `doom-rv32im.bin`
 always has been.
 
-`rom/PINNED_HASH` is the current build's sha256
-(`22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed`).
-`make check-pinned-hash` mirrors the verification CI's own (already
-present, human-gated `ci.yml`) hash-check step runs once this file exists
-— tested both directions locally: passes against the real build, and
-fails loudly with the exact "P0 or update the pin" message when the
-committed hash doesn't match (simulated with a corrupted `PINNED_HASH`,
-restored before committing). From this point on, **any ROM-affecting
-change must update `rom/PINNED_HASH` in the same PR** — CLAUDE.md's third
-non-negotiable is that a mismatch elsewhere is information (a
-nondeterminism P0), never something to "fix" by editing the pin.
+`rom/PINNED_HASH` is the current build's sha256 (as of issue #10's
+original landing, `22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed`;
+it has since moved twice more, most recently to `9a6a47d0…` for #175's
+unroll — check the file itself, never this paragraph, for the live
+value). `make check-pinned-hash` mirrors the verification CI's own
+(already present, human-gated `ci.yml`) hash-check step runs once this
+file exists — tested both directions locally: passes against the real
+build, and fails loudly with the exact "P0 or update the pin" message
+when the committed hash doesn't match (simulated with a corrupted
+`PINNED_HASH`, restored before committing). From this point on, **any
+ROM-affecting change must update `rom/PINNED_HASH` in the same PR** —
+CLAUDE.md's third non-negotiable is that a mismatch elsewhere is
+information (a nondeterminism P0), never something to "fix" by editing
+the pin.
+
+### The dependency runs the other way too: reference traces are PINNED_HASH-keyed (issue #214)
+
+The paragraph above states the forward rule — a ROM-affecting change
+must update `PINNED_HASH` in the same PR. It doesn't state the reverse,
+and nothing in the repo enforced it until #214 filed it: **a
+`PINNED_HASH` change invalidates every reference trace keyed to the old
+hash**, not just the ROM artifact itself. `refemu/reference_traces/`
+names its files by the hash they were generated against precisely
+because they're specific to one build
+(`demo-boot-to-first-frame.<hash>.tsv`, `demo3.<hash>.json` + its
+gitignored `.tsv`) — but a stale trace doesn't error at the point the
+hash moves. It errors later, whenever a run actually walks past the old
+trace's coverage.
+
+#175/#198 (this file's own most recent `PINNED_HASH` move, the dormant-
+unroll optimization) is the concrete instance: the boot-to-first-frame
+trace was regenerated against the new hash and the demo3 trace's
+manifest was re-measured and confirmed (#202) — but the demo3 trace's
+own `.tsv` was never regenerated, because nothing connected "PINNED_HASH
+moved" to "regenerate every trace keyed to the old one." That gap sat
+invisible until a live milestone run reached the old trace's coverage
+boundary mid-run and failed loudly (#214) — the right failure mode,
+just a much later and more expensive point to discover it at than the
+PR that moved the hash.
+
+**Treat a `PINNED_HASH` change as incomplete until every reference trace
+keyed to the old hash has a keyed-to-the-new-hash successor**, generated
+or at least explicitly deferred with a tracking issue — not merely
+"didn't come up in this PR's own testing." #214 tracks the two
+operational fixes this should eventually make automatic (a `just`
+recipe for the demo3 trace generator, and an upfront trace-coverage
+check in the milestone runner so a short trace fails in under a second
+instead of after however much compute a real run has already spent).
 
 ### A real P0, found by this exact check on its first real run
 

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """The batch fold statement (#23): SPEC §1 halt semantics, SPEC §6 early
-termination (halt / write-log high-water mark -- FRAME_COMMIT hooks in at
-#24, once MMIO address routing exists), and the write-log versioning fix
-(SPEC §5, flagged on PR #30 and in issue #35): every write-log entry carries
-its own retiring instruction's icount, not the batch's final icount.
+termination (halt / write-log high-water mark / FRAME_COMMIT -- the
+FRAME_COMMIT arm was wired in by #223; MMIO address routing itself landed
+earlier via #24, but the termination hookup was never added, letting every
+frame-committing batch run a full K past the commit -- see #223 for the
+divergence this caused between a frame's real icount and
+batch_commit.icount), and the write-log versioning fix (SPEC §5, flagged on
+PR #30 and in issue #35): every write-log entry carries its own retiring
+instruction's icount, not the batch's final icount.
 
 Starting point: executor/bench/phase0/fold_predecoded.py (ADR-0002). Reused:
 the collapsed op_id space 0-27 (agreed with sqlcpu, PR #42/#46/#49), the
@@ -641,6 +645,21 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
+    # SPEC §6 (#223): a FRAME_COMMIT write ends the batch early, same as the
+    # write-log high-water mark -- it retires normally (it's an ordinary
+    # MMIO store, not a fault), it just also stops the batch. Defined here,
+    # ahead of both call sites that need it (new_control below, new_frame
+    # further down in the acc.6 section) so each references the SAME text
+    # once instead of re-deriving `step_retires AND is_mmio_store AND
+    # mmio_is(MMIO_FRAME_COMMIT)` twice -- this file's per-textual-reference
+    # cost model (see HALT_CODE's docstring-adjacent comments) makes that a
+    # real saving, not just tidiness. `is_mmio_store` already carries
+    # `step_retires`'s sibling condition `{ID} = OP_STORE` and the width
+    # gate (#152) -- see its own definition above -- so this needs nothing
+    # beyond step_retires AND is_mmio_store AND the FRAME_COMMIT address
+    # check.
+    frame_committed_now = f"({step_retires} AND {is_mmio_store} AND {mmio_is(config.MMIO_FRAME_COMMIT)})"
+
     # wl_icount is ABSOLUTE by construction, not by convention: acc.5 is
     # already the running absolute icount (build_step()'s docstring), so
     # this store's version is simply "acc.5 after this step retires" --
@@ -661,9 +680,16 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
               f" tuple(arrayPushBack(acc.3.1, {WA}), arrayPushBack(acc.3.2, {SVAL}),"
               f" arrayPushBack(acc.3.3, acc.5 + 1)),"
               f" acc.3)")
+    # {hits_hwm} OR {frame_committed_now}, not a separate multiIf arm: both
+    # produce the exact same tuple (stopped=1, everything else carried
+    # through -- neither is a fault), so a second arm would just be a
+    # second copy of that tuple construction for zero behavioral gain.
+    # Folding the condition in costs one OR; a new arm would cost an extra
+    # multiIf branch AND its own tuple literal, on every step, forever
+    # (#183: arrayFold never short-circuits either way).
     new_control = (f"multiIf({step_halts_now},"
                    f" tuple(toUInt8(1), toUInt8(1), toUInt8({HC}), {PC}, {halt_extra_calc}),"
-                   f" {hits_hwm}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5),"
+                   f" {hits_hwm} OR {frame_committed_now}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5),"
                    f" acc.4)")
 
     # --- acc.7: FRAMEBUFFER/PALETTE write-log (#130) ------------------------
@@ -730,7 +756,12 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # frame number and committed-flag share one condition, so they live in a
     # nested tuple and are written by a single `if`. Two separate slots would
     # mean testing FRAME_COMMIT twice, and each test re-expands ADDR.
-    new_frame = (f"if({retiring_mmio_store} AND {mmio_is(config.MMIO_FRAME_COMMIT)},"
+    # {frame_committed_now}, not `{retiring_mmio_store} AND
+    # {mmio_is(config.MMIO_FRAME_COMMIT)}` inline (an earlier version of this
+    # line did exactly that, before #223 needed the same condition for
+    # new_control above and factored it out) -- one shared reference instead
+    # of two independent expansions of the same text.
+    new_frame = (f"if({frame_committed_now},"
                  f" tuple({RS2V}, toUInt8(1)), acc.6.3)")
 
     new_mmio = f"tuple({new_console}, {new_keyq_pos}, {new_frame})"

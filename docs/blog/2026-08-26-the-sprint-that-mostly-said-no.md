@@ -26,11 +26,21 @@ The number that mattered was instructions per second. We were getting about
 675 during boot and about 705 during gameplay. The `demo3` timedemo is
 2,836,207,097 instructions long. At that rate it would run for six weeks.
 
-Phase 0 had set a floor of 1,000 instructions per second as a tripwire. Not a
-target, but a signal: if we could not clear it, the architecture might be
-wrong. We were below it.
+Early in the project we set a floor of 1,000 instructions per second. Not a
+target, but a tripwire. If we could not clear it, the design might be wrong.
+We were below it.
 
-So we spent the day looking for speed.
+We were aiming at four things that day:
+
+1. **Clear the floor.** Get above 1,000 instructions per second.
+2. **Finish the correctness work.** Every rule in our specification
+   implemented and tested, not just the ones we had reached so far.
+3. **Store the pixels.** The CPU was computing DOOM's screen writes and then
+   throwing them away, because nothing kept them.
+4. **Read them back.** A query that turns stored pixels into a frame, so we
+   could check it against the reference emulator.
+
+Only the first is a speed problem. We spent the day on all four.
 
 ---
 
@@ -205,8 +215,9 @@ we knew we were missing is now implemented and tested.
 - Estimated run time: **about 15 days**, down from about 44
 - Test suite: **5 minutes**, down from 33
 
-The Phase 0 floor of 1,000 instructions per second is cleared by roughly 1.8
-times, on both measurement windows independently.
+All four of the things we set out to do are done. The floor of 1,000
+instructions per second is cleared by roughly 1.8 times, on both measurement
+windows independently.
 
 More importantly, the framebuffer now works end to end. Until this afternoon the
 CPU computed DOOM's pixel writes correctly and then threw them away, because

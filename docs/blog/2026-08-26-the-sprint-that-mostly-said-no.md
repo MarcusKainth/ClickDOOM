@@ -214,11 +214,35 @@ nothing stored them. Now they are written, stored, and read back out by a query.
 We verified that the frame read out of ClickHouse hashes to exactly the same
 value as the reference emulator produces.
 
-As I write this, the SQL CPU is executing DOOM. It needs to reach instruction
-15,393,136 to draw its first frame, which should take about two and a half
-hours.
+After the sprint closed, we ran it.
 
-Not fifteen days. An afternoon.
+The SQL CPU executed DOOM from boot to its first drawn frame. That took
+15,393,136 instructions across 264 batches. It stopped exactly on target, with
+no halts, and it matched the reference emulator at every checkpoint along the
+way.
+
+Then a SQL query read the framebuffer back out and hashed it:
+
+```
+fb_hash: fe5d82c0f42d45f1
+```
+
+That is the same value the reference emulator produced hours earlier, working
+independently. The frame matches bit for bit.
+
+Every pixel in it was computed inside a database. The instruction decoder, the
+ALU, the memory, and the MMIO writes DOOM uses to hand over a finished frame:
+all of it ran as one SQL expression, folded over a range, sixty thousand
+instructions at a time.
+
+About five hours, not fifteen days. The long run is still ahead of us. But the
+machine draws now.
+
+One more result came out of that run, and it matters more than the picture. We
+had been worried the fold would slow down as data piled up, which would have
+made a fifteen-day run much longer. Across 264 batches it did not. The second
+half ran 3.5% faster than the first. Another question closed by measuring
+instead of guessing.
 
 ---
 

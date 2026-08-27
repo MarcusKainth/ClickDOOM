@@ -246,6 +246,16 @@ def ppm_render_sql(db: str = DB, width: int = FB_WIDTH, height: int = FB_HEIGHT)
     full of null bytes in practice), verified correct all session against
     refemu's own hash on real data -- not a new assumption, the same one
     this codebase already depends on everywhere `fb_hash` is computed.
+
+    A real 320x200 render is exactly 192,015 bytes (15-byte header +
+    320*200*3). `clickhouse-client --format TSVRaw` appends a trailing
+    row-terminator newline that is NOT part of this function's own String
+    result -- confirmed separately via `SELECT length(ppm_render_sql())`,
+    which reports 192,015 regardless of client/format. Strip that one
+    byte (or use a format/client that doesn't append it) before writing
+    to a file or comparing bytes, or the file will be 192,016 bytes and
+    technically-invalid PPM (`test_render.sh`'s own comparison already
+    does this -- see its Python block for the exact check).
     """
     header = f"P6\n{width} {height}\n255\n"
     pixel_hex = (

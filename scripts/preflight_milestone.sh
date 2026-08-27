@@ -6,7 +6,7 @@
 # hour zero of a 2.8-hour run by someone in a hurry. This script can't be
 # skipped that way -- it exits nonzero and the run doesn't begin.
 #
-# Four gates (#110's own list):
+# Five gates (#110's own list, plus #205):
 #   1. `decoded` is populated and the right size -- an empty or short
 #      `decoded` does not error, it silently executes no-ops and reports
 #      *flattering* throughput (#83). This is the one that would waste the
@@ -25,6 +25,21 @@
 #      silently-stalling batch is indistinguishable from a working one by
 #      wall clock alone -- this catches that class of failure before the
 #      real run's first batch, not after its 221st.
+#   5. `--database`'s LIVE schema (table/column/type shape) matches what
+#      `sqlcpu/schema.sql` currently declares (#205). `CREATE TABLE IF NOT
+#      EXISTS` never retrofits a column onto an existing table or creates a
+#      table that's missing from an existing database -- it only fires for
+#      tables that don't exist at all -- so a database created before a
+#      schema change (#174's `framebuffer`/`palette` tables and
+#      `batch_commit`'s six `fb_wl_*`/`pal_wl_*` columns; #54's `decoded`
+#      columns before that) silently stays on the OLD shape forever, no
+#      matter how many times schema.sql is re-run against it. On an empty
+#      database this is annoying (drop and recreate costs nothing); on one
+#      with real progress, the fold computes writes toward columns that
+#      don't exist -- #130's exact failure mode (computed writes silently
+#      lost) returning through a different door, discovered only when a
+#      downstream `fb_hash`/`ram_hash` check fails with no error at the
+#      point the data actually went missing.
 #
 # Applying #98's own review question to every check here: can two errors
 # cancel and make it pass anyway? That question is what found the
@@ -111,7 +126,7 @@ tsv_field() { # tsv_field <column-name> <TSVWithNames output>
   echo "$data" | tail -1 | awk -F'\t' -v i="$idx" '{print $i}'
 }
 
-echo "# pre-flight: gate 1/4 -- decoded populated and correctly sized" >&2
+echo "# pre-flight: gate 1/5 -- decoded populated and correctly sized" >&2
 TEXT_START=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_start'])")
 TEXT_END=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_end'])")
 TEXT_START_WORD=$(( TEXT_START / 4 ))
@@ -135,7 +150,7 @@ if [ "$DEC_CNT" -ne "$EXPECTED_DECODED" ] || [ "$DEC_MIN" -ne "$TEXT_START_WORD"
 fi
 echo "  decoded: $DEC_CNT rows, word_addr $DEC_MIN..$DEC_MAX -- OK" >&2
 
-echo "# pre-flight: gate 2/4 -- ram dense over SPEC §2's 24 MiB" >&2
+echo "# pre-flight: gate 2/5 -- ram dense over SPEC §2's 24 MiB" >&2
 RAM_BASE=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['load_addr'])")
 RAM_BASE_WORD=$(( RAM_BASE / 4 ))
 RAM_WORDS=6291456  # SPEC §2: 24 MiB / 4
@@ -154,7 +169,7 @@ if [ "$RAM_CNT" -ne "$RAM_WORDS" ] || [ "$RAM_MIN" -ne "$RAM_BASE_WORD" ] || [ "
 fi
 echo "  ram: $RAM_CNT rows, word_addr $RAM_MIN..$RAM_MAX -- OK" >&2
 
-echo "# pre-flight: gate 3/4 -- ROM binary matches rom/PINNED_HASH" >&2
+echo "# pre-flight: gate 3/5 -- ROM binary matches rom/PINNED_HASH" >&2
 PINNED=$(cat rom/PINNED_HASH)
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL=$(sha256sum "$BIN" | cut -d' ' -f1)
@@ -170,7 +185,7 @@ if [ "$ACTUAL" != "$MANIFEST_SHA" ]; then
 fi
 echo "  rom: $ACTUAL == PINNED_HASH == manifest.sha256 -- OK" >&2
 
-echo "# pre-flight: gate 4/4 -- smoke-test batch retires what it's asked to" >&2
+echo "# pre-flight: gate 4/5 -- smoke-test batch retires what it's asked to" >&2
 # Isolated throwaway database, seeded from the SAME loaded ram/decoded state
 # via a table-to-table copy (no re-decoding, no re-loading -- this is meant
 # to prove the CURRENT state actually works, not a fresh one). A small K
@@ -196,9 +211,15 @@ ch --query "INSERT INTO $SMOKE_DB.ram SELECT * FROM $DATABASE.ram"
 ch --query "INSERT INTO $SMOKE_DB.decoded SELECT * FROM $DATABASE.decoded"
 
 SELFMOD_DB="clickdoom_preflight_selfmod_$$"
+# SCHEMA_REF_DB is set later (gate 5), but referenced here already so one
+# trap covers all three throwaway databases regardless of which gate this
+# script exits from -- bash resolves the variable at trap-firing time, not
+# at this definition site, so an empty/unset value here (if gate 5 is never
+# reached) just makes this DROP a harmless no-op.
 cleanup_smoke() {
   ch --query "DROP DATABASE IF EXISTS $SMOKE_DB" 2>/dev/null || true
   ch --query "DROP DATABASE IF EXISTS $SELFMOD_DB" 2>/dev/null || true
+  [ -n "${SCHEMA_REF_DB:-}" ] && { ch --query "DROP DATABASE IF EXISTS $SCHEMA_REF_DB" 2>/dev/null || true; }
 }
 trap cleanup_smoke EXIT
 
@@ -243,7 +264,7 @@ if [ "$SMOKE_HALTED" = "0" ] && [ "$SMOKE_ICOUNT" != "$SMOKE_K" ]; then
 fi
 echo "  smoke test: K=$SMOKE_K retired=$SMOKE_ICOUNT halted=$SMOKE_HALTED -- OK" >&2
 
-echo "# pre-flight: gate 4/4 (cont'd) -- SELF_MODIFY guard actually fires" >&2
+echo "# pre-flight: gate 4/5 (cont'd) -- SELF_MODIFY guard actually fires" >&2
 # #146: the retirement check above cannot catch a unit-confusion bug in
 # TEXT_START_WIDX/TEXT_END_WIDX -- the real loaded ROM's boot slice never
 # performs a genuine self-modifying store within SMOKE_K instructions, so
@@ -322,8 +343,49 @@ if [ "$SELFMOD_HALTED" != "1" ] || [ "$SELFMOD_REASON" != "$HALT_SELF_MODIFY" ];
 fi
 echo "  SELF_MODIFY guard: bound check OK, synthetic store halted=$SELFMOD_HALTED halt_reason=$SELFMOD_REASON -- OK" >&2
 
+echo "# pre-flight: gate 5/5 -- $DATABASE's live schema matches sqlcpu/schema.sql" >&2
+# #205: build a THROWAWAY reference database from the CURRENT
+# sqlcpu/schema.sql -- same rename technique executor/tests/test_commit.py's
+# own schema fixture uses (replace "clickdoom." with the throwaway name,
+# then the CREATE DATABASE line itself) -- so this comparison can never
+# drift from whatever schema.sql actually declares. Comparing against a
+# hand-maintained expected-column list would just move the staleness
+# problem this gate exists to catch into a second file nobody remembers to
+# update either.
+SCHEMA_REF_DB="clickdoom_preflight_schema_ref_$$"
+ch --query "DROP DATABASE IF EXISTS $SCHEMA_REF_DB"
+SCHEMA_SQL_TEXT=$(python3 -c "
+text = open('sqlcpu/schema.sql').read()
+text = text.replace('clickdoom.', '$SCHEMA_REF_DB.').replace(
+    'CREATE DATABASE IF NOT EXISTS clickdoom;', 'CREATE DATABASE IF NOT EXISTS $SCHEMA_REF_DB;')
+print(text)
+")
+echo "$SCHEMA_SQL_TEXT" | ch --multiquery
+
+# system.columns for both databases, as plain (table, name, type) TSV rows
+# ordered by (table, position) -- position matters as much as presence: a
+# reordered column is still a real schema difference (SPEC §5's column
+# order is part of what flushes/readers assume). Comparing the two
+# computed TSV blobs with a plain string `diff`, not a hand-rolled
+# FULL OUTER JOIN in SQL, is the same "compute a value, compare it with
+# plain string equality" shape this script already uses for gate 4's
+# checkpoint-line comparison above -- `diff`'s own output is inherently
+# specific about which table/column/type is missing, extra, or reordered,
+# which is what the failure message needs to say.
+cols_query() { echo "SELECT table, name, type FROM system.columns WHERE database = '$1' ORDER BY table, position FORMAT TSV"; }
+REF_COLS=$(ch --query "$(cols_query "$SCHEMA_REF_DB")")
+LIVE_COLS=$(ch --query "$(cols_query "$DATABASE")")
+if [ "$REF_COLS" != "$LIVE_COLS" ]; then
+  SCHEMA_DIFF=$(diff <(echo "$REF_COLS") <(echo "$LIVE_COLS") || true)
+  fail "schema drift: $DATABASE's live schema (table, column, type) does not match sqlcpu/schema.sql.
+Diff ('<' = sqlcpu/schema.sql's reference shape, '>' = live $DATABASE):
+$SCHEMA_DIFF
+Remedy: for any table/column shown ONLY on the '<' side (missing from $DATABASE) -- if that table is EMPTY, the safe fix is DROP DATABASE $DATABASE and re-create it fresh from sqlcpu/schema.sql; if it holds data you need to keep, use ALTER TABLE ... ADD COLUMN for each missing column instead (CREATE TABLE IF NOT EXISTS never retrofits an existing table). For anything shown ONLY on the '>' side (present in $DATABASE but not in schema.sql), or a type that differs between the two sides, investigate before running -- schema.sql no longer describes what $DATABASE actually contains, and this run cannot be trusted to interpret that table's columns correctly."
+fi
+echo "  schema: $DATABASE matches sqlcpu/schema.sql -- OK" >&2
+
 echo "" >&2
-echo "# ALL 4 PRE-FLIGHT GATES PASSED" >&2
+echo "# ALL 5 PRE-FLIGHT GATES PASSED" >&2
 echo "" >&2
 echo "# --- run provenance -----------------------------------------------" >&2
 printf 'rom_sha256\t%s\n' "$ACTUAL"

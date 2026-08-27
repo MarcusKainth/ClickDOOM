@@ -161,6 +161,25 @@ run-milestone: up
         --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15393136}" \
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
+# Same as run-milestone, but for a target icount past the first
+# FRAME_COMMIT. run_milestone.sh stops at every FRAME_COMMIT, not just at
+# --target-icount (#210) -- reaching a later frame means re-invoking it
+# once per intervening frame. This recipe does that via
+# scripts/run_milestone_through_frames.sh, a pure driver loop with no
+# logic beyond "re-run the same command, read the icount it already
+# printed" -- see that script's header for the full story. Same
+# CLICKDOOM_* overrides as run-milestone above; same sign-off requirement.
+run-milestone-through-frames: up
+    ./scripts/run_milestone_through_frames.sh \
+        --bin "${CLICKDOOM_ROM_BIN:-rom/build/doom-rv32im.bin}" \
+        --manifest "${CLICKDOOM_ROM_MANIFEST:-rom/build/manifest.json}" \
+        --k "${CLICKDOOM_RUN_K:-60000}" \
+        --hwm "${CLICKDOOM_RUN_HWM:-20000}" \
+        --database "${CLICKDOOM_DATABASE:-clickdoom}" \
+        --trace "${CLICKDOOM_REFERENCE_TRACE:-refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv}" \
+        --target-icount "${CLICKDOOM_TARGET_ICOUNT:-15393136}" \
+        --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
+
 # All linters + purity check (what CI runs)
 lint:
     ./scripts/check_purity.sh

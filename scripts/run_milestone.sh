@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# The resumable batch-loop runner for #110's Phase 2 milestone: DOOM
-# reaches its first FRAME_COMMIT inside ClickHouse. Cross-scope (`rom`
-# building `executor`-shaped tooling), signed off by the team lead per
-# CLAUDE.md's cross-scope provision -- taking the runner off `executor`
-# lets executor-2 build #29 (the frame readout) in parallel instead of
-# sequentially.
+# The resumable batch-loop runner, originally built for #110's Phase 2
+# milestone (DOOM reaches its first FRAME_COMMIT inside ClickHouse) and
+# extended by #210 to run through every FRAME_COMMIT to a target icount in
+# one invocation -- the shape Phase 3's ~2,172-frame `demo3` run needs.
+# Cross-scope (`rom` building `executor`-shaped tooling), signed off by the
+# team lead per CLAUDE.md's cross-scope provision -- taking the runner off
+# `executor` lets executor-2 build #29 (the frame readout) in parallel
+# instead of sequentially.
 #
 # What this does, and does not, reimplement:
 #   - Calls scripts/preflight_milestone.sh first and refuses to start if it
@@ -53,19 +55,37 @@
 # runs all K steps regardless of how many retire, so an assumption here
 # would be invisible until it silently produced the wrong K downstream.
 #
-# ## fb_hash is deliberately out of scope
+# ## Runs through FRAME_COMMITs instead of stopping at the first one (#210)
 #
-# See scripts/checkpoint_query.py's own docstring: FRAMEBUFFER/PALETTE SQL
-# storage doesn't exist yet (#130 computes the write-log lanes, nothing
-# flushes them; that flush and its table shape are executor-2/sqlcpu-2's,
-# not landed). Team lead's own framing: stopping at the target icount and
-# reporting is enough until #29 lands. This runner does exactly that.
+# Earlier versions of this script stopped unconditionally on the first
+# FRAME_COMMIT, because #110's original milestone target (icount
+# 15,393,136) happened to BE the first frame's exact icount -- "reached
+# target" and "hit a frame" were the same event, so the distinction was
+# invisible. Past frame 0, that meant re-invoking this script once per
+# intervening FRAME_COMMIT (scripts/run_milestone_through_frames.sh proved
+# the shape of the fix reaching frame 25, then was deleted once this
+# landed -- a stopgap kept beside the real fix drifts from it).
+#
+# A FRAME_COMMIT is now recorded (logged, counted in `frames_observed`) and
+# the loop continues, unless `--stop-at-frame N` was given and this frame's
+# `frame_no >= N`. Stop conditions are exhaustively: target icount reached,
+# `--stop-at-frame` satisfied, fatal halt, SIGINT/SIGTERM -- nothing else.
+# `--stop-at-frame 0` reproduces the old unconditional-first-frame behavior
+# (#110's milestone); omitting it runs straight through every FRAME_COMMIT
+# to the target icount, which is what a multi-day Phase 3 `demo3` run needs
+# from a single invocation.
+#
+# fb_hash (SPEC §7) is wired into scripts/checkpoint_query.py as of #210,
+# reading the real `framebuffer`/`palette` tables (#160/#174) -- all 5
+# trace fields are compared at every RAM_HASH_INTERVAL boundary now, not
+# just the first 4.
 #
 # Usage:
 #   scripts/run_milestone.sh --bin rom/build/doom-rv32im.bin \
 #     --manifest rom/build/manifest.json --k 60000 --hwm 20000 \
 #     --database clickdoom --trace path/to/reference_trace.tsv \
 #     --target-icount 15393136 \  # #175's unrolled ROM; was 15653137 before it
+#     [--stop-at-frame N] \  # optional; stop cleanly once frame_no >= N
 #     [--host localhost --port 9000 --user default --password ... --client '...']
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -77,6 +97,7 @@ HWM=""
 DATABASE="clickdoom"
 TRACE=""
 TARGET_ICOUNT=""
+STOP_AT_FRAME=""
 HOST="localhost"
 PORT="9000"
 CH_USER="default"
@@ -92,6 +113,7 @@ while [ $# -gt 0 ]; do
     --database) DATABASE="$2"; shift 2 ;;
     --trace) TRACE="$2"; shift 2 ;;
     --target-icount) TARGET_ICOUNT="$2"; shift 2 ;;
+    --stop-at-frame) STOP_AT_FRAME="$2"; shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --user) CH_USER="$2"; shift 2 ;;
@@ -167,6 +189,13 @@ ICOUNT="$RESUME_ICOUNT"
 
 reached_target=0
 halted_reason=""
+# Count of FRAME_COMMITs observed BY THIS INVOCATION only -- not carried
+# over from a prior resumed run (there is nowhere durable to carry it from;
+# SPEC §5's cpu_state/batch_commit have no such counter, by design -- see
+# their own "one row per committed batch" contract). A resumed run's
+# provenance block therefore reports how many frames this leg passed
+# through, not the run's lifetime total.
+frames_observed=0
 
 while [ "$stop_requested" -eq 0 ]; do
   if [ "$ICOUNT" -ge "$TARGET_ICOUNT" ]; then
@@ -233,28 +262,18 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
     # compare unequal to the reference trace regardless of whether the
     # underlying hash matched. TSVRaw passes the byte through unescaped.
     ACTUAL_LINE=$(ch --format TSVRaw <<< "$(python3 scripts/checkpoint_query.py --db "$DATABASE")")
-    EXPECTED_FULL=$(awk -F'\t' -v ic="$ICOUNT" '$1 == ic { print; found=1 } END { if (!found) exit 1 }' "$TRACE") \
+    EXPECTED_LINE=$(awk -F'\t' -v ic="$ICOUNT" '$1 == ic { print; found=1 } END { if (!found) exit 1 }' "$TRACE") \
       || fail "no reference trace line for icount=$ICOUNT in $TRACE -- trace/run icount cadence disagree"
-    # Compare only the first 4 fields (icount/pc/reghash/ramhash), not the
-    # whole line: checkpoint_query.py deliberately doesn't compute fbhash
-    # (see its own docstring -- FRAMEBUFFER/PALETTE storage doesn't exist
-    # yet, #130/#29), so ACTUAL_LINE is always 4 columns. The reference
-    # trace's RAM_HASH_INTERVAL rows are always 5 (checkpoint.py's own
-    # format_checkpoint(): "fbhash only ever alongside ramhash"). A raw
-    # whole-line compare would therefore fail at EVERY real checkpoint
-    # boundary regardless of whether the CPU state actually matched --
-    # caught by hand before this ever ran against a real boundary, via
-    # `awk -F'\t' '$1==1048576{print NF}'` on the real trace file (prints
-    # 5, not 4). `cut -f1-4` drops fbhash from the expected side so the
-    # two sides are the same shape without discarding any field this
-    # runner *can* verify.
-    EXPECTED_LINE=$(printf '%s' "$EXPECTED_FULL" | cut -f1-4)
+    # All 5 fields now (#210): checkpoint_query.py computes fbhash from the
+    # real framebuffer/palette tables (#160/#174 landed this schema), so
+    # ACTUAL_LINE and the reference trace's RAM_HASH_INTERVAL rows are the
+    # same shape -- no truncation needed on either side.
     if [ "$ACTUAL_LINE" != "$EXPECTED_LINE" ]; then
       fail "checkpoint mismatch at icount=$ICOUNT
-  expected (icount/pc/reghash/ramhash): $EXPECTED_LINE
-  actual:                               $ACTUAL_LINE"
+  expected (icount/pc/reghash/ramhash/fbhash): $EXPECTED_LINE
+  actual:                                      $ACTUAL_LINE"
     fi
-    echo "# checkpoint OK at icount=$ICOUNT (icount/pc/reghash/ramhash; fbhash not checked -- #29)" >&2
+    echo "# checkpoint OK at icount=$ICOUNT (icount/pc/reghash/ramhash/fbhash)" >&2
   fi
 
   if [ "$HALTED" = "1" ]; then
@@ -262,9 +281,14 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
     break
   fi
   if [ "$HAS_FRAME" = "1" ]; then
-    echo "# FRAME_COMMIT observed: frame_no=$FRAME_NO icount=$ICOUNT" >&2
-    reached_target=1
-    break
+    frames_observed=$(( frames_observed + 1 ))
+    echo "# FRAME_COMMIT observed: frame_no=$FRAME_NO icount=$ICOUNT (frames_observed=$frames_observed)" >&2
+    if [ -n "$STOP_AT_FRAME" ] && [ "$FRAME_NO" -ge "$STOP_AT_FRAME" ]; then
+      reached_target=1
+      break
+    fi
+    # Otherwise: recorded above, loop continues -- FRAME_COMMIT is no
+    # longer a stop condition by itself (#210).
   fi
 done
 
@@ -281,6 +305,7 @@ printf 'final_batch_id\t%s\n' "${BATCH_ID:-$RESUME_BATCH}"
 printf 'final_icount\t%s\n' "$ICOUNT"
 printf 'has_frame\t%s\n' "${HAS_FRAME:-0}"
 printf 'frame_no\t%s\n' "${FRAME_NO:-}"
+printf 'frames_observed\t%s\n' "$frames_observed"
 echo "# ---------------------------------------------------------------------" >&2
 
 if [ "$stop_requested" -eq 1 ]; then
@@ -295,6 +320,6 @@ elif [ -n "$halted_reason" ]; then
   fi
   fail "fatal halt ($halted_reason) at icount=$ICOUNT, short of target icount=$TARGET_ICOUNT"
 elif [ "$reached_target" -eq 1 ]; then
-  echo "# stopped cleanly: icount=$ICOUNT target=$TARGET_ICOUNT has_frame=${HAS_FRAME:-0}" >&2
+  echo "# stopped cleanly: icount=$ICOUNT target=$TARGET_ICOUNT stop_at_frame=${STOP_AT_FRAME:-<none>} frame_no=${FRAME_NO:-} frames_observed=$frames_observed" >&2
   exit 0
 fi

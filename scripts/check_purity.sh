@@ -11,8 +11,24 @@ scan() { # scan <dir> <description> <pattern...>
   local dir="$1"; shift
   local desc="$1"; shift
   [ -d "$dir" ] || return 0
+  # #169: `git ls-files`, not a raw filesystem walk. A plain `grep -R`
+  # has no concept of .gitignore and happily walks into whatever happens
+  # to be sitting on disk -- a local `.venv/` left over from `uv sync`,
+  # `__pycache__/`, `node_modules/`, any future generated-artifact
+  # directory -- none of which are gitignored from grep's perspective,
+  # only from git's. Scoping to tracked files makes this check about the
+  # PROJECT's own code, not whatever a developer's last dependency
+  # install happened to leave lying around: a check that fails on
+  # untracked vendor code isn't evidence of a real defect, same shape as
+  # Non-negotiable #5's "a check that never ran isn't evidence of a
+  # pass" but facing the other direction (see #169 -- this exact false
+  # positive hit two different agents' local `check_purity.sh` runs the
+  # same day).
+  local files
+  files=$(git ls-files -- "$dir" | grep -E '\.(sql|py|sh)$') || true
+  [ -n "$files" ] || return 0
   for pat in "$@"; do
-    if grep -RIn --include='*.sql' --include='*.py' --include='*.sh' -E "$pat" "$dir" \
+    if printf '%s\n' "$files" | xargs grep -InE "$pat" -- \
         | grep -v 'purity-ok:' ; then
       echo "::error::PURITY: forbidden pattern '$pat' (${desc}) found in ${dir}/ — see PURITY.md. If a hit is genuinely benign, annotate the line with 'purity-ok: <reason>'."
       fail=1

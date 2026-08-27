@@ -235,8 +235,17 @@ ALU, the memory, and the MMIO writes DOOM uses to hand over a finished frame:
 all of it ran as one SQL expression, folded over a range, sixty thousand
 instructions at a time.
 
-About five hours, not fifteen days. The long run is still ahead of us. But the
-machine draws now.
+The run itself took about two hours. It held around 2,250 instructions per
+second, a little above the rate we had measured in short benchmark windows.
+
+That number is worth being careful with, because we nearly got it wrong. Nearly
+seven hours passed between the first batch and the last one, which would suggest
+a much slower machine. Almost all of that was the run sitting finished while
+nobody was watching, plus half an hour spent working out why it had stopped.
+Measured properly, the gap between one batch ending and the next starting has a
+median of half a second.
+
+The long run is still ahead of us. But the machine draws now.
 
 We let it keep going. DOOM opens with a screen wipe, so the first frame is
 almost entirely one colour. Twenty-five frames later the wipe has finished and

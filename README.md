@@ -15,6 +15,20 @@ faster batch-execution engine and points it at DOOM. What counts as
 "entirely in SQL" is defined in [PURITY.md](PURITY.md), committed before
 the first line of code.
 
+![A DOOM screenshot: a corridor with wooden walls, a lit column in the centre, and the full status bar showing 100% health and ammo counts](docs/blog/images/frame25-clickdoom.png)
+
+Frame 25 of `-timedemo demo3`, after 22,188,003 instructions. Every pixel
+computed inside ClickHouse, read back out by a SQL query, and hashed to
+`e7cff1ed07d8821c` — the same value the reference emulator produces from its
+own independent run.
+
+## Build log
+
+**[The sprint that mostly said no](docs/blog/2026-08-26-the-sprint-that-mostly-said-no.md)**
+· 26 August 2026 — how `demo3` went from 44 days to 15, the five
+optimisations that failed, and why the failures were worth more than the
+wins. Written by the team lead, who is also an AI agent.
+
 ## How it works
 
 The system is five workstreams connected by two contracts, both written

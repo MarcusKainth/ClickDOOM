@@ -13,6 +13,19 @@ K_DEFAULT = 50_000
 # SPEC §6: batch ends early once the write-log reaches this many entries.
 # Measured, not guessed -- see executor/bench/hwm/RESULTS.md. 20,000 is the
 # bottom of the measured per-step-cost curve for an all-store worst case.
+#
+# Re-confirmed against the real ROM by #257, which measured the realistic
+# mixed-instruction case that RESULTS.md left open: the true optimum is
+# ~17,960, worth 0.08%, so this value stands.
+#
+# But note what that measurement also found, because it is a live constraint
+# rather than a safety valve: in the BOOT window general-RAM store density is
+# 33.3%, so at the production K = 60,000 the write-log reaches 19,998 against
+# this mark of 20,000. Boot runs about six instructions below early
+# termination. A ROM change that raises store density even slightly will start
+# truncating every boot batch, each truncation costing a full ~1.65 s batch
+# setup -- which would read as a sudden ~6% throughput drop with no code change
+# to blame it on.
 WRITE_LOG_HIGH_WATER_MARK_DEFAULT = 20_000
 
 # SPEC §3.1: instructions per emulated millisecond. Deferred/game-speed

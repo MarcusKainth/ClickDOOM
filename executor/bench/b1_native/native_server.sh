@@ -27,7 +27,7 @@ stop() {
   if kill -0 "$pid" 2>/dev/null; then
     kill "$pid"
     for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
-    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" || true
+    if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" || true; fi
   fi
   rm -f "$PIDFILE"
 }

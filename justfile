@@ -53,13 +53,21 @@ test-executor: up
 test-render: up
     ./driver/test_render.sh --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
-# Differential run of N instructions; reports first divergence (SPEC §7)
+# Differential run of N instructions; reports first divergence (SPEC §7).
+# Compares the FULL trace (every CHECKPOINT_INTERVAL, not just
+# RAM_HASH_INTERVAL -- #227/#230), so every sqlcpu batch is clamped to
+# <= 4,096 instructions -- expect roughly half run_milestone.sh's
+# instructions/sec at the same K (#180's fitted model), not a throughput
+# regression, a correctness tool paying a known, deliberate cost.
 diff N: up
-    @test -f scripts/diff_run.sh || { echo "scripts/diff_run.sh not landed yet (executor workstream, issue #27)"; exit 1; }
     ./scripts/diff_run.sh {{N}}
 
-# CI-sized differential smoke
-smoke: (diff "1000000")
+# CI-sized differential smoke. 100,000 (not 1,000,000) -- #227/#230's
+# forced CHECKPOINT_INTERVAL-clamped batches project to roughly half
+# run_milestone.sh's instructions/sec, so 1,000,000 here projected to
+# ~13 minutes, well past this job's stated ~5-minute budget; provisional
+# pending a real measurement (bench-machine), see ci.yml's own comment.
+smoke: (diff "100000")
 
 # Phase 0 arrayFold characterisation benchmark (ADR-0001/0002 evidence).
 # One-off harness, not the nightly regression gate — that is `just bench`.

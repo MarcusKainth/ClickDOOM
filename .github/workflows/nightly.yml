@@ -18,7 +18,22 @@ on:
     inputs:
       deep_diff_instructions:
         description: "Instruction count for the deep differential run"
-        default: "200000000"
+        # #227/#230: diff_run.sh clamps every sqlcpu batch to
+        # <= CHECKPOINT_INTERVAL (4,096) so it can compare the FULL SPEC §7
+        # trace, not a RAM_HASH_INTERVAL-only sample. #180's fitted
+        # per-batch model (S=1,754ms setup + a=0.3696ms/step) projects that
+        # to roughly HALF run_milestone.sh's instructions/sec at the same
+        # K -- the OLD default here, 200,000,000, projects to ~44 hours
+        # (roughly two days), nowhere near this job's 300-minute timeout.
+        # 5,000,000 projects to ~66 minutes (ample margin even if real
+        # throughput lands well under the projection) and crosses 4
+        # RAM_HASH_INTERVAL boundaries, so this job actually exercises the
+        # ramhash/fbhash cadence -- ci.yml's differential-smoke, at 100,000
+        # instructions, never reaches even one. Both numbers are PROJECTED
+        # from #180's model, not yet measured against this exact tool
+        # (bench-machine timing lock, see #227) -- raise once real
+        # wall-clock data is in hand.
+        default: "5000000"
 
 jobs:
   deep-diff:
@@ -36,14 +51,12 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4
-      - name: Deep differential run
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
+      - name: Install uv (for refemu's side of the comparison)
+        run: pipx install uv
+      - name: Deep differential run (full SPEC §7 trace, #227/#230)
         run: |
           make -C rom
-          ./scripts/diff_run.sh "${{ github.event.inputs.deep_diff_instructions || '200000000' }}"
-      - name: Skipped (workstreams not landed)
-        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == '' || hashFiles('scripts/diff_run.sh') == ''
-        run: echo "deep diff activates when rom, refemu, sqlcpu AND scripts/diff_run.sh have all landed"
+          ./scripts/diff_run.sh "${{ github.event.inputs.deep_diff_instructions || '5000000' }}" --host localhost --port 9000
 
   bench:
     runs-on: ubuntu-latest

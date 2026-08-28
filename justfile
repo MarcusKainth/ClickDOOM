@@ -120,6 +120,26 @@ bench-ksweep WINDOW="120000":
     ./executor/bench/commit_mutation/ksweep.sh --window {{WINDOW}}
     python3 executor/bench/commit_mutation/fit.py /tmp/sq2-bench/K_sweep_*.json
 
+# #257: does per-instruction cost grow WITHIN a batch? Seeds the fold's
+# write-log to a given length and reads the per-element slope off directly,
+# instead of fitting it out of #180's three-parameter model. Varies write-log
+# length independently of K, which nothing in normal operation can do.
+#
+# Runs three K values so `slope/K` constancy -- the mix-free answer, which
+# depends on no fit -- can be checked. Unlike bench-ksweep this needs no
+# container per arm: select_only writes nothing, so arms are independent by
+# construction (the harness asserts ram's part count never moves). It DOES
+# need a quiet box, because these are timings.
+# #257 write-log seed sweep (needs a quiet box -- these are timings)
+bench-wl-seed DB="wl257_boot" REPS="5":
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    ./executor/bench/commit_mutation/setup_db.sh --container clickdoom-ch --db {{DB}} --window boot
+    python3 executor/bench/wl_seed/micro.py --out /tmp/wl257-micro.json
+    python3 executor/bench/wl_seed/bench_l0.py --db {{DB}} --k 60000 --reps {{REPS}} --out /tmp/wl257-k60000.json
+    python3 executor/bench/wl_seed/bench_l0.py --db {{DB}} --k 30000 --reps {{REPS}} --out /tmp/wl257-k30000.json
+    python3 executor/bench/wl_seed/bench_l0.py --db {{DB}} --k 15000 --reps {{REPS}} --out /tmp/wl257-k15000.json
+    python3 executor/bench/wl_seed/fit_l0.py /tmp/wl257-k*.json --micro /tmp/wl257-micro.json
+
 # Executor throughput benchmark (instructions/sec)
 bench: up
     @test -f executor/bench.sh || { echo "executor/ not landed yet"; exit 1; }

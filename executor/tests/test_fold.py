@@ -26,8 +26,10 @@ import sys
 import pytest
 
 sys.path.insert(0, ".")
+sys.path.insert(0, "bench/wl_seed")
 import config  # noqa: E402
 import fold  # noqa: E402
+import seed  # noqa: E402
 from tests import reference  # noqa: E402
 
 CONTAINER = "clickdoom-ch"
@@ -595,3 +597,184 @@ def test_every_halt_reason_is_reachable_somewhere_in_this_file():
         covered.add(out["halt_reason"])
     expected = set(config.HALT_REASON_NAMES) - {config.HALT_NONE}
     assert covered == expected, f"missing halt reasons: {expected - covered}"
+
+
+# --- #257: the `wl0` write-log seam ----------------------------------------
+# `select_only(wl0=...)` exists so a benchmark can vary write-log length
+# INDEPENDENTLY of K (issue #257: is per-step cost O(write-log length)?).
+# These tests guard the two properties the measurement rests on, so a
+# regression is caught by `just test-executor` and not by a silently wrong
+# number six hours into a sweep.
+
+def test_wl0_default_is_byte_identical_to_the_previous_seed():
+    """The seam must be invisible when unused.
+
+    `WL0_EMPTY` is the exact text `INIT_ACC` used to hardcode, so every
+    existing caller -- and `batch()`, which cannot pass anything else -- emits
+    the same SQL it did before the parameter existed.
+    """
+    args = (60000, 0, 98824, 98824, 6291456, 20000)
+    assert fold.select_only(*args) == fold.select_only(*args, wl0=fold.WL0_EMPTY)
+    assert fold.WL0_EMPTY in fold.select_only(*args)
+    assert fold.WL0_EMPTY in fold.batch(*args)
+    # The placeholder must be consumed, not emitted.
+    for sql in (fold.select_only(*args), fold.batch(*args)):
+        assert "{wl0}" not in sql
+
+
+def test_wl0_never_reaches_the_lambda():
+    """The load-bearing property, and the reason this seam is safe at all.
+
+    A per-call-varying literal inside the lambda body is part of ClickHouse's
+    compiled-expression cache key, so it silently defeats the JIT -- the exact
+    bug build_step()'s docstring records for `icount0`. The initial
+    accumulator is arrayFold's runtime ARGUMENT, evaluated in the outer
+    SELECT, so a seed there cannot do that. Asserted rather than assumed: the
+    step expression must appear byte-identically in a seeded query.
+    """
+    args = (60000, 0, 98824, 98824, 6291456, 20000)
+    step = fold.build_step(60000, 0, 98824, 98824, 6291456, hwm=20000)
+    seeded = fold.select_only(*args, wl0=seed.seed_sql("VA", 80000))
+    assert step in seeded
+    # ... and the seeded query differs from the default ONLY inside the init
+    # accumulator, i.e. by the seed text itself.
+    default = fold.select_only(*args)
+    assert len(seeded) - len(default) == len(seed.seed_sql("VA", 80000)) - len(fold.WL0_EMPTY)
+
+
+def test_wl0_seed_is_inert_when_executed():
+    """The seed must not change what the program computes.
+
+    Inertness is argued structurally in seed.py (the `wa_safe` clamp makes any
+    address >= ram_words unmatchable), but an argument that is never executed
+    is indistinguishable from one that is wrong -- Non-negotiable #5. So run a
+    program that both loads and stores, seeded and unseeded, and require
+    identical results.
+    """
+    L0 = 8
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0x1234),                     # addi x1, x0, 0x1234
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=RAM_BASE + 32,
+          width_mask=0xFFFFFFFF, sign_bit=0),                            # sw   x1, [base+32]
+        I(op_id=18, rd=2, rs1=0, rs2=0, imm=RAM_BASE + 32,
+          width_mask=0xFFFFFFFF, sign_bit=0),                            # lw   x2, [base+32]  <- forwarded
+        I(op_id=18, rd=3, rs1=0, rs2=0, imm=RAM_BASE + 16,
+          width_mask=0xFFFFFFFF, sign_bit=0),                            # lw   x3, [base+16]  <- from RAM
+        I(op_id=19, rd=0, rs1=0, rs2=2, imm=RAM_BASE + 36,
+          width_mask=0xFFFFFFFF, sign_bit=0),                            # sw   x2, [base+36]
+    ]
+    decn = next_pow2(max(len(insns), 8))
+    padded = list(insns) + [reference.Insn(op_id=reference.OP_ILLEGAL, raw=0xBAD00000 + i)
+                            for i in range(decn - len(insns))]
+    ch(f"TRUNCATE TABLE {DB}.decoded; TRUNCATE TABLE {DB}.ram;")
+    rows = [f"({RAM_BASE_WORD + i},{ins.op_id},{ins.rd},{ins.rs1},{ins.rs2},"
+            f"{reference.u32(ins.imm)},{reference.u32(ins.target)},{ins.width_mask},"
+            f"{ins.sign_bit},{reference.u32(ins.raw)})" for i, ins in enumerate(padded)]
+    ch(f"INSERT INTO {DB}.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) "
+       f"VALUES {','.join(rows)}")
+    ram_words = 64
+    ch(f"INSERT INTO {DB}.ram (word_addr,value,version) "
+       f"SELECT {RAM_BASE_WORD} + number, number * 7, 0 FROM numbers({ram_words})")
+
+    def run(wl0):
+        sql = fold.select_only(len(insns), 0, decn, decn, ram_words, 10_000, wl0=wl0)
+        return json.loads(ch(sql, fmt="JSONEachRow").strip().splitlines()[0])
+
+    base = run(fold.WL0_EMPTY)
+    got = run(seed.seed_sql("VA", L0))
+    # Architectural state is untouched...
+    for field in ("pc", "regs", "stopped", "halted", "halt_reason",
+                  "halt_pc", "halt_extra", "retired", "keyq_pos",
+                  "frame_no", "frame_committed"):
+        assert got[field] == base[field], f"{field} changed under a seed"
+    # ...the load that forwards still forwards (x2 == 0x1234 in both)...
+    assert int(got["regs"][1]) == 0x1234, "forwarded load broke under a seed"
+    # ...and every lane is its seeded prefix followed by exactly the real stores.
+    assert got["wl_addr"][L0:] == base["wl_addr"], "addr lane lost real stores"
+    assert got["wl_val"][L0:] == base["wl_val"], "val lane lost real stores"
+    assert got["wl_icount"][L0:] == base["wl_icount"], "icount lane lost real stores"
+    assert all(int(a) == seed.SENTINEL_ADDR for a in got["wl_addr"][:L0])
+    assert all(int(v) == 0 for v in got["wl_val"][:L0])
+    assert all(int(v) == 0 for v in got["wl_icount"][:L0])
+
+
+def test_unequal_lane_seed_breaks_forwarding():
+    """Why `seed.py` has no lane-selective shapes -- the regression guard.
+
+    Seeding acc.3's lanes to DIFFERENT lengths looks like a free way to split
+    scan cost from copy cost: lanes .1 and .2 are both Array(UInt32) and only
+    .1 is scanned, so the difference of their slopes would be the scan. It is
+    not free. The lanes are PARALLEL arrays, and `LW` subscripts the value
+    lane with an index found in the address lane --
+
+        acc.3.2[arrayLastIndex(z -> z = WA, acc.3.1)]
+
+    -- so unequal lengths desynchronise them and forwarding silently reads the
+    wrong slot. This pins that, so anyone reaching for the elegant version
+    (the team lead did, while planning #257) is stopped by a red test rather
+    than by a plausible-looking number six hours into a sweep.
+    """
+    L0 = 8
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=0x1234),
+        I(op_id=19, rd=0, rs1=0, rs2=1, imm=RAM_BASE + 32,
+          width_mask=0xFFFFFFFF, sign_bit=0),
+        I(op_id=18, rd=2, rs1=0, rs2=0, imm=RAM_BASE + 32,
+          width_mask=0xFFFFFFFF, sign_bit=0),
+    ]
+    decn, ram_words = 8, 64
+    padded = list(insns) + [reference.Insn(op_id=reference.OP_ILLEGAL, raw=0xBAD00000 + i)
+                            for i in range(decn - len(insns))]
+    ch(f"TRUNCATE TABLE {DB}.decoded; TRUNCATE TABLE {DB}.ram;")
+    rows = [f"({RAM_BASE_WORD + i},{ins.op_id},{ins.rd},{ins.rs1},{ins.rs2},"
+            f"{reference.u32(ins.imm)},{reference.u32(ins.target)},{ins.width_mask},"
+            f"{ins.sign_bit},{reference.u32(ins.raw)})" for i, ins in enumerate(padded)]
+    ch(f"INSERT INTO {DB}.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) "
+       f"VALUES {','.join(rows)}")
+    ch(f"INSERT INTO {DB}.ram (word_addr,value,version) "
+       f"SELECT {RAM_BASE_WORD} + number, number * 7, 0 FROM numbers({ram_words})")
+
+    def run(wl0):
+        sql = fold.select_only(len(insns), 0, decn, decn, ram_words, 10_000, wl0=wl0)
+        return json.loads(ch(sql, fmt="JSONEachRow").strip().splitlines()[0])
+
+    aligned = run(seed.seed_sql("VA", L0))
+    assert int(aligned["regs"][1]) == 0x1234, "aligned seed should forward correctly"
+
+    # Addr lane seeded, value lane left empty: the index found in .1 overruns .2.
+    lopsided = ("tuple("
+                f"arrayResize(emptyArrayUInt32(), {L0}, toUInt32({seed.SENTINEL_ADDR})), "
+                "emptyArrayUInt32(), emptyArrayUInt64())")
+    broken = run(lopsided)
+    assert int(broken["regs"][1]) == 0, (
+        "an unequal-lane seed no longer breaks forwarding -- if acc.3's lanes "
+        "stopped being parallel arrays, seed.py's docstring and this guard are "
+        "both stale and lane-selective decomposition may be worth revisiting")
+
+
+def test_wl0_seed_never_matches_a_real_load():
+    """The clamp argument, executed.
+
+    `wa_safe` clamps every word index to <= ram_words - 1, so SENTINEL_ADDR
+    (UInt32::MAX) is unreachable as a load's WA. If that ever stopped being
+    true, a seeded load would forward the seed's value (0) instead of RAM's,
+    and this program's x3 would read 0 rather than RAM's real content.
+    """
+    assert seed.SENTINEL_ADDR >= config.RAM_WORDS_DEFAULT
+    insns = [I(op_id=18, rd=3, rs1=0, rs2=0, imm=RAM_BASE + 16,
+               width_mask=0xFFFFFFFF, sign_bit=0)]
+    decn, ram_words = 8, 64
+    padded = list(insns) + [reference.Insn(op_id=reference.OP_ILLEGAL, raw=0xBAD00000 + i)
+                            for i in range(decn - len(insns))]
+    ch(f"TRUNCATE TABLE {DB}.decoded; TRUNCATE TABLE {DB}.ram;")
+    rows = [f"({RAM_BASE_WORD + i},{ins.op_id},{ins.rd},{ins.rs1},{ins.rs2},"
+            f"{reference.u32(ins.imm)},{reference.u32(ins.target)},{ins.width_mask},"
+            f"{ins.sign_bit},{reference.u32(ins.raw)})" for i, ins in enumerate(padded)]
+    ch(f"INSERT INTO {DB}.decoded (word_addr,id,rd,rs1,rs2,imm,tgt,mk,sg,raw) "
+       f"VALUES {','.join(rows)}")
+    ch(f"INSERT INTO {DB}.ram (word_addr,value,version) "
+       f"SELECT {RAM_BASE_WORD} + number, number * 7, 0 FROM numbers({ram_words})")
+    sql = fold.select_only(1, 0, decn, decn, ram_words, 10_000,
+                           wl0=seed.seed_sql("VA", 4096))
+    out = json.loads(ch(sql, fmt="JSONEachRow").strip().splitlines()[0])
+    assert int(out["regs"][2]) == 4 * 7, "seeded write-log shadowed a real RAM read"

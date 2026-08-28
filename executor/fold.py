@@ -841,8 +841,23 @@ def decode_with(db=DB):
      FROM (SELECT key_event, event_seq FROM {db}.input_queue
            ORDER BY event_seq)) AS KEYQT"""
 
+# acc.3's seed: RAM's write-log, empty at the start of every real batch.
+# Factored out of INIT_ACC as a {wl0} field so a *measurement* harness can seed
+# a non-empty log (issue #257: is per-step cost O(write-log length)?). Nothing
+# in the production path passes anything but this default, and `batch()` cannot
+# pass anything else at all -- see select_only()'s `wl0` docstring for why that
+# asymmetry is deliberate.
+#
+# This is a safe seam for the same reason INIT_ACC can carry a per-batch icount0
+# at all (build_step()'s docstring): the initial accumulator is a runtime
+# ARGUMENT to arrayFold, evaluated in the outer SELECT, never interpolated into
+# the lambda body -- so it is not part of the compiled-expression cache key and
+# a varying value here cannot silently disable the JIT the way a varying literal
+# inside the lambda did.
+WL0_EMPTY = "tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64())"
+
 INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
-            " tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()),"
+            " {wl0},"
             " tuple(toUInt8(0), toUInt8(0), toUInt8(0), toUInt32(0), toUInt32(0)),"
             # acc.5: the batch's ABSOLUTE starting icount, not 0 -- this is
             # the JIT fix (build_step()'s docstring): seeding acc.5 here,
@@ -868,7 +883,30 @@ INIT_ACC = ("tuple(toUInt32({pc0}), {regs0},"
 
 
 def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=None, regs0=None,
-                db=DB, icount0=0, keyq0=0, ipms=config.IPMS_DEFAULT):
+                db=DB, icount0=0, keyq0=0, ipms=config.IPMS_DEFAULT, wl0=WL0_EMPTY):
+    """The fold alone: no state reload, no commit, nothing written.
+
+    `wl0` seeds acc.3, RAM's write-log, and exists for issue #257 -- measuring
+    whether per-step cost is O(write-log length) requires varying that length
+    INDEPENDENTLY of K, which nothing in normal operation can do (the log only
+    grows by retiring stores). Defaults to `WL0_EMPTY`, which reproduces the
+    previous behaviour byte for byte.
+
+    **`batch()` deliberately does not take this parameter, and must not.**
+    `commit.ram_flush_sql()` flushes `wl_addr` straight into `ram.word_addr`, so
+    a seeded log on the e2e path would insert rows at whatever synthetic word
+    addresses the seed used -- silently corrupting RAM rather than failing. The
+    parameter's ABSENCE from `batch()` is the guard: there is no flag to get
+    wrong and no call site that could pass one by accident. `select_only()` is
+    safe precisely because it writes nothing at all.
+
+    A seed is only inert if it can never match a load. `_addr_and_align`'s
+    `wa_safe` clamps `WA` with `least(..., ram_words - 1)` for EVERY address,
+    valid or not, so any seeded address >= ram_words is unmatchable by
+    construction -- a property of the clamp, not of the address set the ROM
+    happens to touch. The scan still walks it in full: `arrayLastIndex` seeks
+    the LAST match and therefore cannot short-circuit.
+    """
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm, ipms=ipms)
     # 31 elements (x1..x31), no x0 slot -- matches sqlcpu's schema.sql (PR #42).
     regs0_sql = ("[" + ",".join(str(x) for x in regs0) + "]") if regs0 else \
@@ -876,7 +914,7 @@ def select_only(K, text_start_widx, text_end_widx, decn, ram_words, hwm, pc0=Non
     # pc0 default is RAM_BASE (SPEC §1's reset value 0x8000_0000), not 0 --
     # pc is a byte address now, not a word index relative to the text window.
     pc0 = config.RAM_BASE if pc0 is None else pc0
-    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql, keyq0=keyq0, icount0=icount0)
+    init = INIT_ACC.format(pc0=pc0, regs0=regs0_sql, keyq0=keyq0, icount0=icount0, wl0=wl0)
     # r.5 is the fold's final ABSOLUTE icount (acc.5, seeded from icount0);
     # `retired` (this call's own K-or-fewer count) is r.5 - icount0, computed
     # here in the outer SELECT -- outside the lambda, where a per-call-
@@ -964,7 +1002,8 @@ def batch(K, text_start_widx, text_end_widx, decn, ram_words, hwm, db=DB,
     # (build_step()'s docstring has the full before/after and the
     # system.query_log evidence that compilation actually engaged).
     step = build_step(K, text_start_widx, text_end_widx, decn, ram_words, hwm=hwm, ipms=ipms)
-    init = INIT_ACC.format(pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')",
+    init = INIT_ACC.format(wl0=WL0_EMPTY,
+                           pc0="assumeNotNull(PREV.2)", regs0="CAST(PREV.3, 'Array(UInt32)')",
                            keyq0="assumeNotNull(PREV.5)", icount0="assumeNotNull(PREV.4)")
     halt_reason_expr = _halt_reason_transform("r.4.3")
     exit_code_expr = f"if(toUInt8(r.4.3) = {config.HALT_EXIT}, r.4.5, toUInt32(0))"

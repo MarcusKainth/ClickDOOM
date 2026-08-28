@@ -36,28 +36,50 @@ harmless -- the target icount for the gameplay window is itself chosen as
 a frame-commit instant, frame 200 of 300, per `rom/bench/e7_memfns`; by
 233M instructions in, roughly 200 frames have already committed.)
 
-## What is NOT captured, and why that is fine here
+## What IS captured, since #251, and what still is not
 
-`framebuffer`/`palette`/`console_out`/`key_queue` are refemu MMIO state
-with no representation in `sqlcpu/schema.sql` yet (#144's own
-`checkpoint_query.py` hit the same gap: FRAMEBUFFER/PALETTE SQL storage
-doesn't exist, #130/#29). This tool only needs `pc`/`regs`/`ram`/`icount`
--- the state a batch of `arrayFold` steps actually reads -- to produce a
-throughput measurement; it is not trying to reproduce the exact MMIO
-continuity a real resumed run would have. `run.sh` seeds the ClickHouse
-side with placeholder MMIO columns (empty write-log, `keyq_pos=0`,
-`has_frame=0`) accordingly, documented there.
+`framebuffer`/`palette` (SPEC §2) are captured as of format version 2
+(`snapshot_format.py`) -- `cpu.memory.framebuffer`/`.palette`, the same
+dense, region-relative bytearrays `refemu.memory.Memory` already keeps
+(byte 0 = the region's own base, not RAM_BASE/an absolute address). #251
+filed this as a gap: a database seeded without them starts both pixel
+regions at all-zero, so any frame-verification run whose replayed window
+doesn't happen to rewrite every word (PALETTE especially -- SPEC §2 and
+`sqlcpu/schema.sql` both note palette writes are rare, on-change only)
+produces a clean, plausible, WRONG `fb_hash` with no error anywhere
+(`scripts/verify_snapshot_pixel_coverage.py` is the tool that first made
+this observable, measuring 0/192 palette words touched in the window
+before frame 220). Capturing them here, restoring them in
+`seed_snapshot.py`, is the fix.
+
+`console_out`/`key_queue` remain uncaptured -- still no representation in
+`sqlcpu/schema.sql` needed for a throughput measurement or a `fb_hash`
+frame-verification run (neither reads console bytes or the key queue), so
+there's nothing yet pulling this tool toward capturing them too. `run.sh`
+seeds the ClickHouse side with placeholder MMIO columns for those two
+(empty write-log, `keyq_pos=0`, `has_frame=0`) accordingly, documented
+there.
 
 ## Caching
 
-Written to `<out-dir>/snapshot.<rom sha256 prefix>.<icount>.pkl`, atomically
-(`tmp` + `os.replace`, same pattern as `refemu/scripts/gen_demo3_trace.py`'s
-`save_state`) -- a crash mid-write leaves no half-written file for `run.sh`
-to mistake for a good one. The ROM hash and target icount are both in the
-filename, so a stale snapshot from a since-superseded ROM (or a different
-window) can never be silently reused -- the same reasoning
-`gen_reference_trace.py`'s `default_out_path` documents for its own
-hash-prefixed trace filenames.
+Written to `<out-dir>/snapshot.<rom sha256 prefix>.<icount>.v<format
+version>.pkl`, atomically (`tmp` + `os.replace`, same pattern as
+`refemu/scripts/gen_demo3_trace.py`'s `save_state`) -- a crash mid-write
+leaves no half-written file for `run.sh` to mistake for a good one. The
+ROM hash and target icount are both in the filename, so a stale snapshot
+from a since-superseded ROM (or a different window) can never be silently
+reused -- the same reasoning `gen_reference_trace.py`'s `default_out_path`
+documents for its own hash-prefixed trace filenames. The format version
+(`snapshot_format.FORMAT_VERSION`) is in the filename too, since #251: a
+pre-#251 (format 1) cache sitting in `--out-dir` from a previous run has a
+different filename under format 2, so it can never be mistaken for a
+current-format snapshot and silently reused with an empty
+`framebuffer`/`palette` -- the cache key changing is what forces
+regeneration, on top of `seed_snapshot.py`'s own explicit
+`format_version` check on the dict itself (belt and suspenders: the
+filename protects against a stale file being found by a fresh run of this
+script, the in-dict field protects against a stale file being handed to
+`seed_snapshot.py` directly under any name).
 
 Usage:
     cd refemu && uv run python ../rom/bench/canonical_throughput/gen_snapshot.py \\
@@ -79,12 +101,15 @@ HERE = Path(__file__).resolve().parent
 ROM_DIR = HERE.parent.parent  # rom/
 REPO = ROM_DIR.parent
 sys.path.insert(0, str(REPO / "refemu" / "src"))
+sys.path.insert(0, str(HERE))
 
 from refemu.cpu import Halted, new_cpu  # noqa: E402
+from refemu.memory import FRAMEBUFFER_SIZE, PALETTE_SIZE  # noqa: E402
+from snapshot_format import FORMAT_VERSION  # noqa: E402
 
 
 def snapshot_path(out_dir: Path, rom_sha256: str, target_icount: int) -> Path:
-    return out_dir / f"snapshot.{rom_sha256[:12]}.{target_icount}.pkl"
+    return out_dir / f"snapshot.{rom_sha256[:12]}.{target_icount}.v{FORMAT_VERSION}.pkl"
 
 
 def generate(image: bytes, manifest: dict, target_icount: int) -> dict:
@@ -118,12 +143,34 @@ def generate(image: bytes, manifest: dict, target_icount: int) -> dict:
     print(f"# reached icount={cpu.icount:,} in {elapsed:.1f}s "
           f"({cpu.icount / max(elapsed, 1e-9):,.0f} instr/sec)", file=sys.stderr)
 
+    # framebuffer/palette (#251): refemu's Memory keeps both as dense,
+    # already-region-relative bytearrays (byte 0 = the region's own base --
+    # see memory.py's write() subtracting FRAMEBUFFER_BASE/PALETTE_BASE
+    # before indexing), fixed at FRAMEBUFFER_SIZE/PALETTE_SIZE from
+    # construction regardless of what's been written -- same "dense from
+    # construction, no separate zero-fill step" property `ram` has, so
+    # these need no sparse/dense reconciliation the way `ram`'s TSV load
+    # in seed_snapshot.py briefly worried about for byte-range coverage.
+    fb_bytes = bytes(cpu.memory.framebuffer)
+    pal_bytes = bytes(cpu.memory.palette)
+    assert len(fb_bytes) == FRAMEBUFFER_SIZE, (
+        f"cpu.memory.framebuffer is {len(fb_bytes)} bytes, expected {FRAMEBUFFER_SIZE} "
+        f"(SPEC §2) -- refemu.memory.Memory's own invariant, should be unreachable"
+    )
+    assert len(pal_bytes) == PALETTE_SIZE, (
+        f"cpu.memory.palette is {len(pal_bytes)} bytes, expected {PALETTE_SIZE} "
+        f"(SPEC §2) -- refemu.memory.Memory's own invariant, should be unreachable"
+    )
+
     return {
+        "format_version": FORMAT_VERSION,
         "icount": cpu.icount,
         "pc": cpu.pc,
         "regs": list(cpu.regs),  # 32 elements, regs[0] always 0 (SPEC §1)
         "ram": bytes(cpu.memory.ram),
         "ram_base": manifest["load_addr"],
+        "framebuffer": fb_bytes,
+        "palette": pal_bytes,
     }
 
 

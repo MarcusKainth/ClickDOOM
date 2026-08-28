@@ -108,9 +108,45 @@ same shortfall. So `micro.py` also carries two probes that test each hypothesis
   expansion creates in the real step expression, and what #191 separately found
   for the double scan.
 
-The distinction matters for what may be claimed: without these, "CSE collapses
-the scans and the accumulator is mutated in place" is an inference from three
-measurements that happen to be consistent with it. With them it is observed.
+The distinction matters for what may be claimed. Without these probes, the
+mechanism is an inference from three measurements that happen to be consistent
+with it; with them it is observed. And the inference would have been **half
+wrong**: the pre-probe best fit was "one scan, no copy", but H1 shows the
+accumulator *is* copied — the copy is simply cheap (0.633 ns/element against the
+scan's 2.671), not absent.
+
+Two things this got wrong before the probes ran, recorded because both are easy
+to repeat:
+
+- **The copy rate was overstated ~30×** by a microbenchmark that forced
+  materialisation with `cityHash64` over the pushed arrays. The hash is itself
+  O(length) and dominated the measurement. Scaffolding has to be cheaper than
+  the thing it scaffolds.
+- **The growth exponent was read too early.** At N ≤ 80,000 it reads ~1.43,
+  which is ambiguous between O(N) and O(N²); it only reaches 1.97 by
+  N = 320,000. An exponent has to be read where the asymptote is, not where the
+  sweep happens to stop.
+
+## What it found
+
+Recorded here only as a pointer — the numbers and their provenance live on #257.
+
+Per-instruction cost **does** grow within a batch, linearly in write-log length,
+at 3.41 ns per element per step (95% CI [3.27, 3.61]). `slope/K` moves 7.0%
+across a 4× range of K, which is the mix-free statement of that and rests on no
+model. It reconciles to 0.74× with #180's independent fit.
+
+The mechanism is fully accounted for: the load-forwarding scan is **81%** of the
+term and the accumulator copy **19%** (2.671 + 0.633 = 3.304 predicted against
+3.411 measured).
+
+The actionable consequence is a **negative** one, which is why this harness
+exists rather than an optimisation: ClickHouse already collapses all six textual
+`arrayLastIndex` calls into one, so #180 §6's "bind the scan once" has no
+headroom. And since the write-log term is 10.3% of a batch (#180) and the scan
+is 81% of that, **the entire linear-scan mechanism is ≈8% of a batch** — which
+bounds every structure-replacement idea competing for it, including #170's
+already-rejected `Map`.
 
 ## Files
 

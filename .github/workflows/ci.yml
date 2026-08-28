@@ -7,7 +7,7 @@
 #
 # PINNED VERSIONS (keep in sync with docker-compose.yml; bumps are `ci:` PRs
 # with nightly deep-diff evidence — see SPEC §8):
-#   ClickHouse: 26.3  (placeholder pin — Phase 0 ratifies the final version)
+#   ClickHouse: 26.7  (bumped from 26.3 on the evidence in #260)
 
 name: ci
 
@@ -18,7 +18,7 @@ on:
     branches: [main]
 
 env:
-  CLICKHOUSE_VERSION: "26.3"
+  CLICKHOUSE_VERSION: "26.7"
   # Credentials for the service containers below. Local-dev only: this database
   # holds an emulator's RAM, never a secret. docker-compose.yml must match.
   CLICKHOUSE_USER: default
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.3   # keep literal in sync with env.CLICKHOUSE_VERSION
+        image: clickhouse/clickhouse-server:26.7   # keep literal in sync with env.CLICKHOUSE_VERSION
         env:
           CLICKHOUSE_DB: clickdoom
           CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.3   # keep in sync
+        image: clickhouse/clickhouse-server:26.7   # keep in sync
         env:
           CLICKHOUSE_DB: clickdoom
           CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
@@ -223,7 +223,7 @@ jobs:
     timeout-minutes: 10
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.3   # keep in sync
+        image: clickhouse/clickhouse-server:26.7   # keep in sync
         env:
           CLICKHOUSE_DB: clickdoom
           CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml

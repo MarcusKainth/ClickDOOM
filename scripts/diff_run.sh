@@ -141,7 +141,37 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$DATABASE" ] || DATABASE="clickdoom_diff_$$"
 
-fail() { echo "::error::DIFFERENTIAL RUN FAILED: $1" >&2; exit 1; }
+# Every fail() call prints the SAME coverage caveat the success path's
+# final summary does -- not just a nicety, a correctness fix (#255 review):
+# a run that fails is exactly when a reader most needs to know which
+# cadence was actually covered before it stopped, and the caveat had
+# previously only ever printed on the clean-exit path. ${VAR:-0} defaults
+# make this safe to call before CHECKPOINTS_COMPARED/
+# RAM_HASH_CHECKPOINTS_COMPARED are ever assigned (e.g. the ROM-hash gate,
+# before the differential loop starts).
+fail() {
+  echo "::error::DIFFERENTIAL RUN FAILED: $1" >&2
+  echo "Register/control-flow divergence would have been caught at the CHECKPOINT_INTERVAL cadence (${CHECKPOINTS_COMPARED:-0} compared before this failure); memory divergence is only ever checked at the RAM_HASH_INTERVAL cadence (${RAM_HASH_CHECKPOINTS_COMPARED:-0} compared before this failure) -- SPEC §7, #191." >&2
+  exit 1
+}
+
+# assert_numeric(): the SAME helper scripts/preflight_milestone.sh's #254
+# fix introduced -- reused verbatim, not a second variant. A checked
+# assignment before `read` (below) stops the script on a genuinely FAILED
+# query (set -e sees the assignment fail); this is the second, independent
+# layer for the case a query "succeeds" but returns something empty or
+# non-numeric -- without it, `read` on an empty/short row silently leaves
+# a variable "", and `[ "" -eq N ]` exits status 2 (not the comparison
+# result), which an `if`/`||` chain upstream can misread as "the check
+# passed" -- the reviewer's exact finding on this PR: a failed post-batch
+# state read left ICOUNT empty, the arithmetic on it silently evaluated to
+# 0, and the comparison-count assertion agreed with its own degraded
+# cross-check (0 == 0) and reported success having verified nothing.
+assert_numeric() { # assert_numeric <label> <value> <context, for the error message>
+  local label="$1" value="$2" context="$3"
+  [ -n "$value" ] || fail "$label came back EMPTY (context: $context) -- the query that should have produced it likely failed (bad credentials, unreachable server, missing database/table) or returned no rows. Refusing to run a numeric comparison against an empty value: '[ "" -eq N ]' does not fail the way a missing/wrong value should -- it exits status 2, which an if/|| chain reads as false, and the gate would print '-- OK' having verified nothing (#232)."
+  [[ "$value" =~ ^-?[0-9]+$ ]] || fail "$label is not a plain integer (got '$value', context: $context) -- the query result shape is not what this gate expects; refusing to run a numeric comparison against it rather than let '[ -eq/-ne ]' fail ambiguously."
+}
 
 CHECKPOINT_INTERVAL=4096       # SPEC §7
 RAM_HASH_INTERVAL=1048576      # SPEC §7 -- 256x CHECKPOINT_INTERVAL
@@ -308,12 +338,20 @@ REFEMU_HALT_ICOUNT="-1"
 REFEMU_HALT_LINE=$(grep -m1 '^# halted:' "$REFSTDERR" || true)
 if [ -n "$REFEMU_HALT_LINE" ]; then
   REFEMU_HALTED=1
-  read -r REFEMU_HALT_REASON REFEMU_HALT_PC REFEMU_HALT_ICOUNT <<< "$(python3 -c "
+  # Checked assignment before `read`, not `read ... <<< "$(...)"` directly
+  # (#232/#254's fix, reused here): a command substitution feeding a
+  # here-string discards its own exit status, so a failing python3 call
+  # would hand `read` an empty line and every variable would come back ""
+  # instead of stopping the script.
+  REFEMU_HALT_ROW=$(python3 -c "
 import re
 m = re.search(r'# halted: (\S+) at pc=0x([0-9a-fA-F]+) icount=(\d+)', open('$REFSTDERR').read())
 reason, pc, icount = (m.group(1), int(m.group(2), 16), m.group(3)) if m else ('UNKNOWN', 0, -1)
 print(reason, pc, icount)
-")"
+")
+  read -r REFEMU_HALT_REASON REFEMU_HALT_PC REFEMU_HALT_ICOUNT <<< "$REFEMU_HALT_ROW"
+  assert_numeric "refemu halt pc" "$REFEMU_HALT_PC" "refemu halt-line parse, result: '$REFEMU_HALT_ROW'"
+  assert_numeric "refemu halt icount" "$REFEMU_HALT_ICOUNT" "refemu halt-line parse, result: '$REFEMU_HALT_ROW'"
   echo "  refemu: $REFEMU_HALT_LINE" >&2
 fi
 
@@ -365,8 +403,24 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   # Never trust STEP_K as what actually retired -- a batch can stop early
   # on halt, FRAME_COMMIT, or the write-log high-water mark. Re-read the
   # real state every iteration, same as run_milestone.sh.
-  read -r ICOUNT PC HALTED HALT_REASON <<< "$(ch --query \
-      "SELECT icount, pc, halted, halt_reason FROM cpu_state ORDER BY batch_id DESC LIMIT 1" | tr '\t' ' ')"
+  #
+  # Checked assignment before `read`, not `read ... <<< "$(...)"` directly
+  # (#232/#254's fix on preflight_milestone.sh, reused verbatim here, NOT a
+  # second variant -- reviewer's finding on this PR): a command
+  # substitution feeding a here-string discards its own exit status even
+  # under `set -euo pipefail`, so a failed query here would silently hand
+  # `read` an empty line, leaving ICOUNT="". `assert_numeric` is the
+  # second, independent layer: without it, `$(( "" % CHECKPOINT_INTERVAL ))`
+  # evaluates to 0, the comparison-count assertion's own arithmetic
+  # (computed from the same degraded ICOUNT) agrees with itself, and the
+  # run reports "0 register checkpoints compared" as SUCCESS -- the exact
+  # defect #227 exists to eliminate, reproduced inside its own guard.
+  CPU_STATE_ROW=$(ch --query \
+      "SELECT icount, pc, halted, halt_reason FROM cpu_state ORDER BY batch_id DESC LIMIT 1" | tr '\t' ' ')
+  read -r ICOUNT PC HALTED HALT_REASON <<< "$CPU_STATE_ROW"
+  assert_numeric "icount" "$ICOUNT" "post-batch state read, query result: '$CPU_STATE_ROW'"
+  assert_numeric "pc" "$PC" "post-batch state read, query result: '$CPU_STATE_ROW'"
+  assert_numeric "halted" "$HALTED" "post-batch state read, query result: '$CPU_STATE_ROW'"
 
   if [ "$ICOUNT" -gt 0 ] && [ "$((ICOUNT % CHECKPOINT_INTERVAL))" -eq 0 ]; then
     if [ "$REFEMU_HALTED" -eq 1 ] && [ "$ICOUNT" -gt "$REFEMU_HALT_ICOUNT" ]; then
@@ -387,6 +441,16 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
     else
       ACTUAL_LINE=$(ch --format TSVRaw <<< "$(python3 scripts/checkpoint_query.py --db "$DATABASE" --reg-only)")
     fi
+    # A plain `VAR=$(...)` assignment's failure is NOT caught by `set -e`
+    # (same category as the here-string bug fixed above, different shape)
+    # -- an empty ACTUAL_LINE here would never equal a real EXPECTED_LINE,
+    # so this wouldn't silently PASS, but it WOULD get reported as a
+    # "checkpoint mismatch" (a CPU divergence) when the real cause is an
+    # infrastructure failure (the query itself didn't run). Named
+    # correctly instead of misdiagnosed, same reasoning as the ROM-hash
+    # gate existing to prevent a stale-binary run from looking like a
+    # divergence.
+    [ -n "$ACTUAL_LINE" ] || fail "checkpoint query for icount=$ICOUNT produced no output -- the query itself likely failed; refusing to compare an empty result against refemu's line as though it were a real CPU divergence"
 
     EXPECTED_LINE=$(awk -F'\t' -v ic="$ICOUNT" '$1 == ic { print; found=1 } END { if (!found) exit 1 }' "$REFTRACE") \
       || fail "no refemu trace line for icount=$ICOUNT -- refemu and sqlcpu disagree about where a checkpoint falls, which should be structurally impossible (both use CHECKPOINT_INTERVAL=$CHECKPOINT_INTERVAL)"

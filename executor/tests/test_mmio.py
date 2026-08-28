@@ -255,6 +255,31 @@ def test_word_store_to_frame_commit_still_commits_a_frame():
     assert actual["frame_no"] == 7  # RS2V, per SPEC §3: the stored value is the frame number
 
 
+def test_frame_commit_stops_the_batch_without_halting():
+    # #223: SPEC §6 ("A batch ends early on: halt, FRAME_COMMIT write, or
+    # write-log high-water mark") -- fold.py set frame_committed but never
+    # folded it into the fold's own `stopped` termination condition, so a
+    # frame-committing batch ran a full K past the commit instead of
+    # stopping there. k=3 here, one more than the commit point (index 1),
+    # mirroring test_fold.py's test_high_water_mark_stops_without_halting
+    # shape -- the third instruction (which would set x2) must NOT execute
+    # if the batch actually stopped at the commit rather than merely
+    # recording it.
+    insns = [
+        I(op_id=0, rd=1, rs1=0, rs2=0, imm=7),                         # addi x1, x0, 7
+        I(op_id=config.OP_STORE, rd=0, rs1=0, rs2=1,
+          imm=config.MMIO_BASE + config.MMIO_FRAME_COMMIT,
+          width_mask=0xFFFFFFFF, sign_bit=0),                           # sw x1, FRAME_COMMIT(x0)
+        I(op_id=0, rd=2, rs1=0, rs2=0, imm=99),                        # addi x2, x0, 99 (must not retire)
+    ]
+    actual = run_mmio_case(insns, k=3)
+    assert actual["frame_committed"] == 1
+    assert actual["frame_no"] == 7
+    assert actual["stopped"] == 1 and actual["halted"] == 0  # stopped, not faulted
+    assert actual["retired"] == 2  # the addi and the commit store -- not the third insn
+    assert actual["regs"][1] == 0  # x2 -- never reached
+
+
 def test_byte_load_at_keyq_does_not_pop_the_queue():
     insns = [
         I(op_id=config.OP_LOAD, rd=1, rs1=0, rs2=0,

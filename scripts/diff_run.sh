@@ -141,6 +141,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$DATABASE" ] || DATABASE="clickdoom_diff_$$"
 
+fail() { echo "::error::DIFFERENTIAL RUN FAILED: $1" >&2; exit 1; }
+
 CHECKPOINT_INTERVAL=4096       # SPEC §7
 RAM_HASH_INTERVAL=1048576      # SPEC §7 -- 256x CHECKPOINT_INTERVAL
 
@@ -172,6 +174,26 @@ else
     CH_CMD=("$fetch_dir/clickhouse" client)
   fi
 fi
+# Re-derive the --client STRING sqlcpu/load_rom.py and executor/bootstrap.py
+# each take as their own argument (they invoke the client as a fresh
+# subprocess, not through this script's ch()/ch_default()) from the same
+# resolved CH_CMD -- otherwise an auto-detected client (CLIENT left empty
+# above) would leave those two calls passing --client "" downstream, which
+# `args.client.split()` turns into an empty argv, silently making the
+# FIRST real argument after it (e.g. "--host") the program name instead.
+# Caught exactly this way: differential-smoke's second real run failed
+# with `FileNotFoundError: [Errno 2] No such file or directory: '--host'`.
+CLIENT="${CH_CMD[*]}"
+# Refuse loudly HERE if that resolution came out empty or broken, rather
+# than let it surface three calls later as the obscure traceback above --
+# same posture as preflight_milestone.sh's gates: refuse to proceed, don't
+# advise and continue anyway.
+if [ "${#CH_CMD[@]}" -eq 0 ]; then
+  fail "clickhouse client resolution produced an EMPTY command (--client was given as blank/whitespace-only, or auto-detection above found nothing usable) -- refusing to proceed. A downstream call would silently treat its own next flag (e.g. --host) as the program name instead of failing here, at the actual point of the problem."
+fi
+if ! "${CH_CMD[@]}" --version >/dev/null 2>&1; then
+  fail "resolved clickhouse client command '${CH_CMD[*]}' does not run (\`${CH_CMD[*]} --version\` failed) -- refusing to proceed rather than let this surface later as an unrelated-looking error from load_rom.py/bootstrap.py/a query. Check --client, or that the fetched/detected binary is actually executable."
+fi
 ch() {
   local args=(--host "$HOST" --port "$PORT" --user "$CH_USER" --database "$DATABASE")
   [ -n "$PASSWORD" ] && args+=(--password "$PASSWORD")
@@ -189,8 +211,6 @@ ch_default() {
   [ -n "$PASSWORD" ] && args+=(--password "$PASSWORD")
   "${CH_CMD[@]}" "${args[@]}" "$@"
 }
-
-fail() { echo "::error::DIFFERENTIAL RUN FAILED: $1" >&2; exit 1; }
 
 REFTRACE=""
 REFSTDERR=""

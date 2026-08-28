@@ -15,11 +15,11 @@ faster batch-execution engine and points it at DOOM. What counts as
 "entirely in SQL" is defined in [PURITY.md](PURITY.md), committed before
 the first line of code.
 
-![A DOOM screenshot: a corridor with wooden walls, a lit column in the centre, and the full status bar showing 100% health and ammo counts](docs/blog/images/frame25-clickdoom.png)
+![A DOOM screenshot: the player firing a shotgun at a red imp in a stone corridor, a second enemy to the right, muzzle flash lighting the scene, status bar showing 10 ammo and 100% health](docs/blog/images/frame220-demo3.png)
 
-Frame 25 of `-timedemo demo3`, after 22,188,003 instructions. Every pixel
+Frame 220 of `-timedemo demo3`, after 221,639,723 instructions. Every pixel
 computed inside ClickHouse, read back out by a SQL query, and hashed to
-`e7cff1ed07d8821c` — the same value the reference emulator produces from its
+`aa27f0470c7c5f3a` — the same value the reference emulator produces from its
 own independent run.
 
 ## Build log

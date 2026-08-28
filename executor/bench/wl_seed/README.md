@@ -88,6 +88,30 @@ fold. It comes from `micro.py` instead — standalone `arrayLastIndex` and
 instruments sharing no assumption is a real anchor; a subtraction between two
 arms of one instrument was never going to be (#197).
 
+## Inference, then observation
+
+Comparing the sweep's slope against the primitive rates can only establish that
+the fold is *cheaper* than a naive reading of its text implies. It cannot say
+which of the two candidate reasons is responsible, because both produce the
+same shortfall. So `micro.py` also carries two probes that test each hypothesis
+**directly**, outside the fold:
+
+- **H1 — does `arrayPushBack` copy the accumulator?**
+  `arrayFold((acc, i) -> arrayPushBack(acc, i), range(N), [])` is O(N²) if the
+  accumulator is copied each step and O(N) if it is mutated in place. The
+  growth exponent over a sweep of N answers it, and the answer is 1 or 2 rather
+  than a ratio needing interpretation.
+- **H2 — does ClickHouse collapse the repeated scan?** Two folds over identical
+  data, one evaluating `arrayLastIndex` once per step and one evaluating the
+  byte-identical call six times. Equal cost means common subexpression
+  elimination is firing — which is exactly the condition `LW`'s triple textual
+  expansion creates in the real step expression, and what #191 separately found
+  for the double scan.
+
+The distinction matters for what may be claimed: without these, "CSE collapses
+the scans and the accumulator is mutated in place" is an inference from three
+measurements that happen to be consistent with it. With them it is observed.
+
 ## Files
 
 | file | role |

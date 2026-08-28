@@ -117,6 +117,40 @@ SETTINGS max_threads = 1"""
 # It is the intercept, and it is measured rather than fitted away.
 
 
+# --- direct tests of the two mechanism hypotheses -------------------------
+# Comparing the sweep's slope against the primitive rates can only say the
+# fold is cheaper than a naive reading of its text implies. It cannot say
+# WHICH of the two candidate reasons is responsible, because both would
+# produce the same shortfall. These two probes test each hypothesis directly,
+# outside the fold, so the attribution is observed rather than inferred.
+
+# H1: does `arrayPushBack` inside `arrayFold` copy the accumulator, or mutate
+# it in place? A copying implementation makes this O(N^2); an in-place one
+# makes it O(N). Sweep N and read the exponent off a log-log fit -- the answer
+# is the exponent, and it is unambiguous (1 vs 2, not a subtle ratio).
+#
+# `length()` of the result, not the array itself, so the measurement is the
+# fold and not the serialisation of an N-element array.
+PUSHBACK_GROWTH_SQL = """SELECT length(arrayFold(
+    (acc, i) -> arrayPushBack(acc, i), range({N}), emptyArrayUInt32())) AS n
+SETTINGS max_threads = 1"""
+
+# H2: does ClickHouse collapse the six textually-repeated `arrayLastIndex`
+# calls into one? Two folds over the same data, one evaluating the call once
+# per step and one evaluating the identical call six times. If common
+# subexpression elimination is doing the work, they cost the same; if not, the
+# six-call variant costs about six times the scan.
+#
+# The six terms are byte-identical, which is exactly the condition under which
+# CSE can fire -- and exactly the situation `LW`'s triple textual expansion
+# creates in the real step expression.
+_LASTIDX = "arrayLastIndex(z -> z = toUInt32(i), arr)"
+SCAN_CSE_SQL = """SELECT arrayFold((acc, i) -> acc + toUInt64({terms}),
+                                   range({N}), toUInt64(0)) AS s
+FROM (SELECT arrayResize(emptyArrayUInt32(), {L}, toUInt32(4294967295)) AS arr)
+SETTINGS max_threads = 1"""
+
+
 def sweep(ch, sql_tmpl, lengths, rows, reps):
     """Median server-side ms for each array length."""
     out = {}
@@ -200,8 +234,37 @@ def main():
     copy = rate("arrayPushBack x3 (16B/elem)",
                 sweep(ch, COPY_SQL, lengths, a.copy_rows, a.reps), a.copy_rows)
 
+    # H1: accumulator copy semantics, from the growth exponent.
+    growth = {}
+    for n in (10000, 20000, 40000, 80000):
+        runs = sorted(ch.duration_ms(ch.run(PUSHBACK_GROWTH_SQL.format(N=n))[1])
+                      for _ in range(a.reps))
+        growth[n] = runs[len(runs) // 2]
+    ns = sorted(growth)
+    # Exponent from the first and last point: t ~ N^p  =>  p = dlog(t)/dlog(N).
+    import math
+    if growth[ns[0]] > 0:
+        exponent = (math.log(growth[ns[-1]] / growth[ns[0]])
+                    / math.log(ns[-1] / ns[0]))
+    else:
+        exponent = float("nan")
+
+    # H2: does CSE collapse the repeated scan?
+    cse = {}
+    for label, terms in (("x1", _LASTIDX),
+                         ("x6", " + ".join([_LASTIDX] * 6))):
+        runs = sorted(ch.duration_ms(
+            ch.run(SCAN_CSE_SQL.format(terms=terms, N=20000, L=20000))[1])
+            for _ in range(a.reps))
+        cse[label] = runs[len(runs) // 2]
+    cse_ratio = cse["x6"] / cse["x1"] if cse["x1"] else float("nan")
+
     result = {"scan": scan, "copy": copy, "k": a.k,
               "scan_multiplicity": 6,
+              "pushback_growth_ms": growth,
+              "pushback_growth_exponent": exponent,
+              "cse_probe_ms": cse,
+              "cse_ratio_x6_over_x1": cse_ratio,
               "clickhouse_version": ch.run("SELECT version()")[0]}
 
     if scan["supported"] and copy["supported"]:
@@ -233,6 +296,18 @@ def main():
               f"per seeded write-log element "
               f"(scan {100 * result['predicted_scan_share']:.0f}% / "
               f"copy {100 * (1 - result['predicted_scan_share']):.0f}%)")
+
+    print("\n--- direct mechanism probes ---")
+    print(f"H1 arrayPushBack inside arrayFold: {growth}")
+    print(f"   growth exponent = {exponent:.2f}  "
+          f"({'O(N) -- accumulator mutated IN PLACE, no per-step copy'
+              if exponent < 1.4 else
+              'O(N^2) -- accumulator COPIED every step'})")
+    print(f"H2 repeated arrayLastIndex: x1={cse['x1']} ms, x6={cse['x6']} ms, "
+          f"ratio {cse_ratio:.2f}x")
+    print(f"   ({'CSE collapses the repeats -- 6 textual calls cost ~1'
+             if cse_ratio < 2.0 else
+             'each textual repeat is evaluated -- no CSE'})")
 
 
 if __name__ == "__main__":

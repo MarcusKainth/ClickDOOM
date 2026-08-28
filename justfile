@@ -67,6 +67,10 @@ diff N: up
 # run_milestone.sh's instructions/sec, so 1,000,000 here projected to
 # ~13 minutes, well past this job's stated ~5-minute budget; provisional
 # pending a real measurement (bench-machine), see ci.yml's own comment.
+# NEVER REACHES A RAM_HASH_INTERVAL BOUNDARY (1,048,576) -- this checks
+# registers/control-flow only, 24 comparisons, ZERO memory comparisons.
+# See ci.yml's differential-smoke comment for what that leaves uncaught
+# (#191) and why (nightly's deep-diff is the only job that checks memory).
 smoke: (diff "100000")
 
 # Phase 0 arrayFold characterisation benchmark (ADR-0001/0002 evidence).

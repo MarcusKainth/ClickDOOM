@@ -122,7 +122,7 @@ HOST="localhost"
 PORT="9000"
 CH_USER="default"
 PASSWORD="${CLICKHOUSE_PASSWORD:-}"
-CLIENT="clickhouse-client"
+CLIENT=""   # empty means auto-detect below; --client overrides explicitly
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -144,9 +144,34 @@ done
 CHECKPOINT_INTERVAL=4096       # SPEC §7
 RAM_HASH_INTERVAL=1048576      # SPEC §7 -- 256x CHECKPOINT_INTERVAL
 
-# shellcheck disable=SC2206  # deliberate word-split, same convention as
-# every other script here that accepts a multi-word --client.
-CH_CMD=($CLIENT)
+if [ -n "$CLIENT" ]; then
+  # shellcheck disable=SC2206  # deliberate word-split, same convention as
+  # every other script here that accepts a multi-word --client.
+  CH_CMD=($CLIENT)
+else
+  # No --client given: locate a native-protocol client, installing one if
+  # the runner has none -- the EXACT fallback sqlcpu/run_tests.sh already
+  # uses (that script's own comment: "CI's ubuntu-latest runner ships
+  # neither clickhouse-client nor clickhouse"). diff_run.sh is invoked
+  # directly as a CI step with no separate install step of its own
+  # (differential-smoke's first real run caught exactly this -- CI has
+  # `clickhouse-client` available in the jobs that install it explicitly
+  # for their own steps, but each job is its own fresh runner, so a step in
+  # one job does not help another), so it needs to be able to provision
+  # itself the same way run_tests.sh does, not assume an environment step
+  # already did it.
+  if command -v clickhouse-client >/dev/null 2>&1; then
+    CH_CMD=(clickhouse-client)
+  elif command -v clickhouse >/dev/null 2>&1; then
+    CH_CMD=(clickhouse client)
+  else
+    echo "# no local clickhouse client found; fetching the standalone binary..." >&2
+    fetch_dir="$(mktemp -d)"
+    curl -fsSL https://clickhouse.com/ -o "$fetch_dir/install.sh"
+    (cd "$fetch_dir" && sh install.sh)
+    CH_CMD=("$fetch_dir/clickhouse" client)
+  fi
+fi
 ch() {
   local args=(--host "$HOST" --port "$PORT" --user "$CH_USER" --database "$DATABASE")
   [ -n "$PASSWORD" ] && args+=(--password "$PASSWORD")

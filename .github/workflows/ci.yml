@@ -193,6 +193,31 @@ jobs:
     # tool (bench-machine timing lock, see #227) -- raise this once a real
     # wall-clock number is in hand. `timeout-minutes` below is a safety net
     # in case that projection is wrong, not a substitute for measuring.
+    #
+    # ## THIS JOB NEVER CHECKS MEMORY. Read this before trusting a green run.
+    #
+    # 100,000 instructions at CHECKPOINT_INTERVAL=4,096 spacing is 24
+    # register-only comparisons and ZERO RAM_HASH_INTERVAL (1,048,576)
+    # boundaries -- the first one needs 1,048,576 instructions, which
+    # projects to ~13.9 minutes here, on every PR, just to reach it. That
+    # is not an acceptable tax on this job (test-executor is already the
+    # slow one), and there is no cheaper way to buy partial coverage: the
+    # trace only carries `ramhash`/`fbhash` at the 1,048,576 cadence --
+    # SPEC §7 defines no finer one, and adding one is a human-gated
+    # spec-change, not a CI tuning knob.
+    #
+    # So: A GREEN `differential-smoke` MEANS "registers and control flow
+    # agreed over 24 comparisons." IT DOES NOT MEAN "the engines agree."
+    # The memory-divergence check does not run on this job, on any PR, ever
+    # -- only nightly's `deep-diff` (5,000,000 instructions, 4
+    # RAM_HASH_INTERVAL boundaries) exercises `ramhash`/`fbhash` at all.
+    # #191 is the concrete shape of what this leaves uncaught: a corrupt
+    # RAM word that left the register file bit-identical to refemu across
+    # 250,000 instructions, zero footprint in any register the entire
+    # time. A PR reintroducing that exact class of defect passes this job
+    # and is only caught the following night. Deliberate, not an oversight
+    # -- but read a green check here as "smoke on registers," not as "the
+    # highest-value check in the repo confirmed nothing is wrong."
     needs: [build-rom, test-refemu, test-sqlcpu]
     runs-on: ubuntu-latest
     timeout-minutes: 10

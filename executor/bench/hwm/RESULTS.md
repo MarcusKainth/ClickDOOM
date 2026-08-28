@@ -59,3 +59,35 @@ store density needs a batch far larger than K's own 50,000 cap, i.e. it
 cannot happen inside one batch under the current K/§6 rules. If K or the
 store fraction changes later, this curve should be re-measured rather than
 assumed to still apply.
+
+## Filled in by #257 -- and the paragraph above was wrong about the real ROM
+
+**Read that gap as closed.** `executor/bench/wl_seed` measured the realistic
+case against the real ROM by seeding the write-log directly, which varies log
+length independently of K and so does not need a batch larger than K's cap.
+Numbers and provenance are on **#257**.
+
+Two corrections to what is written above, both measured rather than argued:
+
+- **The ~10% store fraction does not hold in the boot window.** Real
+  general-RAM store density there is **33.3%** (20,000 write-log entries in
+  60,006 instructions, #180), not 10%. So the mark is reached in ~60,000
+  instructions, not the ~200,000 this file estimated -- and it is therefore
+  **not** merely "a safety valve for anomalous code". At the production
+  K = 60,000 the log reaches **19,998** against a mark of 20,000. Boot runs
+  about six instructions below the truncation point.
+- **The bend is real but much gentler than the all-stores curve suggests.**
+  Per write-log element per step the fold costs **3.41 ns** (95% CI
+  [3.27, 3.61]), and `slope/K` is constant to 7% across K = 15,000-60,000, so
+  the cost is linear in log length rather than in K. Of that, **81% is the
+  load-forwarding `arrayLastIndex` scan** and 19% the accumulator copy.
+
+**The 20,000 default stands.** Its true optimum against the real ROM is
+HWM ~ 17,960 (K ~ 53,900), worth **0.08%** -- comfortably inside the noise,
+and this file's choice was made against a worst case rather than this window,
+which is why it survives being measured on a different one. Deleting the scan
+altogether would be worth 6.4%, which is the ceiling on any write-log
+restructuring.
+
+`executor/config.py`'s `WRITE_LOG_HIGH_WATER_MARK_DEFAULT` still cites this
+file, correctly: the constant is unchanged and this remains its provenance.

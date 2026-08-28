@@ -29,6 +29,11 @@
 #   - Records provenance (ROM hash, decoded row count, K, HWM, trace path)
 #     on every exit path, reusing preflight's own provenance block rather
 #     than a second copy of it.
+#   - Invokes the frame readout (#229) via driver/render.py's
+#     frame_readout_sql()/frame_readout_fb_hash_sql(), called verbatim on
+#     every has_frame=1 batch -- never a hand-rolled INSERT INTO
+#     frames_out. Until #229, nothing on this run path ever wrote
+#     frames_out at all.
 #
 # ## The checkpoint-cadence problem, and why K varies per batch
 #
@@ -309,7 +314,41 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   fi
   if [ "$HAS_FRAME" = "1" ]; then
     frames_observed=$(( frames_observed + 1 ))
-    echo "# FRAME_COMMIT observed: frame_no=$FRAME_NO icount=$ICOUNT (frames_observed=$frames_observed)" >&2
+    # #229: invoke the frame readout itself -- until now this branch only
+    # observed has_frame/frame_no and logged them; nothing ever populated
+    # frames_out, so a full Phase 3 run would end with zero rows in the
+    # table the Definition of Victory is defined over. render.py's own
+    # frame_readout_sql() is called verbatim, unmodified -- per PURITY.md
+    # the driver's job is noticing has_frame=1 and executing the SQL it's
+    # handed, nothing more (#220 already made this query dense/correct;
+    # #223 already made batches stop exactly on FRAME_COMMIT so this fires
+    # at the right instant -- this issue is only the missing invocation).
+    # Checked assignment before the `ch` call, same #228 reasoning as
+    # BATCH_SQL/RAM_SQL/etc. above: a raising render.py call must be a
+    # checked simple command under `set -e`, not silently-empty stdin.
+    READOUT_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver')
+import render
+print(render.frame_readout_sql(db='$DATABASE'))
+")
+    ch --multiquery <<< "$READOUT_SQL"
+    # fb_hash appended to the log line (#229's own suggestion, adopted):
+    # render.frame_readout_fb_hash_sql() already exists (#220) and costs
+    # nothing new to call -- SQL computes it, this just prints the scalar
+    # result, same shape as the RAM_HASH_INTERVAL checkpoint line above.
+    # Not compared against a per-frame reference here -- SPEC §7 has no
+    # per-FRAME_COMMIT checkpoint cadence to compare against yet (only
+    # CHECKPOINT_INTERVAL/RAM_HASH_INTERVAL); a live per-frame cross-engine
+    # comparison needs refemu to emit one, which is a trace-format change
+    # tracked separately, not folded into this invocation fix.
+    FRAME_FBHASH=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver')
+import render
+print(render.frame_readout_fb_hash_sql(db='$DATABASE'))
+" | ch --format TSVRaw)
+    echo "# FRAME_COMMIT observed: frame_no=$FRAME_NO icount=$ICOUNT fb_hash=$FRAME_FBHASH (frames_observed=$frames_observed)" >&2
     if [ -n "$STOP_AT_FRAME" ] && [ "$FRAME_NO" -ge "$STOP_AT_FRAME" ]; then
       reached_target=1
       break

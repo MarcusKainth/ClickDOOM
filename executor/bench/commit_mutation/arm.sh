@@ -20,7 +20,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."   # repo root
 
 LABEL=""; CONTAINER="sq2-arm-ch"; WINDOW="boot"; SNAPSHOT=""; OUTDIR="${SQ2_OUTDIR:-/tmp/sq2-bench}"
-IMAGE="clickhouse/clickhouse-server:26.7"   # the pin from docker-compose.yml
+IMAGE="clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e"   # the pin from docker-compose.yml
 PASSWORD="${CLICKHOUSE_PASSWORD:-clickdoom}"
 EXTRA=()
 while [ $# -gt 0 ]; do

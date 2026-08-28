@@ -496,8 +496,10 @@ Resolved by the Phase 0 benchmark (evidence:
       because it assumed the cost model was about data movement rather than
       expression-node count.
 - [x] **`K` default.** 50,000, fixed in §6 above.
-- [x] **ClickHouse version pin.** 26.7 (tested against 26.7.5.10; bumped from
-      26.3 on #260: 1.77x fold throughput, differential trace clean). Note the
+- [x] **ClickHouse version pin.** 26.7.5.10, pinned by image digest
+      (`sha256:800e8286…`, the multi-arch index) in `docker-compose.yml` and
+      every workflow; bumped from 26.3 on #260 (1.77x fold throughput,
+      differential trace clean). Note the
       image restricts the `default` user to container-local addresses; the pin
       ships `CLICKHOUSE_PASSWORD` in `docker-compose.yml` and in every CI
       service container so host and runner connections work (see issue #3).

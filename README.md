@@ -17,7 +17,7 @@ the first line of code.
 
 ![A DOOM screenshot: the player firing a shotgun at a red imp in a stone corridor, a second enemy to the right, muzzle flash lighting the scene, status bar showing 10 ammo and 100% health](docs/blog/images/frame220-demo3.png)
 
-Frame 220 of `-timedemo demo3`, after 221,639,723 instructions. Every pixel
+Frame 220 of `-timedemo demo3`, after 221,639,724 instructions. Every pixel
 computed inside ClickHouse, read back out by a SQL query, and hashed to
 `aa27f0470c7c5f3a` — the same value the reference emulator produces from its
 own independent run.

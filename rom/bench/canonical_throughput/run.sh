@@ -70,6 +70,7 @@
 # Usage:
 #   rom/bench/canonical_throughput/run.sh \
 #     --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+#     [CLICKDOOM_CH_CONTAINER=<container name>|native  -- env, not a flag] \
 #     [--k 60000] [--hwm 20000] [--batches 3] \
 #     [--gameplay-target-icount 233932753] [--snapshot-dir /tmp/clickdoom-canonical-throughput] \
 #     [--host localhost --port 9000 --user default --password ... --client '...']
@@ -162,9 +163,15 @@ ch() {
 # main() below) narrows that gap without pretending to close it.
 check_contention() {
   local cpu_pct load1 ncpu busy_ratio
-  cpu_pct=$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER" 2>/dev/null | tr -d '%' | head -1)
-  if [ -z "$cpu_pct" ]; then
-    fail "couldn't read docker stats for $CONTAINER -- is it running? (just up)"
+  if [ "$CONTAINER" = "native" ]; then
+    # Native server: no container to inspect. Sample the server process CPU now
+    # (top's second sample), not ps's lifetime average.
+    cpu_pct=$(top -l 2 -s 1 -stats pid,cpu,command 2>/dev/null | awk '/[c]lickhouse/ && $3 ~ /clickhouse/ {v=$2} END {printf "%.1f", v + 0}')
+  else
+    cpu_pct=$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER" 2>/dev/null | tr -d '%' | head -1)
+    if [ -z "$cpu_pct" ]; then
+      fail "couldn't read docker stats for $CONTAINER -- is it running? (just up)"
+    fi
   fi
   # Integer compare only (bash has no float arithmetic) -- truncates
   # 24.9% to 24, which is the conservative direction (rounds toward
@@ -436,7 +443,9 @@ main() {
   (cd refemu && uv run python "../$HERE/gen_snapshot.py" \
       --rom "../$BIN" --manifest "../$MANIFEST" \
       --target-icount "$GAMEPLAY_TARGET_ICOUNT" --out-dir "$SNAPSHOT_DIR") >&2
-  SNAPSHOT_FILE="$SNAPSHOT_DIR/snapshot.${ROM_SHA:0:12}.${GAMEPLAY_TARGET_ICOUNT}.pkl"
+  # Same name gen_snapshot.py writes: the format version is part of the filename.
+  SNAPSHOT_FORMAT=$(python3 -c "import sys; sys.path.insert(0, '$HERE'); from snapshot_format import FORMAT_VERSION; print(FORMAT_VERSION)")
+  SNAPSHOT_FILE="$SNAPSHOT_DIR/snapshot.${ROM_SHA:0:12}.${GAMEPLAY_TARGET_ICOUNT}.v${SNAPSHOT_FORMAT}.pkl"
   [ -f "$SNAPSHOT_FILE" ] || fail "expected snapshot at $SNAPSHOT_FILE, not found after gen_snapshot.py ran"
 
   echo "# --- setting up gameplay window (seeded from snapshot) ---" >&2

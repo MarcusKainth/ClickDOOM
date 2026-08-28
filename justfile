@@ -101,6 +101,13 @@ bench-canonical-throughput: up
         --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
+# Native vs Docker throughput comparison (executor/bench/b1_native/README.md).
+# Starts its own servers on ports 9010, 9020 and 9100. Take the machine
+# lock (kind: timing) first.
+bench-native REPEATS="3" BATCHES="3" ARMS="ABC":
+    @test -f rom/build/doom-rv32im.bin || { echo "rom/ not built yet -- run just build-rom first"; exit 1; }
+    ./executor/bench/b1_native/run.sh --repeats {{REPEATS}} --batches {{BATCHES}} --arms {{ARMS}}
+
 # #180/#182: per-statement attribution of the e2e batch. Breaks the batch
 # apart -- own query_id per statement, standalone RAMT/DEC/KEYQ timings, a
 # direct select_only(K=0) reading of the fixed per-batch setup cost, and a

@@ -183,16 +183,16 @@ jobs:
     # N=100,000, NOT the 1,000,000 this job used to (unreachably) claim:
     # #227/#230's diff_run.sh clamps every sqlcpu batch to
     # <= CHECKPOINT_INTERVAL (4,096) so it cannot skip a checkpoint row --
-    # correct by construction, but ~half run_milestone.sh's
-    # instructions/sec at the same K (#180's fitted per-batch model:
-    # S=1,754ms fixed setup, a=0.3696ms/step -- setup goes from ~7% of a
-    # K=60,000 production batch to ~54% of a K=4,096 one). 1,000,000
-    # projects to ~13 minutes at that rate, well past this job's old
-    # "~5 minutes" budget; 100,000 projects to ~1.3 minutes. Both are
-    # PROJECTED from #180's model, not yet measured against this exact
-    # tool (bench-machine timing lock, see #227) -- raise this once a real
-    # wall-clock number is in hand. `timeout-minutes` below is a safety net
-    # in case that projection is wrong, not a substitute for measuring.
+    # correct by construction, but slower than run_milestone.sh's
+    # instructions/sec at the same K. MEASURED (not projected -- #227's own
+    # container, N=100,000): **990 instructions/sec, 101 seconds wall
+    # clock** -- 21% slower than #180's ~1,253 fold+commit-only projection,
+    # which didn't include this tool's own per-4,096-batch overhead (a
+    # checkpoint_query.py invocation, a client round-trip, a trace-file
+    # lookup, once per landing). 1,000,000 at this rate is ~16.8 minutes,
+    # well past this job's old "~5 minutes" budget; 100,000 is the ~1.7
+    # minutes actually measured. `timeout-minutes` below is a safety net
+    # for CI-runner variance, not a substitute for the measurement above.
     #
     # ## THIS JOB NEVER CHECKS MEMORY. Read this before trusting a green run.
     #

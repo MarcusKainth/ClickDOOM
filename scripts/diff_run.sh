@@ -169,7 +169,13 @@ fail() { echo "::error::DIFFERENTIAL RUN FAILED: $1" >&2; exit 1; }
 
 REFTRACE=""
 REFSTDERR=""
-# shellcheck disable=SC2329  # invoked indirectly via `trap cleanup EXIT` below
+# shellcheck disable=SC2317,SC2329
+# Invoked indirectly via `trap cleanup EXIT` below -- SC2317 ("unreachable")
+# is shellcheck pre-0.10's mistaken read of a trap-invoked function; SC2329
+# ("never invoked") is the newer check's name for the identical false
+# positive. CI runs 0.9.0 (Ubuntu noble's apt package); local shellcheck is
+# commonly newer -- disable both so this doesn't flip depending on which
+# version happens to be checking it.
 cleanup() {
   if [ "$KEEP_DB" -eq 0 ]; then
     ch_default --query "DROP DATABASE IF EXISTS $DATABASE" 2>/dev/null || true

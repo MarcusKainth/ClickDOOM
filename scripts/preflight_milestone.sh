@@ -126,6 +126,26 @@ tsv_field() { # tsv_field <column-name> <TSVWithNames output>
   echo "$data" | tail -1 | awk -F'\t' -v i="$idx" '{print $i}'
 }
 
+# #232: `read -r A B C <<< "$(ch --query ...)"` discards the command
+# substitution's own exit status even under `set -euo pipefail` -- a failed
+# query (wrong password, unreachable server, missing database) hands `read`
+# an empty string, every variable comes back "", and `[ "" -eq 0 ]` does not
+# return false: it errors "integer expression expected" and exits 2, which
+# an `if`/`||` chain reads as "condition false" exactly as 1 would. Gates 1
+# and 2 below now assign the query's output to a checked variable FIRST
+# (same fix #236 applied to scripts/run_milestone.sh's flush/resume-read
+# sites), so a failing `ch` call is a checked simple command `set -e` can
+# see and stop on, before `read` ever runs. assert_numeric is a second,
+# independent layer on top: even if some future query shape change made the
+# checked assignment itself "succeed" with unexpected output (extra/missing
+# columns, a non-numeric value), this stops the arithmetic comparison from
+# silently misreading it as false rather than failing loudly.
+assert_numeric() { # assert_numeric <label> <value> <context, for the error message>
+  local label="$1" value="$2" context="$3"
+  [ -n "$value" ] || fail "$label came back EMPTY (context: $context) -- the query that should have produced it likely failed (bad credentials, unreachable server, missing database/table) or returned no rows. Refusing to run a numeric comparison against an empty value: '[ \"\" -eq N ]' does not fail the way a missing/wrong value should -- it exits status 2, which an if/|| chain reads as false, and the gate would print '-- OK' having verified nothing (#232)."
+  [[ "$value" =~ ^-?[0-9]+$ ]] || fail "$label is not a plain integer (got '$value', context: $context) -- the query result shape is not what this gate expects; refusing to run a numeric comparison against it rather than let '[ -eq/-ne ]' fail ambiguously."
+}
+
 echo "# pre-flight: gate 1/5 -- decoded populated and correctly sized" >&2
 TEXT_START=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_start'])")
 TEXT_END=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['text_end'])")
@@ -140,8 +160,17 @@ EXPECTED_DECODED=$(( TEXT_END_WORD - TEXT_START_WORD ))
 # = expected width with matching endpoints is airtight by pigeonhole --
 # expected_count distinct integers spanning exactly [lo, hi] can only be the
 # full contiguous range.
-read -r DEC_CNT DEC_MIN DEC_MAX <<< "$(ch --query \
-  "SELECT count(DISTINCT word_addr), min(word_addr), max(word_addr) FROM decoded" | tr '\t' ' ')"
+# Checked assignment before the `read`, not `read ... <<< "$(...)"` directly
+# (#232): a command substitution feeding a here-string discards its own
+# exit status even under `set -euo pipefail`, so a failed query here would
+# hand `read` an empty line and every variable would come back "" instead
+# of stopping the script.
+DEC_ROW=$(ch --query \
+  "SELECT count(DISTINCT word_addr), min(word_addr), max(word_addr) FROM decoded" | tr '\t' ' ')
+read -r DEC_CNT DEC_MIN DEC_MAX <<< "$DEC_ROW"
+assert_numeric "decoded count(DISTINCT word_addr)" "$DEC_CNT" "gate 1, query result: '$DEC_ROW'"
+assert_numeric "decoded min(word_addr)" "$DEC_MIN" "gate 1, query result: '$DEC_ROW'"
+assert_numeric "decoded max(word_addr)" "$DEC_MAX" "gate 1, query result: '$DEC_ROW'"
 if [ "$DEC_CNT" -eq 0 ]; then
   fail "decoded is EMPTY (0 rows) -- this is #83's exact failure shape: the run would execute K no-ops per batch, retire nothing real, and report throughput that looks fine. Run sqlcpu/decode.sql before retrying."
 fi
@@ -162,8 +191,13 @@ RAM_WORDS=6291456  # SPEC §2: 24 MiB / 4
 # load-time check (sqlcpu/load_rom.py) uses the same count()+span+min form
 # for the same reason. Re-checking here rather than trusting that load
 # happened, or happened last, per the team lead's ask.
-read -r RAM_CNT RAM_MIN RAM_MAX <<< "$(ch --query \
-  "SELECT count(), min(word_addr), max(word_addr) FROM ram FINAL" | tr '\t' ' ')"
+# Checked assignment before the `read`, same reason as DEC_ROW above (#232).
+RAM_ROW=$(ch --query \
+  "SELECT count(), min(word_addr), max(word_addr) FROM ram FINAL" | tr '\t' ' ')
+read -r RAM_CNT RAM_MIN RAM_MAX <<< "$RAM_ROW"
+assert_numeric "ram count()" "$RAM_CNT" "gate 2, query result: '$RAM_ROW'"
+assert_numeric "ram min(word_addr)" "$RAM_MIN" "gate 2, query result: '$RAM_ROW'"
+assert_numeric "ram max(word_addr)" "$RAM_MAX" "gate 2, query result: '$RAM_ROW'"
 if [ "$RAM_CNT" -ne "$RAM_WORDS" ] || [ "$RAM_MIN" -ne "$RAM_BASE_WORD" ] || [ "$RAM_MAX" -ne $(( RAM_BASE_WORD + RAM_WORDS - 1 )) ]; then
   fail "ram is not dense over SPEC §2's 24 MiB region: got count=$RAM_CNT min=$RAM_MIN max=$RAM_MAX, expected count=$RAM_WORDS min=$RAM_BASE_WORD max=$(( RAM_BASE_WORD + RAM_WORDS - 1 )). RAMT indexes positionally (#81) -- a sparse ram silently displaces every load past the first gap, no halt, no error."
 fi

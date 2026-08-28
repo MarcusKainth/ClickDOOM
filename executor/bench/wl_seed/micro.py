@@ -93,23 +93,27 @@ FROM (SELECT arrayResize(emptyArrayUInt32(), {L}, toUInt32(4294967295 - number %
       FROM numbers({rows}))
 SETTINGS max_threads = 1"""
 
-# The fold copies three lanes per step: UInt32 + UInt32 + UInt64 = 16 bytes per
-# element. Modelled with the same three pushBacks rather than one, so the
-# measured rate is per-ELEMENT-of-write-log and directly comparable to the
-# sweep's slope without a bytes-per-element conversion in between.
+# The accumulator copy, measured INSIDE arrayFold on acc.3's exact three-lane
+# shape (UInt32 + UInt32 + UInt64), grown exactly as the real step expression
+# grows it.
 #
-# `cityHash64` over the three results forces each pushed array to be
-# materialised: a `length()` reduction would let ClickHouse answer `L + 1`
-# without ever copying, which is exactly the elision the linearity check exists
-# to catch. Verified by that check, not assumed.
-COPY_SQL = """SELECT sum(cityHash64(arrayPushBack(a32, toUInt32(n)),
-                                    arrayPushBack(b32, toUInt32(n)),
-                                    arrayPushBack(c64, toUInt64(n)))) AS s
-FROM (SELECT number AS n,
-             arrayResize(emptyArrayUInt32(), {L}, toUInt32(number)) AS a32,
-             arrayResize(emptyArrayUInt32(), {L}, toUInt32(number + 1)) AS b32,
-             arrayResize(emptyArrayUInt64(), {L}, toUInt64(number + 2)) AS c64
-      FROM numbers({rows}))
+# An earlier version measured this outside a fold, forcing materialisation with
+# `cityHash64` over the three pushed arrays. That was wrong by a factor of 30:
+# the hash is itself O(length) and dominated the measurement, reporting
+# 18.5 ns/element when the copy is 0.63. A microbenchmark's scaffolding has to
+# be cheaper than the thing it is scaffolding, and that one was not.
+#
+# Growing the array inside the fold needs no scaffolding at all -- the copies
+# are the work, and `length(...).1` at the end is O(1). Over `range(N)` the
+# accumulator is copied at lengths 0, 1, ... N-1, so the total is N*(N-1)/2
+# element-copies. That quadratic is also the H1 answer: an in-place
+# implementation would be linear.
+COPY_FOLD_SQL = """SELECT length(arrayFold(
+    (acc, i) -> tuple(arrayPushBack(acc.1, i),
+                      arrayPushBack(acc.2, i),
+                      arrayPushBack(acc.3, toUInt64(i))),
+    range({N}),
+    tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64())).1) AS n
 SETTINGS max_threads = 1"""
 
 # The same shape with L held at 0, to price the per-row scaffolding (array
@@ -121,19 +125,16 @@ SETTINGS max_threads = 1"""
 # Comparing the sweep's slope against the primitive rates can only say the
 # fold is cheaper than a naive reading of its text implies. It cannot say
 # WHICH of the two candidate reasons is responsible, because both would
-# produce the same shortfall. These two probes test each hypothesis directly,
-# outside the fold, so the attribution is observed rather than inferred.
-
-# H1: does `arrayPushBack` inside `arrayFold` copy the accumulator, or mutate
-# it in place? A copying implementation makes this O(N^2); an in-place one
-# makes it O(N). Sweep N and read the exponent off a log-log fit -- the answer
-# is the exponent, and it is unambiguous (1 vs 2, not a subtle ratio).
+# produce the same shortfall. These probes test each hypothesis directly, so
+# the attribution is observed rather than inferred.
 #
-# `length()` of the result, not the array itself, so the measurement is the
-# fold and not the serialisation of an N-element array.
-PUSHBACK_GROWTH_SQL = """SELECT length(arrayFold(
-    (acc, i) -> arrayPushBack(acc, i), range({N}), emptyArrayUInt32())) AS n
-SETTINGS max_threads = 1"""
+# H1 -- does `arrayPushBack` inside `arrayFold` copy the accumulator, or mutate
+# it in place? -- is answered by COPY_FOLD_SQL's growth exponent above, which
+# is the same sweep that supplies the copy rate. A copying implementation is
+# O(N^2), an in-place one O(N), and the exponent must be read at the LARGE end:
+# at N <= 80,000 it reads ~1.4, which is ambiguous, and only by N = 320,000
+# does it reach ~1.9. An earlier version stopped at 80,000 and called 1.43
+# "quadratic", which the data did not support.
 
 # H2: does ClickHouse collapse the six textually-repeated `arrayLastIndex`
 # calls into one? Two folds over the same data, one evaluating the call once
@@ -219,7 +220,10 @@ def main():
     # linearity gate refused it -- correctly.) They therefore get separate row
     # counts, chosen so both land in the same ~1-3 s band.
     p.add_argument("--scan-rows", type=int, default=20000)
-    p.add_argument("--copy-rows", type=int, default=2000)
+    # The copy sweep must reach far enough for the growth exponent to separate
+    # O(N) from O(N^2): at N <= 80,000 it reads ~1.4, which is ambiguous, and
+    # only by 320,000 does it reach ~1.9.
+    p.add_argument("--copy-n", default="40000,80000,160000,320000")
     p.add_argument("--reps", type=int, default=5)
     p.add_argument("--k", type=int, default=60000,
                    help="batch length the prediction is expressed for")
@@ -229,25 +233,35 @@ def main():
     ch = CH(a.container, a.password)
     lengths = [int(x) for x in a.lengths.split(",")]
 
+    import math
+
     scan = rate("arrayLastIndex",
                 sweep(ch, SCAN_SQL, lengths, a.scan_rows, a.reps), a.scan_rows)
-    copy = rate("arrayPushBack x3 (16B/elem)",
-                sweep(ch, COPY_SQL, lengths, a.copy_rows, a.reps), a.copy_rows)
 
-    # H1: accumulator copy semantics, from the growth exponent.
+    # The copy rate and H1's exponent come from ONE sweep: growing acc.3 inside
+    # arrayFold over range(N) performs N*(N-1)/2 element-copies, so the rate is
+    # t / (N*(N-1)/2) and the exponent says whether copying happens at all.
     growth = {}
-    for n in (10000, 20000, 40000, 80000):
-        runs = sorted(ch.duration_ms(ch.run(PUSHBACK_GROWTH_SQL.format(N=n))[1])
+    for n in [int(x) for x in a.copy_n.split(",")]:
+        runs = sorted(ch.duration_ms(ch.run(COPY_FOLD_SQL.format(N=n))[1])
                       for _ in range(a.reps))
         growth[n] = runs[len(runs) // 2]
     ns = sorted(growth)
-    # Exponent from the first and last point: t ~ N^p  =>  p = dlog(t)/dlog(N).
-    import math
-    if growth[ns[0]] > 0:
-        exponent = (math.log(growth[ns[-1]] / growth[ns[0]])
-                    / math.log(ns[-1] / ns[0]))
-    else:
-        exponent = float("nan")
+    # t ~ N^p  =>  p = dlog(t)/dlog(N), taken over the LARGEST pair: the small-N
+    # points carry per-query overhead that biases the exponent down, and it is
+    # the asymptote that distinguishes O(N) from O(N^2).
+    exponent = (math.log(growth[ns[-1]] / growth[ns[-2]])
+                / math.log(ns[-1] / ns[-2])) if growth[ns[-2]] > 0 else float("nan")
+    n_big = ns[-1]
+    copy_ns = 1e6 * growth[n_big] / (n_big * (n_big - 1) / 2)
+    copy = {"name": "acc.3 3-lane copy, in arrayFold", "points_ms": growth,
+            "ns_per_element": copy_ns, "exponent": exponent,
+            "seconds_per_element": copy_ns / 1e9,
+            "supported": exponent > 1.7,
+            "why_not": None if exponent > 1.7 else (
+                f"growth exponent {exponent:.2f} is not clearly quadratic; the "
+                f"copy model (t = rate * N^2/2) does not hold, so this rate is "
+                f"UNSUPPORTED")}
 
     # H2: does CSE collapse the repeated scan?
     cse = {}
@@ -260,21 +274,27 @@ def main():
     cse_ratio = cse["x6"] / cse["x1"] if cse["x1"] else float("nan")
 
     result = {"scan": scan, "copy": copy, "k": a.k,
-              "scan_multiplicity": 6,
-              "pushback_growth_ms": growth,
-              "pushback_growth_exponent": exponent,
+              "scan_multiplicity_textual": 6,
               "cse_probe_ms": cse,
               "cse_ratio_x6_over_x1": cse_ratio,
+              "cse_collapses": cse_ratio < 2.0,
               "clickhouse_version": ch.run("SELECT version()")[0]}
 
     if scan["supported"] and copy["supported"]:
-        g_ms_per_elem = a.k * (6 * scan["seconds_per_element"]
-                               + copy["seconds_per_element"]) * 1000.0
-        result["predicted_g_VA_ms_per_seeded_element"] = g_ms_per_elem
+        # H2 decides the scan multiplicity the fold actually pays. The six
+        # textual calls are byte-identical, so if CSE collapses them the fold
+        # pays for one -- measured, not assumed.
+        mult = 1 if result["cse_collapses"] else 6
+        result["scan_multiplicity_paid"] = mult
+        per_step_ns = mult * scan["ns_per_element"] + copy["ns_per_element"]
+        result["predicted_ns_per_element_per_step"] = per_step_ns
+        result["predicted_g_VA_ms_per_seeded_element"] = (
+            a.k * per_step_ns / 1e6)
         result["predicted_scan_share"] = (
-            6 * scan["seconds_per_element"]
-            / (6 * scan["seconds_per_element"] + copy["seconds_per_element"]))
+            mult * scan["ns_per_element"] / per_step_ns)
     else:
+        result["scan_multiplicity_paid"] = None
+        result["predicted_ns_per_element_per_step"] = None
         result["predicted_g_VA_ms_per_seeded_element"] = None
         result["predicted_scan_share"] = None
 
@@ -284,30 +304,38 @@ def main():
             json.dump(result, f, indent=2)
 
     print()
-    for r in (scan, copy):
-        status = "OK" if r["supported"] else "UNSUPPORTED"
-        print(f"{r['name']:<32} {r['ns_per_element']:8.3f} ns/element  "
-              f"r2={r['r2']:.4f}  [{status}]")
-        if not r["supported"]:
-            print(f"    {r['why_not']}")
-    if result["predicted_g_VA_ms_per_seeded_element"] is not None:
-        print(f"\npredicted slope at K={a.k}: "
-              f"{result['predicted_g_VA_ms_per_seeded_element']:.4f} ms "
-              f"per seeded write-log element "
-              f"(scan {100 * result['predicted_scan_share']:.0f}% / "
-              f"copy {100 * (1 - result['predicted_scan_share']):.0f}%)")
+    print(f"{scan['name']:<34} {scan['ns_per_element']:8.3f} ns/element  "
+          f"r2={scan['r2']:.4f}  "
+          f"[{'OK' if scan['supported'] else 'UNSUPPORTED'}]")
+    if not scan["supported"]:
+        print(f"    {scan['why_not']}")
+    print(f"{copy['name']:<34} {copy['ns_per_element']:8.3f} ns/element  "
+          f"exponent={copy['exponent']:.2f}  "
+          f"[{'OK' if copy['supported'] else 'UNSUPPORTED'}]")
+    if not copy["supported"]:
+        print(f"    {copy['why_not']}")
 
     print("\n--- direct mechanism probes ---")
-    print(f"H1 arrayPushBack inside arrayFold: {growth}")
-    print(f"   growth exponent = {exponent:.2f}  "
-          f"({'O(N) -- accumulator mutated IN PLACE, no per-step copy'
-              if exponent < 1.4 else
-              'O(N^2) -- accumulator COPIED every step'})")
+    print(f"H1 acc.3 copy growth inside arrayFold: {growth}")
+    print(f"   exponent = {copy['exponent']:.2f} -> "
+          + ("O(N^2): the accumulator IS copied every step"
+             if copy["exponent"] > 1.7 else
+             "sub-quadratic: copying is not the model, treat the rate as void"))
     print(f"H2 repeated arrayLastIndex: x1={cse['x1']} ms, x6={cse['x6']} ms, "
           f"ratio {cse_ratio:.2f}x")
-    print(f"   ({'CSE collapses the repeats -- 6 textual calls cost ~1'
-             if cse_ratio < 2.0 else
-             'each textual repeat is evaluated -- no CSE'})")
+    print("   -> " + ("CSE collapses the repeats: 6 textual calls cost ~1"
+                      if result["cse_collapses"] else
+                      "no CSE: each textual repeat is evaluated"))
+
+    if result["predicted_ns_per_element_per_step"] is not None:
+        m = result["scan_multiplicity_paid"]
+        print(f"\npredicted fold cost, per write-log element per step:")
+        print(f"   {m} x scan {scan['ns_per_element']:.3f} + copy "
+              f"{copy['ns_per_element']:.3f} = "
+              f"{result['predicted_ns_per_element_per_step']:.3f} ns")
+        print(f"   scan is {100 * result['predicted_scan_share']:.0f}% of it")
+        print(f"   (= {result['predicted_g_VA_ms_per_seeded_element']:.4f} ms "
+              f"per seeded element at K={a.k:,})")
 
 
 if __name__ == "__main__":

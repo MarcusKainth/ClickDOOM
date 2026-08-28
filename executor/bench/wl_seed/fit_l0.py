@@ -226,21 +226,26 @@ def main():
         if micro and micro["scan"]["supported"] and micro["copy"]["supported"]:
             s = micro["scan"]["ns_per_element"]
             c = micro["copy"]["ns_per_element"]
-            print(f"\n  primitives, measured standalone: scan {s:.3f} ns/elem, "
-                  f"copy(16B) {c:.3f} ns/elem")
-            print("  what the fold would cost if it paid, per element per step:")
-            for label, pred in (
-                    ("6 scans + copy (naive text count)", 6 * s + c),
-                    ("1 scan  + copy (CSE collapses scans)", s + c),
-                    ("6 scans, no copy (in-place accumulator)", 6 * s),
-                    ("1 scan,  no copy (CSE *and* in-place)", s)):
-                print(f"    {label:<42} {pred:7.3f}   "
-                      f"(measured/pred = {g_ns / pred:.2f}x)")
-            print("\n  The closest row is the mechanism the fold actually pays for.\n"
-                  "  Note this is an INFERENCE from three measurements, not a direct\n"
-                  "  observation of CSE or of in-place mutation -- neither is visible\n"
-                  "  from SQL. It is corroborated by #191 having separately found\n"
-                  "  ClickHouse already collapses the write-log's double scan.")
+            mult = micro["scan_multiplicity_paid"]
+            pred = micro["predicted_ns_per_element_per_step"]
+            print(f"\n=== attribution, from separately measured primitives ===")
+            print(f"  scan  {s:6.3f} ns/element   x{mult} paid "
+                  f"(6 in the text; CSE probe ratio "
+                  f"{micro['cse_ratio_x6_over_x1']:.2f}x)")
+            print(f"  copy  {c:6.3f} ns/element   acc.3's three lanes, "
+                  f"growth exponent {micro['copy']['exponent']:.2f}")
+            print(f"  ----- {pred:6.3f} ns/element/step predicted   "
+                  f"vs {g_ns:.3f} measured  ({g_ns / pred:.2f}x)")
+            share = micro["predicted_scan_share"]
+            print(f"\n  The load-forwarding SCAN is {100 * share:.0f}% of the "
+                  f"write-log term;\n  the accumulator copy is "
+                  f"{100 * (1 - share):.0f}%.")
+            if mult == 1:
+                print("\n  NOTE: ClickHouse already collapses the six textual\n"
+                      "  arrayLastIndex calls into one (measured, and consistent\n"
+                      "  with #191's null result on the double scan). So binding\n"
+                      "  the scan once by hand -- #180 6's proposal -- has NO\n"
+                      "  headroom: the optimiser has already done it.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,21 @@
+<!-- Same default user and password as docker-compose.yml. -->
+<clickhouse>
+    <profiles>
+        <default/>
+    </profiles>
+    <users>
+        <default>
+            <password>clickdoom</password>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+    </users>
+    <quotas>
+        <default/>
+    </quotas>
+</clickhouse>

@@ -37,6 +37,26 @@ this module's real `frame_readout_sql()`/`ansi_render_sql()`, reproducing
 isolated test path rather than requiring the full shared schema for every
 test run.
 
+## Dense reads (issue #220)
+
+`frame_readout_sql()` originally read `framebuffer`/`palette` with a bare
+`groupArray(value) FROM (... FINAL ORDER BY word_addr)` -- correct only
+because it happens to run right after `DG_DrawFrame` has written every
+word in both regions (verified against rom/src/dg_hooks.c). That is a
+property of when the query is called, not something the query itself
+guarantees: any word `DG_DrawFrame` hasn't (yet) written shortens the
+`groupArray` result instead of reading as 0, which shifts every
+subsequent byte and produces a wrong `fb_hash` with no error. #210 hit
+the same gap for real on the SPEC §7 checkpoint path (`fbhash` at
+`RAM_HASH_INTERVAL`, which has no FRAME_COMMIT-adjacent timing guarantee
+at all) and fixed it there with `dense_words_sql()` -- a `numbers(N)` LEFT
+JOIN zero-filling any unwritten word. That function now lives in this
+module (moved from `scripts/checkpoint_query.py`, which already depended
+on this module for the word-count constants and never the other way
+around) and `frame_readout_sql()` uses it too, so there is exactly one
+implementation of "read this word-sparse table as a dense zero-filled
+array" for both call sites.
+
 ## Why the word->bytes technique isn't imported from checkpoint.py
 
 `sqlcpu/checkpoint.py`'s `word_array_hash()` already established the
@@ -86,6 +106,48 @@ def region_bytes_sql(words_expr: str) -> str:
     )
 
 
+def dense_words_sql(db: str, table: str, n_words: int) -> str:
+    """A dense `Array(UInt32)` over `[0, n_words)` for `framebuffer`/
+    `palette` -- tables that, unlike `ram` (zero-filled densely by
+    `load_rom.py` at load time), start with ZERO ROWS and only gain one
+    per address once the ROM's first store there actually happens. A bare
+    `groupArray(value) FROM (... FINAL ORDER BY word_addr)` silently
+    returns a SHORT or EMPTY array whenever any word in the range has
+    never been written, not a zero-filled one -- and unlike `ram_hash`'s
+    same-shaped query over `ram`, there is no load-time guarantee here
+    that every address already has a row by the time this runs. An
+    unwritten framebuffer/palette word must read as 0 (the same
+    "never-written memory is zero" semantic refemu's `Memory` gives both
+    regions) or the resulting byte string is not just wrong at that one
+    word -- it is SHORTER, which shifts every later byte's alignment too
+    (issue #220).
+
+    Moved here from `scripts/checkpoint_query.py` (#210 wrote it first,
+    for the SPEC §7 `fbhash` checkpoint path) rather than staying there or
+    being reimplemented a second time in this module: `checkpoint_query.py`
+    already imports this module for `FRAMEBUFFER_WORDS`/`PALETTE_WORDS`/
+    `region_bytes_sql()`, never the reverse, so this module is the one
+    with no risk of a circular import, and it is also the natural owner --
+    it already defines the two word-count constants this function's
+    callers pass in. `checkpoint_query.py` now calls `render.dense_words_sql`
+    instead of keeping its own copy (#220).
+
+    `LEFT JOIN` against a `numbers(n_words)` address domain, `coalesce`ing
+    a missing match to 0, closes the gap; the ORDER BY lives on the inner
+    subquery, same convention as the bare `groupArray` pattern this
+    replaces, so `groupArray` sees rows in address order without needing
+    its own ORDER BY (aggregates don't take one)."""
+    return (
+        f"(SELECT groupArray(value) FROM ("
+        f"SELECT coalesce(t.value, 0) AS value "
+        f"FROM (SELECT number AS word_addr FROM numbers({n_words})) n "
+        f"LEFT JOIN (SELECT word_addr, value FROM {db}.{table} FINAL) t "
+        f"ON n.word_addr = t.word_addr "
+        f"ORDER BY n.word_addr"
+        f"))"
+    )
+
+
 def frame_readout_sql(db: str = DB) -> str:
     """INSERT one `frames_out` row from the latest committed frame's
     `framebuffer`/`palette` word-table state (SPEC §5: frames_out is
@@ -106,9 +168,19 @@ def frame_readout_sql(db: str = DB) -> str:
     ever writing either region (verified against rom/src/dg_hooks.c while
     reviewing #149) -- read any later and a second `DG_DrawFrame` call may
     have already overwritten it.
+
+    Reads both regions through `dense_words_sql()` (#220), not a bare
+    `groupArray`/`FINAL` read: "DG_DrawFrame writes every word before
+    FRAME_COMMIT" is a property of the ROM's *behaviour*, not something
+    this query enforces, so a bare read was only densely correct by
+    accident of when it happened to run. `dense_words_sql()` makes the
+    output exactly `FRAMEBUFFER_WORDS`/`PALETTE_WORDS` long unconditionally,
+    zero-filling any word this particular commit's write history hasn't
+    touched yet -- the same fix already proven correct for the SPEC §7
+    `fbhash` checkpoint path in #210.
     """
-    fb_words = f"(SELECT groupArray(value) FROM (SELECT value FROM {db}.framebuffer FINAL ORDER BY word_addr))"
-    pal_words = f"(SELECT groupArray(value) FROM (SELECT value FROM {db}.palette FINAL ORDER BY word_addr))"
+    fb_words = dense_words_sql(db, "framebuffer", FRAMEBUFFER_WORDS)
+    pal_words = dense_words_sql(db, "palette", PALETTE_WORDS)
     fb_bytes = region_bytes_sql(fb_words)
     pal_bytes = region_bytes_sql(pal_words)
     return f"""INSERT INTO {db}.frames_out (frame_no, committed_icount, fb, palette)

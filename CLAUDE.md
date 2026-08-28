@@ -96,7 +96,7 @@ is missing, add it in the same PR.
     just test-refemu   # riscv-tests against the reference emulator
     just test-sqlcpu   # riscv-tests inside ClickHouse
     just diff N        # differential run, N instructions, report first divergence
-    just smoke         # CI-sized differential smoke (1M instructions)
+    just smoke         # CI-sized differential smoke (100K instr, registers/control-flow only -- see ci.yml)
     just bench         # executor throughput benchmark (instructions/sec)
     just lint          # all linters + purity check
 

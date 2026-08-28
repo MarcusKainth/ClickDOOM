@@ -175,11 +175,52 @@ jobs:
         run: echo "executor workstream not landed — skipped by design"
 
   differential-smoke:
-    # Highest-value check in the repo: first 1M instructions of the DOOM ROM
-    # on refemu vs sqlcpu, checkpoint hashes compared per SPEC §7.
-    # Budget: keep under ~5 minutes; the deep run lives in nightly.yml.
+    # Highest-value check in the repo: N instructions of the DOOM ROM on
+    # refemu vs sqlcpu, the FULL SPEC §7 trace compared (every
+    # CHECKPOINT_INTERVAL, not just RAM_HASH_INTERVAL -- #227/#230), not a
+    # sampled subset.
+    #
+    # N=100,000, NOT the 1,000,000 this job used to (unreachably) claim:
+    # #227/#230's diff_run.sh clamps every sqlcpu batch to
+    # <= CHECKPOINT_INTERVAL (4,096) so it cannot skip a checkpoint row --
+    # correct by construction, but slower than run_milestone.sh's
+    # instructions/sec at the same K. MEASURED (not projected -- #227's own
+    # container, N=100,000): **990 instructions/sec, 101 seconds wall
+    # clock** -- 21% slower than #180's ~1,253 fold+commit-only projection,
+    # which didn't include this tool's own per-4,096-batch overhead (a
+    # checkpoint_query.py invocation, a client round-trip, a trace-file
+    # lookup, once per landing). 1,000,000 at this rate is ~16.8 minutes,
+    # well past this job's old "~5 minutes" budget; 100,000 is the ~1.7
+    # minutes actually measured. `timeout-minutes` below is a safety net
+    # for CI-runner variance, not a substitute for the measurement above.
+    #
+    # ## THIS JOB NEVER CHECKS MEMORY. Read this before trusting a green run.
+    #
+    # 100,000 instructions at CHECKPOINT_INTERVAL=4,096 spacing is 24
+    # register-only comparisons and ZERO RAM_HASH_INTERVAL (1,048,576)
+    # boundaries -- the first one needs 1,048,576 instructions, which
+    # projects to ~13.9 minutes here, on every PR, just to reach it. That
+    # is not an acceptable tax on this job (test-executor is already the
+    # slow one), and there is no cheaper way to buy partial coverage: the
+    # trace only carries `ramhash`/`fbhash` at the 1,048,576 cadence --
+    # SPEC §7 defines no finer one, and adding one is a human-gated
+    # spec-change, not a CI tuning knob.
+    #
+    # So: A GREEN `differential-smoke` MEANS "registers and control flow
+    # agreed over 24 comparisons." IT DOES NOT MEAN "the engines agree."
+    # The memory-divergence check does not run on this job, on any PR, ever
+    # -- only nightly's `deep-diff` (5,000,000 instructions, 4
+    # RAM_HASH_INTERVAL boundaries) exercises `ramhash`/`fbhash` at all.
+    # #191 is the concrete shape of what this leaves uncaught: a corrupt
+    # RAM word that left the register file bit-identical to refemu across
+    # 250,000 instructions, zero footprint in any register the entire
+    # time. A PR reintroducing that exact class of defect passes this job
+    # and is only caught the following night. Deliberate, not an oversight
+    # -- but read a green check here as "smoke on registers," not as "the
+    # highest-value check in the repo confirmed nothing is wrong."
     needs: [build-rom, test-refemu, test-sqlcpu]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       clickhouse:
         image: clickhouse/clickhouse-server:26.3   # keep in sync
@@ -193,14 +234,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download ROM artifact
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
         uses: actions/download-artifact@v4
         with:
           name: rom
           path: rom/build
-      - name: Run smoke diff (1M instructions)
-        if: hashFiles('rom/Makefile') != '' && hashFiles('refemu/pyproject.toml') != '' && hashFiles('sqlcpu/schema.sql') != '' && hashFiles('scripts/diff_run.sh') != ''
-        run: ./scripts/diff_run.sh 1000000
-      - name: Skipped (needs rom + refemu + sqlcpu all landed)
-        if: hashFiles('rom/Makefile') == '' || hashFiles('refemu/pyproject.toml') == '' || hashFiles('sqlcpu/schema.sql') == '' || hashFiles('scripts/diff_run.sh') == ''
-        run: echo "differential smoke activates when rom, refemu, sqlcpu AND scripts/diff_run.sh have all landed"
+      - name: Install uv (for refemu's side of the comparison)
+        run: pipx install uv
+      - name: Run smoke diff (100,000 instructions, full SPEC §7 trace)
+        run: ./scripts/diff_run.sh 100000 --host localhost --port 9000

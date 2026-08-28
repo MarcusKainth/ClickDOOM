@@ -72,6 +72,121 @@ echo "# --- setting up fixture database ($TESTDB) ---" >&2
 ch default --query "DROP DATABASE IF EXISTS $TESTDB"
 sed "s/{{DB}}/$TESTDB/g" driver/fixture_schema.sql | ch default --multiquery
 
+# --- test 0: sparse framebuffer/palette injection (issue #220) ---------
+#
+# frame_readout_sql() used to read framebuffer/palette with a bare
+# `groupArray(value) FROM (... FINAL ORDER BY word_addr)`, correct only
+# because DG_DrawFrame happens to write every word before FRAME_COMMIT --
+# a property of when the query runs, not something it enforces. This
+# deliberately constructs a genuinely sparse table (a partially-written
+# region, per #220's own description) and checks BOTH the historical bare
+# read (OLD_READOUT_SQL below, a literal copy of the pre-#220 query --
+# kept here so this regression stays caught even though render.py no
+# longer contains it) and the current, fixed render.frame_readout_sql()
+# (NEW) against the same seed data. Two independent cases -- sparse
+# FRAMEBUFFER with a fully dense PALETTE, and vice versa -- so a fix that
+# only covers one side is still caught by the case it didn't fix.
+#
+# Fully synthetic, deterministic data (gen_sparse_frame_fixture.py) --
+# no ROM/refemu CPU stepping needed for this test, and the expected
+# fb_hash comes from refemu.trace.fb_hash() directly (the same oracle
+# function, not a reimplementation), applied to an independently-built
+# zero-filled byte string in Python.
+run_sparse_case() {
+  local which="$1" written="$2" case_label="$3"
+  echo "# --- test 0.$case_label: sparse $which injection (issue #220) ---" >&2
+
+  ch "$TESTDB" --query "TRUNCATE TABLE framebuffer"
+  ch "$TESTDB" --query "TRUNCATE TABLE palette"
+  ch "$TESTDB" --query "TRUNCATE TABLE batch_commit"
+  ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
+
+  local sparse_fixture
+  sparse_fixture="$(mktemp -t "clickdoom-sparse-${which}.XXXXXX").pkl"
+  (cd refemu && uv run python ../driver/gen_sparse_frame_fixture.py \
+      --which "$which" --written-words "$written" --out "$sparse_fixture") >&2
+  EXPECTED_SPARSE_FBHASH=$(python3 -c "
+import pickle
+with open('$sparse_fixture', 'rb') as f:
+    print(pickle.load(f)['expected_fbhash'])
+")
+
+  python3 driver/seed_sparse_fixture.py --fixture "$sparse_fixture" --host "$HOST" --port "$PORT" \
+      --user "$CH_USER" --password "$PASSWORD" --database "$TESTDB" --client "$CLIENT" \
+      --frame-no 1 --icount 1 >&2
+
+  # OLD: the pre-#220 bare groupArray/FINAL read, reproduced verbatim as
+  # a historical negative control (not imported from render.py -- this
+  # exact shape no longer exists there on purpose). Byte conversion
+  # (region_bytes_sql) is still cited from render.py, since that half of
+  # the query was never wrong.
+  OLD_READOUT_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver')
+sys.path.insert(0, 'sqlcpu')
+import render
+db = '$TESTDB'
+old_fb_words = f'(SELECT groupArray(value) FROM (SELECT value FROM {db}.framebuffer FINAL ORDER BY word_addr))'
+old_pal_words = f'(SELECT groupArray(value) FROM (SELECT value FROM {db}.palette FINAL ORDER BY word_addr))'
+fb_bytes = render.region_bytes_sql(old_fb_words)
+pal_bytes = render.region_bytes_sql(old_pal_words)
+print(f'''INSERT INTO {db}.frames_out (frame_no, committed_icount, fb, palette)
+SELECT frame_no, icount, {fb_bytes} AS fb, {pal_bytes} AS palette
+FROM (
+    SELECT frame_no, icount
+    FROM {db}.batch_commit
+    WHERE has_frame = 1
+    ORDER BY batch_id DESC
+    LIMIT 1
+)''')
+")
+  echo "$OLD_READOUT_SQL" | ch "$TESTDB" --multiquery
+  OLD_FBHASH=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver'); sys.path.insert(0, 'sqlcpu')
+import render
+print(render.frame_readout_fb_hash_sql(db='$TESTDB'))
+" | ch "$TESTDB" --multiquery)
+
+  ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
+
+  # NEW: the current, fixed render.frame_readout_sql() -- same seed data.
+  NEW_READOUT_SQL=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver'); sys.path.insert(0, 'sqlcpu')
+import render
+print(render.frame_readout_sql(db='$TESTDB'))
+")
+  echo "$NEW_READOUT_SQL" | ch "$TESTDB" --multiquery
+  NEW_FBHASH=$(python3 -c "
+import sys
+sys.path.insert(0, 'driver'); sys.path.insert(0, 'sqlcpu')
+import render
+print(render.frame_readout_fb_hash_sql(db='$TESTDB'))
+" | ch "$TESTDB" --multiquery)
+
+  echo "  which=$which written_words=$written expected=$EXPECTED_SPARSE_FBHASH old=$OLD_FBHASH new=$NEW_FBHASH" >&2
+
+  if [ "$OLD_FBHASH" = "$EXPECTED_SPARSE_FBHASH" ]; then
+    fail "sparse-$which negative control did not fail: the historical bare-groupArray query produced the expected hash anyway ($OLD_FBHASH) -- this case does not actually exercise sparseness, fix the test"
+  fi
+  if [ "$NEW_FBHASH" != "$EXPECTED_SPARSE_FBHASH" ]; then
+    fail "sparse-$which: fixed frame_readout_sql() produced fb_hash=$NEW_FBHASH, expected $EXPECTED_SPARSE_FBHASH -- the dense-read fix does not reconstruct a genuinely sparse $which region correctly"
+  fi
+  echo "  test 0.$case_label OK: old(sparse, buggy)=$OLD_FBHASH != expected; new(dense, fixed)=$NEW_FBHASH == expected" >&2
+
+  rm -f "$sparse_fixture"
+}
+
+run_sparse_case fb  100 a   # sparse FRAMEBUFFER (100/16000 words written), dense PALETTE
+run_sparse_case pal 50  b   # sparse PALETTE (50/192 words written), dense FRAMEBUFFER
+
+# Reset fixture tables before the real-fixture tests below reuse them.
+ch "$TESTDB" --query "TRUNCATE TABLE framebuffer"
+ch "$TESTDB" --query "TRUNCATE TABLE palette"
+ch "$TESTDB" --query "TRUNCATE TABLE batch_commit"
+ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
+
 echo "# --- generating/reusing real refemu data at icount=$TARGET_ICOUNT ---" >&2
 mkdir -p "$(dirname "$FIXTURE_CACHE")"
 if [ ! -f "$FIXTURE_CACHE" ]; then

@@ -12,16 +12,24 @@ to drift from the real one.
 
 fb_hash (#210) reads the live `framebuffer`/`palette` tables, FINAL,
 address-ascending -- like ramhash reads `ram` -- but densified over their
-full declared word range first (`dense_words_sql()` below): unlike `ram`,
-these two tables start with zero rows and only gain one per address after
-the ROM's first store there, so a bare FINAL read returns a short or empty
-array before that, not a zero-filled one. Each dense word array is turned
-into a raw byte string via driver/render.py's `region_bytes_sql()` before
-handing both to `checkpoint.fb_hash()`. `region_bytes_sql()` is cited from
-there rather than reimplemented (its own docstring explains why the
-technique lives beside frame_readout_sql() and not here: it needs the
-intermediate bytes, not just a hash of them) -- this module borrows the
-one expression it needs, not the other way around.
+full declared word range first (`render.dense_words_sql()`): unlike
+`ram`, these two tables start with zero rows and only gain one per
+address after the ROM's first store there, so a bare FINAL read returns a
+short or empty array before that, not a zero-filled one. Each dense word
+array is turned into a raw byte string via driver/render.py's
+`region_bytes_sql()` before handing both to `checkpoint.fb_hash()`.
+
+`dense_words_sql()` was originally written *in this module* for exactly
+this fb_hash path. #220 found the identical gap on `render.py`'s own
+`frame_readout_sql()` (a bare `groupArray`/`FINAL` read of these same two
+tables, dense only by accident of when `frame_readout_sql()` happens to
+be called relative to `DG_DrawFrame`) and moved the function to
+`driver/render.py` rather than adding a second copy there -- this module
+already imports `render` for `FRAMEBUFFER_WORDS`/`PALETTE_WORDS`/
+`region_bytes_sql()` and never the reverse, so `render.py` is the side
+with no circular-import risk, and it already owns the two word-count
+constants this function is parameterized by. This module now calls
+`render.dense_words_sql()` instead of keeping its own copy.
 
 Prints SQL to stdout, exactly like fold.py's/commit.py's own CLIs -- pipe
 into clickhouse-client via stdin, not `--query` (the same ARG_MAX reasoning
@@ -42,41 +50,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "driver"))
 import render
 
 
-def dense_words_sql(db: str, table: str, n_words: int) -> str:
-    """A dense `Array(UInt32)` over `[0, n_words)` for `framebuffer`/
-    `palette` -- tables that, unlike `ram` (zero-filled densely by
-    `load_rom.py` at load time), start with ZERO ROWS and only gain one
-    per address once the ROM's first store there actually happens. A bare
-    `groupArray(value) FROM (... FINAL ORDER BY word_addr)` -- `ram_words`'s
-    own pattern above -- silently returns a SHORT or EMPTY array before
-    that first write, not a zero-filled one: an unwritten framebuffer/
-    palette word must read as 0, the same "never-written memory is zero"
-    semantic refemu's `Memory` gives both regions, for `fb_hash` to be
-    comparable against the reference trace at all before the first
-    `FRAME_COMMIT`.
-
-    Caught by #210's own positive checkpoint test, not asserted from
-    reasoning alone: an early-boot RAM_HASH_INTERVAL checkpoint's real
-    fbhash (`7bed8159bb569479`, the pinned all-zero pre-render value 14 of
-    15 lines in demo-boot-to-first-frame's reference trace carry) came
-    back wrong the first time this ran, from exactly this gap -- `hex()`ing
-    an empty array hashes the empty string, not 64,768 zero bytes.
-    `LEFT JOIN` against a `numbers(n_words)` address domain, `coalesce`ing
-    a missing match to 0, closes it; the ORDER BY lives on the inner
-    subquery, same convention as `ram_words`, so `groupArray` sees rows in
-    address order without needing its own ORDER BY (aggregates don't take
-    one)."""
-    return (
-        f"(SELECT groupArray(value) FROM ("
-        f"SELECT coalesce(t.value, 0) AS value "
-        f"FROM (SELECT number AS word_addr FROM numbers({n_words})) n "
-        f"LEFT JOIN (SELECT word_addr, value FROM {db}.{table} FINAL) t "
-        f"ON n.word_addr = t.word_addr "
-        f"ORDER BY n.word_addr"
-        f"))"
-    )
-
-
 def checkpoint_sql(db: str) -> str:
     """The latest cpu_state row's SPEC §7 checkpoint line (all 5 fields --
     icount/pc/reghash/ramhash/fbhash), computed in one SELECT. The inner
@@ -92,8 +65,8 @@ def checkpoint_sql(db: str) -> str:
     the cpu_state row it's selected alongside -- same pattern ramhash
     already uses for `ram` above it, not a new one."""
     ram_words = f"(SELECT groupArray(value) FROM (SELECT value FROM {db}.ram FINAL ORDER BY word_addr))"
-    fb_words = dense_words_sql(db, "framebuffer", render.FRAMEBUFFER_WORDS)
-    pal_words = dense_words_sql(db, "palette", render.PALETTE_WORDS)
+    fb_words = render.dense_words_sql(db, "framebuffer", render.FRAMEBUFFER_WORDS)
+    pal_words = render.dense_words_sql(db, "palette", render.PALETTE_WORDS)
     reghash_expr = checkpoint.reg_hash(pc="pc", regs="regs")
     ramhash_expr = checkpoint.word_array_hash(ram_words)
     fbhash_expr = checkpoint.fb_hash(

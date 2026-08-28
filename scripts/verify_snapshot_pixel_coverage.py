@@ -71,10 +71,42 @@ second hash implementation) and asserts it matches -- this is what turns
 didn't perturb execution, by checking the instrumented run still
 reproduces a value known correct from an uninstrumented run.
 
+## `--seed-has-pixels` (#251)
+
+Before #251, `gen_snapshot.py`/`seed_snapshot.py` didn't round-trip
+FRAMEBUFFER/PALETTE at all, so a seeded resume always started both regions
+at all-zero -- full window coverage (every word rewritten between seed and
+target) was the ONLY way a seeded resume's `fb_hash` could be trusted, and
+that is what this script checks by default (`--seed-has-pixels` unset):
+incomplete coverage of either region is a hard failure.
+
+#251 makes the seed itself carry real, correct FRAMEBUFFER/PALETTE content
+at `--seed-icount`. With that in place, a word the window never rewrites
+is no longer wrong -- it carries forward the seed's own correct value,
+which is exactly what a live run would also have at that word (nothing
+else in the ROM writes either region between two DG_DrawFrame calls,
+confirmed in `driver/render.py`'s `frame_readout_sql()` docstring against
+`rom/src/dg_hooks.c`). Full coverage stops being a *requirement* for
+correctness and becomes purely informational: pass `--seed-has-pixels`
+to report the same two coverage numbers without failing the run over an
+incomplete one -- only `--expect-fbhash` (if given) still gates success.
+Omit it to keep this script's original, stricter meaning (still the right
+check for a caller that has NOT restored pixel state into its seed, or
+that specifically wants to confirm a window is self-sufficient regardless
+of what the seed carries).
+
 Usage:
     cd refemu && uv run python ../scripts/verify_snapshot_pixel_coverage.py \\
         --seed-icount 15333136 --target-icount 15393136 \\
         --expect-fbhash fe5d82c0f42d45f1
+
+    # A later frame, seeded with a #251-format snapshot that already
+    # carries real pixel state -- incomplete window coverage is expected
+    # and fine (e.g. the palette not changing that frame), so it must not
+    # fail the run:
+    cd refemu && uv run python ../scripts/verify_snapshot_pixel_coverage.py \\
+        --seed-icount 221579723 --target-icount 221639723 \\
+        --seed-has-pixels --expect-fbhash aa27f0470c7c5f3a
 """
 
 from __future__ import annotations
@@ -109,6 +141,13 @@ def main() -> int:
                      help="if given, assert the instrumented run's own fb_hash at --target-icount "
                           "matches this (16 lowercase hex digits) -- proves the instrumentation "
                           "didn't perturb execution, not just that some writes were counted")
+    ap.add_argument("--seed-has-pixels", action="store_true",
+                     help="(#251) the seed itself already carries real framebuffer/palette content "
+                          "at --seed-icount (a format-2+ gen_snapshot.py/seed_snapshot.py snapshot), "
+                          "so incomplete coverage in this window is expected/fine, not a failure -- "
+                          "the coverage numbers are still printed, just not gating. Omit this for the "
+                          "original, stricter meaning: a seed with NO pixel state, where full window "
+                          "coverage is the only way the result can be trusted. See module docstring.")
     args = ap.parse_args()
 
     if args.target_icount <= args.seed_icount:
@@ -177,17 +216,32 @@ def main() -> int:
 
     ok = True
     if not fb_full:
-        print(f"::error::FRAMEBUFFER coverage incomplete: {len(fb_written)}/{render.FRAMEBUFFER_WORDS} words "
-              f"written in [{args.seed_icount}, {args.target_icount}) -- a seeded resume from "
-              f"--seed-icount would read the missing words as 0 (post-#220) instead of their real value, "
-              f"producing a clean but WRONG fb_hash.", file=sys.stderr)
-        ok = False
+        if args.seed_has_pixels:
+            print(f"# FRAMEBUFFER coverage incomplete: {len(fb_written)}/{render.FRAMEBUFFER_WORDS} words "
+                  f"written in [{args.seed_icount}, {args.target_icount}) -- not a failure with "
+                  f"--seed-has-pixels: the missing words carry forward the seed's own real value.",
+                  file=sys.stderr)
+        else:
+            print(f"::error::FRAMEBUFFER coverage incomplete: {len(fb_written)}/{render.FRAMEBUFFER_WORDS} words "
+                  f"written in [{args.seed_icount}, {args.target_icount}) -- a seeded resume from "
+                  f"--seed-icount would read the missing words as 0 (post-#220) instead of their real value, "
+                  f"producing a clean but WRONG fb_hash. (If your seed already carries real pixel state -- "
+                  f"a #251-format snapshot -- pass --seed-has-pixels.)", file=sys.stderr)
+            ok = False
     if not pal_full:
-        print(f"::error::PALETTE coverage incomplete: {len(pal_written)}/{render.PALETTE_WORDS} words "
-              f"written in [{args.seed_icount}, {args.target_icount}) -- same failure mode as above, "
-              f"and the one SPEC §2/schema.sql's own 'palette writes are rare' note predicts: don't "
-              f"assume a prior frame's coverage result carries over to this seed point.", file=sys.stderr)
-        ok = False
+        if args.seed_has_pixels:
+            print(f"# PALETTE coverage incomplete: {len(pal_written)}/{render.PALETTE_WORDS} words "
+                  f"written in [{args.seed_icount}, {args.target_icount}) -- not a failure with "
+                  f"--seed-has-pixels: the missing words carry forward the seed's own real value.",
+                  file=sys.stderr)
+        else:
+            print(f"::error::PALETTE coverage incomplete: {len(pal_written)}/{render.PALETTE_WORDS} words "
+                  f"written in [{args.seed_icount}, {args.target_icount}) -- same failure mode as above, "
+                  f"and the one SPEC §2/schema.sql's own 'palette writes are rare' note predicts: don't "
+                  f"assume a prior frame's coverage result carries over to this seed point. (If your seed "
+                  f"already carries real pixel state -- a #251-format snapshot -- pass --seed-has-pixels.)",
+                  file=sys.stderr)
+            ok = False
     if not ok:
         return 1
 
@@ -198,7 +252,12 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    print("coverage OK: both regions fully written in the window"
+    if fb_full and pal_full:
+        coverage_msg = "both regions fully written in the window"
+    else:
+        coverage_msg = ("coverage incomplete but not gating (--seed-has-pixels: the seed itself "
+                         "supplies the rest)")
+    print(f"coverage OK: {coverage_msg}"
           + (f", fb_hash matches --expect-fbhash={args.expect_fbhash}" if args.expect_fbhash else ""),
           file=sys.stderr)
     return 0

@@ -113,13 +113,45 @@ def bootstrap_ci(by_l0, b=10000, seed_val=12345):
     return lo, hi
 
 
-BETA_180_MS_PER_UNIT_K = 0.0916 / 120000  # ms per K^2, from #180's fit
+# #180 fitted `Total(K) = (W/K)*S + a*W + beta*W*K` over a fixed window of
+# W = 120,000 instructions, and reported `beta*W = 0.0916` ms per unit of K.
+BETA_W_180 = 0.0916      # ms per unit of K, for the whole window
+W_180 = 120_000          # instructions in that window
+
+# Boot's general-RAM store density, measured on #180: a K = 80,000 batch
+# retired 60,006 before the write-log hit HWM = 20,000, i.e. 20,000 pushes in
+# 60,006 steps. This is the conversion factor between "cost per batch" and
+# "cost per element per step", so it is named and sourced rather than assumed.
+RHO_STORE_BOOT = 20_000 / 60_006
+
+
+def per_element_per_step_from_180(rho):
+    """#180's beta, converted to nanoseconds per write-log element per step.
+
+    #180's model prices the whole window. Per batch, its write-log term is
+
+        beta*W * K / (W/K)  =  beta*W * K^2 / W        ms
+
+    and that is paid over K steps against a log that grows linearly from 0 to
+    rho*K, i.e. a MEAN length of rho*K/2. So
+
+        cost per (step * element) = (beta*W * K^2 / W) / (K * rho*K/2)
+                                  = 2 * beta*W / (W * rho)
+
+    -- independent of K, which is the same invariance this harness measures
+    directly. That the two agree at all is the reconciliation; that this
+    expression has no K in it is why the comparison is legitimate.
+    """
+    return 1e6 * 2 * BETA_W_180 / (W_180 * rho)   # ms -> ns
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("json", nargs="+")
     p.add_argument("--micro", default=None, help="micro.py output, for attribution")
+    p.add_argument("--rho-store", type=float, default=RHO_STORE_BOOT,
+                   help="general-RAM store density of the window #180 measured; "
+                        "converts its per-window fit into a per-element rate")
     a = p.parse_args()
 
     runs = load(a.json)
@@ -173,29 +205,42 @@ def main():
               if spread < 0.25 else
               "  -> NOT constant; the cost is not simply linear in K, report as such")
 
-    # Reconciliation against the two independent predictions.
-    ref_k = 60000
-    if ref_k in per_k:
-        g = per_k[ref_k]["theil_sen"]
-        print(f"\n=== reconciliation at K = {ref_k:,} ===")
-        print(f"  measured                     : {g:.4f} ms/element")
-        b180 = BETA_180_MS_PER_UNIT_K * ref_k
-        print(f"  #180's beta implies          : {b180:.4f} ms/element  "
-              f"(ratio {g / b180:.2f}x)")
-        if micro and micro.get("predicted_g_VA_ms_per_seeded_element"):
-            pm = micro["predicted_g_VA_ms_per_seeded_element"]
-            print(f"  micro.py primitives predict  : {pm:.4f} ms/element  "
-                  f"(ratio {g / pm:.2f}x)")
-            print(f"    scan {micro['scan']['ns_per_element']:.3f} ns/elem x6, "
-                  f"copy {micro['copy']['ns_per_element']:.3f} ns/elem")
-            if g < 0.5 * pm:
-                print("    -> the fold pays MUCH less than the primitives imply.\n"
-                      "       Consistent with ClickHouse CSE collapsing the six\n"
-                      "       arrayLastIndex calls (#191 found it collapses the\n"
-                      "       double scan) and/or arrayFold mutating its\n"
-                      "       accumulator in place rather than copying it.\n"
-                      "       Attribution between scan and copy is therefore NOT\n"
-                      "       settled by these two numbers alone.")
+    # Reconciliation. Everything is expressed as ns per write-log element per
+    # step, which is the only unit in which all three sources are comparable:
+    # #180 prices a window, micro.py prices a primitive, this harness prices a
+    # seeded element.
+    ref_k = max(per_k) if per_k else None
+    if ref_k:
+        g_ns = 1e6 * per_k[ref_k]["theil_sen"] / ref_k
+        lo_ns = 1e6 * per_k[ref_k]["ci95"][0] / ref_k
+        hi_ns = 1e6 * per_k[ref_k]["ci95"][1] / ref_k
+        print(f"\n=== reconciliation, ns per write-log element per step ===")
+        print(f"  measured here (K={ref_k:,})     : {g_ns:.3f}  "
+              f"95% CI [{lo_ns:.3f}, {hi_ns:.3f}]")
+
+        n180 = per_element_per_step_from_180(a.rho_store)
+        print(f"  #180's beta implies          : {n180:.3f}   "
+              f"(measured / #180 = {g_ns / n180:.2f}x, "
+              f"rho_store = {a.rho_store:.4f})")
+
+        if micro and micro["scan"]["supported"] and micro["copy"]["supported"]:
+            s = micro["scan"]["ns_per_element"]
+            c = micro["copy"]["ns_per_element"]
+            print(f"\n  primitives, measured standalone: scan {s:.3f} ns/elem, "
+                  f"copy(16B) {c:.3f} ns/elem")
+            print("  what the fold would cost if it paid, per element per step:")
+            for label, pred in (
+                    ("6 scans + copy (naive text count)", 6 * s + c),
+                    ("1 scan  + copy (CSE collapses scans)", s + c),
+                    ("6 scans, no copy (in-place accumulator)", 6 * s),
+                    ("1 scan,  no copy (CSE *and* in-place)", s)):
+                print(f"    {label:<42} {pred:7.3f}   "
+                      f"(measured/pred = {g_ns / pred:.2f}x)")
+            print("\n  The closest row is the mechanism the fold actually pays for.\n"
+                  "  Note this is an INFERENCE from three measurements, not a direct\n"
+                  "  observation of CSE or of in-place mutation -- neither is visible\n"
+                  "  from SQL. It is corroborated by #191 having separately found\n"
+                  "  ClickHouse already collapses the write-log's double scan.")
 
 
 if __name__ == "__main__":

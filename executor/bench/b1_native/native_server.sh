@@ -33,7 +33,7 @@ stop() {
 }
 
 start() {
-  [ -x "$BINARY" ] || { echo "::error::native clickhouse binary not executable: $BINARY" >&2; exit 1; }
+  [ -x "$BINARY" ] || { echo "::error::cannot run native clickhouse binary: $BINARY" >&2; exit 1; }
   mkdir -p "$STATE"/{log,data,tmp,user_files,format_schemas,etc}
   sed -e "s#@@PATH@@#$STATE#g" -e "s#@@TCP_PORT@@#$TCP_PORT#g" -e "s#@@HTTP_PORT@@#$HTTP_PORT#g" \
       "$HERE/native-server.xml" > "$STATE/etc/config.xml"

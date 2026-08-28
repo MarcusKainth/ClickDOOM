@@ -89,11 +89,16 @@ confirmed in `driver/render.py`'s `frame_readout_sql()` docstring against
 `rom/src/dg_hooks.c`). Full coverage stops being a *requirement* for
 correctness and becomes purely informational: pass `--seed-has-pixels`
 to report the same two coverage numbers without failing the run over an
-incomplete one -- only `--expect-fbhash` (if given) still gates success.
-Omit it to keep this script's original, stricter meaning (still the right
-check for a caller that has NOT restored pixel state into its seed, or
-that specifically wants to confirm a window is self-sufficient regardless
-of what the seed carries).
+incomplete one -- `--expect-fbhash` still gates success, and is now
+REQUIRED alongside `--seed-has-pixels` (enforced at argument parsing),
+not merely recommended: without it, coverage would be reported but
+nothing would gate the run, and a verification tool that can be run in a
+mode where it always exits 0 regardless of what it found is exactly the
+defect it exists to catch. Omit both `--seed-has-pixels` and
+`--expect-fbhash` to keep this script's original, stricter meaning (still
+the right check for a caller that has NOT restored pixel state into its
+seed, or that specifically wants to confirm a window is self-sufficient
+regardless of what the seed carries).
 
 Usage:
     cd refemu && uv run python ../scripts/verify_snapshot_pixel_coverage.py \\
@@ -145,10 +150,18 @@ def main() -> int:
                      help="(#251) the seed itself already carries real framebuffer/palette content "
                           "at --seed-icount (a format-2+ gen_snapshot.py/seed_snapshot.py snapshot), "
                           "so incomplete coverage in this window is expected/fine, not a failure -- "
-                          "the coverage numbers are still printed, just not gating. Omit this for the "
-                          "original, stricter meaning: a seed with NO pixel state, where full window "
-                          "coverage is the only way the result can be trusted. See module docstring.")
+                          "the coverage numbers are still printed, just not gating. REQUIRES "
+                          "--expect-fbhash (enforced below): without it nothing would gate the run "
+                          "at all. Omit both for the original, stricter meaning: a seed with NO "
+                          "pixel state, where full window coverage is the only way the result can "
+                          "be trusted. See module docstring.")
     args = ap.parse_args()
+
+    if args.seed_has_pixels and args.expect_fbhash is None:
+        ap.error("--seed-has-pixels requires --expect-fbhash -- without it, coverage is reported "
+                 "but nothing gates the run, so this script would report two numbers and always "
+                 "exit 0 regardless of what it found. That is exactly the failure mode this tool "
+                 "exists to catch, not a mode it should offer.")
 
     if args.target_icount <= args.seed_icount:
         print("::error::--target-icount must be strictly greater than --seed-icount", file=sys.stderr)

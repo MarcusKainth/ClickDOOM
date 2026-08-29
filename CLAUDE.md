@@ -35,9 +35,16 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
 
 ## Git conventions
 
-- Commit/PR title: `scope: imperative summary` ≤72 chars. Scopes: `spec`,
-  `rom`, `refemu`, `sqlcpu`, `executor`, `driver`, `render`, `test`,
-  `bench`, `ci`, `docs`. Breaking contract change: `scope!: ...`.
+- Commit messages follow FFmpeg's developer guide, section 3.2
+  (https://ffmpeg.org/developer.html#Patches_002fCommitting): first line
+  `scope: short one-line description`, then a short body that says what
+  changed and why and gives references (issue and PR ids in addition to
+  the explanation, never instead of it). Keep it short. Evidence and
+  numbers belong in the issue, not the commit. Scopes: `spec`, `rom`,
+  `refemu`, `sqlcpu`, `executor`, `driver`, `render`, `test`, `bench`,
+  `ci`, `docs`. Breaking contract change: `scope!: ...`. Title ≤72 chars.
+- One self-contained change per commit. Never mix cosmetic changes with
+  functional ones.
 - Branch names: `scope/short-desc`.
 - Squash-merge only; the PR title becomes the commit. CI lints it.
 - **Never `--delete-branch` while another PR is based on that branch.**

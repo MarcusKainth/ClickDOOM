@@ -79,4 +79,34 @@ impl Db {
     {
         Ok(self.client.query(sql).fetch_one::<T>().await?)
     }
+
+    /// Runs a statement that returns no rows, with `param_<name>` query
+    /// parameters bound for a `{name:Type}` placeholder in the SQL text.
+    pub async fn run_with_params(&self, sql: &str, params: &[(&str, u32)]) -> Result<(), Error> {
+        let mut query = self.client.query(sql);
+        for (name, value) in params {
+            query = query.param(name, *value);
+        }
+        query.execute().await?;
+        Ok(())
+    }
+
+    /// Inserts every row of `rows` into `table`, naming the columns after
+    /// `T`'s own fields (a `#[derive(Row)]` type inserts into exactly the
+    /// columns it declares, leaving the rest at their table default).
+    pub async fn insert_all<T>(
+        &self,
+        table: &str,
+        rows: impl Iterator<Item = T>,
+    ) -> Result<(), Error>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowWrite,
+    {
+        let mut insert = self.client.insert::<T>(table).await?;
+        for row in rows {
+            insert.write(&row).await?;
+        }
+        insert.end().await?;
+        Ok(())
+    }
 }

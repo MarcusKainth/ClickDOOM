@@ -1,0 +1,1 @@
+unhex(arrayStringConcat(arrayMap(w -> hex(reinterpretAsFixedString(toUInt32(w))), foo)))

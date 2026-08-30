@@ -13,6 +13,7 @@ repository = "https://github.com/MarcusKainth/ClickDOOM"
 
 [workspace.dependencies]
 clickdoom-spec = { path = "spec" }
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 clickhouse = "0.15"
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,1 @@
+(SELECT groupArray(value) FROM (SELECT coalesce(t.value, 0) AS value FROM (SELECT number AS word_addr FROM numbers(16000)) n LEFT JOIN (SELECT word_addr, value FROM db1.framebuffer FINAL) t ON n.word_addr = t.word_addr ORDER BY n.word_addr))

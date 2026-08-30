@@ -127,10 +127,10 @@ REPO = HERE.parent
 sys.path.insert(0, str(REPO / "refemu" / "src"))
 sys.path.insert(0, str(REPO / "driver"))
 
-import render  # FRAMEBUFFER_WORDS / PALETTE_WORDS -- SPEC §2, not re-declared here
-from refemu.cpu import Halted, new_cpu
-from refemu.memory import Memory
-from refemu.trace import fb_hash
+import render  # FRAMEBUFFER_WORDS / PALETTE_WORDS -- SPEC §2, not re-declared here  # noqa: E402 - import follows the sys.path insertion above
+from refemu.cpu import Halted, new_cpu  # noqa: E402
+from refemu.memory import Memory  # noqa: E402
+from refemu.trace import fb_hash  # noqa: E402
 
 FRAMEBUFFER_BASE = 0x1100_0000
 PALETTE_BASE = 0x1101_0000

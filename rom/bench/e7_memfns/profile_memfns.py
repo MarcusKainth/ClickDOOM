@@ -211,7 +211,7 @@ def main() -> int:
     # actual timedemo. crt0's BSS loop lives entirely inside the boot window
     # and is named explicitly there so it can be subtracted.
     def window(label, lo_counts, hi_counts, lo_calls, hi_calls, icount):
-        delta = [h - l for h, l in zip(hi_counts, lo_counts)]
+        delta = [hi - lo for hi, lo in zip(hi_counts, lo_counts)]
         tot = sum(delta)
         rows = sorted(
             ((delta[i], names[i] if i < nsym else "<no symbol>") for i in range(nsym + 1)),

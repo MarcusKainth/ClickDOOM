@@ -44,8 +44,8 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO / "refemu" / "src"))
 
-from refemu.cpu import Halted, new_cpu
-from refemu.trace import (
+from refemu.cpu import Halted, new_cpu  # noqa: E402 - import follows the sys.path insertion above
+from refemu.trace import (  # noqa: E402
     fb_hash,
 )
 

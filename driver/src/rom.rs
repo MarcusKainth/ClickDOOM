@@ -21,11 +21,14 @@ use serde::Serialize;
 
 use crate::client::{Db, Error};
 
+/// One row of `ram`/`framebuffer`/`palette`: all three share this exact
+/// shape (word_addr, value, version), ReplacingMergeTree keyed on
+/// word_addr.
 #[derive(Row, Serialize)]
-struct RamRow {
-    word_addr: u32,
-    value: u32,
-    version: u64,
+pub(crate) struct WordRow {
+    pub word_addr: u32,
+    pub value: u32,
+    pub version: u64,
 }
 
 /// Word count of the RAM region a freshly loaded `ram` is dense over.
@@ -137,7 +140,7 @@ pub async fn load(
 
     let base_word = load_addr / 4;
     let word_count = (blob.len() / 4) as u32;
-    let rows = blob.chunks_exact(4).enumerate().map(|(i, w)| RamRow {
+    let rows = blob.chunks_exact(4).enumerate().map(|(i, w)| WordRow {
         word_addr: base_word + i as u32,
         value: u32::from_le_bytes([w[0], w[1], w[2], w[3]]),
         version: 0,

@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::bench::canonical;
 use crate::bootstrap::{self, Seeded};
 use crate::client::ConnArgs;
 use crate::{decode, preflight, render, rom};
@@ -56,6 +57,47 @@ pub enum Command {
     Render(RenderCmd),
     /// Check every gate before a long run
     Preflight(PreflightCmd),
+    /// Real-ROM throughput benchmarks
+    Bench(BenchCmd),
+}
+
+#[derive(Args)]
+pub struct BenchCmd {
+    #[command(subcommand)]
+    pub mode: BenchMode,
+}
+
+#[derive(Subcommand)]
+pub enum BenchMode {
+    /// The canonical two-window, fold-alone-and-e2e throughput benchmark
+    Canonical(CanonicalCmd),
+}
+
+#[derive(Args)]
+pub struct CanonicalCmd {
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    /// Flat ROM binary
+    #[arg(long)]
+    pub bin: PathBuf,
+    /// Manifest naming the binary's size, sha256 and text region
+    #[arg(long)]
+    pub manifest: PathBuf,
+    /// Instructions per batch
+    #[arg(long, default_value_t = clickdoom_executor::config::K_DEFAULT)]
+    pub k: u32,
+    /// Write-log high-water mark
+    #[arg(long, default_value_t = clickdoom_executor::config::WRITE_LOG_HIGH_WATER_MARK_DEFAULT)]
+    pub hwm: u32,
+    /// Chained batches per window per mode
+    #[arg(long, default_value_t = 3)]
+    pub batches: u32,
+    /// Where the gameplay window's snapshot is cached
+    #[arg(long, default_value = "/tmp/clickdoom-canonical-throughput")]
+    pub snapshot_dir: PathBuf,
+    /// The refemu binary, for generating the gameplay window's snapshot
+    #[arg(long, default_value = "./target/release/refemu")]
+    pub refemu_bin: PathBuf,
 }
 
 #[derive(Args)]
@@ -290,6 +332,54 @@ async fn cmd_preflight(cmd: &PreflightCmd) -> Result<Exit, Failure> {
     Ok(Exit::Ok)
 }
 
+async fn cmd_bench(cmd: &BenchCmd) -> Result<Exit, Failure> {
+    match &cmd.mode {
+        BenchMode::Canonical(cmd) => cmd_bench_canonical(cmd).await,
+    }
+}
+
+async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
+    let args = canonical::Args {
+        bin: &cmd.bin,
+        manifest_path: &cmd.manifest,
+        k: cmd.k,
+        hwm: cmd.hwm,
+        batches: cmd.batches,
+        windows: canonical::Windows::default(),
+        snapshot_dir: cmd.snapshot_dir.clone(),
+        refemu_bin: cmd.refemu_bin.clone(),
+    };
+    let report = canonical::run(&cmd.conn, &args)
+        .await
+        .map_err(|err| failed(err.to_string()))?;
+    eprintln!("rom_sha256\t{}", report.rom_sha256);
+    eprintln!("decoded_rows\t{}", report.decoded_rows);
+    eprintln!("K\t{}", report.k);
+    eprintln!("HWM\t{}", report.hwm);
+    eprintln!("batches_per_mode\t{}", report.batches);
+    eprintln!("git_sha\t{}", report.git_sha);
+    println!("window\tmode\tk\thwm\tretired\tinstr_per_sec");
+    for window in &report.windows {
+        println!(
+            "{}\tfold\t{}\t{}\t{}\t{:.1}",
+            window.label,
+            window.k,
+            window.hwm,
+            window.fold.retired,
+            window.fold.instr_per_sec()
+        );
+        println!(
+            "{}\te2e\t{}\t{}\t{}\t{:.1}",
+            window.label,
+            window.k,
+            window.hwm,
+            window.e2e.retired,
+            window.e2e.instr_per_sec()
+        );
+    }
+    Ok(Exit::Ok)
+}
+
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -301,6 +391,7 @@ pub fn main() -> ExitCode {
             Command::Decode(cmd) => cmd_decode(cmd).await,
             Command::Render(cmd) => cmd_render(cmd).await,
             Command::Preflight(cmd) => cmd_preflight(cmd).await,
+            Command::Bench(cmd) => cmd_bench(cmd).await,
         }
     });
     match result {

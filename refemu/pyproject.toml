@@ -2,6 +2,7 @@
 name = "refemu"
 version = "0.1.0"
 description = "ClickDOOM reference RV32IM interpreter (the oracle)"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "xxhash>=4.0.1",

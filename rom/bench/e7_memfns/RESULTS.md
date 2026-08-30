@@ -23,11 +23,10 @@ show they are already word-wise. See the GitHub issue for the numbers.
 
 Both runs were taken against ROM sha256
 `22113f55234fa050dbd9ece64b8d713451b32ddc6b2b3f3c289c2bff87c955ed`
-(matching `rom/PINNED_HASH` at the time). **That ROM was the boot-to-attract-mode
-build** — before #107/#111 wired a fixed `-timedemo demo3` argv. It has since
-been superseded three times (#100, #111, #125); the ROM this repo ships today
-is a different binary running a different program (a specific recorded demo,
-not the attract-mode loop).
+which was the boot-to-attract-mode build, with no fixed `-timedemo demo3`
+argv. That is not the ROM this repository ships: the current binary runs a
+specific recorded demo rather than the attract-mode loop, so these numbers
+describe a different program.
 
 ## Re-run against the current, frozen ROM (`eabb12ed…`) — does it reproduce?
 

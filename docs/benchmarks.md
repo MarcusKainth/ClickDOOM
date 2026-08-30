@@ -5,8 +5,8 @@ finding nobody can find is not evidence.
 
 Each directory holds a `README.md` describing the harness and how to run it. A
 `RESULTS.md` beside it holds the findings, dated and with the ClickHouse version
-they were taken against. Three directories have no `RESULTS.md` because no
-findings have been recorded for them.
+they were taken against. A directory with no `RESULTS.md` has had no findings
+recorded for it; the table below says which.
 
 Timings need a quiet machine. `DEVELOPING.md` says what that means and what to
 record alongside a number.

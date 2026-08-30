@@ -14,7 +14,7 @@ than a script. The Python here generates SQL text and executes nothing itself.
 
     make test-sqlcpu
 
-Needs a live ClickHouse, which the target starts. Four suites run in sequence:
-the riscv-tests inside the database, the committed decode vectors, the execute
+Needs a live ClickHouse, which the target starts. It runs, in sequence, the
+riscv-tests inside the database, the committed decode vectors, the execute
 checks, and the checkpoint checks against the reference interpreter's worked
 examples.

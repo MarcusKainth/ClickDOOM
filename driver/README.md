@@ -33,7 +33,7 @@ Needs a live ClickHouse, which the target starts. On a host without
     make test-render CH_CLIENT="docker exec -i clickdoom-ch clickhouse-client"
 
 Runs against a throwaway `driver_render_test_<pid>` database, never the shared
-one. Four checks, none of them eyeballed:
+one. None of these checks is eyeballed:
 
 1. The readout against real reference-emulator data at the milestone icount,
    reproducing `fb_hash fe5d82c0f42d45f1`. The check is computed by `sqlcpu/`'s

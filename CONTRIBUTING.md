@@ -77,13 +77,13 @@ The template asks which invariants the change touches. Answer it by reading
 
 ## The invariants
 
-`PURITY.md` numbers its rules `PUR-1` to `PUR-12` and is the only place that
-states them. `SPEC.md` is the contract everything else is checked against.
+`PURITY.md` numbers its rules `PUR-N` and is the only place that states
+them. `SPEC.md` is the contract everything else is checked against.
 Cite them by number rather than restating them: "this touches PUR-10" is the
 reviewable form.
 
-Eight of the twelve purity rules cannot be grepped and are enforced by review
-alone. `PURITY.md`'s Enforcement table says which.
+Most purity rules cannot be grepped and are enforced by review alone.
+`PURITY.md`'s Enforcement table says which.
 
 ## Working with AI assistance
 

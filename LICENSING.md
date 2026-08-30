@@ -12,11 +12,11 @@ under.
 
 ## Apache-2.0 covers the emulator
 
-`refemu/`, `sqlcpu/`, `executor/`, `driver/`, `scripts/` and `docs/` are an
-RV32IM machine emulator and the tooling around it. They implement an
-instruction set, not a game. None of them contains or derives
-from DOOM source, and none of them is compiled into the ROM image. They run the
-ROM the way any emulator runs a program it did not write.
+`spec/`, `refemu/`, `sqlcpu/`, `executor/`, `driver/`, `scripts/` and `docs/`
+are an RV32IM machine emulator and the tooling around it. They implement an
+instruction set, not a game. None of them contains or derives from DOOM source,
+and none of them is compiled into the ROM image. They run the ROM the way any
+emulator runs a program it did not write.
 
 ## GPL-2.0-or-later covers `rom/`
 

@@ -13,7 +13,7 @@ unnoticed: "zero MMIO test cases... no dedicated MMIO test file" was the
 issue's own diagnosis of how a plain, ordinary, address-only dispatch bug
 sat undetected through review and every fold.py test run. So this file
 checks fold.py's raw select_only() output directly against SPEC §3's text
-(and refemu/src/refemu/mmio.py's own width gate, #87/#90 -- the two
+(and refemu/src/mmio.rs's own width gate, #87/#90 -- the two
 engines are required to agree here, not just this file's opinion of what
 SPEC says), rather than against a second model that would need building
 from scratch to cover five registers it has never touched.

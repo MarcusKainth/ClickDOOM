@@ -23,7 +23,7 @@ condition newlib's fast path requires. Dividing instructions by bytes gives
 the measured instructions-per-byte directly, with no modelling.
 
 `elfsyms.py` is a dependency-free ELF32 symbol-table reader, so the harness
-adds nothing to `refemu/pyproject.toml`.
+adds nothing to the repository's Python dependencies.
 
 Windows reported: the whole run, boot (0 → first `FRAME_COMMIT`), steady
 state (first → last `FRAME_COMMIT`), plus any `--extra-window LO:HI` frame
@@ -51,8 +51,8 @@ reproducible too.
 Build the ROM first if `rom/build/` is empty (`make -C rom`). The script
 prints the image's sha256 next to `rom/PINNED_HASH` and says MATCH or
 MISMATCH — quote that hash with any number taken from it. Throughput is
-about 0.9M instructions/sec, so 300 frames (~340M instructions) takes
-roughly 6 minutes.
+about 170M instructions/sec, so 300 frames, which is about 330M
+instructions, takes roughly four seconds.
 
 Disassembling the routines under test needs the pinned toolchain image:
 

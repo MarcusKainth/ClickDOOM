@@ -25,7 +25,7 @@
 # Reaching icount 233,932,753 by live-executing the SQL CPU would cost tens
 # of hours at ~1,000-2,000 instr/sec (ADR-0004) -- not payable once, let
 # alone every sprint measurement. `refemu run --dump-state` runs the SAME ROM
-# through refemu instead (~0.9M instr/sec, rom/bench/e7_memfns/README.md),
+# through refemu instead (about 170M instr/sec, rom/bench/e7_memfns/README.md),
 # reaching that icount in minutes, and `seed_snapshot.py` loads the dumped
 # state directly into an isolated database's `ram`/`batch_commit`. See both
 # scripts' own docstrings for what is and is not captured.

@@ -64,10 +64,10 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
           find scripts driver sqlcpu executor rom refemu -name '*.sh' -exec shellcheck {} +
       - name: ruff
-        # The version refemu's lockfile pins, so CI and a local run agree.
+        # The version the root lockfile pins, so CI and a local run agree.
         run: |
           pipx install uv
-          uv run --project refemu ruff check .
+          uv run ruff check .
       - name: cargo fmt
         # rust-toolchain.toml pins the version, so the first cargo call
         # installs it and a local `make lint` speaks the same rustfmt.
@@ -132,10 +132,6 @@ jobs:
         # No ROM and no ClickHouse. The comparisons that need the built ROM
         # are behind the rom-tests feature and run in their own job.
         run: cargo test --locked --workspace
-      - name: The Python interpreter's own suite, until it is removed
-        run: |
-          pipx install uv
-          cd refemu && uv sync --frozen && uv run pytest -q
 
   build-refemu:
     runs-on: ubuntu-latest

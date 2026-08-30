@@ -330,7 +330,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # but the difference is real and is filed rather than left implicit.
     #
     # `{DMKv}=4294967295` (word width): SPEC §3's registers are word-access
-    # only, matching refemu/src/refemu/mmio.py's own width gate (#87/#90).
+    # only, matching refemu/src/mmio.rs's own width gate (#87/#90).
     # Without this, a narrow access exactly at a register's address hit the
     # register's real semantics instead of reads-0/writes-ignored -- #152,
     # found reading this file directly: a byte load at TICKS_MS/KEYQ

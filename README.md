@@ -42,7 +42,7 @@ compiled to a bare-metal RV32IM binary, with the shareware `doom1.wad`
 embedded in the image, crt0 and libc shims standing in for an OS that
 isn't there.
 
-**refemu** is a Python RV32IM interpreter that runs the same ROM and
+**refemu** is a Rust RV32IM interpreter that runs the same ROM and
 serves as the oracle — the known-good trace that the SQL implementation is
 checked against, instruction by instruction (SPEC §7).
 

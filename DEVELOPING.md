@@ -10,7 +10,7 @@ policy; this file covers how things run.
 |---|---|
 | Docker | ClickHouse and the rv32 toolchain both run in containers |
 | `make` | Every task. `make help` lists them |
-| `uv` | Python environments for `refemu` and `executor`, both with committed lockfiles |
+| `uv` | Python environments for the repository's lint pin and for `executor`, both with committed lockfiles |
 | `cargo` | The Rust workspace. `rust-toolchain.toml` pins the version |
 | `shellcheck` | `make shellcheck` |
 | `clang-format` | `make clang-format`, over `rom/src/` |
@@ -113,8 +113,9 @@ name is derived from `rom/PINNED_HASH`, so a re-pinned ROM cannot silently reuse
 the previous one's trace.
 
 `make gen-reference-trace` regenerates one and refuses to run against an
-unpinned ROM. The reference interpreter runs at roughly a million instructions
-per second, which sets the cost of any regeneration.
+unpinned ROM. The reference interpreter runs at about 170 million instructions
+per second on a quiet machine, so a regeneration costs seconds rather than
+minutes.
 
 The `demo3` trace is not committed. It is large, changes with every ROM, and is
 regenerable.

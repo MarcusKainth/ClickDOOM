@@ -58,7 +58,7 @@ updates:
 
   - package-ecosystem: "uv"
     directories:
-      - "/refemu"
+      - "/"
       - "/executor"
     schedule:
       interval: "weekly"

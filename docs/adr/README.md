@@ -24,3 +24,5 @@ was believed at the time.
   single atomic row plus idempotent derivation.
 - [ADR-0004](0004-halt-semantics-throughput-cost.md) — Halt and bounds checking
   is a real, measured throughput cost. Amends ADR-0001's threshold.
+- [ADR-0005](0005-rust-reference-emulator.md) — The reference emulator is Rust,
+  and the contract it shares with the SQL side is data and never semantics.

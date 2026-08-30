@@ -62,6 +62,8 @@ jobs:
         run: pipx install uv
       - name: Build ROM
         run: make -C rom
+      - name: Build the reference emulator
+        run: cargo build --locked --release -p refemu
       - name: Deep differential run (full checkpoint trace)
         # The input goes through env rather than into the run block, so it
         # cannot be read as shell.

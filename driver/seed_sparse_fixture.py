@@ -19,7 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import pickle
+import json
 import subprocess  # purity-ok: shells out to clickhouse-client to load already-computed fixture rows, same "housekeeping that computes nothing" class as seed_frame_fixture.py -- test/fixture tooling, not the runtime driver
 import sys
 
@@ -38,8 +38,8 @@ def main() -> int:
     ap.add_argument("--version", type=int, default=1)
     args = ap.parse_args()
 
-    with open(args.fixture, "rb") as f:
-        state = pickle.load(f)
+    with open(args.fixture, encoding="utf-8") as f:
+        state = json.load(f)
 
     base_cmd = args.client.split() + [
         "--host", args.host, "--port", str(args.port),

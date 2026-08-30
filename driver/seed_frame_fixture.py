@@ -18,10 +18,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import pickle
 import struct
 import subprocess  # purity-ok: shells out to clickhouse-client to load already-computed fixture bytes, same "housekeeping that computes nothing" class as sqlcpu/load_rom.py -- this script is test/fixture tooling, not the real runtime driver loop
 import sys
+from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from refemu_snapshot import load as load_snapshot  # noqa: E402
 
 
 def main() -> int:
@@ -35,10 +39,11 @@ def main() -> int:
     ap.add_argument("--client", default="clickhouse-client")
     args = ap.parse_args()
 
-    with open(args.fixture, "rb") as f:
-        state = pickle.load(f)
-
-    fb, palette = state["framebuffer"], state["palette"]
+    header, sections = load_snapshot(args.fixture, need=("framebuffer", "palette"))
+    if header["kind"] != "frame":
+        print(f"::error::{args.fixture} is a {header['kind']} capture, not a frame", file=sys.stderr)
+        return 1
+    fb, palette = sections["framebuffer"], sections["palette"]
     if len(fb) % 4 != 0 or len(palette) % 4 != 0:
         print(f"::error::framebuffer ({len(fb)} B) / palette ({len(palette)} B) not word-multiples", file=sys.stderr)
         return 1
@@ -59,7 +64,7 @@ def main() -> int:
         return result.returncode
 
     for table, data in (("framebuffer", fb), ("palette", palette)):
-        rc = load_words(table, data, state["committed_icount"])
+        rc = load_words(table, data, header["frame"]["retired_icount"])
         if rc != 0:
             return rc
         print(f"seeded {table}: {len(data) // 4} words", file=sys.stderr)
@@ -70,16 +75,17 @@ def main() -> int:
             "INSERT INTO batch_commit "
             "(batch_id, icount, pc, regs, halted, halt_reason, exit_code, "
             " keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes) "
-            f"VALUES (1, {state['committed_icount']}, 0, [], 0, '', 0, "
-            f" 0, 1, {state['frame_no']}, [], [], [], [])"
+            f"VALUES (1, {header['frame']['retired_icount']}, 0, [], 0, '', 0, "
+            f" 0, 1, {header['frame']['frame_no']}, [], [], [], [])"
         ),
     ]
     result = subprocess.run(insert_batch_commit, text=True, check=False)  # purity-ok: fixed-literal insert of already-known values, computes nothing (fixture tooling, not the runtime driver)
     if result.returncode != 0:
         return result.returncode
-    print(f"seeded batch_commit: frame_no={state['frame_no']} icount={state['committed_icount']} has_frame=1",
+    print(f"seeded batch_commit: frame_no={header['frame']['frame_no']} "
+          f"icount={header['frame']['retired_icount']} has_frame=1",
           file=sys.stderr)
-    print(f"expected fbhash (computed by gen_frame_fixture.py from refemu directly): {state['fbhash']}",
+    print(f"expected fbhash (from the emulator that captured the frame): {header['fbhash']}",
           file=sys.stderr)
     return 0
 

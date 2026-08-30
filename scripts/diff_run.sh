@@ -81,10 +81,13 @@
 # Every run provisions a throwaway database (schema.sql, load_rom.py,
 # decode.sql, executor/bootstrap.py -- the same four steps
 # preflight_milestone.sh assumes already happened, done here explicitly)
-# and drives refemu via `python -m refemu` for the SAME N, exactly as that
-# module's own docstring describes it as being built for. Neither engine
-# resumes from prior state -- always icount 0, so a diff run's result never
-# depends on `clickdoom`'s shared production state.
+# and drives refemu for the SAME N. Neither engine resumes from prior state
+# -- always icount 0, so a diff run's result never depends on `clickdoom`'s
+# shared production state.
+#
+# The reference emulator's halt record comes from --halt-report, a JSON file,
+# rather than from a pattern matched against its stderr. A pattern that stops
+# matching reads exactly like a run that did not halt.
 #
 # Usage:
 #   scripts/diff_run.sh N [--bin PATH] [--manifest PATH] [--hwm HWM]
@@ -100,6 +103,8 @@
 #                     dropped on exit)
 #   --keep-db         don't drop the database on exit (for inspecting a
 #                     caught divergence)
+#   --refemu          the reference emulator (default:
+#                     ./target/release/refemu, or $REFEMU)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -123,6 +128,7 @@ PORT="9000"
 CH_USER="default"
 PASSWORD="${CLICKHOUSE_PASSWORD:-}"
 CLIENT=""   # empty means auto-detect below; --client overrides explicitly
+REFEMU="${REFEMU:-./target/release/refemu}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -136,6 +142,7 @@ while [ $# -gt 0 ]; do
     --user) CH_USER="$2"; shift 2 ;;
     --password) PASSWORD="$2"; shift 2 ;;
     --client) CLIENT="$2"; shift 2 ;;
+    --refemu) REFEMU="$2"; shift 2 ;;
     *) echo "::error::unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -243,6 +250,7 @@ ch_default() {
 }
 
 REFTRACE=""
+REFHALT=""
 REFSTDERR=""
 # shellcheck disable=SC2317,SC2329
 # Invoked indirectly via `trap cleanup EXIT` below -- SC2317 ("unreachable")
@@ -259,6 +267,7 @@ cleanup() {
   fi
   [ -n "$REFTRACE" ] && rm -f "$REFTRACE"
   [ -n "$REFSTDERR" ] && rm -f "$REFSTDERR"
+  [ -n "$REFHALT" ] && rm -f "$REFHALT"
 }
 trap cleanup EXIT
 
@@ -322,37 +331,49 @@ python3 executor/bootstrap.py --host "$HOST" --port "$PORT" --user "$CH_USER" \
 CH_VERSION=$(ch --query "SELECT version()")
 echo "  provisioned: decoded rows=$DECN, ClickHouse $CH_VERSION" >&2
 
-echo "# --- generating refemu's SPEC §7 trace for N=$N instructions -----------" >&2
+echo "# --- generating refemu's checkpoint trace for N=$N instructions --------" >&2
 REFTRACE=$(mktemp)
 REFSTDERR=$(mktemp)
+REFHALT=$(mktemp)
 REFEMU_STATUS=0
-( cd refemu && uv run python -m refemu "../$BIN" --manifest "../$MANIFEST" --max-instructions "$N" ) \
-    >"$REFTRACE" 2>"$REFSTDERR" || REFEMU_STATUS=$?
+"$REFEMU" trace "$BIN" --manifest "$MANIFEST" --max-instructions "$N" \
+    --halt-report "$REFHALT" >"$REFTRACE" 2>"$REFSTDERR" || REFEMU_STATUS=$?
+# 0 is a clean stop at the budget and 3 is a halt, which is an ordinary
+# outcome here. Anything else is refemu failing, not the ROM.
+case "$REFEMU_STATUS" in
+  0|3) ;;
+  *) fail "refemu exited $REFEMU_STATUS. Its stderr:
+$(cat "$REFSTDERR")" ;;
+esac
 REFEMU_LINES=$(wc -l < "$REFTRACE" | tr -d ' ')
 echo "  refemu: $REFEMU_LINES trace lines, exit=$REFEMU_STATUS" >&2
 
+# The halt record comes from a JSON file rather than a regular expression
+# over stderr. A pattern that stops matching reads exactly like a run that
+# did not halt, which is the failure this script exists to avoid.
 REFEMU_HALTED=0
 REFEMU_HALT_REASON=""
 REFEMU_HALT_PC="0"
 REFEMU_HALT_ICOUNT="-1"
-REFEMU_HALT_LINE=$(grep -m1 '^# halted:' "$REFSTDERR" || true)
-if [ -n "$REFEMU_HALT_LINE" ]; then
-  REFEMU_HALTED=1
-  # Checked assignment before `read`, not `read ... <<< "$(...)"` directly
-  # (#232/#254's fix, reused here): a command substitution feeding a
-  # here-string discards its own exit status, so a failing python3 call
-  # would hand `read` an empty line and every variable would come back ""
-  # instead of stopping the script.
-  REFEMU_HALT_ROW=$(python3 -c "
-import re
-m = re.search(r'# halted: (\S+) at pc=0x([0-9a-fA-F]+) icount=(\d+)', open('$REFSTDERR').read())
-reason, pc, icount = (m.group(1), int(m.group(2), 16), m.group(3)) if m else ('UNKNOWN', 0, -1)
-print(reason, pc, icount)
+# Checked assignment before `read`, not `read ... <<< "$(...)"` directly: a
+# command substitution feeding a here-string discards its own exit status,
+# so a failing python3 call would hand `read` an empty line and every
+# variable would come back "" instead of stopping the script.
+REFEMU_HALT_ROW=$(python3 -c "
+import json, sys
+report = json.load(open('$REFHALT'))
+halt = report['halt']
+print(1 if halt else 0,
+      halt['reason'] if halt else '-',
+      halt['pc'] if halt else 0,
+      halt['icount'] if halt else -1)
 ")
-  read -r REFEMU_HALT_REASON REFEMU_HALT_PC REFEMU_HALT_ICOUNT <<< "$REFEMU_HALT_ROW"
-  assert_numeric "refemu halt pc" "$REFEMU_HALT_PC" "refemu halt-line parse, result: '$REFEMU_HALT_ROW'"
-  assert_numeric "refemu halt icount" "$REFEMU_HALT_ICOUNT" "refemu halt-line parse, result: '$REFEMU_HALT_ROW'"
-  echo "  refemu: $REFEMU_HALT_LINE" >&2
+read -r REFEMU_HALTED REFEMU_HALT_REASON REFEMU_HALT_PC REFEMU_HALT_ICOUNT <<< "$REFEMU_HALT_ROW"
+assert_numeric "refemu halted" "$REFEMU_HALTED" "halt report parse, result: '$REFEMU_HALT_ROW'"
+assert_numeric "refemu halt pc" "$REFEMU_HALT_PC" "halt report parse, result: '$REFEMU_HALT_ROW'"
+assert_numeric "refemu halt icount" "$REFEMU_HALT_ICOUNT" "halt report parse, result: '$REFEMU_HALT_ROW'"
+if [ "$REFEMU_HALTED" -eq 1 ]; then
+  echo "  refemu halted: $REFEMU_HALT_REASON at icount=$REFEMU_HALT_ICOUNT" >&2
 fi
 
 echo "# --- differential loop: sqlcpu batches clamped to CHECKPOINT_INTERVAL --" >&2

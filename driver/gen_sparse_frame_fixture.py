@@ -23,39 +23,65 @@ were dropped entirely." One case injects sparseness into FRAMEBUFFER only
 (e.g. `fb_words` switched to `dense_words_sql()` but `pal_words` left
 bare) is still caught by the case it didn't fix.
 
-No ClickHouse here, and no ROM/refemu CPU stepping -- this is synthetic,
-deterministic test data (SPEC §8: nothing on a result path reads a clock
-or randomness), not a real DOOM frame. `word_value()` below is a fixed
-multiplicative hash, not `random`/`hash()` (CPython's `hash()` is
-salted per-process for several builtin types, which would make this
-fixture non-reproducible across runs -- exactly what SPEC §8 forbids on
-a result path). `refemu.trace.fb_hash()` is reused directly to compute
-the independent oracle value the SQL under test is checked against, the
-same pattern `driver/gen_frame_fixture.py` already uses for its own real
-(non-synthetic) fixture -- never a second, hand-rolled hash
-implementation.
+No ClickHouse here, and no CPU stepping. This is synthetic deterministic
+test data, not a real DOOM frame. `word_value()` below is a fixed
+multiplicative hash rather than `random` or `hash()`, because CPython salts
+`hash()` per process for several builtin types, which would make this
+fixture different on every run.
+
+The framebuffer hash comes from the emulator. There is one definition of it
+and this file is not a second one.
 
 Usage:
-    python3 gen_sparse_frame_fixture.py --which fb  --written-words 100 --out /tmp/sparse_fb.pkl
+    python3 gen_sparse_frame_fixture.py --which fb --written-words 100 --out /tmp/sparse_fb.json
     python3 gen_sparse_frame_fixture.py --which pal --written-words 50  --out /tmp/sparse_pal.pkl
 """
 
 from __future__ import annotations
 
 import argparse
-import pickle
+import os
+import json
+import subprocess  # purity-ok: fixture tooling, not the runtime driver loop; it asks refemu for the framebuffer hash rather than computing one
+import tempfile
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "refemu" / "src"))
-from refemu.trace import fb_hash  # noqa: E402 - import follows the sys.path insertion above
 
 # Same word counts as driver/render.py's FRAMEBUFFER_WORDS/PALETTE_WORDS
 # (SPEC §2) -- duplicated as plain literals, not imported, so this
 # fixture generator has no dependency on the module it's used to test.
 FRAMEBUFFER_WORDS = 16_000
 PALETTE_WORDS = 192
+
+
+def frame_hash(framebuffer: bytes, palette: bytes) -> str:
+    """The pinned framebuffer hash, from the emulator that defines it.
+
+    Shelling out rather than reimplementing: there is one definition of this
+    hash and this file is not it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        fb_path = Path(tmp) / "fb.bin"
+        pal_path = Path(tmp) / "pal.bin"
+        fb_path.write_bytes(framebuffer)
+        pal_path.write_bytes(palette)
+        result = subprocess.run(  # purity-ok: fixture tooling, not the runtime driver loop; delegating the hash to refemu is what keeps a second implementation of it out of driver/
+            [
+                os.environ.get("REFEMU", "./target/release/refemu"),
+                "hash",
+                "fb",
+                "--framebuffer",
+                str(fb_path),
+                "--palette",
+                str(pal_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    return result.stdout.strip()
 
 
 def word_value(addr: int) -> int:
@@ -97,7 +123,7 @@ def main() -> int:
             (dense_pal[a] if a < args.written_words else 0).to_bytes(4, "little") for a in range(PALETTE_WORDS)
         )
 
-    expected_fbhash = f"{fb_hash(expected_fb, expected_pal):016x}"
+    expected_fbhash = frame_hash(expected_fb, expected_pal)
     state = {
         "which": args.which,
         "written_words": args.written_words,
@@ -105,10 +131,10 @@ def main() -> int:
         "pal_rows": pal_rows,
         "expected_fbhash": expected_fbhash,
     }
+    state["schema"] = "clickdoom.sparse-frame-fixture/1"
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "wb") as f:
-        pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+    out_path.write_text(json.dumps(state, indent=2) + "\n")
     print(
         f"# which={args.which} written_words={args.written_words}/{total} expected_fbhash={expected_fbhash}",
         file=sys.stderr,

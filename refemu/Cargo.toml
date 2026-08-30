@@ -15,6 +15,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [features]
+# The comparisons that need the pinned ROM built. Behind a feature rather
+# than behind a runtime skip, so a run either includes them or visibly does
+# not, and a missing ROM is a failure rather than an "ignored" line nobody
+# reads.
+rom-tests = []
 # Compares this interpreter against the Python one, which has to be present.
 # Both this feature and the oracle it drives go when the Python does.
 py-oracle = []

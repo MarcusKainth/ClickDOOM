@@ -60,7 +60,7 @@ DEMO3_MAX ?= 4000000000
 reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12 rom/PINNED_HASH).tsv
 
 .PHONY: help up down build-rom \
-        test test-refemu test-refemu-rust test-refemu-python \
+        test test-refemu test-refemu-rust test-refemu-python test-refemu-reference \
         test-sqlcpu test-executor test-render smoke diff \
         bench-phase0 bench-e1-cse bench-e7-memfns bench-canonical-throughput \
         bench-native bench-commit-attribution bench-ksweep bench-wl-seed \
@@ -100,7 +100,7 @@ require-rom:
 
 ##@ Test
 
-test: test-refemu test-sqlcpu test-executor test-render ## Every suite that has one
+test: test-refemu test-refemu-reference test-sqlcpu test-executor test-render ## Every suite that has one
 
 test-refemu: test-refemu-rust test-refemu-python ## Every reference-emulator suite. No ClickHouse, no ROM
 
@@ -109,6 +109,10 @@ test-refemu-rust: ## The Rust suites: units, the riscv-tests fixtures, the forma
 
 test-refemu-python: ## The Python interpreter's own suite, until it is removed
 	cd refemu && uv run pytest -q
+
+test-refemu-reference: require-rom ## Regenerate the committed traces and compare them, and run demo3
+	cargo test --locked --release --workspace --features refemu/rom-tests \
+	    --test reference_trace --test demo3_parity -- --nocapture
 
 test-sqlcpu: up ## riscv-tests inside ClickHouse
 	./sqlcpu/run_tests.sh $(conn) $(no_stdin)

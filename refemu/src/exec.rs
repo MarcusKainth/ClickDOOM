@@ -168,6 +168,26 @@ impl Cpu {
         self.memory.load_image(data, load_addr)
     }
 
+    /// Loads every piece of an image where the image says it goes, and points
+    /// the machine at its entry.
+    ///
+    /// A segment whose memory is longer than its file has a zero-filled tail,
+    /// which is already zero in a fresh machine and is cleared here so a
+    /// reused one behaves the same.
+    pub fn load(&mut self, image: &crate::image::Image) -> Result<(), LoadError> {
+        self.cache = None;
+        for segment in &image.segments {
+            self.memory.load_image(&segment.bytes, segment.vaddr)?;
+            let tail = segment.mem_len as usize - segment.bytes.len();
+            if tail > 0 {
+                let at = segment.vaddr + segment.bytes.len() as u32;
+                self.memory.load_image(&vec![0u8; tail], at)?;
+            }
+        }
+        self.pc = image.entry;
+        Ok(())
+    }
+
     /// Declares the read-only region, dropping any decoded instructions.
     pub fn set_text_region(&mut self, region: Option<(u32, u32)>) {
         self.cache = None;

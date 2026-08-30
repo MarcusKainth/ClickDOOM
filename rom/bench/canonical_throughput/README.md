@@ -44,7 +44,7 @@ convention):
 
 The SQL CPU runs at roughly 1,000-2,000 instr/sec (ADR-0004). Reaching
 icount 233,932,753 by live execution would cost tens of hours -- payable
-once, not every sprint measurement. `gen_snapshot.py` runs the same ROM
+once, not every sprint measurement. `refemu run --dump-state` runs the same ROM
 through `refemu` instead (~0.9-1.0M instr/sec measured), reaching that
 icount in about four minutes, and dumps the full CPU state (`pc`, `regs`,
 `ram`). `seed_snapshot.py` loads that dump directly into an isolated
@@ -56,7 +56,7 @@ The snapshot is cached (`<snapshot-dir>/snapshot.<rom sha256 prefix>.<target
 icount>.pkl`, atomically written) -- generated once per ROM, reused for
 every subsequent sprint measurement until `PINNED_HASH` changes.
 
-See `gen_snapshot.py`'s own docstring for exactly what is and is not
+See `scripts/refemu_snapshot.py` for exactly what is and is not
 captured (short version: `pc`/`regs`/`ram`/`icount` only -- no
 framebuffer/palette/console/MMIO state, since there's no SQL storage for
 those yet and this benchmark doesn't need them to measure throughput).

@@ -1,5 +1,5 @@
 """Seed an isolated ClickHouse database's `ram`/`framebuffer`/`palette`/
-`batch_commit` from a `gen_snapshot.py` dump, so `run.sh` -- or a
+`batch_commit` from a captured machine, so `run.sh` -- or a
 frame-verification run (#251) -- can start from a real, representative
 mid-run state without live-executing the tens of millions of instructions
 it takes to reach it.
@@ -28,7 +28,7 @@ address, never inspecting what a word *means*:
    (`executor/commit.py:fbpal_flush_sql()`'s docstring spells this
    asymmetry out explicitly, and it exists precisely because an earlier
    draft of the analogous `ram` flush got the rebasing wrong -- #81).
-   `gen_snapshot.py` already captures `cpu.memory.framebuffer`/`.palette`
+   A captured machine already carries the framebuffer and palette
    in that same region-relative form (byte 0 = the region's own base), so
    this function seeds them at `word_addr = i` directly, base_word=0 --
    getting this right by construction rather than by a rebasing formula
@@ -42,21 +42,20 @@ address, never inspecting what a word *means*:
    its own insert rather than overloading `bootstrap.py`'s narrower one.
    `wl_addr`/`wl_val`/`wl_icount`/`console_bytes` are seeded empty and
    `keyq_pos`/`has_frame`/`frame_no` at 0 -- `console_out`/the key queue
-   still have no SQL storage this benchmark needs (see `gen_snapshot.py`'s
-   docstring), and this insert only needs pc/regs/ram/framebuffer/palette
+   still have no SQL storage this benchmark needs, and this insert only
+   needs pc/regs/ram/framebuffer/palette
    to measure throughput or verify a frame, not exact MMIO continuity.
 
-## Format version (#251)
+## What the reader checks before anything is inserted
 
-Refuses to run against a snapshot whose `state["format_version"]` is
-missing or does not equal `snapshot_format.FORMAT_VERSION` -- a pre-#251
-(format 1) snapshot has no `framebuffer`/`palette` keys at all, and
-seeding one under this script's current assumptions would either KeyError
-(if this script blindly indexed the missing keys) or, worse, silently skip
-seeding those tables and leave them empty with no error -- exactly the
-"clean, plausible, WRONG fb_hash" failure mode #251 exists to close off.
-Checked before touching the database, not after: cheaper to fail loudly
-before any INSERT than to leave a half-seeded database for the caller to
+`scripts/refemu_snapshot.py` refuses a capture whose format version is not
+the one it reads, and refuses one that does not carry every section named in
+its `need` list. A capture without a framebuffer or palette would otherwise
+leave those tables empty with no error, and a frame-verification run against
+them produces a clean, plausible and wrong frame hash.
+
+Checked before touching the database rather than after: failing before any
+insert is cheaper than leaving a half-seeded database for the caller to
 notice is wrong.
 
 Usage:
@@ -67,7 +66,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import pickle
 import struct
 import subprocess
 import sys
@@ -78,7 +76,8 @@ REPO = HERE.parent.parent.parent  # rom/bench/canonical_throughput/ -> repo root
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO / "driver"))
 
-from snapshot_format import FORMAT_VERSION  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from refemu_snapshot import load as load_snapshot  # noqa: E402
 
 # FRAMEBUFFER_WORDS/PALETTE_WORDS from driver/render.py, not re-declared --
 # that module is the SQL-side render query's own authority on these two
@@ -136,32 +135,29 @@ def main() -> int:
     ap.add_argument("--client", default="clickhouse-client")
     args = ap.parse_args()
 
-    with open(args.snapshot, "rb") as f:
-        state = pickle.load(f)
+    header, sections = load_snapshot(
+        args.snapshot, need=("ram", "framebuffer", "palette")
+    )
 
     # #251: refuse an old-format snapshot rather than silently seeding an
     # empty framebuffer/palette. Checked before any INSERT runs -- see this
     # module's docstring.
-    snapshot_version = state.get("format_version")
-    if snapshot_version != FORMAT_VERSION:
-        print(f"::error::{args.snapshot}: format_version={snapshot_version!r}, expected {FORMAT_VERSION} -- "
-              f"this snapshot predates #251 (or is otherwise the wrong shape) and has no "
-              f"framebuffer/palette captured. Seeding it would leave those tables empty with no error, "
-              f"producing a clean but WRONG fb_hash for any frame-verification run. Regenerate it with "
-              f"the current gen_snapshot.py.", file=sys.stderr)
+    if header["kind"] != "machine":
+        print(f"::error::{args.snapshot} is a {header['kind']} capture, and seeding "
+              f"needs a whole machine", file=sys.stderr)
         return 1
 
-    ram_bytes = state["ram"]
+    ram_bytes = sections["ram"]
     if len(ram_bytes) % 4 != 0:
         print(f"::error::snapshot ram is {len(ram_bytes)} bytes, not a multiple of 4", file=sys.stderr)
         return 1
-    ram_base = state["ram_base"]
+    ram_base = header["ram_base"]
     ram_base_word = ram_base >> 2
     ram_nwords = len(ram_bytes) // 4
     ram_words = struct.unpack(f"<{ram_nwords}I", ram_bytes)
 
-    fb_bytes = state["framebuffer"]
-    pal_bytes = state["palette"]
+    fb_bytes = sections["framebuffer"]
+    pal_bytes = sections["palette"]
     if len(fb_bytes) != render.FRAMEBUFFER_WORDS * 4:
         print(f"::error::snapshot framebuffer is {len(fb_bytes)} bytes, expected "
               f"{render.FRAMEBUFFER_WORDS * 4} (SPEC §2)", file=sys.stderr)
@@ -192,7 +188,7 @@ def main() -> int:
     rc = seed_word_table(base_cmd, "ram", ram_words, ram_base_word)
     if rc != 0:
         return rc
-    print(f"  (icount={state['icount']:,})", file=sys.stderr)
+    print(f"  (icount={header['icount']:,})", file=sys.stderr)
 
     rc = seed_word_table(base_cmd, "framebuffer", fb_words, 0)
     if rc != 0:
@@ -201,9 +197,9 @@ def main() -> int:
     if rc != 0:
         return rc
 
-    regs31 = state["regs"][1:32]  # drop refemu's x0 (always 0, not stored -- schema.sql's convention)
+    regs31 = header["regs"][1:32]  # drop refemu's x0 (always 0, not stored -- schema.sql's convention)
     if len(regs31) != 31:
-        print(f"::error::snapshot regs has {len(state['regs'])} elements, expected 32 (x0..x31)", file=sys.stderr)
+        print(f"::error::snapshot regs has {len(header['regs'])} elements, expected 32 (x0..x31)", file=sys.stderr)
         return 1
     regs_literal = "[" + ",".join(str(r) for r in regs31) + "]"
     insert_batch_commit = base_cmd + [
@@ -211,13 +207,13 @@ def main() -> int:
         "INSERT INTO batch_commit "
         "(batch_id, icount, pc, regs, halted, halt_reason, exit_code, "
         " keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount, console_bytes) "
-        f"VALUES (0, {state['icount']}, {state['pc']}, {regs_literal}, 0, '', 0, "
+        f"VALUES (0, {header['icount']}, {header['pc']}, {regs_literal}, 0, '', 0, "
         f" 0, 0, 0, [], [], [], [])",
     ]
     result = subprocess.run(insert_batch_commit, text=True)
     if result.returncode != 0:
         return result.returncode
-    print(f"seeded batch_commit batch_id=0: pc={state['pc']:#x}, icount={state['icount']:,}", file=sys.stderr)
+    print(f"seeded batch_commit batch_id=0: pc={header['pc']:#x}, icount={header['icount']:,}", file=sys.stderr)
     return 0
 
 

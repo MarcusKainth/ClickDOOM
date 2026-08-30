@@ -24,7 +24,7 @@
 #
 # Reaching icount 233,932,753 by live-executing the SQL CPU would cost tens
 # of hours at ~1,000-2,000 instr/sec (ADR-0004) -- not payable once, let
-# alone every sprint measurement. `gen_snapshot.py` runs the SAME ROM
+# alone every sprint measurement. `refemu run --dump-state` runs the SAME ROM
 # through refemu instead (~0.9M instr/sec, rom/bench/e7_memfns/README.md),
 # reaching that icount in minutes, and `seed_snapshot.py` loads the dumped
 # state directly into an isolated database's `ram`/`batch_commit`. See both
@@ -90,7 +90,7 @@ BATCHES=3
 # instruction cost to reach it), so this no longer lands on frame 200
 # precisely.
 #
-# CONFIRMED unasserted, not just unlikely to be hit: gen_snapshot.py's
+# CONFIRMED unasserted, not just unlikely to be hit: the capture's
 # generate() only checks `while cpu.icount < target_icount`, raising on a
 # halt before reaching it -- it never reads or checks frame_commits, so
 # there is no error path that would catch this drifting. Since the new
@@ -219,6 +219,7 @@ DECN=$(( TEXT_END_WORD - TEXT_START_WORD ))
 RAM_WORDS=6291456  # SPEC §2: 24 MiB / 4
 
 HERE="rom/bench/canonical_throughput"
+REFEMU="${REFEMU:-./target/release/refemu}"
 
 # --- generated-SQL shape (bytes + AST node count), not just wall-clock ---
 #
@@ -440,13 +441,20 @@ main() {
       --password "$PASSWORD" --database "$BOOT_DB" --client "$CLIENT" >&2
 
   echo "# --- generating/reusing gameplay-window snapshot (icount=$GAMEPLAY_TARGET_ICOUNT) ---" >&2
-  (cd refemu && uv run python "../$HERE/gen_snapshot.py" \
-      --rom "../$BIN" --manifest "../$MANIFEST" \
-      --target-icount "$GAMEPLAY_TARGET_ICOUNT" --out-dir "$SNAPSHOT_DIR") >&2
-  # Same name gen_snapshot.py writes: the format version is part of the filename.
-  SNAPSHOT_FORMAT=$(python3 -c "import sys; sys.path.insert(0, '$HERE'); from snapshot_format import FORMAT_VERSION; print(FORMAT_VERSION)")
-  SNAPSHOT_FILE="$SNAPSHOT_DIR/snapshot.${ROM_SHA:0:12}.${GAMEPLAY_TARGET_ICOUNT}.v${SNAPSHOT_FORMAT}.pkl"
-  [ -f "$SNAPSHOT_FILE" ] || fail "expected snapshot at $SNAPSHOT_FILE, not found after gen_snapshot.py ran"
+  # The format version is part of the filename, so a capture written by an
+  # older reader cannot be picked up by a newer one.
+  SNAPSHOT_FORMAT=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); from refemu_snapshot import FORMAT_VERSION; print(FORMAT_VERSION)")
+  SNAPSHOT_FILE="$SNAPSHOT_DIR/snapshot.${ROM_SHA:0:12}.${GAMEPLAY_TARGET_ICOUNT}.v${SNAPSHOT_FORMAT}.rsnap"
+  if [ ! -f "$SNAPSHOT_FILE" ]; then
+    mkdir -p "$SNAPSHOT_DIR"
+    "$REFEMU" run "$BIN" --manifest "$MANIFEST" --pinned-hash rom/PINNED_HASH \
+        --stop-at "icount:$GAMEPLAY_TARGET_ICOUNT" \
+        --max-instructions "$GAMEPLAY_TARGET_ICOUNT" \
+        --dump-state "$SNAPSHOT_FILE" >&2
+  else
+    echo "# reusing cached snapshot: $SNAPSHOT_FILE" >&2
+  fi
+  [ -f "$SNAPSHOT_FILE" ] || fail "expected a snapshot at $SNAPSHOT_FILE"
 
   echo "# --- setting up gameplay window (seeded from snapshot) ---" >&2
   GAMEPLAY_DB="canonical_throughput_gameplay_$$"
@@ -466,10 +474,12 @@ main() {
 
   local snapshot_pc snapshot_regs
   read -r snapshot_pc snapshot_regs <<< "$(python3 -c "
-import pickle
-d = pickle.load(open('$SNAPSHOT_FILE', 'rb'))
-regs = d['regs'][1:32]
-print(d['pc'], '[' + ','.join(str(r) for r in regs) + ']')
+import sys
+sys.path.insert(0, 'scripts')
+from refemu_snapshot import load
+header, _ = load('$SNAPSHOT_FILE')
+regs = header['regs'][1:32]
+print(header['pc'], '[' + ','.join(str(r) for r in regs) + ']')
 ")"
 
   cleanup() {

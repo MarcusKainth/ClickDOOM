@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 bytes.workspace = true
 clap.workspace = true
+clickdoom-executor.workspace = true
 clickdoom-spec.workspace = true
 clickhouse.workspace = true
 serde.workspace = true

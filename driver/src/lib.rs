@@ -6,6 +6,8 @@ pub mod checkpoint;
 pub mod cli;
 pub mod client;
 pub mod decode;
+pub mod fold_result;
+pub mod preflight;
 pub mod render;
 pub mod rom;
 pub mod sql;

@@ -353,14 +353,16 @@ fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
         DeviceSet::Full => Devices::registers(machine.ipms),
         DeviceSet::None => Devices::bytes(map.mmio_size),
     };
-    let mut memory = Memory::new(map, devices);
-    memory
-        .load_image(&bytes, load_addr)
+    let mut cpu = Cpu::new(Memory::new(map, devices), load_addr);
+    cpu.load_image(&bytes, load_addr)
         .map_err(|e| failed(e.to_string()))?;
-    memory.set_text_region(text);
+    cpu.set_text_region(text);
+    // Decoding the read-only region up front is what makes a long run cheap.
+    // A machine with no declared region has nothing to cache.
+    cpu.enable_decode_cache();
 
     Ok(Loaded {
-        cpu: Cpu::new(memory, load_addr),
+        cpu,
         rom_sha256,
         pinned,
     })

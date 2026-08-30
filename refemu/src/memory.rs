@@ -99,7 +99,7 @@ impl Memory {
         self.text
     }
 
-    pub const fn set_text_region(&mut self, region: Option<(u32, u32)>) {
+    pub(crate) const fn set_text_region(&mut self, region: Option<(u32, u32)>) {
         self.text = region;
     }
 
@@ -108,7 +108,11 @@ impl Memory {
     /// This is not a store. It bypasses the text check, because a program's
     /// own code arriving in RAM is what declares that region rather than a
     /// violation of it.
-    pub fn load_image(&mut self, data: &[u8], load_addr: u32) -> Result<(), LoadError> {
+    ///
+    /// Reached through `Cpu`, which drops any decoded instructions this
+    /// invalidates. Loading behind the machine's back would leave a cache
+    /// describing bytes that are no longer there.
+    pub(crate) fn load_image(&mut self, data: &[u8], load_addr: u32) -> Result<(), LoadError> {
         if load_addr < self.map.ram_base {
             return Err(LoadError::BelowRam {
                 load_addr,

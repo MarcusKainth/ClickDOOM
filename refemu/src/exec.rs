@@ -15,8 +15,9 @@ use clickdoom_spec::map::MemoryMap;
 use clickdoom_spec::{HaltReason, RAM_BASE};
 
 use crate::decode::{Instruction, Op, decode};
-use crate::memory::{MemFault, Memory};
+use crate::memory::{LoadError, MemFault, Memory};
 use crate::mmio::Devices;
+use crate::predecode::DecodeCache;
 
 /// Why the machine stopped, and what the record carries.
 ///
@@ -84,6 +85,9 @@ pub struct Cpu {
     pc: u32,
     regs: [u32; 32],
     icount: u64,
+    /// Decoded instructions for the read-only region, when one is declared
+    /// and the machine has been asked to keep them.
+    cache: Option<DecodeCache>,
 }
 
 impl Cpu {
@@ -96,6 +100,7 @@ impl Cpu {
             pc: entry,
             regs: [0; 32],
             icount: 0,
+            cache: None,
         }
     }
 
@@ -157,6 +162,36 @@ impl Cpu {
         Self::new(Memory::new(map, Devices::bytes(map.mmio_size)), RAM_BASE)
     }
 
+    /// Loads an image, dropping any decoded instructions it invalidates.
+    pub fn load_image(&mut self, data: &[u8], load_addr: u32) -> Result<(), LoadError> {
+        self.cache = None;
+        self.memory.load_image(data, load_addr)
+    }
+
+    /// Declares the read-only region, dropping any decoded instructions.
+    pub fn set_text_region(&mut self, region: Option<(u32, u32)>) {
+        self.cache = None;
+        self.memory.set_text_region(region);
+    }
+
+    /// Decodes the read-only region up front, so a fetch inside it is a
+    /// lookup rather than a region dispatch and a decode.
+    ///
+    /// Call it after the image is loaded and the region declared. Doing either
+    /// again drops the result. Returns whether anything was cached: a machine
+    /// with no declared region has nothing to cache and runs the slow path.
+    pub fn enable_decode_cache(&mut self) -> bool {
+        self.cache = self
+            .memory
+            .text_region()
+            .and_then(|(start, end)| DecodeCache::build(&self.memory, start, end));
+        self.cache.is_some()
+    }
+
+    pub const fn decode_cache(&self) -> Option<&DecodeCache> {
+        self.cache.as_ref()
+    }
+
     /// Fetches, decodes and executes one instruction.
     #[inline]
     pub fn step(&mut self) -> Result<(), Halt> {
@@ -172,11 +207,16 @@ impl Cpu {
     #[inline]
     pub fn step_reporting(&mut self) -> Result<(u32, Instruction), Halt> {
         let pc = self.pc;
-        let word = match self.memory.read(pc, 4, self.icount) {
-            Ok(word) => word,
-            Err(fault) => return Err(fetch_halt(pc, fault)),
+        let (word, insn) = match self.cache.as_ref().and_then(|cache| cache.get(pc)) {
+            Some(entry) => (entry.word, entry.insn),
+            None => {
+                let word = match self.memory.read(pc, 4, self.icount) {
+                    Ok(word) => word,
+                    Err(fault) => return Err(fetch_halt(pc, fault)),
+                };
+                (word, decode(word))
+            }
         };
-        let insn = decode(word);
         let next_pc = self.execute(pc, word, insn)?;
         self.icount += 1;
         self.pc = next_pc;
@@ -412,7 +452,7 @@ mod tests {
     /// Puts `words` in RAM at `base` and points the machine at them. Loading
     /// is not a store, so this works inside a declared text region.
     fn load_at(cpu: &mut Cpu, words: &[u32], base: u32) {
-        cpu.memory.load_image(&program(words), base).unwrap();
+        cpu.load_image(&program(words), base).unwrap();
         cpu.set_pc(base);
     }
 

@@ -211,7 +211,7 @@ mod tests {
         } else {
             Cpu::inert()
         };
-        cpu.memory.load_image(&program(words), RAM_BASE).unwrap();
+        cpu.load_image(&program(words), RAM_BASE).unwrap();
         cpu
     }
 

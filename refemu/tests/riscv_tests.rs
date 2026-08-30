@@ -68,7 +68,7 @@ fn every_riscv_test_passes() {
         let name = name_of(path);
         let image = std::fs::read(path).unwrap();
         let mut cpu = Cpu::inert();
-        cpu.memory.load_image(&image, RAM_BASE).unwrap();
+        cpu.load_image(&image, RAM_BASE).unwrap();
 
         // Stepping one at a time rather than running to a halt, so every
         // retired instruction can be checked against the decoder as well.

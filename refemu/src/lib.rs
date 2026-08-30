@@ -6,6 +6,7 @@
 
 pub mod asm;
 pub mod boot;
+pub mod cli;
 pub mod decode;
 pub mod exec;
 pub mod memory;

@@ -137,6 +137,27 @@ pub struct Instruction {
 }
 
 impl Instruction {
+    /// A readable form, for a disassembly listing.
+    pub fn render(&self) -> String {
+        use Op::*;
+        let (rd, rs1, rs2, imm) = (self.rd, self.rs1, self.rs2, self.imm);
+        let name = self.op.mnemonic();
+        match self.op {
+            Lui | Auipc => format!("{name} x{rd}, {:#x}", imm as u32),
+            Jal => format!("{name} x{rd}, {imm}"),
+            Jalr => format!("{name} x{rd}, {imm}(x{rs1})"),
+            Beq | Bne | Blt | Bge | Bltu | Bgeu => format!("{name} x{rs1}, x{rs2}, {imm}"),
+            Lb | Lh | Lw | Lbu | Lhu => format!("{name} x{rd}, {imm}(x{rs1})"),
+            Sb | Sh | Sw => format!("{name} x{rs2}, {imm}(x{rs1})"),
+            Slli | Srli | Srai => format!("{name} x{rd}, x{rs1}, {}", imm & 0x1F),
+            Addi | Slti | Sltiu | Xori | Ori | Andi => format!("{name} x{rd}, x{rs1}, {imm}"),
+            Add | Sub | Sll | Slt | Sltu | Xor | Srl | Sra | Or | And | Mul | Mulh | Mulhsu
+            | Mulhu | Div | Divu | Rem | Remu => format!("{name} x{rd}, x{rs1}, x{rs2}"),
+            Csr => format!("{name} x{rd}, x{rs1}, {:#x}", imm & 0xFFF),
+            Fence | Ecall | Ebreak | Illegal => name.to_owned(),
+        }
+    }
+
     const fn illegal() -> Self {
         Self {
             op: Op::Illegal,
@@ -468,6 +489,19 @@ mod tests {
         for funct3 in [0b001, 0b010, 0b011, 0b101, 0b110, 0b111] {
             assert_eq!(op(i_type(0x73, 1, funct3, 2, 0x340)), Op::Csr);
         }
+    }
+
+    #[test]
+    fn a_rendering_names_the_operands_its_format_has() {
+        assert_eq!(decode(addi(1, 2, -3)).render(), "addi x1, x2, -3");
+        assert_eq!(decode(lw(1, 2, 64)).render(), "lw x1, 64(x2)");
+        assert_eq!(decode(sw(2, 1, -4)).render(), "sw x1, -4(x2)");
+        assert_eq!(decode(beq(1, 2, 32)).render(), "beq x1, x2, 32");
+        assert_eq!(decode(add(1, 2, 3)).render(), "add x1, x2, x3");
+        assert_eq!(decode(slli(1, 2, 4)).render(), "slli x1, x2, 4");
+        assert_eq!(decode(lui(1, 0xABCDE)).render(), "lui x1, 0xabcde000");
+        assert_eq!(decode(ecall()).render(), "ecall");
+        assert_eq!(decode(RESERVED_OPCODE).render(), "illegal");
     }
 
     #[test]

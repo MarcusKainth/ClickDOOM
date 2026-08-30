@@ -8,7 +8,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+clap.workspace = true
 clickdoom-spec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[[bin]]
+name = "refemu"
+path = "src/bin/refemu.rs"

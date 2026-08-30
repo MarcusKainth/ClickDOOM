@@ -132,6 +132,19 @@ impl Memory {
         Ok(())
     }
 
+    /// Puts the three stored regions back, taking as much of each as fits.
+    pub(crate) fn restore_regions(&mut self, ram: &[u8], framebuffer: &[u8], palette: &[u8]) {
+        for (into, from) in [
+            (&mut self.ram, ram),
+            (&mut self.framebuffer, framebuffer),
+            (&mut self.palette, palette),
+        ] {
+            let take = from.len().min(into.len());
+            into[..take].copy_from_slice(&from[..take]);
+            into[take..].fill(0);
+        }
+    }
+
     const fn check_align(addr: u32, width: u32) -> Result<(), MemFault> {
         if width > 1 && !addr.is_multiple_of(width) {
             return Err(MemFault::Misaligned { addr, width });

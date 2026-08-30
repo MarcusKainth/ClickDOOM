@@ -188,6 +188,15 @@ impl Cpu {
         Ok(())
     }
 
+    /// Puts memory back from a captured machine.
+    ///
+    /// Not a store, so the read-only region does not object: this is the same
+    /// machine carrying on, not a program writing over its own code.
+    pub fn restore_memory(&mut self, ram: &[u8], framebuffer: &[u8], palette: &[u8]) {
+        self.cache = None;
+        self.memory.restore_regions(ram, framebuffer, palette);
+    }
+
     /// Declares the read-only region, dropping any decoded instructions.
     pub fn set_text_region(&mut self, region: Option<(u32, u32)>) {
         self.cache = None;

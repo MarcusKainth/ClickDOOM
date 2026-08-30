@@ -1,0 +1,72 @@
+# Path rules for the `area:` labels on a pull request.
+#
+# Every label named here must exist in `.github/labels.yml`. GitHub creates a
+# missing one on the fly, with a default colour and no description, so a name
+# that does not match the taxonomy lands as a stray label rather than an error.
+
+"area: rom":
+  - changed-files:
+      - any-glob-to-any-file: rom/**
+
+"area: refemu":
+  - changed-files:
+      - any-glob-to-any-file: refemu/**
+
+"area: sqlcpu":
+  - changed-files:
+      - any-glob-to-any-file: sqlcpu/**
+
+"area: executor":
+  - changed-files:
+      - any-glob-to-any-file: executor/**
+
+# render lives inside driver/, so it is named file by file rather than by
+# directory. Everything else under driver/ is the loop itself.
+"area: render":
+  - changed-files:
+      - any-glob-to-any-file:
+          - driver/render.py
+          - driver/test_render.sh
+          - driver/gen_frame_fixture.py
+          - driver/gen_sparse_frame_fixture.py
+          - driver/seed_frame_fixture.py
+          - driver/seed_sparse_fixture.py
+          - driver/fixture_schema.sql
+
+"area: driver":
+  - changed-files:
+      - any-glob-to-any-file: driver/**
+
+"area: spec":
+  - changed-files:
+      - any-glob-to-any-file:
+          - SPEC.md
+          - PURITY.md
+
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - scripts/**
+          - Makefile
+          - docker-compose.yml
+          - .pre-commit-config.yaml
+
+"area: bench":
+  - changed-files:
+      - any-glob-to-any-file:
+          - executor/bench/**
+          - rom/bench/**
+
+# The two match keys are ORed. `actions/labeler` wraps a bare `changed-files`
+# in `any`, and returns on the first key that matches, so an exclusion has to
+# sit inside the key it applies to. `all-globs-to-any-file` requires one changed
+# file to match every pattern in its list, so the negations exclude the licence
+# texts and leave any other root markdown counting as documentation.
+"area: docs":
+  - changed-files:
+      - any-glob-to-any-file: docs/**
+      - all-globs-to-any-file:
+          - "*.md"
+          - "!SPEC.md"
+          - "!PURITY.md"

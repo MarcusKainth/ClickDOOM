@@ -1,0 +1,46 @@
+name: Labels
+
+# Applies `.github/labels.yml`. A pull request touching it gets a dry run, so a
+# bad entry fails before merge rather than leaving a label quietly missing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/labels.yml
+      - scripts/sync-labels.sh
+  pull_request:
+    paths:
+      - .github/labels.yml
+      - .github/workflows/labels.yml
+      - scripts/sync-labels.sh
+  # Idempotent, so a manual run is safe after a hand-edit in the web UI.
+  workflow_dispatch:
+
+concurrency:
+  group: labels-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  sync:
+    name: Sync
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Labels are an issues-scoped resource even though most of these end up on
+      # pull requests. A fork's pull request gets read here, and only dry-runs.
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No pruning: deleting a label destroys the record of what was filed under
+      # it. Retiring one is a manual step.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' }}
+        run: ./scripts/sync-labels.sh

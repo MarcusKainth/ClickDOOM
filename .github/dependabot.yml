@@ -1,0 +1,75 @@
+# Dependency update automation. Nothing auto-merges.
+#
+# Every label named below must exist in `.github/labels.yml`. Dependabot creates
+# a missing label on the fly with a default colour and no description, so a name
+# that does not match the taxonomy lands as a stray rather than an error.
+#
+# Ecosystems are staggered across the week so a quiet day is a signal rather
+# than a coincidence. `cooldown` holds a freshly published version back, which
+# is the window a compromised release is most likely to be caught in.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "area: ci"]
+    commit-message:
+      prefix: "ci"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The rv32 toolchain image. Its base is digest-pinned, so a bump here is a
+  # deliberate rebuild and changes rom/PINNED_HASH.
+  - package-ecosystem: "docker"
+    directories:
+      - "/rom/toolchain"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 2
+    labels: ["dependencies", "area: rom"]
+    commit-message:
+      prefix: "rom"
+    cooldown:
+      default-days: 7
+
+  # ClickHouse in docker-compose.yml. Bumping it needs deep-diff evidence, so
+  # these arrive as proposals and sit until that evidence exists.
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    open-pull-requests-limit: 1
+    labels: ["dependencies", "area: ci"]
+    commit-message:
+      prefix: "ci"
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "uv"
+    directories:
+      - "/refemu"
+      - "/executor"
+    schedule:
+      interval: "weekly"
+      day: "thursday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "area: ci"]
+    commit-message:
+      prefix: "ci"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      python-compatible:
+        update-types: ["minor", "patch"]

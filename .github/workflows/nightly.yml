@@ -1,15 +1,16 @@
-# Nightly, non-PR-blocking: the long differential run and the throughput
-# benchmark. Failures here open issues (deep-diff failures use the
-# divergence-report form) rather than blocking merges.
+# The long differential run, nightly. It does not block merges.
+#
+# This is the only job that compares memory. ci.yml's differential-smoke stops
+# well short of the first RAM_HASH_INTERVAL boundary, so `ramhash` and `fbhash`
+# are exercised here and nowhere else. A failure here needs a divergence-report
+# issue opened by hand; nothing files one automatically.
+#
+# Throughput is deliberately not benchmarked here. A shared runner cannot give
+# a timing a quiet machine gives, and a gate that fails for reasons unrelated to
+# the change is worse than no gate. Run `bench-canonical-throughput` on a quiet
+# box instead.
 
 name: nightly
-
-env:
-  # Credentials for the service containers below. Local-dev only: this database
-  # holds an emulator's RAM, never a secret. docker-compose.yml must match.
-  CLICKHOUSE_USER: default
-  CLICKHOUSE_PASSWORD: clickdoom
-  CLICKHOUSE_DATABASE: clickdoom
 
 on:
   schedule:
@@ -18,76 +19,52 @@ on:
     inputs:
       deep_diff_instructions:
         description: "Instruction count for the deep differential run"
-        # #227/#230: diff_run.sh clamps every sqlcpu batch to
-        # <= CHECKPOINT_INTERVAL (4,096) so it can compare the FULL SPEC §7
-        # trace, not a RAM_HASH_INTERVAL-only sample -- the OLD default
-        # here, 200,000,000, projected to ~44 hours (roughly two days) at
-        # #180's fitted per-batch model, nowhere near this job's
-        # 300-minute timeout.
-        #
-        # 5,000,000 is now backed by REAL measurements, not #180's
-        # projection: three real diff_run.sh runs (own container, #227) at
-        # N = 8,192 / 100,000 / 1,048,576 measured 910 / 990 / 961
-        # instructions/sec. #180's model was fitted over K in
-        # {15,000..120,000}; this tool runs at K<=4,096, roughly a quarter
-        # of that fit's smallest point -- these numbers are the first real
-        # measurement at this stride, not a shortfall against a
-        # projection that was never valid there, so they supersede it
-        # rather than disagree with it.
-        #
-        # Sized against the CONSERVATIVE measurement (910, the smallest of
-        # the three, not the largest): 5,000,000 instructions is ~91.6
-        # minutes, a 3.28x margin inside the 300-minute timeout. Crosses 4
-        # RAM_HASH_INTERVAL boundaries, so this job actually exercises the
-        # ramhash/fbhash cadence -- ci.yml's differential-smoke, at
-        # 100,000 instructions (~1.7 minutes measured), never reaches even
-        # one.
+        # 5,000,000 is measured, not projected. Three diff_run.sh runs at
+        # N = 8,192 / 100,000 / 1,048,576 gave 910 / 990 / 961 instructions/sec.
+        # Sized against the slowest of the three, 5,000,000 takes about
+        # 91.6 minutes, a 3.28x margin inside the 300-minute timeout, and
+        # crosses 4 RAM_HASH_INTERVAL boundaries.
         default: "5000000"
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  CLICKHOUSE_USER: default
+  # Local-only. This database holds an emulator's RAM and nothing secret.
+  CLICKHOUSE_PASSWORD: clickdoom
+  CLICKHOUSE_DATABASE: clickdoom
 
 jobs:
   deep-diff:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 300
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e   # keep in sync with ci.yml
+        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
         env:
           CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
+          CLICKHOUSE_PASSWORD: clickdoom
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - name: Install uv (for refemu's side of the comparison)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
         run: pipx install uv
-      - name: Deep differential run (full SPEC §7 trace, #227/#230)
-        run: |
-          make -C rom
-          ./scripts/diff_run.sh "${{ github.event.inputs.deep_diff_instructions || '5000000' }}" --host localhost --port 9000
-
-  bench:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e   # keep in sync with ci.yml
+      - name: Build ROM
+        run: make -C rom
+      - name: Deep differential run (full checkpoint trace)
+        # The input goes through env rather than into the run block, so it
+        # cannot be read as shell.
         env:
-          CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
-        ports: ["8123:8123", "9000:9000"]
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Executor throughput benchmark
-        if: hashFiles('executor/bench.sh') != ''
-        # bench.sh prints instructions/sec, appends a row to the bench history
-        # table (dogfooding: history lives in ClickHouse), and exits non-zero
-        # on a >10% regression vs the trailing-7-run median.
-        run: ./executor/bench.sh --host localhost --port 9000 --gate 0.10
-      - name: Skipped (executor/ not landed yet)
-        if: hashFiles('executor/bench.sh') == ''
-        run: echo "bench activates when executor lands bench.sh"
+          INSTRUCTIONS: ${{ github.event.inputs.deep_diff_instructions || '5000000' }}
+        run: ./scripts/diff_run.sh "$INSTRUCTIONS" --host localhost --port 9000

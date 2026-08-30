@@ -208,7 +208,15 @@ run-milestone: up
         --host localhost --port 9000 --password "${CLICKHOUSE_PASSWORD:-clickdoom}"
 
 # All linters + purity check (what CI runs)
+#
+# `-exec ... +` rather than a pipe into xargs: a pipeline reports only the last
+# command's exit status, so a failing find would pass silently.
+#
+# actionlint has no CI job. Run it before pushing a workflow change or you pay
+# a round-trip to find out.
 lint:
     ./scripts/check_purity.sh
-    find scripts driver sqlcpu executor rom -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
-    @if [ -f refemu/pyproject.toml ] || [ -f driver/pyproject.toml ]; then ruff check refemu driver; fi
+    find scripts driver sqlcpu executor rom -name '*.sh' -exec shellcheck {} +
+    uv run --project refemu ruff check refemu driver
+    actionlint .github/workflows/*.yml
+    zizmor --persona=regular .github/

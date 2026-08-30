@@ -73,7 +73,7 @@ fn select_only_small_k2_matches_python_output() {
 
 #[test]
 fn select_only_overrides_matches_python_output() {
-    let regs0: Vec<u32> = (1..32).collect();
+    let regs0: Vec<String> = (1..32u32).map(|n| n.to_string()).collect();
     let args = SelectOnlyArgs {
         pc0: Some(0x8000_1000),
         regs0: Some(&regs0),

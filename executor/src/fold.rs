@@ -374,7 +374,14 @@ fn init_acc(pc0: &str, regs0: &str, wl0: &str, icount0: &str, keyq0: &str) -> St
 /// shape/K/hwm ones.
 pub struct SelectOnlyArgs<'a> {
     pub pc0: Option<u32>,
-    pub regs0: Option<&'a [u32]>,
+    /// Each element is a SQL expression, not a bare value: a caller seeding
+    /// an all-zero reset vector needs `toUInt32(0)` rather than `0`, since
+    /// ClickHouse infers `Array(UInt8)` for an array literal whose values
+    /// all happen to be small, and `arrayFold`'s accumulator then rejects
+    /// it as a type mismatch. `regs.iter().map(u32::to_string)` is the
+    /// right choice when the caller already knows the values fit and
+    /// wants the plain literal instead.
+    pub regs0: Option<&'a [String]>,
     pub db: &'a str,
     pub icount0: u64,
     pub keyq0: u32,
@@ -442,13 +449,7 @@ pub fn select_only(
         args.ipms,
     );
     let regs0_sql = match args.regs0 {
-        Some(regs) => format!(
-            "[{}]",
-            regs.iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
+        Some(regs) => format!("[{}]", regs.join(",")),
         None => "arrayResize(emptyArrayUInt32(), 31, toUInt32(0))".to_string(),
     };
     let pc0 = args.pc0.unwrap_or(RAM_BASE);

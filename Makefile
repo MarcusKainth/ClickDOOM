@@ -68,7 +68,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-refemu build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
-        fuzz-refemu-vs-python fuzz-refemu-selftest \
+        fuzz fuzz-refemu-vs-python fuzz-refemu-selftest \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
         adr-new check-adr require-rom
@@ -221,6 +221,15 @@ fuzz-refemu-vs-python: ## Compare the Rust interpreter against the Python one ov
 fuzz-refemu-selftest: ## Show the differential failing, against a deliberately broken build
 	cargo test --locked --release --features refemu/py-oracle,refemu/fuzz-selftest \
 	    --test py_differential the_differential_catches -- --nocapture
+
+FUZZ_SECONDS ?= 60
+FUZZ_TARGETS ?= predecode_equivalence step_invariants elf_loader snapshot_reader
+fuzz: ## Coverage-guided fuzzing. Needs the nightly fuzz/ pins and cargo-fuzz
+	for target in $(FUZZ_TARGETS); do \
+	    echo "== $$target =="; \
+	    (cd fuzz && cargo +nightly fuzz run "$$target" -- \
+	        -max_total_time=$(FUZZ_SECONDS) -print_final_stats=1); \
+	done
 
 build-riscv-tests-fixtures: ## Regenerate refemu's committed riscv-tests fixtures
 	./refemu/scripts/build_riscv_tests.sh

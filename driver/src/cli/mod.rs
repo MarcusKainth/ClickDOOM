@@ -60,6 +60,8 @@ pub enum Command {
     Preflight(PreflightCmd),
     /// Run the resumable batch loop to a target icount
     Run(RunCmd),
+    /// Run sqlcpu and refemu side by side, comparing every checkpoint
+    Diff(DiffCmd),
     /// Real-ROM throughput benchmarks
     Bench(BenchCmd),
 }
@@ -282,6 +284,32 @@ pub struct RunCmd {
 }
 
 #[derive(Args)]
+pub struct DiffCmd {
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    /// Instruction count to compare both engines over
+    pub n: u64,
+    /// Flat ROM binary
+    #[arg(long, default_value = "rom/build/doom-rv32im.bin")]
+    pub bin: PathBuf,
+    /// Manifest naming the binary's size, sha256 and text region
+    #[arg(long, default_value = "rom/build/manifest.json")]
+    pub manifest: PathBuf,
+    /// Write-log high-water mark
+    #[arg(long, default_value_t = 20_000)]
+    pub hwm: u32,
+    /// Ephemeral database name, dropped on exit
+    #[arg(long, value_name = "NAME")]
+    pub ephemeral_database: Option<String>,
+    /// Leave the ephemeral database in place, for inspecting a caught divergence
+    #[arg(long)]
+    pub keep_db: bool,
+    /// The reference emulator
+    #[arg(long, default_value = "./target/release/refemu")]
+    pub refemu_bin: PathBuf,
+}
+
+#[derive(Args)]
 pub struct PreflightCmd {
     #[command(flatten)]
     pub conn: ConnArgs,
@@ -444,6 +472,65 @@ async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
     Ok(Exit::Ok)
 }
 
+async fn cmd_diff(cmd: &DiffCmd) -> Result<Exit, Failure> {
+    let database = cmd
+        .ephemeral_database
+        .clone()
+        .unwrap_or_else(|| format!("clickdoom_diff_{}", std::process::id()));
+    let args = crate::diff::Args {
+        bin: &cmd.bin,
+        manifest_path: &cmd.manifest,
+        hwm: cmd.hwm,
+        database,
+        keep_db: cmd.keep_db,
+        refemu_bin: cmd.refemu_bin.clone(),
+        target_icount: cmd.n,
+    };
+    let outcome = crate::diff::run(&cmd.conn, &args).await.map_err(|err| {
+        use crate::diff::DiffError;
+        match err {
+            DiffError::RomHash(..)
+            | DiffError::CheckpointMismatch { .. }
+            | DiffError::SqlcpuOutranRefemuHalt { .. }
+            | DiffError::SqlcpuHaltedAlone { .. }
+            | DiffError::RefemuHaltedAlone { .. }
+            | DiffError::HaltShapeMismatch { .. }
+            | DiffError::OracleTraceShortfall { .. }
+            | DiffError::CountShortfall { .. } => gate(err.to_string()),
+            DiffError::Read { .. }
+            | DiffError::HaltReportParse { .. }
+            | DiffError::Manifest(_)
+            | DiffError::Spawn(..)
+            | DiffError::RefemuFailed(..)
+            | DiffError::NoTraceLine(..)
+            | DiffError::Db(_)
+            | DiffError::Bootstrap(_)
+            | DiffError::Provision(_) => failed(err.to_string()),
+        }
+    })?;
+    eprintln!(
+        "diff: no divergence found -- {} register checkpoints compared through icount={} ({} of them also memory+framebuffer checkpoints)",
+        outcome.checkpoints_compared, outcome.final_icount, outcome.ram_hash_checkpoints_compared
+    );
+    eprintln!("rom_sha256\t{}", outcome.rom_sha256);
+    eprintln!("clickhouse_version\t{}", outcome.clickhouse_version);
+    eprintln!("requested_instructions\t{}", outcome.requested_instructions);
+    eprintln!("final_icount\t{}", outcome.final_icount);
+    eprintln!("batches_run\t{}", outcome.batches_run);
+    eprintln!("checkpoints_compared\t{}", outcome.checkpoints_compared);
+    eprintln!("checkpoints_expected\t{}", outcome.checkpoints_expected);
+    eprintln!(
+        "ram_hash_checkpoints_compared\t{}",
+        outcome.ram_hash_checkpoints_compared
+    );
+    eprintln!(
+        "ram_hash_checkpoints_expected\t{}",
+        outcome.ram_hash_checkpoints_expected
+    );
+    eprintln!("sqlcpu_halted\t{}", outcome.sqlcpu_halted as u8);
+    Ok(Exit::Ok)
+}
+
 async fn cmd_preflight(cmd: &PreflightCmd) -> Result<Exit, Failure> {
     let db = cmd.conn.connect();
     let provenance = preflight::check(&db, &cmd.conn, &cmd.bin, &cmd.manifest, cmd.k, cmd.hwm)
@@ -603,6 +690,7 @@ pub fn main() -> ExitCode {
             Command::Render(cmd) => cmd_render(cmd).await,
             Command::Preflight(cmd) => cmd_preflight(cmd).await,
             Command::Run(cmd) => cmd_run(cmd).await,
+            Command::Diff(cmd) => cmd_diff(cmd).await,
             Command::Bench(cmd) => cmd_bench(cmd).await,
         }
     });

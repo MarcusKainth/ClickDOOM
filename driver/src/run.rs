@@ -204,7 +204,7 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             "# batch_id={batch_id} icount={icount} pc={pc:#010x} halted={halted} halt_reason={halt_reason} has_frame={has_frame} frame_no={frame_no}"
         );
 
-        if icount % ram_hash_interval == 0 && icount > 0 {
+        if icount.is_multiple_of(ram_hash_interval) && icount > 0 {
             let actual: String = db.fetch_one(&checkpoint_sql(&conn.database)).await?;
             let expected = trace_line_for(args.trace_path, icount)?;
             if actual != expected {

@@ -21,6 +21,7 @@ use clickdoom_spec::{
 use crate::boot::{RETIRED_PC_HISTORY, format_report};
 use crate::decode::decode;
 use crate::exec::{Cpu, Halt};
+use crate::image::{Image, read_image};
 use crate::memory::Memory;
 use crate::mmio::Devices;
 use crate::trace::{self, Step, Stop};
@@ -109,6 +110,12 @@ pub struct ImageArgs {
     /// Don't look for a manifest next to IMAGE
     #[arg(long, conflicts_with = "manifest")]
     pub no_manifest: bool,
+    /// How to read IMAGE
+    #[arg(long, value_enum, default_value_t = ImageFormat::Auto)]
+    pub format: ImageFormat,
+    /// Where execution starts. Defaults to the image's own entry
+    #[arg(long, value_name = "ADDR", value_parser = parse_addr)]
+    pub entry: Option<u32>,
     /// Where the image loads
     #[arg(long, value_name = "ADDR", value_parser = parse_addr)]
     pub load_addr: Option<u32>,
@@ -134,6 +141,17 @@ pub struct MachineArgs {
     /// Device behaviour
     #[arg(long, value_enum, default_value_t = DeviceSet::Full)]
     pub devices: DeviceSet,
+}
+
+/// How to read the image file.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
+pub enum ImageFormat {
+    /// An ELF if it starts with one, a flat binary otherwise.
+    Auto,
+    /// The whole file at one address.
+    Flat,
+    /// Loadable segments where the file says they go.
+    Elf,
 }
 
 /// Which device model the window presents.
@@ -338,14 +356,23 @@ fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
     };
 
     let load_addr = image.load_addr.or(manifest.load_addr).unwrap_or(RAM_BASE);
-    // An explicit bound wins over the manifest, which is a default and not an
+    let parsed = match image.format {
+        ImageFormat::Flat => Image::flat(bytes, load_addr),
+        ImageFormat::Elf => Image::parse_elf(&bytes).map_err(|e| failed(e.to_string()))?,
+        ImageFormat::Auto => {
+            read_image(bytes, Some(load_addr)).map_err(|e| failed(e.to_string()))?
+        }
+    };
+
+    // An explicit bound wins over the manifest, which wins over what the image
+    // says about itself. Each is a default for the one below it rather than an
     // override of something the caller set.
     let text = match (
         image.text_start.or(manifest.text_start),
         image.text_end.or(manifest.text_end),
     ) {
         (Some(start), Some(end)) => Some((start, end)),
-        _ => None,
+        _ => parsed.text_region(),
     };
 
     let map = MemoryMap::clickdoom().with_ram_size(machine.ram_size);
@@ -353,9 +380,11 @@ fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
         DeviceSet::Full => Devices::registers(machine.ipms),
         DeviceSet::None => Devices::bytes(map.mmio_size),
     };
-    let mut cpu = Cpu::new(Memory::new(map, devices), load_addr);
-    cpu.load_image(&bytes, load_addr)
-        .map_err(|e| failed(e.to_string()))?;
+    let mut cpu = Cpu::new(Memory::new(map, devices), parsed.entry);
+    cpu.load(&parsed).map_err(|e| failed(e.to_string()))?;
+    if let Some(entry) = image.entry {
+        cpu.set_pc(entry);
+    }
     cpu.set_text_region(text);
     // Decoding the read-only region up front is what makes a long run cheap.
     // A machine with no declared region has nothing to cache.

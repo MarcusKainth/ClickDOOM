@@ -1,4 +1,4 @@
-"""Boot report for a ROM image (issue #16, Phase 1's second refemu
+"""Boot report for a ROM image (issue #16, the second refemu
 milestone: "ROM boots in refemu").
 
 Loads a flat binary per SPEC §4's manifest and runs it, reporting exactly

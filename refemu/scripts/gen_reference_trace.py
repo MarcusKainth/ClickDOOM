@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the SPEC §7 reference trace for the real DOOM ROM, out to (at
 least) the first `FRAME_COMMIT` -- issue #96's team-lead ask: a stored,
-committed oracle Phase 2's milestone run diffs against, so a divergence at
+committed oracle the first-frame milestone run diffs against, so a divergence at
 instruction 4,000,000 is caught at instruction 4,000,000, not after ~2.8
 hours of compute produces a final hash that doesn't match.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # #23 throughput evidence: fold.py (halt semantics, write-log versioning,
-# address/alignment/self-modify checks) vs. the Phase 0 baseline
+# address/alignment/self-modify checks) vs. the baseline fold benchmark
 # (fold_predecoded.py, ADR-0002), same synthetic instruction stream.
 # ADR-0004 names this file explicitly: "executor/bench/halt_overhead/ stays
 # in the tree as the reproducible before/after, the same role

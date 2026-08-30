@@ -34,7 +34,7 @@ import sys
 
 DB = "e1_cse_bench"
 RAM_BASE = 0x8000_0000
-DECN = 524_288          # 2 MiB of text / 4, same as the Phase 0 fixture
+DECN = 524_288          # 2 MiB of text / 4, same as the baseline fold benchmark's fixture
 NREGS = 31              # x1..x31, no x0 slot (schema.sql / fold.py)
 
 # `+ 0` insertion sites. 6 inside IDX (which B embeds three times, as

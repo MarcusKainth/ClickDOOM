@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the pre-decoded arrayFold step (ADR-0002) for the Phase 0 bench.
+"""Generate the pre-decoded arrayFold step (ADR-0002) for the baseline fold benchmark.
 
 Why this file exists
 --------------------
-Phase 0 measured that an arrayFold step costs roughly 0.8 us per *expression
+The baseline benchmark measured that an arrayFold step costs roughly 0.8 us per *expression
 node* in the lambda, essentially independent of how much data those nodes
 touch. Node count, not data volume, is the throughput lever. So this variant
 moves every decode bit-op out of the lambda into a table built inside
@@ -42,7 +42,7 @@ IDX = "(acc.1 + 1)"     # 1-based index into the decode arrays
 # `optimize_read_in_order` can silently misalign a per-column groupArray
 # against its declared ORDER BY. Not reproduced against this bench's own
 # tables (team lead verified 0/524,288 and 0/6,291,456 misaligned, both
-# directions), so Phase 0's ratified numbers stand unchanged -- this is a
+# directions), so the baseline benchmark's ratified numbers stand unchanged -- this is a
 # defensive fix, not a correction, applied because this file is the pattern
 # both executor/fold.py and sqlcpu's schema.sql originally copied from.
 ID  = f"DEC[{IDX}].1"

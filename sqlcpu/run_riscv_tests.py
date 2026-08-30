@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """riscv-tests runner inside ClickHouse — sqlcpu workstream, issue #21.
 
-Phase 1's milestone for this workstream: riscv-tests fully green *inside
+The milestone for this component: riscv-tests fully green *inside
 ClickHouse*. Assembles decode.sql's `decoded` table with execute.py's
 composable expressions into a single arrayFold, run to completion (halt or
 a step cap) entirely within one query per test binary.
@@ -29,7 +29,7 @@ Decode field binding: id/rd/rs1/rs2/imm/tgt/mk/sg (from the decode arrays),
 A, B, the eager MISALIGNED condition, the load/store byte address, its
 word index, and the loaded word are each referenced multiple times across
 alu_result()/next_pc()/is_store()/halted()/halt_reason(). Past the ~2-use
-crossover the team lead's correction to Phase 0's RESULTS.md identifies,
+crossover the team lead's correction to the baseline benchmark's RESULTS.md identifies,
 `arrayMap(v -> ..., [expr])[1]` binds cheaper than recomputing (unlike a
 query-level `WITH`, this idiom works inside an arrayFold lambda) -- bound
 once each, nested, rather than left to recompute per reference.
@@ -162,7 +162,7 @@ def step_expr():
 
 # CORRECTNESS-CRITICAL, found debugging this issue: a bare
 # `(SELECT groupArray(col) FROM (SELECT col, word_addr FROM t ORDER BY
-# word_addr))` -- the idiom Phase 0's bench and executor's fold.py also
+# word_addr))` -- the idiom the baseline benchmark's bench and executor's fold.py also
 # use, one such scalar subquery per captured column -- is NOT reliable in
 # ClickHouse 26.3. `col`'s values can come back correctly *word_addr-count*
 # and *type*, just silently reordered relative to word_addr, when
@@ -182,7 +182,7 @@ def step_expr():
 # tested fine in isolation, but was not trusted here given how easily
 # `decoded`'s multi-column case looked fine until specifically checked).
 # Flagged project-wide: PR #ADR-0001's whole array-capture idiom needs the
-# same treatment wherever it's used (Phase 0's bench, executor's fold.py).
+# same treatment wherever it's used (the baseline benchmark's bench, executor's fold.py).
 #
 # RAM_T[i]/DEC_T[i] (see step_expr()'s REL_IDX/wa lookups) are indexed
 # POSITIONALLY relative to RAM_BASE_WORD: position i is trusted to be the
@@ -250,7 +250,7 @@ def run_query(max_instructions, word_count):
     # ClickHouse regardless of the underlying expression's own nullability,
     # and a Nullable anywhere in arrayFold's initial accumulator poisons the
     # whole tuple's inferred type against the lambda's non-Nullable return
-    # (the exact Phase 0 finding this workstream's own charter notes --
+    # (the exact the baseline benchmark finding this workstream's own charter notes --
     # verified again here: the first version of this line, without
     # assumeNotNull, failed every fixture with a TYPE_MISMATCH on the
     # accumulator before a single instruction ran).

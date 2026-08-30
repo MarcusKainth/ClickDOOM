@@ -36,7 +36,7 @@ null bytes to trip over, then one `unhex()` at the end.
 
 This module builds SQL expression *text*, like decode.sql/execute.py's
 composable functions — it does not read from any particular table.
-Framebuffer/palette storage doesn't exist yet (Phase 2's "first
+Framebuffer/palette storage doesn't exist yet (the "first
 FRAME_COMMIT" milestone, executor's MMIO plumbing, SPEC §6) — `fb_hash()`
 takes the current bytes as a caller-supplied expression rather than
 assuming where they live, the same interface posture execute.py's

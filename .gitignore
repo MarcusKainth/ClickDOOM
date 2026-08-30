@@ -31,7 +31,7 @@ __pycache__/
 .idea/
 .vscode/
 
-# Per-teammate git worktrees (Phase 1+)
+# Local git worktrees.
 worktrees/
 
 # Local agent configuration and notes. Nothing here is part of the project.

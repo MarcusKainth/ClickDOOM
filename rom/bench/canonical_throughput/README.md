@@ -3,7 +3,7 @@
 ## Why this exists
 
 The human owner ruled on #130's 1.61x throughput regression (recorded in
-#147): the Phase 0 "1,000 instr/sec floor" was an architecture-viability
+#147): the baseline benchmark's "1,000 instr/sec floor" was an architecture-viability
 tripwire, not a merge gate for correctness-driven cost with the
 optimisation queue unexecuted. That triggered a **time-boxed 5-day
 optimisation sprint**, after which the floor is re-evaluated for real.

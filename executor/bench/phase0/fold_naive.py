@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Baseline: decode-in-the-lambda RV32IM arrayFold step (Phase 0, SPEC §9).
+"""Baseline: decode-in-the-lambda RV32IM arrayFold step (the baseline, SPEC §9).
 
 This is the obvious implementation -- fetch the word, pull the fields apart
 with bit ops, dispatch on opcode/funct3/funct7 -- and it exists only as the

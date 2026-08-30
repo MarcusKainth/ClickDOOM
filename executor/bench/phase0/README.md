@@ -1,4 +1,4 @@
-# Phase 0 arrayFold throughput
+# Baseline arrayFold throughput
 
 The characterisation benchmark behind ADR-0001 and ADR-0002: whether `arrayFold`
 can carry a CPU step at all, how the accumulator behaves, and why node count is

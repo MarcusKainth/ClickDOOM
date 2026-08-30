@@ -14,7 +14,7 @@ CREATE TABLE a1_jit_bench.decoded
     imm UInt32, tgt UInt32, mk UInt32, sg UInt8, raw UInt32
 ) ENGINE = MergeTree ORDER BY word_addr;
 
--- 524,288 words = 2 MiB of text, matching the Phase 0 / E1 fixture.
+-- 524,288 words = 2 MiB of text, matching the baseline fold and E1 fixture.
 -- id is kept in 0..19 (pure ALU ops) so the synthetic "program" never halts:
 -- a halted fold would short-circuit the batch and destroy the measurement.
 INSERT INTO a1_jit_bench.decoded

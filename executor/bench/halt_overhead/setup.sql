@@ -14,16 +14,16 @@
 -- the bench's private database name -- never run this file unsubstituted.
 --
 -- Not a correctness harness (see executor/bench/phase0/setup.sql's own
--- disclaimer) -- and per Phase 0's finding that arrayFold's `if`/`multiIf`
+-- disclaimer) -- and per the baseline benchmark's finding that arrayFold's `if`/`multiIf`
 -- never short-circuit, whether any of these synthetic instructions would
 -- "actually" halt doesn't change the node count *the fold itself* evaluates
--- per step, so this reuses Phase 0's fixture generator largely unmodified.
+-- per step, so this reuses the baseline benchmark's fixture generator largely unmodified.
 --
 -- That property does NOT extend to the *e2e* harness, and an earlier
 -- version of this file's own comment claimed it did -- wrong, found by
 -- actually checking `batch_out.retired` rather than trusting the theory.
--- Phase 0's mix used raw small `imm` values as load/store addresses, sound
--- only because Phase 0's fold had no bounds checking at all. #23 adds
+-- the baseline benchmark's mix used raw small `imm` values as load/store addresses, sound
+-- only because the baseline benchmark's fold had no bounds checking at all. #23 adds
 -- BAD_ADDR: an address that isn't `imm` alone but `regs[rs1] + imm`, and
 -- with `regs[rs1]` starting at 0, an unadjusted `imm` in [0, 4096) is never
 -- inside RAM (`[0x8000_0000, ...)`). The very first load/store in the

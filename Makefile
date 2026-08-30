@@ -68,6 +68,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-refemu build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
+        fuzz-refemu-vs-python fuzz-refemu-selftest \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
         adr-new check-adr require-rom
@@ -209,6 +210,17 @@ run-milestone: up ## The resumable batch loop. Runs its own preflight and refuse
 		$(conn) $(no_stdin)
 
 ##@ Maintenance
+
+FUZZ_CASES ?= 200000
+FUZZ_SEED ?= 1
+fuzz-refemu-vs-python: ## Compare the Rust interpreter against the Python one over generated cases
+	FUZZ_CASES=$(FUZZ_CASES) FUZZ_SEED=$(FUZZ_SEED) \
+	    cargo test --locked --release --features refemu/py-oracle \
+	    --test py_differential -- --nocapture --test-threads=1
+
+fuzz-refemu-selftest: ## Show the differential failing, against a deliberately broken build
+	cargo test --locked --release --features refemu/py-oracle,refemu/fuzz-selftest \
+	    --test py_differential the_differential_catches -- --nocapture
 
 build-riscv-tests-fixtures: ## Regenerate refemu's committed riscv-tests fixtures
 	./refemu/scripts/build_riscv_tests.sh

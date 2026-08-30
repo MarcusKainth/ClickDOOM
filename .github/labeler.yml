@@ -42,6 +42,7 @@
       - any-glob-to-any-file:
           - SPEC.md
           - PURITY.md
+          - spec/**
 
 "area: ci":
   - changed-files:
@@ -51,6 +52,9 @@
           - Makefile
           - docker-compose.yml
           - .pre-commit-config.yaml
+          - Cargo.toml
+          - Cargo.lock
+          - rust-toolchain.toml
 
 "area: bench":
   - changed-files:

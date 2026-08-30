@@ -11,13 +11,16 @@ policy; this file covers how things run.
 | Docker | ClickHouse and the rv32 toolchain both run in containers |
 | `make` | Every task. `make help` lists them |
 | `uv` | Python environments for `refemu` and `executor`, both with committed lockfiles |
+| `cargo` | The Rust workspace. `rust-toolchain.toml` pins the version |
 | `shellcheck` | `make shellcheck` |
 | `clang-format` | `make clang-format`, over `rom/src/` |
 | `actionlint`, `zizmor` | Workflow linting, both in `make lint` |
 
-Python is 3.11 or newer. The rv32 toolchain is pinned to xPack
-`riscv-none-elf-gcc` 15.2.0-1 and built from `rom/toolchain/Dockerfile`; you
-never install it yourself.
+Python is 3.11 or newer. Rust comes from `rust-toolchain.toml`, so the first
+`cargo` call in a fresh checkout installs the pinned version and `make lint`
+speaks the same `rustfmt` and `clippy` as CI. The rv32 toolchain is pinned to
+xPack `riscv-none-elf-gcc` 15.2.0-1 and built from `rom/toolchain/Dockerfile`;
+you never install it yourself.
 
 ## Targets
 

@@ -44,7 +44,7 @@
 
 - name: "area: spec"
   color: "0052cc"
-  description: "SPEC.md and PURITY.md"
+  description: "SPEC.md, PURITY.md, and the crate that encodes their constants"
 
 - name: "area: ci"
   color: "0052cc"

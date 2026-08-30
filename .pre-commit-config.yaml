@@ -48,3 +48,14 @@ repos:
     hooks:
       - id: actionlint
         stages: [manual]
+
+  # Formatting only. clippy is a full compile, which would make every commit a
+  # build. `make lint` is where it runs.
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --check
+        language: system
+        files: \.rs$
+        pass_filenames: false

@@ -1,0 +1,11 @@
+[package]
+name = "clickdoom-executor"
+description = "The batch fold and commit-flush SQL text the SQL CPU executes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clickdoom-spec.workspace = true

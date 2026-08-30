@@ -164,6 +164,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "clickdoom-executor"
+version = "0.1.0"
+dependencies = [
+ "clickdoom-spec",
+]
+
+[[package]]
 name = "clickdoom-spec"
 version = "0.1.0"
 dependencies = [

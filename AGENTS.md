@@ -54,7 +54,7 @@ as machine-written. Replacing one with another is not a fix.
 
 ## Commits and pull requests
 
-Title is `scope: imperative summary`, at most 72 characters, and CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 `CONTRIBUTING.md` lists the scopes. Branches are `scope/short-desc`.
 
 Messages have to make sense to outsiders: no plan or phase references, no

@@ -1,7 +1,7 @@
 <!--
 Delete every section that does not apply, and every comment like this one.
 
-Title is `scope: imperative summary`, at most 72 characters. CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 
 Contributions are accepted under the terms of the directory they land in:
 Apache-2.0 outside rom/, GPL-2.0-or-later inside it. There is no CLA to sign.

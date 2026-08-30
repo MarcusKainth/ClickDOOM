@@ -60,7 +60,7 @@ A workflow from a fork needs maintainer approval before it runs. A workflow runs
 as it exists in the pull request, so an unreviewed run is an unreviewed change
 to what CI proves. It costs you one round-trip.
 
-Title is `scope: imperative summary`, at most 72 characters, and CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 The scopes are `spec`, `rom`, `refemu`, `sqlcpu`, `executor`, `driver`,
 `render`, `test`, `bench`, `ci` and `docs`. A change that breaks a contract is
 `scope!:`.

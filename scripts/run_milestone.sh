@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The resumable batch-loop runner, originally built for #110's Phase 2
+# The resumable batch-loop runner for a multi-hour run against the real ROM
 # milestone (DOOM reaches its first FRAME_COMMIT inside ClickHouse) and
 # extended by #210 to run through every FRAME_COMMIT to a target icount in
-# one invocation -- the shape Phase 3's ~2,172-frame `demo3` run needs.
+# one invocation -- the shape the ~2,172-frame `demo3` run needs.
 # Cross-scope (`rom` building `executor`-shaped tooling), signed off by the
 # team lead per CLAUDE.md's cross-scope provision -- taking the runner off
 # `executor` lets executor-2 build #29 (the frame readout) in parallel
@@ -77,7 +77,7 @@
 # `--stop-at-frame` satisfied, fatal halt, SIGINT/SIGTERM -- nothing else.
 # `--stop-at-frame 0` reproduces the old unconditional-first-frame behavior
 # (#110's milestone); omitting it runs straight through every FRAME_COMMIT
-# to the target icount, which is what a multi-day Phase 3 `demo3` run needs
+# to the target icount, which is what a multi-day `demo3` run needs
 # from a single invocation.
 #
 # fb_hash (SPEC §7) is wired into scripts/checkpoint_query.py as of #210,
@@ -316,7 +316,7 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
     frames_observed=$(( frames_observed + 1 ))
     # #229: invoke the frame readout itself -- until now this branch only
     # observed has_frame/frame_no and logged them; nothing ever populated
-    # frames_out, so a full Phase 3 run would end with zero rows in the
+    # frames_out, so a full `demo3` run would end with zero rows in the
     # table the Definition of Victory is defined over. render.py's own
     # frame_readout_sql() is called verbatim, unmodified -- per PURITY.md
     # the driver's job is noticing has_frame=1 and executing the SQL it's

@@ -10,7 +10,7 @@ CREATE TABLE e1_cse_bench.decoded
     tgt UInt32, mk  UInt32, sg  UInt32, raw UInt32
 ) ENGINE = MergeTree ORDER BY word_addr;
 
--- 524,288 words = 2 MiB of text, matching the Phase 0 fixture.
+-- 524,288 words = 2 MiB of text, matching the baseline fold benchmark's fixture.
 -- rs1/rs2 land in [0, 31] so the guarded `regs[rs2]` read is in range for a
 -- 31-element (x1..x31) register file, and hits the rs2 = 0 guard 1/32 of the
 -- time -- i.e. both arms of the `if` are exercised.

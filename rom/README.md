@@ -300,7 +300,7 @@ retiring instructions, not blocking on a real clock — see the "DG_*
 platform hooks" section above), but under that model a sleep is never
 free: waiting N ms costs N × `IPMS` instructions (10,000/ms by default)
 doing no game work. If interactive play sleeps ~28ms between tics at 35
-fps, that's real overhead — the question was whether Phase 3's
+fps, that's real overhead — the question was whether the full `demo3` run's
 `-timedemo demo3` run pays it too.
 
 Read `d_loop.c`/`g_game.c` rather than assuming. It doesn't, and not by

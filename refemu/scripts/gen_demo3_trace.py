@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run the real DOOM ROM's `-timedemo demo3` to completion, emitting the
-SPEC §7 reference trace the Phase 3 victory run diffs against -- issue
+SPEC §7 reference trace the full `demo3` run diffs against -- issue
 #129, the team lead's ask after #111 established the ROM can actually
 invoke README's Definition of Victory.
 
@@ -269,7 +269,7 @@ def run(
     `Halted`, `StopRequested` (SIGINT/SIGTERM), or `max_instructions` is
     reached (a safety cap for tests/estimation, not expected to bind on a
     real run). Returns a summary dict; does not raise `Halted` -- a halt
-    mid-run is the normal, hoped-for outcome (Phase 3's finish line), not
+    mid-run is the normal, hoped-for outcome (the finish line), not
     an error.
     """
     stop_requested = False

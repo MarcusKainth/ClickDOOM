@@ -39,7 +39,7 @@
 --    initial tuple poisons the WHOLE tuple's inferred type against the
 --    step lambda's non-Nullable return, failing every row with a
 --    TYPE_MISMATCH before a single instruction executes. Fix: wrap with
---    `assumeNotNull(...)`, same as this project's Phase 0 guidance for any
+--    `assumeNotNull(...)`, same as this project's the baseline benchmark guidance for any
 --    other scalar-subquery-derived value entering an accumulator.
 -- ---------------------------------------------------------------------------
 
@@ -185,7 +185,7 @@ ORDER BY batch_id;
 -- ReplacingMergeTree so a store amends the previous value at that word;
 -- `version` = icount of the store, so the last writer always wins under
 -- FINAL. Read once per batch as a captured constant array — materialize
--- with FINAL, not `argMax(...) GROUP BY word_addr`: Phase 0 measured
+-- with FINAL, not `argMax(...) GROUP BY word_addr`: The baseline benchmark measured
 -- 0.022-0.030s against 0.245-0.256s for the argMax form, and FINAL stayed
 -- flat with 1.2M accumulated deltas (docs/adr/0001-batch-execution-with-arrayfold.md).
 CREATE TABLE IF NOT EXISTS clickdoom.ram
@@ -315,7 +315,7 @@ ORDER BY seq;
 --
 -- Column semantics:
 --   id   dense collapsed opcode (dispatch key for the execute multiIf, see
---        below). Agreed with executor (PR #48) — ids 0..27 are the Phase 0
+--        below). Agreed with executor (PR #48) — ids 0..27 are the the baseline benchmark
 --        bench's numbering; 28..31 are new, added for SPEC §1's fatal-halt
 --        arms (ecall/ebreak/CSR/illegal), which the bench never needed
 --        since its decode table never halted anything.
@@ -340,7 +340,7 @@ ORDER BY seq;
 --        issue #37). NOT used for jalr (register-relative, computed live)
 --        and NOT a link value: the link value jal/jalr write to rd is
 --        pc + 4, which the execute expression computes directly from the
---        accumulator's live pc rather than storing it here. (The Phase 0
+--        accumulator's live pc rather than storing it here. (The the baseline benchmark
 --        bench's placeholder `tgt` column conflated "jump target" and "link
 --        value" into one field for the same id — harmless there since the
 --        bench's decode table is synthetic and never executed, see

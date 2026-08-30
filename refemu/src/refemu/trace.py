@@ -43,7 +43,7 @@ Decisions, and why:
   *separate* column (rather than one hash over all three regions) means a
   divergence hunt learns immediately which region disagreed, without
   having to re-hash subregions after the fact to bisect -- real value
-  specifically because Phase 3 is when this needs to be fast, not just
+  specifically because the full `demo3` run is when this needs to be fast, not just
   possible. Bytes: xxh64 over FRAMEBUFFER (64,000 B) `||` PALETTE (768 B),
   address-ascending, concatenated in that order, 64,768 bytes total; same
   seed and hex formatting as every other hash column here. Present only

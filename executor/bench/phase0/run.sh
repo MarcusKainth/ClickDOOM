@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 0 arrayFold throughput benchmark (SPEC §9, evidence for ADR-0001/0002).
+# Baseline arrayFold throughput benchmark (SPEC §9, evidence for ADR-0001/0002).
 #
 # Emits TSV to stdout: variant<TAB>mode<TAB>K<TAB>seconds<TAB>instr_per_sec
 # so results can be pasted into an ADR or loaded straight back into ClickHouse.

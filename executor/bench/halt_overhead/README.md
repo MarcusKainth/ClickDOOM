@@ -2,7 +2,7 @@
 
 What the fold's halt semantics cost. Compares `executor/fold.py`, which carries
 halt checks, write-log versioning, and address, alignment and self-modify
-checks, against the Phase 0 baseline in `executor/bench/phase0/`, over the same
+checks, against the baseline in `executor/bench/phase0/`, over the same
 synthetic instruction stream.
 
 ADR-0004 names this directory as the reproducible before-and-after for that

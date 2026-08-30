@@ -66,7 +66,7 @@ def _addr_and_align(A, IMM, DMKv, RAM_BASE, RAM_WORDS):
     align_mask = f"multiIf({DMKv}=4294967295, 3, {DMKv}=65535, 1, 0)"
     misaligned_cond = f"(bitAnd({ADDR}, {align_mask}) != 0)"
     # `least(..., RAM_WORDS-1)`, not a bitAnd mask: SPEC's 24 MiB RAM is
-    # 6,291,456 words, not a power of two, so a power-of-two mask (Phase 0's
+    # 6,291,456 words, not a power of two, so a power-of-two mask (the baseline benchmark's
     # trick, fine there since that harness never claimed correctness) would
     # silently under-cover the top of RAM. `least` needs no such assumption
     # -- it only has to clamp into a valid index, which any UInt32 already
@@ -184,7 +184,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 
     Deliberately NOT an 11-flat-field tuple (an earlier version of this
     function was exactly that): every accumulator field needs its own
-    `if(step_retires/step_halts_now, ..., acc.N)` guard, and Phase 0's
+    `if(step_retires/step_halts_now, ..., acc.N)` guard, and the baseline benchmark's
     cost model charges per node regardless of which branch is "taken" --
     so 11 fields means the halt/retire condition gets evaluated ~10 times
     per step. Packing the write-log's three arrays and the halt record's
@@ -246,7 +246,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     RAW = f"DEC[{IDX}].9"
 
     # Register file per sqlcpu's schema.sql (PR #42): `regs` is 31 elements,
-    # 1-indexed, x1..x31 -- x0 has NO array slot (unlike the Phase 0 bench's
+    # 1-indexed, x1..x31 -- x0 has NO array slot (unlike the baseline fold benchmark's
     # 32-element array with x0 pinned at position 1, which this PR initially
     # copied uncritically). Reading x0 must be an explicit 0, not an array
     # lookup; writing x0 must be discarded, not written to some slot.
@@ -385,7 +385,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # itself (mk's top bit: 0xFF -> 0x80, 0xFFFF -> 0x8000) rather than
     # stored as a separate value, so there's one fewer column whose meaning
     # could drift out of sync with mk. An earlier version of this file
-    # stored sg as the bit-mask directly, inherited from the Phase 0 bench.
+    # stored sg as the bit-mask directly, inherited from the baseline fold benchmark.
     EXTRACTED = f"bitAnd(bitShiftRight({LW}, {SH}), {DMKv})"
     SIGN_POS = f"(bitShiftRight({DMKv}, 1) + 1)"
     LOADV = (f"toUInt32({EXTRACTED}"
@@ -397,7 +397,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
 
     # jal/jalr's link value (written to rd) is pc+4 as a byte address --
     # NOT `target` (sqlcpu's `tgt`/this file's TGT, the jump target). The
-    # Phase 0 prototype used the same column for both, which is only
+    # The baseline prototype used the same column for both, which is only
     # harmless in a benchmark that never executes its decode data
     # (RESULTS.md §6) -- sqlcpu caught this reviewing PR #42's schema and
     # this PR initially carried the bug forward from fold_predecoded.py.
@@ -527,7 +527,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # the reason", and "what's the extra halt-record field" (an earlier
     # version of this function did exactly that -- three-to-four-fold
     # duplication of the same checks, each substituted again at every one
-    # of the accumulator's 11 fields; measurably not free under Phase 0's
+    # of the accumulator's 11 fields; measurably not free under the baseline benchmark's
     # node-count cost model). Every other place below just compares this
     # one value against small integer constants.
     HALT_CODE = ("multiIf("

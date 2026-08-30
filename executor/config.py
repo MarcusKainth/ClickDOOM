@@ -71,8 +71,8 @@ SPEC_VERSION = "0.1.0"
 
 # --- Fixture-only (this PR's local test schema, not SPEC) -------------------
 RAM_BASE = 0x8000_0000
-RAM_WORDS_DEFAULT = 6_291_456       # 24 MiB / 4, matches Phase 0's fixture
-TEXT_WORDS_DEFAULT = 524_288        # 2 MiB / 4, matches Phase 0's fixture
+RAM_WORDS_DEFAULT = 6_291_456       # 24 MiB / 4, matches the baseline benchmark's fixture
+TEXT_WORDS_DEFAULT = 524_288        # 2 MiB / 4, matches the baseline benchmark's fixture
 
 # Halt reason codes used inside the fold accumulator (mapped to the SPEC §5
 # LowCardinality(String) `halt_reason` outside the fold, once per batch, not

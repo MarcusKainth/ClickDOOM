@@ -11,7 +11,7 @@
 #      this number -- it's already inside both the "fold" and "e2e" figures
 #      in executor/bench/halt_overhead/run.sh's table, cancelling out of the
 #      subtraction that produced 325 us/instr in the first place.
-#   2. write-log flush: the two statements ADR-0001/Phase 0's e2e loop adds
+#   2. write-log flush: the two statements ADR-0001's e2e loop adds
 #      on top of the batch INSERT itself -- flushing wl_addr/wl_val/wl_icount
 #      into `ram` (arrayJoin over the write-log, scales with its length) and
 #      the derived `cpu_state` row (single row, O(1)), both via #25's

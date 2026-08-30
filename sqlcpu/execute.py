@@ -3,7 +3,7 @@
 
 Generates the SQL expression that computes one instruction's effect, given a
 decoded row (sqlcpu/schema.sql's `decoded` columns) and the current register
-file. This is *not* a runnable query on its own — like the Phase 0 bench's
+file. This is *not* a runnable query on its own — like the baseline fold benchmark's
 fold_predecoded.py, it emits SQL text meant to sit inside `executor`'s
 arrayFold lambda (#23) or, for testing here, inside a single-row SELECT
 (sqlcpu/test_execute.py does the latter). PURITY.md's posture is unchanged
@@ -160,7 +160,7 @@ def alu_result(loaded_word_expr: str, addr_expr: str, id_="id", a="A", b="B",
 # `(is_misaligned(...)) AS misaligned` in the surrounding WITH clause) and
 # pass the alias through, instead of each of the four re-deriving the same
 # ~9-arm multiIf independently. Not just style: four full inline copies in
-# one lambda is a real node-count cost under Phase 0's per-node model
+# one lambda is a real node-count cost under the baseline benchmark's per-node model
 # (ADR-0002), and it's what first surfaced this to me -- sqlcpu/test_execute.py
 # hit ClickHouse's `AST is too big` query limit before this parameter existed,
 # from ~56 test rows each carrying four copies of the same expression.
@@ -197,7 +197,7 @@ def next_pc(id_="id", a="A", b="B", tgt="tgt", imm="imm", pc="pc", misaligned=No
     `(is_misaligned(...)) AS misaligned` computed once) to reuse across this,
     halted(), halt_reason() and rd_or_suppressed() instead of each
     re-deriving is_misaligned()'s ~9-arm multiIf independently — four full
-    copies of it in one lambda is a real node-count cost under Phase 0's
+    copies of it in one lambda is a real node-count cost under the baseline benchmark's
     per-node model (ADR-0002), not just verbose SQL text. Omit it (the
     default) to compute fresh inline, which is what every caller in this
     file's own tests did before this parameter existed."""

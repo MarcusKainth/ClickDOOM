@@ -2,9 +2,9 @@
 
 Harness and how to rerun: [README.md](README.md).
 
-SPEC §6 requires a write-log high-water mark that ends a batch early. Phase 0
+SPEC §6 requires a write-log high-water mark that ends a batch early. the baseline benchmark
 didn't set one (its e2e harness never accumulated enough stores in one batch
-to matter). This measures the curve `RESULTS.md` in Phase 0 promised: does
+to matter). This measures the curve `RESULTS.md` in the baseline benchmark promised: does
 per-step cost bend as the write-log grows, and where.
 
 ## Method
@@ -13,7 +13,7 @@ Worst case: every instruction in the batch is a store (`op_id=19`), each to
 one of a small cycling pool of addresses just past a tiny (8192-word) decode
 window -- so `arrayPushBack` grows the write-log's arrays by exactly one
 entry every single step, for the full length of the batch. Real DOOM code
-won't be this store-dense (Phase 0's synthetic DOOM-shaped mix used ~10%
+won't be this store-dense (the baseline benchmark's synthetic DOOM-shaped mix used ~10%
 stores), so this is intentionally the worst case, not the expected case.
 `fold.select_only` with the high-water mark set above `K` (so it never
 triggers) isolates just the write-log's own growth cost.
@@ -47,7 +47,7 @@ rather than of K.
 **High-water mark default: 20,000** (`executor/config.py`,
 `WRITE_LOG_HIGH_WATER_MARK_DEFAULT`) -- at the bottom of the measured curve,
 comfortably before the bend. This is a worst-case-store-density number: at
-Phase 0's ~10% store fraction, a batch would need roughly 200,000
+the baseline benchmark's ~10% store fraction, a batch would need roughly 200,000
 instructions of nothing but stores to reach it, well past K's own 50,000
 cap -- so in ordinary operation the mark is a safety valve for anomalous
 code, not a normal-path constraint, consistent with SPEC §6 treating it as

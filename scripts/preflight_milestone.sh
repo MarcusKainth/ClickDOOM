@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-flight gate for a multi-hour run against the real ROM (#110's Phase 2
+# Pre-flight gate for a multi-hour run against the real ROM (the first-frame milestone
 # milestone first; any later multi-hour run -- demo3 included -- should call
 # this too). Refuses to start rather than advising: every check below is
 # prose in #110 today, which means it is advice, and advice gets skipped at

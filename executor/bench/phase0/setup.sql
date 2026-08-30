@@ -1,4 +1,4 @@
--- Phase 0 benchmark fixtures (SPEC §9).
+-- Baseline fold benchmark fixtures (SPEC §9).
 --
 -- This is a THROUGHPUT harness, not a correctness harness: it measures how
 -- fast ClickHouse can turn the arrayFold crank on an RV32IM-shaped lambda.

@@ -1,4 +1,4 @@
-# Phase 0 benchmark results
+# Baseline fold benchmark results
 
 Harness and how to rerun: [README.md](README.md).
 
@@ -32,7 +32,7 @@ The fold in isolation: no state reload, no commit.
 | pre-decoded | 200,000 | 14.681 / 14.815 | 13,623 / 13,499 |
 | naive (decode in lambda) | 10,000 | 6.333 / 6.480 | 1,579 / 1,543 |
 
-**Pre-decoding is worth 7.4x** — the single largest result of Phase 0, and the
+**Pre-decoding is worth 7.4x** — the single largest result of the baseline benchmark, and the
 reason ADR-0001 clears its own target instead of missing it by 6x. See ADR-0002.
 
 ## 2. Accumulator copy behaviour (SPEC §9, second bullet)

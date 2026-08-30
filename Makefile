@@ -58,7 +58,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-riscv-tests-fixtures gen-reference-trace \
-        lint check-purity shellcheck ruff actionlint zizmor \
+        lint check-purity shellcheck ruff clang-format actionlint zizmor \
         require-rom
 
 help: ## List every target
@@ -199,7 +199,7 @@ gen-reference-trace: require-rom ## Regenerate the committed reference trace. Re
 
 ##@ Lint
 
-lint: check-purity shellcheck ruff actionlint zizmor ## Everything a pull request must pass
+lint: check-purity shellcheck ruff clang-format actionlint zizmor ## Everything a pull request must pass
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
@@ -209,6 +209,9 @@ shellcheck: ## Every shell script in the tree
 
 ruff: ## Python, at the version refemu's lockfile pins
 	uv run --project refemu ruff check refemu driver
+
+clang-format: ## C sources. rom/vendor/.clang-format disables the vendored ones
+	find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
 
 actionlint: ## Workflow syntax. Has no CI job, so run it before pushing a workflow change
 	actionlint .github/workflows/*.yml

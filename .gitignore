@@ -33,5 +33,5 @@ __pycache__/
 # Per-teammate git worktrees (Phase 1+)
 worktrees/
 
-# Per-session machine lock, held so agents don't contend for CPU.
-.claude/machine-lock
+# Local agent configuration and notes. Nothing here is part of the project.
+/.claude/

@@ -1,0 +1,58 @@
+name: Something is slower than it should be
+description: A throughput regression, or a cost that does not match the model.
+title: "perf: "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Throughput here is measured, not estimated. A report without numbers
+        taken on a quiet machine cannot be acted on, because the noise floor on
+        a busy box is larger than most of the effects worth chasing.
+
+  - type: dropdown
+    id: what
+    attributes:
+      label: What kind
+      options:
+        - A change made it slower
+        - Cost grows where the model says it should not
+        - A benchmark disagrees with a committed RESULTS.md
+        - Something is slow and I do not know why
+    validations:
+      required: true
+
+  - type: input
+    id: bench
+    attributes:
+      label: Which benchmark
+      description: The `make` target, or the script path if it has no target.
+      placeholder: "make bench-canonical-throughput"
+    validations:
+      required: true
+
+  - type: textarea
+    id: numbers
+    attributes:
+      label: The numbers
+      description: >-
+        Before and after, in instructions/sec, with K and the ClickHouse
+        version. Both arms on the same machine.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: machine
+    attributes:
+      label: The machine, and how quiet it was
+      description: >-
+        CPU, memory, and what else was running. "Nothing else, no other
+        container" is a complete answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: What you think is happening

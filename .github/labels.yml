@@ -133,3 +133,7 @@
 - name: "dependencies"
   color: "0366d6"
   description: "A dependency version bump"
+
+- name: "blocked"
+  color: "d93f0b"
+  description: "Waiting on another issue. Name it in the thread"

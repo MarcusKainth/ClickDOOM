@@ -1,4 +1,4 @@
 # executor/
 
-See CLAUDE.md for this workstream's charter and SPEC.md for its contracts.
-Ownership is claimed via issue self-assignment.
+See [SPEC.md](../SPEC.md) for the contracts this implements and
+[DEVELOPING.md](../DEVELOPING.md) for how to run its tests.

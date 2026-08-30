@@ -3,6 +3,9 @@
 **Knee-Deep in the Rows** — the actual 1993 DOOM engine, running on a
 RISC-V CPU implemented in ClickHouse SQL.
 
+[![ci](https://github.com/MarcusKainth/ClickDOOM/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MarcusKainth/ClickDOOM/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20%2F%20GPL--2.0-blue)](LICENSING.md)
+
 This is not another Doom-like raycaster written in SQL. Excellent projects
 already exist in that genre (DOOMHouse, DOOMQL, DuckDB-DOOM). ClickDOOM
 executes the real id Software engine: DOOM's C source, via the doomgeneric
@@ -59,33 +62,6 @@ Two contracts hold this together: the ROM boundary (rom ↔ refemu ↔ sqlcpu
 all execute the identical binary) and the trace format differential
 testing is checked against (SPEC §7). Everything else is workstream-local.
 
-## Status
-
-[SPEC 0.1.0 is ratified](SPEC.md) (Phase 0 — the `arrayFold` throughput
-benchmark and SPEC's open questions — is done; `SPEC_VERSION` is no longer
-`-draft`). Phase 1 — building `rom`, `refemu`, `sqlcpu`, and
-`executor`+`driver` in parallel, closing when riscv-tests is green inside
-ClickHouse and the ROM boots in refemu — is **complete**. Phase 2 —
-integration and executor performance, closing at DOOM's first
-`FRAME_COMMIT` inside ClickHouse — is **in progress**: the SQL CPU executes
-the real DOOM ROM and boots through crt0; [PR #88](https://github.com/MarcusKainth/ClickDOOM/pull/88)
-demonstrated byte-for-byte parity with refemu through crt0 and MMIO init
-(`pc` and all 31 registers cross-checked), and MMIO (SPEC §3) is
-implemented. The throughput gap remaining before a full `-timedemo demo3`
-run is practical is tracked in [#104](https://github.com/MarcusKainth/ClickDOOM/issues/104).
-Phase 3 is the divergence hunt against `-timedemo demo3` described below.
-All four workstreams have landed substantial code, and the `just` recipes
-below work. The phase plan and workstream charters live in
-[CLAUDE.md](CLAUDE.md).
-
-## Definition of victory
-
-`doom -timedemo demo3` runs to completion on the SQL CPU with zero
-desync, and the final frame hash matches the reference emulator
-bit-for-bit. Frame rate is explicitly not a success criterion — the
-timelapse is the demo. Interactive play is the stretch goal
-(correspondence-chess DOOM is a feature, not a bug).
-
 ## Quick start
 
 ```sh
@@ -100,11 +76,17 @@ every pull request. `make help` lists every target.
 
 ## Contributing
 
-This repository is built by a team of Claude Code agents under
-human-owned guardrails: SPEC and PURITY changes require sign-off from the
-human owner regardless of which agent proposes them. [CLAUDE.md](CLAUDE.md)
-has the workstream charters, coordination protocol, and git conventions
-that govern how work lands here.
+The most useful contribution is one that falsifies the claim above: a case
+where the SQL CPU and the reference emulator disagree on the same ROM, or a
+place where computation has left SQL.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) is the entry point.
+[DEVELOPING.md](DEVELOPING.md) has the build, test and benchmark mechanics,
+[PURITY.md](PURITY.md) states the twelve rules the project is held to, and
+[AGENTS.md](AGENTS.md) is what a coding agent should read first.
+
+Much of this repository was written by AI agents. [AI_POLICY.md](AI_POLICY.md)
+says what that changes about a contribution, and what it does not.
 
 ## Credits & prior art
 

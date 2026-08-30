@@ -1,0 +1,67 @@
+name: Propose a change or an addition
+description: A capability, a tool, or a change to how something works.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The useful form of this proposal is usually "here is what I could not
+        do", not "here is the design I want".
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it lands
+      options:
+        - ROM build (rom)
+        - Reference emulator (refemu)
+        - Decode or execute in SQL (sqlcpu)
+        - Batch loop, write-log or commit (executor)
+        - Driver loop (driver)
+        - Frame readout or render (render)
+        - Benchmarks (bench)
+        - Makefile, workflows or scripts (ci)
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do, and what stops you
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it might look like
+      description: Optional. A sketch is more useful than a specification.
+
+  - type: checkboxes
+    id: purity
+    attributes:
+      label: Does this touch any of these?
+      description: >-
+        PURITY.md states each rule in full. Ticking one is not a problem; it
+        means the proposal has to say how the property still holds.
+      options:
+        - label: "PUR-1 to PUR-4: SQL does all fetch, decode, execute, memory, MMIO and frame readout"
+        - label: "PUR-5 to PUR-8: the driver only loops, ferries input, blits output and does housekeeping"
+        - label: "PUR-9: nothing delegates computation to a subprocess"
+        - label: "PUR-10: the driver computes nothing"
+        - label: "PUR-11: no precomputed answers generated outside ClickHouse"
+        - label: "PUR-12: no wall-clock or host dependence on a computation path"
+        - label: "None of them"
+
+  - type: dropdown
+    id: implement
+    attributes:
+      label: Would you want to implement it?
+      options:
+        - "Yes"
+        - "Maybe, with guidance"
+        - "No"
+    validations:
+      required: true

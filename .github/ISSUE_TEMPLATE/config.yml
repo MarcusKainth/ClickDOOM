@@ -1,2 +1,18 @@
-# Force structured issue forms — freeform issues are hard for agents to triage.
 blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MarcusKainth/ClickDOOM/security/advisories/new
+    about: >-
+      Privately, through GitHub's advisory flow. Anything that could let the
+      emulated program reach the host belongs here rather than in a public
+      issue.
+  - name: What "runs in ClickHouse" means
+    url: https://github.com/MarcusKainth/ClickDOOM/blob/main/PURITY.md
+    about: >-
+      The twelve rules the project is held to, and which of them a script
+      checks. Read it before arguing that something is or is not cheating.
+  - name: Prior art
+    url: https://github.com/SpencerTorres/Click-V
+    about: >-
+      Click-V put a RISC-V CPU in ClickHouse first. Questions about that
+      approach belong there.

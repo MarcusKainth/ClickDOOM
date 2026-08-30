@@ -223,6 +223,7 @@ impl Traps {
 pub struct Recorders {
     pub histogram: Option<PcHistogram>,
     pub traps: Option<Traps>,
+    pub milestones: Vec<ConsoleMilestone>,
     /// The regions to start watching, once the run reaches its window.
     pub watch_writes: Vec<Region>,
     /// Set once watching has started, so it starts once.
@@ -237,6 +238,15 @@ impl Recorders {
         }
     }
 
+    /// Console milestones need the state after each instruction, since a
+    /// console byte lands during one.
+    #[inline]
+    pub fn after_console(&mut self, cpu: &Cpu) {
+        for milestone in &mut self.milestones {
+            milestone.observe(cpu);
+        }
+    }
+
     #[inline]
     pub fn after(&mut self, retired_pc: u32, _insn: Instruction) {
         if let Some(histogram) = &mut self.histogram {
@@ -244,8 +254,11 @@ impl Recorders {
         }
     }
 
-    pub const fn records_anything(&self) -> bool {
-        self.histogram.is_some() || self.traps.is_some() || !self.watch_writes.is_empty()
+    pub fn records_anything(&self) -> bool {
+        self.histogram.is_some()
+            || self.traps.is_some()
+            || !self.watch_writes.is_empty()
+            || !self.milestones.is_empty()
     }
 }
 
@@ -344,5 +357,94 @@ mod tests {
         }
         assert_eq!(traps.hits.len(), 2);
         assert!(traps.overflowed);
+    }
+}
+
+/// Names the moment a program's console output settles before its first
+/// frame.
+///
+/// Not "when the needle first appears": the console takes one byte per store,
+/// so a needle completes mid-print, well before the output settles. The
+/// moment worth naming is the last console write before the first announced
+/// frame, and the needle is what says the run got that far.
+pub struct ConsoleMilestone {
+    pub needle: Vec<u8>,
+    pub name: String,
+    last_len: usize,
+    last_change: Option<u64>,
+    pub found: Option<u64>,
+}
+
+impl ConsoleMilestone {
+    pub fn new(needle: &str, name: &str) -> Self {
+        Self {
+            needle: needle.as_bytes().to_vec(),
+            name: name.to_owned(),
+            last_len: 0,
+            last_change: None,
+            found: None,
+        }
+    }
+
+    pub fn observe(&mut self, cpu: &Cpu) {
+        let Some(registers) = cpu.memory.devices().registers_ref() else {
+            return;
+        };
+        if registers.console.len() != self.last_len {
+            self.last_len = registers.console.len();
+            self.last_change = Some(cpu.icount());
+        }
+        if self.found.is_none()
+            && !registers.frame_commits.is_empty()
+            && let Some(at) = self.last_change
+            && registers
+                .console
+                .windows(self.needle.len())
+                .any(|window| window == self.needle)
+        {
+            self.found = Some(at);
+        }
+    }
+}
+
+/// `NEEDLE=NAME`, split at the last `=`, so a needle may contain one.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MilestoneSpec {
+    pub needle: String,
+    pub name: String,
+}
+
+impl std::str::FromStr for MilestoneSpec {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (needle, name) = text
+            .rsplit_once('=')
+            .ok_or_else(|| format!("`{text}` is not NEEDLE=NAME"))?;
+        Ok(Self {
+            needle: needle.to_owned(),
+            name: name.to_owned(),
+        })
+    }
+}
+
+/// `NAME=VALUE`, for asserting a milestone landed where it is expected to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NamedCount {
+    pub name: String,
+    pub value: u64,
+}
+
+impl std::str::FromStr for NamedCount {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (name, value) = text
+            .rsplit_once('=')
+            .ok_or_else(|| format!("`{text}` is not NAME=VALUE"))?;
+        Ok(Self {
+            name: name.to_owned(),
+            value: super::point::parse_count(value)?,
+        })
     }
 }

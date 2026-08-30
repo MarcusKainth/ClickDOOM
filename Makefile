@@ -48,16 +48,26 @@ CLICKDOOM_DATABASE ?= clickdoom
 CLICKDOOM_RUN_K ?= 60000
 CLICKDOOM_RUN_HWM ?= 20000
 CLICKDOOM_TARGET_ICOUNT ?= 15393136
+
+# The reference emulator, and the numbers a regenerated trace is checked
+# against. These move when rom/PINNED_HASH does, and they live here so the
+# ROM's hash and the milestones it implies sit together.
+REFEMU ?= ./target/release/refemu
+REFERENCE_TRACE_MAX ?= 15728640
+EXPECT_INIT_GRAPHICS ?= 11014966
+EXPECT_FIRST_FRAME_FBHASH ?= fe5d82c0f42d45f1
+DEMO3_MAX ?= 4000000000
 reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12 rom/PINNED_HASH).tsv
 
 .PHONY: help up down build-rom \
-        test test-refemu test-sqlcpu test-executor test-render smoke diff \
+        test test-refemu test-refemu-rust test-refemu-python \
+        test-sqlcpu test-executor test-render smoke diff \
         bench-phase0 bench-e1-cse bench-e7-memfns bench-canonical-throughput \
         bench-native bench-commit-attribution bench-ksweep bench-wl-seed \
         bench-batch-overhead bench-halt-overhead bench-hwm bench-a1-jit \
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
-        build-riscv-tests-fixtures gen-reference-trace \
+        build-refemu build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
         adr-new check-adr require-rom
@@ -81,6 +91,9 @@ down: ## Stop it
 build-rom: ## Build the DOOM ROM reproducibly, in the pinned toolchain image
 	make -C rom
 
+build-refemu: ## Build the reference emulator
+	cargo build --locked --release -p refemu
+
 require-rom:
 	test -f $(ROM_BIN) || { echo "$(ROM_BIN) missing. Run: make build-rom" >&2; exit 1; }
 
@@ -88,7 +101,12 @@ require-rom:
 
 test: test-refemu test-sqlcpu test-executor test-render ## Every suite that has one
 
-test-refemu: ## riscv-tests against the reference emulator
+test-refemu: test-refemu-rust test-refemu-python ## Every reference-emulator suite. No ClickHouse, no ROM
+
+test-refemu-rust: ## The Rust suites: units, the riscv-tests fixtures, the formats
+	cargo test --locked --workspace
+
+test-refemu-python: ## The Python interpreter's own suite, until it is removed
 	cd refemu && uv run pytest -q
 
 test-sqlcpu: up ## riscv-tests inside ClickHouse
@@ -195,8 +213,22 @@ run-milestone: up ## The resumable batch loop. Runs its own preflight and refuse
 build-riscv-tests-fixtures: ## Regenerate refemu's committed riscv-tests fixtures
 	./refemu/scripts/build_riscv_tests.sh
 
-gen-reference-trace: require-rom ## Regenerate the committed reference trace. Refuses to run against an unpinned ROM
-	cd refemu && uv run python scripts/gen_reference_trace.py
+gen-reference-trace: require-rom build-refemu ## Regenerate the committed reference trace. Refuses to run against an unpinned ROM
+	$(REFEMU) run $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+	    --pinned-hash rom/PINNED_HASH \
+	    --stop-at frame:0 -n $(REFERENCE_TRACE_MAX) \
+	    --expect-icount $(CLICKDOOM_TARGET_ICOUNT) \
+	    --expect-fbhash $(EXPECT_FIRST_FRAME_FBHASH)
+	$(REFEMU) trace $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+	    --pinned-hash rom/PINNED_HASH -n $(REFERENCE_TRACE_MAX) \
+	    --console-milestone 'I_InitGraphics: framebuffer=init_graphics' \
+	    --expect-milestone init_graphics=$(EXPECT_INIT_GRAPHICS) \
+	    --out-dir refemu/reference_traces --name demo-boot-to-first-frame
+
+gen-demo3-trace: require-rom build-refemu ## Run demo3 to completion and write its manifest. The .tsv is not committed
+	$(REFEMU) trace $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+	    --pinned-hash rom/PINNED_HASH --stop-at halt -n $(DEMO3_MAX) \
+	    --out-dir refemu/reference_traces/demo3 --name demo3
 
 ##@ Docs
 

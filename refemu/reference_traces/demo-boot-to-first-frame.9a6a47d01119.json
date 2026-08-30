@@ -1,6 +1,9 @@
 {
+  "schema": "refemu.trace-meta/1",
   "spec_version": "0.1.0",
+  "refemu_version": "0.1.0",
   "rom_sha256": "9a6a47d01119f67580e48e9875207186c25efd56ff93019df331eb307cfaa5d9",
+  "pinned": true,
   "rom_manifest": {
     "spec_version": "0.1.0",
     "entry": 2147483648,
@@ -10,21 +13,47 @@
     "text_start": 2147483648,
     "text_end": 2147879460
   },
-  "generated_by": "refemu/scripts/gen_reference_trace.py --no-expect",
+  "generated_by": "refemu trace -n 15728640 --name demo-boot-to-first-frame --pinned-hash --console-milestone I_InitGraphics: framebuffer=init_graphics",
   "trace_file": "demo-boot-to-first-frame.9a6a47d01119.tsv",
+  "trace_file_sha256": "e62528b41b4467163e64cd681f5f0e41623c86fb6b638113cdd7b036cadb67dd",
+  "trace_file_bytes": 132199,
   "trace_line_count": 3840,
-  "final_icount": 15728640,
-  "halt": null,
-  "init_graphics_icount": 11014966,
-  "frame_commit": {
-    "frame_no": 0,
-    "committed_icount": 15393135,
-    "icount": 15393136,
-    "pc": 2147485724,
-    "checkpoint": "15393136\t8000081c\t53183c98b21f2827\tcc300135a62f4581\tfe5d82c0f42d45f1"
-  },
   "checkpoint_interval": 4096,
   "ram_hash_interval": 1048576,
-  "generation_seconds": 15.145,
-  "instructions_per_second": 1038516
+  "stop_condition": "budget",
+  "final_icount": 15728640,
+  "final_checkpoint_line": "15728640\t8000781c\t037f66924e09629e\taa7406dff1dff473\t4f0bdcb72d6bfa7e",
+  "final_state": {
+    "icount": 15728640,
+    "pc": 2147514396,
+    "pc_hex": "8000781c",
+    "reghash": "037f66924e09629e",
+    "ramhash": "aa7406dff1dff473",
+    "fbhash": "4f0bdcb72d6bfa7e"
+  },
+  "halt": null,
+  "frame_commit_count": 2,
+  "first_frame_commit": {
+    "index": 0,
+    "frame_no": 0,
+    "commit_icount": 15393135,
+    "retired_icount": 15393136
+  },
+  "last_frame_commit": {
+    "index": 1,
+    "frame_no": 1,
+    "commit_icount": 15651515,
+    "retired_icount": 15651516
+  },
+  "milestones": [
+    {
+      "name": "init_graphics",
+      "icount": 11014966
+    }
+  ],
+  "timing": {
+    "elapsed_seconds": 0,
+    "elapsed_millis": 123,
+    "instructions_per_second": 127474217
+  }
 }

@@ -34,10 +34,10 @@ are reported separately so that effect is visible instead of averaged away.
 Each window is measured two ways, reported separately (ADR-0004's own
 convention):
 
-- **fold-alone** -- `executor/fold.py`'s `select_only()`, the cost of the
+- **fold-alone** -- `executor::fold::select_only`, the cost of the
   `arrayFold` step expression itself.
-- **end-to-end (e2e)** -- `fold.py`'s `batch()` plus all four of
-  `executor/commit.py`'s flushes (`ram`, `console_out`, `cpu_state`,
+- **end-to-end (e2e)** -- `executor::fold::batch` plus all four of
+  `executor::commit`'s flushes (`ram`, `console_out`, `cpu_state`,
   `retention`), the cost a real run actually pays per batch.
 
 ## How it reaches the gameplay window without a multi-hour run
@@ -47,19 +47,21 @@ icount 233,932,753 by live execution would cost tens of hours -- payable
 once, not every sprint measurement. `refemu run --dump-state` runs the same ROM
 through `refemu` instead (about 170M instr/sec measured), reaching that
 icount in under two seconds, and dumps the full CPU state (`pc`, `regs`,
-`ram`). `seed_snapshot.py` loads that dump directly into an isolated
+`ram`). `bench canonical` loads that dump directly into an isolated
 database's `ram`/`batch_commit`, so the SQL CPU's *first* batch in the
 gameplay window starts from real, representative mid-run state -- not a
 synthetic fixture, and not a guess at what gameplay state looks like.
 
 The snapshot is cached (`<snapshot-dir>/snapshot.<rom sha256 prefix>.<target
-icount>.pkl`, atomically written) -- generated once per ROM, reused for
-every subsequent sprint measurement until `PINNED_HASH` changes.
+icount>.v<format version>.rsnap`, atomically written) -- generated once per
+ROM, reused for every subsequent sprint measurement until `PINNED_HASH`
+changes. `--snapshot-dir` says where; it defaults to
+`/tmp/clickdoom-canonical-throughput`.
 
-See `scripts/refemu_snapshot.py` for exactly what is and is not
-captured (short version: `pc`/`regs`/`ram`/`icount` only -- no
-framebuffer/palette/console/MMIO state, since there's no SQL storage for
-those yet and this benchmark doesn't need them to measure throughput).
+See `refemu::snapshot` for exactly what is and is not captured (short
+version: `pc`/`regs`/`ram`/`icount` only -- no framebuffer/palette/console/
+MMIO state, since there's no SQL storage for those yet and this benchmark
+doesn't need them to measure throughput).
 
 ## K, HWM, and the refuse-to-run guarantee
 
@@ -70,18 +72,10 @@ production default, used **unchanged**, not inflated to trivially
 guarantee no write-log truncation -- raising it would change the very
 write-log scan cost this benchmark measures. If the gameplay window's real
 store density is high enough to trip HWM before K retires at these
-settings, `run.sh` refuses to report a throughput figure computed on a
-truncated batch (a batch that stops early measures different work than a
-full one) -- that refusal is itself the sprint-relevant finding, not
+settings, `bench canonical` refuses to report a throughput figure computed
+on a truncated batch (a batch that stops early measures different work than
+a full one) -- that refusal is itself the sprint-relevant finding, not
 something to route around by quietly raising HWM.
-
-## Contention detection
-
-Checked once before starting and once between windows: `docker stats`
-against the shared container plus host load average, both point-in-time
-checks. Aborts rather than caveats -- see `run.sh`'s own comment for what
-this does and does not catch (it cannot detect contention that begins
-mid-window; `arrayFold` doesn't yield control back to check).
 
 ## Provenance
 
@@ -96,13 +90,14 @@ produced it.
 
 or directly:
 
-    rom/bench/canonical_throughput/run.sh \
-        --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json
+    clickdoom bench canonical \
+        --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+        --refemu-bin target/release/refemu
 
-Needs `rom/build/` built (`make build-rom`) and the pinned ClickHouse up
-(`make up`). Coordinate with whoever else might be using the shared
-container first -- the contention check catches an already-busy container
-at start time, but not a teammate who starts a run seconds later.
+Needs `rom/build/` built (`make build-rom`), `refemu` and `clickdoom` built
+(`make build-refemu build-clickdoom`), and the pinned ClickHouse up
+(`make up`). The container is shared and the compiled-expression cache is
+server-global, so a second timing run against it measures this one.
 
 ## What this is not
 
@@ -111,4 +106,4 @@ measurement instrument only, isolated to its own throwaway databases
 (`canonical_throughput_boot_<pid>`, `canonical_throughput_gameplay_<pid>`,
 dropped on exit), never the shared `clickdoom` database. It reports
 throughput; interpreting a sprint experiment's result against it is the
-sprint's job, not this script's.
+sprint's job, not this benchmark's.

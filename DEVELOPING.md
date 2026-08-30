@@ -33,22 +33,18 @@ you never install it yourself.
 - **Targets are not parallel-safe.** Most share one container, and the
   compiled-expression cache is server-global, so two timing runs at once
   measure each other. Do not pass `-j`.
-- **Every ClickHouse-driving target closes stdin.** `clickhouse-client` blocks
-  forever on an INSERT when stdin is an open pipe rather than at EOF, which
-  makes a run from a pipeline or an editor task runner hang with no output and
-  no query running server-side. A script invoked directly needs `< /dev/null`.
-
-### `CH_CLIENT`
-
-`driver/test_render.sh` expects `clickhouse-client` on `PATH` and does not
-auto-detect one the way `scripts/diff_run.sh` does. On a host without it:
-
-    make test-render CH_CLIENT="docker exec -i clickdoom-ch clickhouse-client"
+- **Every `clickhouse-client`-driving target closes stdin.** `clickhouse-client`
+  blocks forever on an INSERT when stdin is an open pipe rather than at EOF,
+  which makes a run from a pipeline or an editor task runner hang with no
+  output and no query running server-side. A script invoked directly needs
+  `< /dev/null`. `clickdoom`-based targets (`diff`, `test-render`,
+  `preflight-milestone`, `run-milestone`, `bench-canonical-throughput`) speak
+  ClickHouse's HTTP interface directly and need no such workaround.
 
 ### Databases
 
 Tests use throwaway databases and never the shared `clickdoom` one.
-`test-render` creates `driver_render_test_<pid>`, the benches use
+`test-render` creates `driver_render_live_test_<pid>`, the benches use
 `clickdoom_exec_bench` and similar. `run-milestone` is the exception and writes
 to `clickdoom` itself.
 

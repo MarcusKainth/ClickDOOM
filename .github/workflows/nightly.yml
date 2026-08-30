@@ -19,7 +19,7 @@ on:
     inputs:
       deep_diff_instructions:
         description: "Instruction count for the deep differential run"
-        # 5,000,000 is measured, not projected. Three diff_run.sh runs at
+        # 5,000,000 is measured, not projected. Three differential runs at
         # N = 8,192 / 100,000 / 1,048,576 gave 910 / 990 / 961 instructions/sec.
         # Sized against the slowest of the three, 5,000,000 takes about
         # 91.6 minutes, a 3.28x margin inside the 300-minute timeout, and
@@ -58,15 +58,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        run: pipx install uv
       - name: Build ROM
         run: make -C rom
       - name: Build the reference emulator
         run: cargo build --locked --release -p refemu
+      - name: Build clickdoom
+        run: cargo build --locked --release -p clickdoom-driver
       - name: Deep differential run (full checkpoint trace)
         # The input goes through env rather than into the run block, so it
         # cannot be read as shell.
         env:
           INSTRUCTIONS: ${{ github.event.inputs.deep_diff_instructions || '5000000' }}
-        run: ./scripts/diff_run.sh "$INSTRUCTIONS" --host localhost --port 9000
+        run: |
+          ./target/release/clickdoom diff "$INSTRUCTIONS" --host localhost --port 8123 \
+              --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+              --refemu-bin target/release/refemu

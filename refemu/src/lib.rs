@@ -5,12 +5,14 @@
 //! code. They share the contract, in `clickdoom-spec`, and nothing else.
 
 pub mod asm;
+pub mod boot;
 pub mod decode;
 pub mod exec;
 pub mod memory;
 pub mod mmio;
 pub mod trace;
 
+pub use boot::{BootReport, Outcome, boot, format_report};
 pub use decode::{Instruction, Op, decode};
 pub use exec::{Cpu, DidNotHalt, Halt};
 pub use memory::{LoadError, MemFault, Memory};

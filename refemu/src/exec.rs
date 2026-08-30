@@ -158,16 +158,29 @@ impl Cpu {
     }
 
     /// Fetches, decodes and executes one instruction.
+    #[inline]
     pub fn step(&mut self) -> Result<(), Halt> {
+        self.step_reporting().map(|_| ())
+    }
+
+    /// Steps, reporting the instruction that retired.
+    ///
+    /// A caller that wants to name what ran, for a histogram or a trap, takes
+    /// it from here rather than re-reading the word afterwards. A fetch is an
+    /// ordinary read, so re-reading one that came from the device window
+    /// would pop a second key event.
+    #[inline]
+    pub fn step_reporting(&mut self) -> Result<(u32, Instruction), Halt> {
         let pc = self.pc;
         let word = match self.memory.read(pc, 4, self.icount) {
             Ok(word) => word,
             Err(fault) => return Err(fetch_halt(pc, fault)),
         };
-        let next_pc = self.execute(pc, word, decode(word))?;
+        let insn = decode(word);
+        let next_pc = self.execute(pc, word, insn)?;
         self.icount += 1;
         self.pc = next_pc;
-        Ok(())
+        Ok((word, insn))
     }
 
     /// Steps until the machine halts. The bound is a safety valve for a

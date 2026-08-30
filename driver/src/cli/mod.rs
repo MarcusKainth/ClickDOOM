@@ -58,6 +58,8 @@ pub enum Command {
     Render(RenderCmd),
     /// Check every gate before a long run
     Preflight(PreflightCmd),
+    /// Run the resumable batch loop to a target icount
+    Run(RunCmd),
     /// Real-ROM throughput benchmarks
     Bench(BenchCmd),
 }
@@ -253,6 +255,33 @@ pub enum RenderMode {
 }
 
 #[derive(Args)]
+pub struct RunCmd {
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    /// Flat ROM binary
+    #[arg(long)]
+    pub bin: PathBuf,
+    /// Manifest naming the binary's size, sha256 and text region
+    #[arg(long)]
+    pub manifest: PathBuf,
+    /// Instructions per batch
+    #[arg(long)]
+    pub k: u32,
+    /// Write-log high-water mark
+    #[arg(long)]
+    pub hwm: u32,
+    /// Reference checkpoint trace to diff against at every RAM_HASH_INTERVAL boundary
+    #[arg(long)]
+    pub trace: PathBuf,
+    /// Instruction count to run to
+    #[arg(long)]
+    pub target_icount: u64,
+    /// Stop cleanly once a committed frame's frame_no reaches this
+    #[arg(long)]
+    pub stop_at_frame: Option<u32>,
+}
+
+#[derive(Args)]
 pub struct PreflightCmd {
     #[command(flatten)]
     pub conn: ConnArgs,
@@ -384,6 +413,32 @@ async fn cmd_render(cmd: &RenderCmd) -> Result<Exit, Failure> {
                 .await
                 .map_err(|err| failed(err.to_string()))?;
             std::fs::write(out, &ppm).map_err(|err| failed(err.to_string()))?;
+        }
+    }
+    Ok(Exit::Ok)
+}
+
+async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
+    let args = crate::run::Args {
+        bin: &cmd.bin,
+        manifest_path: &cmd.manifest,
+        k: cmd.k,
+        hwm: cmd.hwm,
+        trace_path: &cmd.trace,
+        target_icount: cmd.target_icount,
+        stop_at_frame: cmd.stop_at_frame,
+    };
+    let outcome = crate::run::run(&cmd.conn, &args)
+        .await
+        .map_err(|err| failed(err.to_string()))?;
+    eprintln!("final_batch_id\t{}", outcome.final_batch_id);
+    eprintln!("final_icount\t{}", outcome.final_icount);
+    eprintln!("frames_observed\t{}", outcome.frames_observed);
+    match outcome.stop {
+        crate::run::Stop::Interrupted => eprintln!("stop\tinterrupted"),
+        crate::run::Stop::ReachedTarget => eprintln!("stop\treached_target"),
+        crate::run::Stop::HaltedAtOrPastTarget { reason } => {
+            eprintln!("stop\thalted\treason\t{reason}")
         }
     }
     Ok(Exit::Ok)
@@ -547,6 +602,7 @@ pub fn main() -> ExitCode {
             Command::Decode(cmd) => cmd_decode(cmd).await,
             Command::Render(cmd) => cmd_render(cmd).await,
             Command::Preflight(cmd) => cmd_preflight(cmd).await,
+            Command::Run(cmd) => cmd_run(cmd).await,
             Command::Bench(cmd) => cmd_bench(cmd).await,
         }
     });

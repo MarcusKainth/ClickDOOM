@@ -285,7 +285,7 @@ for i, name in enumerate(names[:len(expected)]):
         diffs.append(f"  {name}: expected(refemu)={e} actual(sqlcpu)={a}")
 print("\n".join(diffs) if diffs else "  (lines differ but no per-field mismatch found -- check field count/whitespace)")
 PYEOF
-  echo "One-line repro: just diff $N" >&2
+  echo "One-line repro: make diff N=$N" >&2
 }
 
 echo "# --- gate: ROM matches rom/PINNED_HASH ---------------------------------" >&2
@@ -295,7 +295,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   ROM_SHA=$(shasum -a 256 "$BIN" | cut -d' ' -f1)
 fi
-[ "$ROM_SHA" = "$PINNED" ] || fail "$BIN sha256 ($ROM_SHA) != rom/PINNED_HASH ($PINNED) -- a diff run against the wrong binary produces a meaningless divergence report. Rebuild (just build-rom) or check out the right commit."
+[ "$ROM_SHA" = "$PINNED" ] || fail "$BIN sha256 ($ROM_SHA) != rom/PINNED_HASH ($PINNED) -- a diff run against the wrong binary produces a meaningless divergence report. Rebuild (make build-rom) or check out the right commit."
 echo "  rom: $ROM_SHA == PINNED_HASH -- OK" >&2
 
 echo "# --- provisioning ephemeral database '$DATABASE' (fresh, icount 0) ----" >&2
@@ -430,7 +430,7 @@ print(fold.batch($STEP_K, $TEXT_START_WIDX, $TEXT_END_WIDX, $DECN, $RAM_WORDS, $
   First divergent instruction (icount): $REFEMU_HALT_ICOUNT
   PC at divergence (hex, from refemu): 0x$(printf '%08x' "$REFEMU_HALT_PC")
   State diff: refemu halted ($REFEMU_HALT_REASON) here; sqlcpu had no corresponding halt and continued to icount=$ICOUNT
-  One-line repro: just diff $N"
+  One-line repro: make diff N=$N"
     fi
 
     AT_RAM_HASH=0
@@ -481,7 +481,7 @@ if [ "$SQLCPU_HALTED" -eq 1 ] && [ "$REFEMU_HALTED" -eq 0 ]; then
   First divergent instruction (icount): $ICOUNT
   PC at divergence (hex, from refemu): <refemu never halted, no reference pc>
   State diff: sqlcpu halted ($SQLCPU_HALT_REASON) here; refemu had no corresponding halt
-  One-line repro: just diff $N"
+  One-line repro: make diff N=$N"
 elif [ "$SQLCPU_HALTED" -eq 0 ] && [ "$REFEMU_HALTED" -eq 1 ] && [ "$ICOUNT" -ge "$REFEMU_HALT_ICOUNT" ]; then
   fail "refemu halted (reason=$REFEMU_HALT_REASON icount=$REFEMU_HALT_ICOUNT pc=0x$(printf '%08x' "$REFEMU_HALT_PC")) but sqlcpu did not.
   ROM sha256: $ROM_SHA
@@ -489,7 +489,7 @@ elif [ "$SQLCPU_HALTED" -eq 0 ] && [ "$REFEMU_HALTED" -eq 1 ] && [ "$ICOUNT" -ge
   First divergent instruction (icount): $REFEMU_HALT_ICOUNT
   PC at divergence (hex, from refemu): 0x$(printf '%08x' "$REFEMU_HALT_PC")
   State diff: refemu halted ($REFEMU_HALT_REASON) here; sqlcpu had no corresponding halt
-  One-line repro: just diff $N"
+  One-line repro: make diff N=$N"
 elif [ "$SQLCPU_HALTED" -eq 1 ] && [ "$REFEMU_HALTED" -eq 1 ]; then
   if [ "$ICOUNT" != "$REFEMU_HALT_ICOUNT" ] || [ "$SQLCPU_HALT_REASON" != "$REFEMU_HALT_REASON" ]; then
     fail "halt shape mismatch: refemu(reason=$REFEMU_HALT_REASON icount=$REFEMU_HALT_ICOUNT pc=0x$(printf '%08x' "$REFEMU_HALT_PC")) vs sqlcpu(reason=$SQLCPU_HALT_REASON icount=$ICOUNT pc=0x$(printf '%08x' "$SQLCPU_HALT_PC")).
@@ -498,7 +498,7 @@ elif [ "$SQLCPU_HALTED" -eq 1 ] && [ "$REFEMU_HALTED" -eq 1 ]; then
   First divergent instruction (icount): $REFEMU_HALT_ICOUNT
   PC at divergence (hex, from refemu): 0x$(printf '%08x' "$REFEMU_HALT_PC")
   State diff: halt_reason expected(refemu)=$REFEMU_HALT_REASON actual(sqlcpu)=$SQLCPU_HALT_REASON; icount expected=$REFEMU_HALT_ICOUNT actual=$ICOUNT
-  One-line repro: just diff $N"
+  One-line repro: make diff N=$N"
   fi
   echo "  both engines halted identically: reason=$SQLCPU_HALT_REASON icount=$ICOUNT -- not a divergence" >&2
 else

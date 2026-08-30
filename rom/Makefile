@@ -1,5 +1,5 @@
 # rom/Makefile — reproducible RV32IM ROM build (SPEC §4), driven by the
-# pinned toolchain container in toolchain/Dockerfile. `just build-rom` runs
+# pinned toolchain container in toolchain/Dockerfile. `make build-rom` runs
 # `make -C rom` with no target, so the first target below (`all`) is the one
 # that must produce rom/build/doom-rv32im.bin.
 #

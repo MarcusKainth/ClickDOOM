@@ -3,7 +3,7 @@
 The `test_*_matches_clickhouse` cases hardcode hash values that were cross
 -checked against real ClickHouse 26.3 (the repo pin), not just against
 Python's own xxhash library agreeing with itself. Reproduce against a
-running `just up` instance:
+running `make up` instance:
 
     docker exec clickdoom-ch clickhouse-client -q \\
       "SELECT xxHash64(unhex('<hex from the test>'))"

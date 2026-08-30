@@ -75,8 +75,8 @@ This directory is bench evidence for a question already answered (REJECT,
 see above), and a generally reusable tool beyond that one question — exact
 per-symbol instruction attribution against any ROM build, not just this
 one's memcpy/memset question. Kept in the tree per the team lead's ask
-rather than left to a `git clean`; run it via `just bench-e7-memfns` per
-CLAUDE.md's "use just recipes only."
+rather than left to a `git clean`; run it via `make bench-e7-memfns` per
+CLAUDE.md's "use make targets only."
 
 ## Evidence in `results/`
 

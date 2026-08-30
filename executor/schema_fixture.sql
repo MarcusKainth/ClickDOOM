@@ -4,7 +4,7 @@
 -- `input_queue` was missing until #25 found it: PR #88's MMIO plumbing
 -- added decode_with()'s KEYQT subquery (reads `{db}.input_queue`) to every
 -- select_only()/batch() call, but never landed here, and
--- `just test-executor` isn't wired into CI (no `test-executor` job in
+-- `make test-executor` isn't wired into CI (no `test-executor` job in
 -- .github/workflows/ci.yml), so nothing ran select_only() against this
 -- fixture between #88 landing and now to catch it -- every test_fold.py
 -- case failed outright (UNKNOWN_TABLE) the first time this file's tests

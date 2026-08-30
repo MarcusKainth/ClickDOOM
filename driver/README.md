@@ -49,7 +49,7 @@ Validated two ways, both against real evidence, not eyeballed:
    check is what ties them together instead: same underlying frame, two
    independently-computed representations, both correct.
 
-Run all three: `driver/test_render.sh` (or `just test-render`).
+Run all three: `driver/test_render.sh` (or `make test-render`).
 
 ### Why this isn't wired into the milestone runner yet
 

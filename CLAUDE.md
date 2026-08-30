@@ -88,17 +88,15 @@ One scope per PR. Cross-scope changes need team-lead sign-off in the PR.
 
 ## Canonical commands
 
-Use `just` recipes only — do not improvise shell incantations; if a recipe
-is missing, add it in the same PR.
+Use `make` targets only; do not improvise shell incantations. If a target is
+missing, add it in the same PR. `make help` lists all of them.
 
-    just up            # pinned ClickHouse via docker compose
-    just build-rom     # reproducible ROM build (dockerized toolchain)
-    just test-refemu   # riscv-tests against the reference emulator
-    just test-sqlcpu   # riscv-tests inside ClickHouse
-    just diff N        # differential run, N instructions, report first divergence
-    just smoke         # CI-sized differential smoke (100K instr, registers/control-flow only -- see ci.yml)
-    just bench         # executor throughput benchmark (instructions/sec)
-    just lint          # all linters + purity check
+    make up             # pinned ClickHouse via docker compose
+    make build-rom      # reproducible ROM build, in the pinned toolchain image
+    make test           # every suite that has one
+    make diff N=100000  # differential run, reporting the first divergence
+    make smoke          # what CI runs: diff at 100,000 instructions
+    make lint           # purity check and every linter
 
 ## Phase plan
 

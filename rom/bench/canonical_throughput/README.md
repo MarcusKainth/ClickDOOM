@@ -92,15 +92,15 @@ produced it.
 
 ## Rerunning
 
-    just bench-canonical-throughput
+    make bench-canonical-throughput
 
 or directly:
 
     rom/bench/canonical_throughput/run.sh \
         --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json
 
-Needs `rom/build/` built (`just build-rom`) and the pinned ClickHouse up
-(`just up`). Coordinate with whoever else might be using the shared
+Needs `rom/build/` built (`make build-rom`) and the pinned ClickHouse up
+(`make up`). Coordinate with whoever else might be using the shared
 container first -- the contention check catches an already-busy container
 at start time, but not a teammate who starts a run seconds later.
 

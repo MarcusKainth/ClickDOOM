@@ -1,12 +1,12 @@
 # SPEC §7 reference traces
 
 Committed oracle output for `sqlcpu`/`executor` to diff against, so a
-divergence during Phase 2's integration run (or `just diff`'s future
+divergence during Phase 2's integration run (or `make diff`'s future
 `scripts/diff_run.sh`, issue #27) is caught at the instruction it happens,
 not after hours of compute produce a final hash that doesn't match. See
 `../scripts/gen_reference_trace.py`'s module docstring for the full
 rationale, what this deliberately does and doesn't cover, and how to
-regenerate (`just gen-reference-trace` from the repo root, after `just
+regenerate (`make gen-reference-trace` from the repo root, after `just
 build-rom`).
 
 ## Naming: `demo-boot-to-first-frame.<rom sha256 prefix>.tsv` / `.json`

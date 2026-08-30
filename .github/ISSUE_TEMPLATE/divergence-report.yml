@@ -41,7 +41,7 @@ body:
     id: repro
     attributes:
       label: One-line repro
-      placeholder: just diff 48211008
+      placeholder: make diff N=48211008
     validations:
       required: true
   - type: textarea

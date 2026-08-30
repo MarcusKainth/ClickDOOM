@@ -52,7 +52,7 @@ contract in SPEC §6.
 
 Benchmarked on the repo pin (ClickHouse 26.3.17.4). Full tables, method and
 caveats in [`executor/bench/phase0/RESULTS.md`](../../executor/bench/phase0/RESULTS.md);
-reproduce with `just bench-phase0`.
+reproduce with `make bench-phase0`.
 
 **Verdict: accepted.** Sustained end-to-end throughput is **11,894
 instructions/sec** at K=50,000, against this ADR's ">=10,000 instr/sec sustained

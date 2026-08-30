@@ -26,11 +26,9 @@
   - changed-files:
       - any-glob-to-any-file:
           - driver/render.py
-          - driver/test_render.sh
-          - driver/gen_frame_fixture.py
-          - driver/gen_sparse_frame_fixture.py
-          - driver/seed_frame_fixture.py
-          - driver/seed_sparse_fixture.py
+          - driver/src/render.rs
+          - driver/tests/render_golden.rs
+          - driver/tests/render_live.rs
           - driver/fixture_schema.sql
 
 "area: driver":

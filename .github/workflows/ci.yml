@@ -270,18 +270,13 @@ jobs:
         with:
           name: refemu
           path: target/release
-      - name: Install clickhouse-client
-        run: |
-          curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
-          sh /tmp/install.sh
-          sudo install -m 0755 clickhouse /usr/local/bin/clickhouse
-          printf '#!/bin/sh\nexec /usr/local/bin/clickhouse client "$@"\n' | sudo tee /usr/local/bin/clickhouse-client >/dev/null
-          sudo chmod +x /usr/local/bin/clickhouse-client
       - name: Frame readout and render tests
+        env:
+          CLICKHOUSE_HOST: localhost
+          CLICKHOUSE_HTTP_PORT: "8123"
         run: |
-          pipx install uv
           chmod +x target/release/refemu
-          ./driver/test_render.sh --host localhost --port 9000
+          cargo test --locked -p clickdoom-driver --test render_live -- --include-ignored --nocapture
 
   differential-smoke:
     # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
@@ -294,7 +289,7 @@ jobs:
     # leaves uncaught a corrupt RAM word which keeps every register
     # bit-identical. Only nightly's deep-diff exercises memory.
     #
-    # N=100,000 because diff_run.sh clamps every sqlcpu batch to
+    # N=100,000 because clickdoom diff clamps every sqlcpu batch to
     # <= CHECKPOINT_INTERVAL so it cannot skip a checkpoint row. Measured at
     # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
     # would take about 13.9 minutes on every pull request. timeout-minutes is a
@@ -328,9 +323,11 @@ jobs:
         with:
           name: refemu
           path: target/release
-      - name: Install uv
-        run: pipx install uv
+      - name: Build clickdoom
+        run: cargo build --locked --release -p clickdoom-driver
       - name: Smoke diff (100,000 instructions, full checkpoint trace)
         run: |
           chmod +x target/release/refemu
-          ./scripts/diff_run.sh 100000 --host localhost --port 9000
+          ./target/release/clickdoom diff 100000 --host localhost --port 8123 \
+              --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+              --refemu-bin target/release/refemu

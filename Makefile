@@ -23,15 +23,14 @@ SHELL := bash
 CLICKHOUSE_PASSWORD ?= clickdoom
 CH_HOST ?= localhost
 CH_PORT ?= 9000
-
-# The command that speaks the native protocol. Empty means each script picks
-# its own default. Set it when the host has no `clickhouse-client` on PATH:
-#
-#   make test-render CH_CLIENT="docker exec -i clickdoom-ch clickhouse-client"
-CH_CLIENT ?=
-client_flag = $(if $(CH_CLIENT),--client "$(CH_CLIENT)",)
+CH_HTTP_PORT ?= 8123
 
 conn = --host $(CH_HOST) --port $(CH_PORT) --password "$(CLICKHOUSE_PASSWORD)"
+
+# The clickdoom binary speaks ClickHouse's HTTP interface, not the native
+# protocol scripts/clickhouse-client use, so it takes its own port.
+CLICKDOOM ?= ./target/release/clickdoom
+clickdoom_conn = --host $(CH_HOST) --port $(CH_HTTP_PORT) --password "$(CLICKHOUSE_PASSWORD)" --database "$(CLICKDOOM_DATABASE)"
 
 # clickhouse-client blocks forever on an INSERT when stdin is an open pipe
 # rather than at EOF. Every target here is non-interactive, so stdin is closed
@@ -63,11 +62,11 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         test test-refemu test-refemu-reference \
         test-sqlcpu test-executor test-render smoke diff \
         bench-phase0 bench-e1-cse bench-e7-memfns bench-canonical-throughput \
-        bench-native bench-commit-attribution bench-ksweep bench-wl-seed \
+        bench-commit-attribution bench-ksweep bench-wl-seed \
         bench-batch-overhead bench-halt-overhead bench-hwm bench-a1-jit \
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
-        build-refemu build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
+        build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         fuzz \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
@@ -95,6 +94,9 @@ build-rom: ## Build the DOOM ROM reproducibly, in the pinned toolchain image
 build-refemu: ## Build the reference emulator
 	cargo build --locked --release -p refemu
 
+build-clickdoom: ## Build the driver binary
+	cargo build --locked --release -p clickdoom-driver
+
 require-rom:
 	test -f $(ROM_BIN) || { echo "$(ROM_BIN) missing. Run: make build-rom" >&2; exit 1; }
 
@@ -115,12 +117,14 @@ test-sqlcpu: up ## riscv-tests inside ClickHouse
 test-executor: up ## Fold, commit and MMIO unit tests
 	cd executor && uv run pytest tests/ -v $(no_stdin)
 
-test-render: up ## Frame readout and the ANSI/PPM render queries
-	./driver/test_render.sh $(conn) $(client_flag) $(no_stdin)
+test-render: up require-rom build-refemu ## Live render checks: sparse tables, a real refemu frame, ANSI/PPM byte checks
+	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
+	    cargo test --locked -p clickdoom-driver --test render_live -- --include-ignored --nocapture
 
 N ?= 100000
-diff: up ## Differential run of N instructions, reporting the first divergence
-	./scripts/diff_run.sh $(N) $(conn) $(client_flag) $(no_stdin)
+diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence
+	$(CLICKDOOM) diff $(N) --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+		--hwm "$(CLICKDOOM_RUN_HWM)" --refemu-bin $(REFEMU) $(clickdoom_conn)
 
 smoke: ## The differential run CI uses, at 100,000 instructions
 	$(MAKE) diff N=100000
@@ -140,16 +144,12 @@ bench-e1-cse: up ## Does arrayFold deduplicate repeated subexpressions, and at w
 bench-e7-memfns: require-rom build-refemu ## Per-symbol instruction attribution for the real ROM. No ClickHouse
 	python3 rom/bench/e7_memfns/profile_memfns.py --frames 40
 
-bench-canonical-throughput: up require-rom build-refemu ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
-	./rom/bench/canonical_throughput/run.sh \
-		--bin $(ROM_BIN) --manifest $(ROM_MANIFEST) $(conn) $(no_stdin)
+bench-canonical-throughput: up require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
+	$(CLICKDOOM) bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
+		--refemu-bin $(REFEMU) $(clickdoom_conn)
 
-REPEATS ?= 3
 BATCHES ?= 3
-ARMS ?= ABC
-bench-native: require-rom ## Native ClickHouse against Docker. Starts its own servers on 9010, 9020, 9100
-	./executor/bench/b1_native/run.sh --repeats $(REPEATS) --batches $(BATCHES) --arms $(ARMS) $(no_stdin)
-
 LABEL ?= baseline
 K ?= 60000
 bench-commit-attribution: require-rom ## Per-statement attribution of one end-to-end batch. Own container per arm
@@ -190,23 +190,18 @@ bench-b3-dict-lookup: ## dictGet against arrayElement for RAM reads in the fold
 
 ##@ Milestone
 
-preflight-milestone: up ## Fail-closed gates before a multi-hour run. Refuses to start rather than advising
-	./scripts/preflight_milestone.sh \
-		--bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
+preflight-milestone: up require-rom build-clickdoom ## Fail-closed gates before a multi-hour run. Refuses to start rather than advising
+	$(CLICKDOOM) preflight --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
-		--database "$(CLICKDOOM_DATABASE)" \
-		--trace "$(reference_trace)" \
-		$(conn) $(no_stdin)
+		$(clickdoom_conn)
 
-run-milestone: up ## The resumable batch loop. Runs its own preflight and refuses to start if it fails
-	./scripts/run_milestone.sh \
-		--bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
+run-milestone: up require-rom build-clickdoom ## The resumable batch loop. Runs its own preflight and refuses to start if it fails
+	$(CLICKDOOM) run --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
-		--database "$(CLICKDOOM_DATABASE)" \
 		--trace "$(reference_trace)" \
 		--target-icount "$(CLICKDOOM_TARGET_ICOUNT)" \
 		--stop-at-frame 0 \
-		$(conn) $(no_stdin)
+		$(clickdoom_conn)
 
 ##@ Maintenance
 

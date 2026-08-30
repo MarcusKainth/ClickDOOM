@@ -70,7 +70,8 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         fuzz \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
-        adr-new check-adr require-rom
+        adr-new check-adr require-rom \
+        gates check-rom-hash
 
 help: ## List every target
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage: make <target>\n"} \
@@ -245,7 +246,7 @@ check-adr: ## The ADR set is numbered contiguously and fully indexed
 
 ##@ Lint
 
-lint: check-purity shellcheck ruff cargo-fmt cargo-clippy clang-format typos check-adr actionlint zizmor ## Everything a pull request must pass
+lint: check-purity shellcheck ruff cargo-fmt cargo-clippy clang-format typos check-adr actionlint zizmor ## Every static check. No container, no ROM
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
@@ -273,3 +274,19 @@ actionlint: ## Workflow syntax. Has no CI job, so run it before pushing a workfl
 
 zizmor: ## Workflow security posture
 	zizmor --persona=regular .github/
+
+##@ Gates
+#
+# Prerequisites in cost order. `lint` needs no container and no ROM, and
+# `check-rom-hash` builds the ROM that `test-refemu-reference`, `test-render`
+# and `smoke` all require. Make stops at the first one that fails.
+#
+# `check-rom-hash` names both goals in one `make -C rom` rather than depending
+# on `build-rom` and recursing twice. rom/Makefile's binary depends on the
+# phony `toolchain-image`, so it is rebuilt on every entry, and two entries
+# compile the ROM twice.
+
+gates: lint check-rom-hash test smoke ## Every check ci.yml runs on a pull request
+
+check-rom-hash: ## The built ROM matches rom/PINNED_HASH
+	make -C rom all check-pinned-hash

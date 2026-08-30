@@ -24,7 +24,18 @@ you never install it yourself.
 
 ## Targets
 
-`make help` is the inventory. What it does not say:
+`make help` is the inventory. `make gates` is the pull request bar: `lint`, the
+ROM hash check, every suite in `make test`, and `smoke`. Those are the jobs
+`ci.yml` runs on a pull request. It takes upwards of ten minutes, most of it the
+ROM build and the smoke diff.
+
+`lint` also runs `check-adr` and `actionlint`, which have no CI job of their own.
+
+The benches, `fuzz`, the milestone targets and the nightly deep-diff sit outside
+`gates`, by cost or by what they need. A timing run needs a quiet machine, and
+the deep-diff takes hours.
+
+What `make help` does not say:
 
 - **`make up` is a prerequisite of most test and bench targets**, so you rarely
   run it yourself. It waits for the container to report healthy.
@@ -68,9 +79,10 @@ project's whole output is an expression evaluated a few billion times.
 | `test-executor` | Fold, commit and MMIO, against a fixture schema |
 | `test-render` | Frame readout and the ANSI and PPM render queries |
 | `smoke` | The differential run at 100,000 instructions |
+| `gates` | `lint`, the ROM hash check, every suite above, and `smoke` |
 
-`make test` runs the suites above. It does not run `smoke`, which needs a
-built ROM.
+`make test` runs the suites above and not `smoke`. It needs a built ROM either
+way, because `test-refemu-reference` and `test-render` declare `require-rom`.
 
 ### What the smoke run does not cover
 

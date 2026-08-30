@@ -61,7 +61,7 @@ the twelve are enforced by review alone.
 
 <!-- Tick what you ran, by exit code. Nothing else belongs under this heading. -->
 
-- [ ] `make lint`
+- [ ] `make gates`
 - [ ] The suites covering what this touches
 - [ ] No AI attribution trailers in the commits
 

@@ -50,6 +50,14 @@ pub enum Op {
     Sra,
     Or,
     And,
+    Mul,
+    Mulh,
+    Mulhsu,
+    Mulhu,
+    Div,
+    Divu,
+    Rem,
+    Remu,
     Fence,
     Ecall,
     Ebreak,
@@ -98,6 +106,14 @@ impl Op {
             Op::Sra => "sra",
             Op::Or => "or",
             Op::And => "and",
+            Op::Mul => "mul",
+            Op::Mulh => "mulh",
+            Op::Mulhsu => "mulhsu",
+            Op::Mulhu => "mulhu",
+            Op::Div => "div",
+            Op::Divu => "divu",
+            Op::Rem => "rem",
+            Op::Remu => "remu",
             Op::Fence => "fence",
             Op::Ecall => "ecall",
             Op::Ebreak => "ebreak",
@@ -246,6 +262,22 @@ pub const fn decode(word: u32) -> Instruction {
             insn!(op, i_imm)
         }
         OP_REG => {
+            // The multiply extension shares this opcode, selected by its
+            // own function-seven field, and every function-three value under
+            // it names an arm.
+            if funct7 == 0x01 {
+                let op = match funct3 {
+                    0b000 => Op::Mul,
+                    0b001 => Op::Mulh,
+                    0b010 => Op::Mulhsu,
+                    0b011 => Op::Mulhu,
+                    0b100 => Op::Div,
+                    0b101 => Op::Divu,
+                    0b110 => Op::Rem,
+                    _ => Op::Remu,
+                };
+                return insn!(op, 0);
+            }
             let op = match (funct3, funct7) {
                 (0b000, 0x00) => Op::Add,
                 (0b000, 0x20) => Op::Sub,
@@ -330,6 +362,14 @@ mod tests {
             (sra(1, 2, 3), Op::Sra),
             (or(1, 2, 3), Op::Or),
             (and(1, 2, 3), Op::And),
+            (mul(1, 2, 3), Op::Mul),
+            (mulh(1, 2, 3), Op::Mulh),
+            (mulhsu(1, 2, 3), Op::Mulhsu),
+            (mulhu(1, 2, 3), Op::Mulhu),
+            (div(1, 2, 3), Op::Div),
+            (divu(1, 2, 3), Op::Divu),
+            (rem(1, 2, 3), Op::Rem),
+            (remu(1, 2, 3), Op::Remu),
             (fence(), Op::Fence),
             (ecall(), Op::Ecall),
             (ebreak(), Op::Ebreak),
@@ -392,8 +432,20 @@ mod tests {
     }
 
     #[test]
-    fn a_multiply_is_not_implemented_yet_and_reads_as_illegal() {
-        assert_eq!(op(r_type(0x33, 1, 0b000, 2, 3, 0x01)), Op::Illegal);
+    fn every_multiply_function_code_names_an_arm() {
+        let arms = [
+            Op::Mul,
+            Op::Mulh,
+            Op::Mulhsu,
+            Op::Mulhu,
+            Op::Div,
+            Op::Divu,
+            Op::Rem,
+            Op::Remu,
+        ];
+        for (funct3, expected) in arms.iter().enumerate() {
+            assert_eq!(op(r_type(0x33, 1, funct3 as u32, 2, 3, 0x01)), *expected);
+        }
     }
 
     #[test]

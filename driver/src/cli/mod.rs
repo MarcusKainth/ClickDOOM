@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::bootstrap::{self, Seeded};
 use crate::client::ConnArgs;
-use crate::{decode, rom};
+use crate::{decode, render, rom};
 
 /// What the process reports.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -50,6 +50,8 @@ pub enum Command {
     Bootstrap(BootstrapCmd),
     /// Rebuild `decoded` from `ram`'s current contents
     Decode(DecodeCmd),
+    /// Read out the latest committed frame
+    Render(RenderCmd),
 }
 
 #[derive(Args)]
@@ -89,6 +91,39 @@ pub struct DecodeCmd {
     /// End of the read-only text region, in words
     #[arg(long)]
     pub text_end_word: u32,
+}
+
+#[derive(Args)]
+pub struct RenderCmd {
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    #[command(subcommand)]
+    pub mode: RenderMode,
+}
+
+#[derive(Subcommand)]
+pub enum RenderMode {
+    /// Insert a frames_out row from the latest committed frame
+    Frame,
+    /// Print the latest frame's fb_hash
+    FbHash,
+    /// Print the latest frame as ANSI half-block truecolor
+    Ansi {
+        #[arg(long, default_value_t = render::FB_WIDTH)]
+        width: u32,
+        #[arg(long, default_value_t = render::FB_HEIGHT)]
+        height: u32,
+    },
+    /// Write the latest frame as a binary PPM (P6) image
+    Ppm {
+        /// Where to write the image
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = render::FB_WIDTH)]
+        width: u32,
+        #[arg(long, default_value_t = render::FB_HEIGHT)]
+        height: u32,
+    },
 }
 
 /// Anything that stops the command before it does its job.
@@ -166,6 +201,43 @@ async fn cmd_decode(cmd: &DecodeCmd) -> Result<Exit, Failure> {
     Ok(Exit::Ok)
 }
 
+async fn cmd_render(cmd: &RenderCmd) -> Result<Exit, Failure> {
+    let db = cmd.conn.connect();
+    match &cmd.mode {
+        RenderMode::Frame => {
+            db.run(&render::frame_readout_sql(&cmd.conn.database))
+                .await
+                .map_err(|err| failed(err.to_string()))?;
+        }
+        RenderMode::FbHash => {
+            let hash: String = db
+                .fetch_one(&render::frame_readout_fb_hash_sql(&cmd.conn.database))
+                .await
+                .map_err(|err| failed(err.to_string()))?;
+            println!("{hash}");
+        }
+        RenderMode::Ansi { width, height } => {
+            let ansi: String = db
+                .fetch_one(&render::ansi_render_sql(
+                    &cmd.conn.database,
+                    *width,
+                    *height,
+                ))
+                .await
+                .map_err(|err| failed(err.to_string()))?;
+            println!("{ansi}");
+        }
+        RenderMode::Ppm { out, width, height } => {
+            let ppm: bytes::Bytes = db
+                .fetch_one(&render::ppm_render_sql(&cmd.conn.database, *width, *height))
+                .await
+                .map_err(|err| failed(err.to_string()))?;
+            std::fs::write(out, &ppm).map_err(|err| failed(err.to_string()))?;
+        }
+    }
+    Ok(Exit::Ok)
+}
+
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -175,6 +247,7 @@ pub fn main() -> ExitCode {
             Command::LoadRom(cmd) => cmd_load_rom(cmd).await,
             Command::Bootstrap(cmd) => cmd_bootstrap(cmd).await,
             Command::Decode(cmd) => cmd_decode(cmd).await,
+            Command::Render(cmd) => cmd_render(cmd).await,
         }
     });
     match result {

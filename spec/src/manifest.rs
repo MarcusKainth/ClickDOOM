@@ -76,12 +76,33 @@ pub enum ManifestError {
 
 /// Lowercase hex sha256, the spelling `PINNED_HASH` and every manifest use.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
+    let mut stream = Sha256Stream::new();
+    stream.update(bytes);
+    stream.finish()
+}
+
+/// A sha256 fed in pieces, for a caller that hashes an output while it writes
+/// it rather than reading the file back afterwards. `finish` returns the same
+/// spelling as [`sha256_hex`].
+#[derive(Default)]
+pub struct Sha256Stream(Sha256);
+
+impl Sha256Stream {
+    pub fn new() -> Self {
+        Self::default()
     }
-    out
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        Digest::update(&mut self.0, bytes);
+    }
+
+    pub fn finish(self) -> String {
+        let mut out = String::with_capacity(64);
+        for byte in self.0.finalize() {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -166,6 +187,14 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn a_stream_hashes_the_same_as_one_slice() {
+        let mut stream = Sha256Stream::new();
+        stream.update(b"a");
+        stream.update(b"bc");
+        assert_eq!(stream.finish(), sha256_hex(b"abc"));
     }
 
     #[test]

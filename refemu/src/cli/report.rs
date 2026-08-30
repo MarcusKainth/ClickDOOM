@@ -190,3 +190,65 @@ mod tests {
         assert_eq!(serde_json::from_str::<RunReport>(&text).unwrap(), report);
     }
 }
+
+pub const TRACE_META_SCHEMA: &str = "refemu.trace-meta/1";
+
+/// What a generated trace records about itself.
+///
+/// One schema covers both the traces this project keeps: the short one from a
+/// boot to its first frame, and the long one from a whole demo. Every field is
+/// present with null where it does not apply, so the directory documents one
+/// shape rather than two.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct TraceMeta {
+    pub schema: String,
+    pub spec_version: Option<String>,
+    pub refemu_version: String,
+    pub rom_sha256: String,
+    pub pinned: bool,
+    pub rom_manifest: Option<clickdoom_spec::Manifest>,
+    pub generated_by: String,
+    pub trace_file: Option<String>,
+    pub trace_file_sha256: String,
+    pub trace_file_bytes: u64,
+    pub trace_line_count: u64,
+    pub checkpoint_interval: u64,
+    pub ram_hash_interval: u64,
+    pub stop_condition: Option<String>,
+    pub final_icount: u64,
+    pub final_checkpoint_line: Option<String>,
+    /// The hashes at the stop, computed from the machine rather than read off
+    /// the trace. A run ends where it ends, and the last hash-bearing line can
+    /// be a whole interval behind.
+    pub final_state: FinalState,
+    pub halt: Option<HaltJson>,
+    pub frame_commit_count: u64,
+    pub first_frame_commit: Option<FrameCommitJson>,
+    pub last_frame_commit: Option<FrameCommitJson>,
+    pub milestones: Vec<Milestone>,
+    pub timing: Timing,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct FinalState {
+    pub icount: u64,
+    pub pc: u32,
+    pub pc_hex: String,
+    pub reghash: String,
+    pub ramhash: String,
+    pub fbhash: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Milestone {
+    pub name: String,
+    pub icount: Option<u64>,
+}
+
+/// Wall clock, which no emulated result depends on.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Timing {
+    pub elapsed_seconds: u64,
+    pub elapsed_millis: u32,
+    pub instructions_per_second: u64,
+}

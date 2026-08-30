@@ -20,7 +20,9 @@ pub use checkpoint::{
     reg_hash,
 };
 pub use halt::HaltReason;
-pub use manifest::{Manifest, PinnedHashError, assert_pinned_hash, hashed_filename, sha256_hex};
+pub use manifest::{
+    Manifest, PinnedHashError, Sha256Stream, assert_pinned_hash, hashed_filename, sha256_hex,
+};
 pub use map::{
     FRAMEBUFFER_BASE, FRAMEBUFFER_SIZE, IPMS_DEFAULT, MMIO_BASE, MMIO_SIZE, MemoryMap,
     PALETTE_BASE, PALETTE_SIZE, RAM_BASE, RAM_SIZE, Region, mmio,

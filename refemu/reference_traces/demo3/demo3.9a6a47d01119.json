@@ -1,6 +1,9 @@
 {
+  "schema": "refemu.trace-meta/1",
   "spec_version": "0.1.0",
+  "refemu_version": "0.1.0",
   "rom_sha256": "9a6a47d01119f67580e48e9875207186c25efd56ff93019df331eb307cfaa5d9",
+  "pinned": true,
   "rom_manifest": {
     "spec_version": "0.1.0",
     "entry": 2147483648,
@@ -10,33 +13,52 @@
     "text_start": 2147483648,
     "text_end": 2147879460
   },
-  "generated_by": "refemu/scripts/gen_demo3_trace.py ",
+  "generated_by": "refemu trace -n 4000000000 --stop-at halt --name demo3 --pinned-hash",
   "trace_file": "demo3.9a6a47d01119.tsv",
   "trace_file_sha256": "c541e4394f7e6f0e54795afe1132c2869acae8496b147197b5110f343eda1c07",
   "trace_file_bytes": 20581535,
-  "final_checkpoint_line": "2300207104\t8005e88c\t7bf0c6cf2805131b",
+  "trace_line_count": 561574,
+  "checkpoint_interval": 4096,
+  "ram_hash_interval": 1048576,
+  "stop_condition": "halt",
   "final_icount": 2300210133,
-  "final_state_at_halt": {
+  "final_checkpoint_line": "2300207104\t8005e88c\t7bf0c6cf2805131b",
+  "final_state": {
     "icount": 2300210133,
     "pc": 2147485360,
+    "pc_hex": "800006b0",
     "reghash": "82a0b3490a5e59a8",
     "ramhash": "eea701e2759bca70",
     "fbhash": "d303721d8116e877"
   },
-  "frame_commit_count": 2172,
-  "last_frame_commit": {
-    "frame_no": 2171,
-    "committed_icount": 2300191942
-  },
   "halt": {
     "reason": "EXIT",
     "pc": 2147485360,
+    "pc_hex": "800006b0",
     "icount": 2300210133,
     "insn": 10986531,
+    "insn_hex": "00a7a423",
     "addr": null,
+    "addr_hex": null,
     "exit_code": 4294967295
   },
-  "elapsed_seconds": 2253.8660733331926,
-  "checkpoint_interval": 4096,
-  "ram_hash_interval": 1048576
+  "frame_commit_count": 2172,
+  "first_frame_commit": {
+    "index": 0,
+    "frame_no": 0,
+    "commit_icount": 15393135,
+    "retired_icount": 15393136
+  },
+  "last_frame_commit": {
+    "index": 2171,
+    "frame_no": 2171,
+    "commit_icount": 2300191942,
+    "retired_icount": 2300191943
+  },
+  "milestones": [],
+  "timing": {
+    "elapsed_seconds": 18,
+    "elapsed_millis": 660,
+    "instructions_per_second": 123266782
+  }
 }

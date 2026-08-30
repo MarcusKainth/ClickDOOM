@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clickdoom_spec::{
     Checkpoint, HaltReason, IPMS_DEFAULT, Manifest, MemoryMap, RAM_BASE, RAM_SIZE, Region,
-    TraceConfig, assert_pinned_hash, sha256_hex,
+    Sha256Stream, TraceConfig, assert_pinned_hash, sha256_hex,
 };
 
 use crate::boot::{RETIRED_PC_HISTORY, format_report};
@@ -27,9 +27,14 @@ use crate::memory::Memory;
 use crate::mmio::Devices;
 use crate::snapshot::{self, Provenance, Snapshot};
 use crate::trace::{self, Observer, Step, Stop};
-use observe::{PcHistogram, Recorders, TrapSpec, Traps};
+use observe::{
+    ConsoleMilestone, MilestoneSpec, NamedCount, PcHistogram, Recorders, TrapSpec, Traps,
+};
 use point::{Point, StopAt, WatchFrom, parse_addr, parse_count, parse_hash64};
-use report::{FrameCommitJson, HaltJson, RunOutcome, RunReport, write_json};
+use report::{
+    FinalState, FrameCommitJson, HaltJson, Milestone, RunOutcome, RunReport, Timing, TraceMeta,
+    write_json,
+};
 
 /// What the process reports.
 ///
@@ -339,6 +344,21 @@ pub struct TraceCmd {
     /// Instructions between the memory hashes
     #[arg(long, value_name = "N", default_value_t = TraceConfig::default().ram_hash_interval, value_parser = parse_count)]
     pub ram_hash_interval: u64,
+    /// Write the trace into this directory, named after the image's sha256
+    #[arg(long, value_name = "DIR", requires = "name", conflicts_with = "out")]
+    pub out_dir: Option<PathBuf>,
+    /// Filename stem used with --out-dir
+    #[arg(long, value_name = "STEM")]
+    pub name: Option<String>,
+    /// Write the trace metadata here. With --out-dir it defaults beside the trace
+    #[arg(long, value_name = "PATH")]
+    pub meta_out: Option<PathBuf>,
+    /// Name the count of the last console write before the first frame
+    #[arg(long, value_name = "NEEDLE=NAME")]
+    pub console_milestone: Vec<MilestoneSpec>,
+    /// Fail unless a milestone lands on this count. Repeatable
+    #[arg(long, value_name = "NAME=N")]
+    pub expect_milestone: Vec<NamedCount>,
     #[command(flatten)]
     pub capture: CaptureArgs,
     #[command(flatten)]
@@ -555,7 +575,11 @@ fn read_trap_file(path: &Path) -> Result<Vec<TrapSpec>, Failure> {
 }
 
 /// Sets up whatever the caller asked to record.
-fn recorders(cpu: &Cpu, observe: &ObserveArgs) -> Result<Recorders, Failure> {
+fn recorders(
+    cpu: &Cpu,
+    observe: &ObserveArgs,
+    milestones: &[MilestoneSpec],
+) -> Result<Recorders, Failure> {
     let text = cpu.memory.text_region();
     let mut specs = observe.trap_pc.clone();
     if let Some(path) = &observe.trap_pcs {
@@ -568,6 +592,10 @@ fn recorders(cpu: &Cpu, observe: &ObserveArgs) -> Result<Recorders, Failure> {
             .then(|| PcHistogram::new(text)),
         traps: (!specs.is_empty())
             .then(|| Traps::new(&specs, observe.trap_regs.clone(), text, observe.trap_limit)),
+        milestones: milestones
+            .iter()
+            .map(|spec| ConsoleMilestone::new(&spec.needle, &spec.name))
+            .collect(),
         watch_writes: observe.watch_writes.iter().map(|r| r.region()).collect(),
         watching: false,
     })
@@ -634,6 +662,7 @@ impl<C: FnMut(Checkpoint)> Observer for Driver<'_, C> {
 
     fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, insn: crate::Instruction) -> Step {
         self.rec.after(retired_pc, insn);
+        self.rec.after_console(cpu);
         self.maybe_start_watching(cpu);
         self.maybe_snapshot(cpu);
         for stop in &self.stops {
@@ -1031,7 +1060,7 @@ fn cmd_run(cli: &Cli, cmd: &RunCmd) -> Result<Exit, Failure> {
         pinned,
         manifest,
     } = load(&cmd.image, &cmd.machine, &cmd.capture)?;
-    let mut rec = recorders(&cpu, &cmd.observe)?;
+    let mut rec = recorders(&cpu, &cmd.observe, &[])?;
     let ending = drive(
         &mut cpu,
         TraceConfig::default(),
@@ -1081,7 +1110,28 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         manifest,
     } = load(&cmd.image, &cmd.machine, &cmd.capture)?;
 
-    let mut out: Box<dyn std::io::Write> = match &cmd.out {
+    // The trace's own name records which image it came from, so one generated
+    // against an image that has since moved cannot be mistaken for current.
+    let out_path = match (&cmd.out, &cmd.out_dir, &cmd.name) {
+        (Some(path), _, _) => Some(path.clone()),
+        (None, Some(dir), Some(name)) => {
+            let file = clickdoom_spec::hashed_filename(name, &rom_sha256, ".tsv")
+                .map_err(|e| failed(e.to_string()))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| failed(format!("creating {}: {e}", dir.display())))?;
+            Some(dir.join(file))
+        }
+        _ => None,
+    };
+    let meta_path = cmd
+        .meta_out
+        .clone()
+        .or_else(|| match (&cmd.out_dir, &out_path) {
+            (Some(_), Some(path)) => Some(path.with_extension("json")),
+            _ => None,
+        });
+
+    let mut out: Box<dyn std::io::Write> = match &out_path {
         Some(path) if path != Path::new("-") => Box::new(std::io::BufWriter::new(
             std::fs::File::create(path)
                 .map_err(|e| failed(format!("creating {}: {e}", path.display())))?,
@@ -1089,7 +1139,16 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         _ => Box::new(std::io::BufWriter::new(std::io::stdout())),
     };
 
-    let mut rec = recorders(&cpu, &cmd.observe)?;
+    // Hashed as it is written, so a twenty-megabyte trace is not read back to
+    // find out what it hashes to, and one sent to stdout still has a hash.
+    let mut digest = Sha256Stream::new();
+    let mut trace_bytes = 0u64;
+    let mut trace_lines = 0u64;
+    let mut last_line: Option<String> = None;
+    // purity-ok: reported in the metadata, never read by the machine.
+    let started = std::time::Instant::now();
+
+    let mut rec = recorders(&cpu, &cmd.observe, &cmd.console_milestone)?;
     let mut write_error = None;
     let ending = drive(
         &mut cpu,
@@ -1099,8 +1158,13 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         &mut rec,
         |checkpoint| {
             use std::io::Write as _;
+            let line = format!("{checkpoint}\n");
+            digest.update(line.as_bytes());
+            trace_bytes += line.len() as u64;
+            trace_lines += 1;
+            last_line = Some(line[..line.len() - 1].to_owned());
             if write_error.is_none()
-                && let Err(e) = writeln!(out, "{checkpoint}")
+                && let Err(e) = out.write_all(line.as_bytes())
             {
                 write_error = Some(e);
             }
@@ -1115,6 +1179,7 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         return Err(failed(format!("writing the trace: {e}")));
     }
 
+    let elapsed = started.elapsed();
     let report = summarise(&cpu, &ending, &rom_sha256, pinned);
     write_captures(
         &cpu,
@@ -1135,10 +1200,113 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
     report_ending(cli.quiet, &cpu, &ending);
     let mut failures = write_records(&cpu, &ending, &cmd.observe, &rec)?;
     failures.extend(check_expectations(&report, &cmd.expect));
+
+    let milestones: Vec<Milestone> = rec
+        .milestones
+        .iter()
+        .map(|m| Milestone {
+            name: m.name.clone(),
+            icount: m.found,
+        })
+        .collect();
+    for expected in &cmd.expect_milestone {
+        match milestones.iter().find(|m| m.name == expected.name) {
+            Some(Milestone {
+                icount: Some(at), ..
+            }) if *at == expected.value => {}
+            Some(Milestone {
+                icount: Some(at), ..
+            }) => failures.push(format!(
+                "expected milestone {} at icount {}, got {at}",
+                expected.name, expected.value
+            )),
+            _ => failures.push(format!(
+                "milestone {} was never reached, and it is expected at icount {}",
+                expected.name, expected.value
+            )),
+        }
+    }
+
+    if let Some(path) = &meta_path {
+        let meta = TraceMeta {
+            schema: report::TRACE_META_SCHEMA.to_owned(),
+            spec_version: manifest.spec_version.clone(),
+            refemu_version: env!("CARGO_PKG_VERSION").to_owned(),
+            rom_sha256: rom_sha256.clone(),
+            pinned,
+            rom_manifest: Some(manifest.clone()),
+            generated_by: generated_by(cmd),
+            trace_file: out_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned()),
+            trace_file_sha256: digest.finish(),
+            trace_file_bytes: trace_bytes,
+            trace_line_count: trace_lines,
+            checkpoint_interval: config.checkpoint_interval,
+            ram_hash_interval: config.ram_hash_interval,
+            stop_condition: report.stop_condition.clone(),
+            final_icount: cpu.icount(),
+            final_checkpoint_line: last_line,
+            final_state: FinalState {
+                icount: cpu.icount(),
+                pc: cpu.pc(),
+                pc_hex: report.pc_hex.clone(),
+                reghash: report.reghash.clone(),
+                ramhash: report.ramhash.clone(),
+                fbhash: report.fbhash.clone(),
+            },
+            halt: report.halt.clone(),
+            frame_commit_count: report.frame_commit_count,
+            first_frame_commit: report.first_frame_commit,
+            last_frame_commit: report.last_frame_commit,
+            milestones,
+            timing: Timing {
+                elapsed_seconds: elapsed.as_secs(),
+                elapsed_millis: elapsed.subsec_millis(),
+                instructions_per_second: (cpu.icount() as f64 / elapsed.as_secs_f64()) as u64,
+            },
+        };
+        write_json(path, &meta).map_err(|e| failed(format!("writing {}: {e}", path.display())))?;
+    }
+
     if !failures.is_empty() {
         return Err(gate(failures.join("\n")));
     }
     Ok(ending_exit(&ending))
+}
+
+/// The invocation that made a trace, rebuilt from the settings that shaped it
+/// rather than copied from the command line.
+///
+/// A path pointing outside the repository resolves for nobody else, and the
+/// content it named is already recorded here by hash, so what goes in the
+/// record is the flags that decide the answer.
+fn generated_by(cmd: &TraceCmd) -> String {
+    let mut parts = vec!["refemu trace".to_owned()];
+    parts.push(format!("-n {}", cmd.budget.max_instructions));
+    for stop in &cmd.budget.stop_at {
+        parts.push(format!("--stop-at {stop}"));
+    }
+    if cmd.checkpoint_interval != TraceConfig::default().checkpoint_interval {
+        parts.push(format!("--checkpoint-interval {}", cmd.checkpoint_interval));
+    }
+    if cmd.ram_hash_interval != TraceConfig::default().ram_hash_interval {
+        parts.push(format!("--ram-hash-interval {}", cmd.ram_hash_interval));
+    }
+    if let Some(name) = &cmd.name {
+        parts.push(format!("--name {name}"));
+    }
+    if cmd.image.pinned_hash.is_some() {
+        parts.push("--pinned-hash".to_owned());
+    }
+    for milestone in &cmd.console_milestone {
+        parts.push(format!(
+            "--console-milestone {}={}",
+            milestone.needle, milestone.name
+        ));
+    }
+    parts.join(" ")
 }
 
 fn cmd_boot(_cli: &Cli, cmd: &BootCmd) -> Result<Exit, Failure> {

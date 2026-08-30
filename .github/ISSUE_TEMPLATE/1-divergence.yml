@@ -1,0 +1,87 @@
+name: The SQL CPU and the reference emulator disagree
+description: sqlcpu diverged from refemu on identical input. The most valuable report this project takes.
+title: "sqlcpu: divergence at icount "
+labels: ["divergence", "area: sqlcpu"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A divergence falsifies the project's central claim, so this form asks
+        for everything needed to reproduce one rather than discuss it.
+
+        If the two engines agree and something else is wrong, use the bug form.
+
+  - type: input
+    id: rom-sha
+    attributes:
+      label: ROM sha256
+      description: >-
+        From `rom/build/manifest.json`. It must match `rom/PINNED_HASH` unless
+        you are deliberately testing a modified ROM, in which case say so.
+    validations:
+      required: true
+
+  - type: input
+    id: ch-version
+    attributes:
+      label: ClickHouse version
+      description: The repository pin, unless the report is about a version bump.
+      placeholder: "26.7.5.10"
+    validations:
+      required: true
+
+  - type: input
+    id: icount
+    attributes:
+      label: First divergent instruction (icount)
+    validations:
+      required: true
+
+  - type: input
+    id: pc
+    attributes:
+      label: PC at divergence, hex, as refemu reports it
+    validations:
+      required: true
+
+  - type: dropdown
+    id: what
+    attributes:
+      label: What disagrees
+      options:
+        - A register
+        - The program counter
+        - A memory word (ramhash)
+        - The framebuffer (fbhash)
+        - Halt reason or exit code
+        - Instruction count at a checkpoint
+    validations:
+      required: true
+
+  - type: textarea
+    id: state-diff
+    attributes:
+      label: The diff, from both sides
+      description: >-
+        Registers as refemu has them against as sqlcpu has them, and the
+        `word_addr` diff if a memory checkpoint diverged. Both sides, not a
+        summary of one.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: repro
+    attributes:
+      label: One-line repro
+      placeholder: "make diff N=48211008"
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Analysis, if you have any
+      description: >-
+        Suspected instruction or class, disassembly around the PC, anything
+        that would save the next person a bisect.

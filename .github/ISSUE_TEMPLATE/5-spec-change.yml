@@ -1,0 +1,51 @@
+name: Propose a change to the SPEC contract
+description: SPEC.md or PURITY.md. Requires maintainer ratification.
+title: "spec: "
+labels: ["spec-change", "area: spec", "needs: maintainer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SPEC.md and PURITY.md are CODEOWNERS-gated. A proposal here is a request
+        for a decision, not a plan to implement.
+
+        Diverging from the contract "temporarily" is not an option this project
+        takes. If the contract is wrong, move it here first.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: What broke, or what became impossible under the current contract
+    validations:
+      required: true
+
+  - type: textarea
+    id: diff
+    attributes:
+      label: Proposed contract text
+      description: The exact sections and their new wording.
+      render: diff
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: affected
+    attributes:
+      label: What has to change if this is ratified
+      options:
+        - label: "rom"
+        - label: "refemu"
+        - label: "sqlcpu"
+        - label: "executor"
+        - label: "driver or render"
+        - label: "Nothing. The contract catches up with the code"
+
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration
+      description: >-
+        Is it breaking, meaning `spec!:`? What changes, and in what order, so
+        the tree is never in a state where the two engines disagree?
+    validations:
+      required: true

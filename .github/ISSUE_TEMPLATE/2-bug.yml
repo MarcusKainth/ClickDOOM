@@ -1,0 +1,79 @@
+name: Something else does the wrong thing
+description: A crash, a wrong result, a target that will not run, a check that reports the wrong thing.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A disagreement between sqlcpu and refemu on the same ROM belongs on the
+        divergence form instead. It asks the questions that class of bug needs.
+
+        A check that passes while verifying nothing is a bug, and a valuable
+        one. Report it here.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      options:
+        - ROM build (rom)
+        - Reference emulator (refemu)
+        - Decode or execute in SQL (sqlcpu)
+        - Batch loop, write-log or commit (executor)
+        - Driver loop (driver)
+        - Frame readout or render (render)
+        - Benchmarks (bench)
+        - Makefile, workflows or scripts (ci)
+        - Documentation
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you are on, from `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: OS, architecture and ClickHouse version
+      placeholder: "macOS aarch64, ClickHouse 26.7.5.10"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, and what it did.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest thing that shows it, from a clean checkout. `make` targets preferred.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        Errors or relevant log lines. Long output is fine. **Check it for
+        credentials before pasting.** This is a public issue.
+      render: shell

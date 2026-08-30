@@ -48,8 +48,8 @@ $ make ...
 Name the PUR-N rules this change touches and say how each property still holds.
 Touching one is not a problem. Answer "None." if it touches none.
 
-PURITY.md states each rule in full and is the only place that does. Eight of
-the twelve are enforced by review alone.
+PURITY.md states each rule in full and is the only place that does. Most are
+enforced by review alone, and its Enforcement table says which.
 -->
 
 ## Spec impact

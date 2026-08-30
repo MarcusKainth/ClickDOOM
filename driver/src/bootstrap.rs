@@ -16,28 +16,30 @@ use crate::client::{Db, Error};
 /// `x1..x31`, SPEC's reset vector.
 pub const RESET_REGS: [u32; 31] = [0; 31];
 
+/// One `batch_commit` row's full shape: bootstrap's reset-state seed and a
+/// benchmark's snapshot seed both write exactly this.
 #[derive(Row, Serialize)]
-struct BatchCommitRow {
-    batch_id: u64,
-    icount: u64,
-    pc: u32,
-    regs: Vec<u32>,
-    halted: u8,
-    halt_reason: String,
-    exit_code: u32,
-    keyq_pos: u64,
-    has_frame: u8,
-    frame_no: u32,
-    wl_addr: Vec<u32>,
-    wl_val: Vec<u32>,
-    wl_icount: Vec<u64>,
-    fb_wl_addr: Vec<u32>,
-    fb_wl_val: Vec<u32>,
-    fb_wl_icount: Vec<u64>,
-    pal_wl_addr: Vec<u32>,
-    pal_wl_val: Vec<u32>,
-    pal_wl_icount: Vec<u64>,
-    console_bytes: Vec<u8>,
+pub(crate) struct BatchCommitRow {
+    pub batch_id: u64,
+    pub icount: u64,
+    pub pc: u32,
+    pub regs: Vec<u32>,
+    pub halted: u8,
+    pub halt_reason: String,
+    pub exit_code: u32,
+    pub keyq_pos: u64,
+    pub has_frame: u8,
+    pub frame_no: u32,
+    pub wl_addr: Vec<u32>,
+    pub wl_val: Vec<u32>,
+    pub wl_icount: Vec<u64>,
+    pub fb_wl_addr: Vec<u32>,
+    pub fb_wl_val: Vec<u32>,
+    pub fb_wl_icount: Vec<u64>,
+    pub pal_wl_addr: Vec<u32>,
+    pub pal_wl_val: Vec<u32>,
+    pub pal_wl_icount: Vec<u64>,
+    pub console_bytes: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]

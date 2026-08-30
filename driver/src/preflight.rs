@@ -26,8 +26,8 @@ use crate::fold_result::FoldResult;
 use crate::rom::RAM_WORDS_DEFAULT;
 use crate::sql::split_statements;
 
-const SCHEMA_SQL: &str = include_str!("../../sqlcpu/schema.sql");
-const PINNED_HASH: &str = include_str!("../../rom/PINNED_HASH");
+pub(crate) const SCHEMA_SQL: &str = include_str!("../../sqlcpu/schema.sql");
+pub(crate) const PINNED_HASH: &str = include_str!("../../rom/PINNED_HASH");
 
 #[derive(Debug, thiserror::Error)]
 pub enum GateError {

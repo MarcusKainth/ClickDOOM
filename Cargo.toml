@@ -14,6 +14,7 @@ repository = "https://github.com/MarcusKainth/ClickDOOM"
 [workspace.dependencies]
 clickdoom-spec = { path = "spec" }
 clickdoom-executor = { path = "executor" }
+refemu = { path = "refemu" }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 clickhouse = "0.15"

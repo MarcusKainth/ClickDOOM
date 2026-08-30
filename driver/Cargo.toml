@@ -13,6 +13,7 @@ clap.workspace = true
 clickdoom-executor.workspace = true
 clickdoom-spec.workspace = true
 clickhouse.workspace = true
+refemu.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

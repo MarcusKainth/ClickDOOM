@@ -35,7 +35,11 @@ CLIENT="clickhouse-client"
 # that specific shortcut isn't trusted today.
 TARGET_ICOUNT=15393136
 EXPECTED_FBHASH="fe5d82c0f42d45f1"
-FIXTURE_CACHE="${TMPDIR:-/tmp}/clickdoom-frame-fixture/fixture.${TARGET_ICOUNT}.pkl"
+REFEMU="${REFEMU:-./target/release/refemu}"
+BIN="${ROM_BIN:-rom/build/doom-rv32im.bin}"
+MANIFEST="${ROM_MANIFEST:-rom/build/manifest.json}"
+SNAPSHOT_FORMAT=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); from refemu_snapshot import FORMAT_VERSION; print(FORMAT_VERSION)")
+FIXTURE_CACHE="${TMPDIR:-/tmp}/clickdoom-frame-fixture/fixture.${TARGET_ICOUNT}.v${SNAPSHOT_FORMAT}.rsnap"
 PPM_REAL_OUT="$(mktemp -t clickdoom-ppm-real.XXXXXX)"
 PPM_SYNTH_OUT="$(mktemp -t clickdoom-ppm-synth.XXXXXX)"
 
@@ -102,13 +106,13 @@ run_sparse_case() {
   ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
 
   local sparse_fixture
-  sparse_fixture="$(mktemp -t "clickdoom-sparse-${which}.XXXXXX").pkl"
-  (cd refemu && uv run python ../driver/gen_sparse_frame_fixture.py \
-      --which "$which" --written-words "$written" --out "$sparse_fixture") >&2
+  sparse_fixture="$(mktemp -t "clickdoom-sparse-${which}.XXXXXX").json"
+  REFEMU="$REFEMU" python3 driver/gen_sparse_frame_fixture.py \
+      --which "$which" --written-words "$written" --out "$sparse_fixture" >&2
   EXPECTED_SPARSE_FBHASH=$(python3 -c "
-import pickle
-with open('$sparse_fixture', 'rb') as f:
-    print(pickle.load(f)['expected_fbhash'])
+import json
+with open('$sparse_fixture', encoding='utf-8') as f:
+    print(json.load(f)['expected_fbhash'])
 ")
 
   python3 driver/seed_sparse_fixture.py --fixture "$sparse_fixture" --host "$HOST" --port "$PORT" \
@@ -190,8 +194,13 @@ ch "$TESTDB" --query "TRUNCATE TABLE frames_out"
 echo "# --- generating/reusing real refemu data at icount=$TARGET_ICOUNT ---" >&2
 mkdir -p "$(dirname "$FIXTURE_CACHE")"
 if [ ! -f "$FIXTURE_CACHE" ]; then
-  (cd refemu && uv run python ../driver/gen_frame_fixture.py \
-      --target-icount "$TARGET_ICOUNT" --out "$FIXTURE_CACHE") >&2
+  # Stops at the first announced frame and checks it landed where the
+  # milestone says, so a fixture built against a moved ROM fails here rather
+  # than several comparisons later.
+  "$REFEMU" run "$BIN" --manifest "$MANIFEST" --pinned-hash rom/PINNED_HASH \
+      --stop-at "frame:0" --max-instructions "$TARGET_ICOUNT" \
+      --expect-icount "$TARGET_ICOUNT" --expect-fbhash "$EXPECTED_FBHASH" \
+      --dump-frame "$FIXTURE_CACHE" >&2
 else
   echo "# reusing cached fixture: $FIXTURE_CACHE" >&2
 fi
@@ -251,11 +260,12 @@ T1=$(python3 -c 'import time; print(time.time())')
 PPM_SECONDS=$(python3 -c "print(f'{$T1 - $T0:.3f}')")
 
 python3 -c "
-import pickle, struct, sys
+import struct, sys
+sys.path.insert(0, 'scripts')
+from refemu_snapshot import load
 
-with open('$FIXTURE_CACHE', 'rb') as f:
-    state = pickle.load(f)
-fb, palette = state['framebuffer'], state['palette']
+_header, sections = load('$FIXTURE_CACHE', need=('framebuffer', 'palette'))
+fb, palette = sections['framebuffer'], sections['palette']
 assert len(fb) == 64_000 and len(palette) == 768
 
 expected = b'P6\n320 200\n255\n'

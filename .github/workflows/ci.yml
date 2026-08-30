@@ -137,6 +137,22 @@ jobs:
           pipx install uv
           cd refemu && uv sync --frozen && uv run pytest -q
 
+  build-refemu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the reference emulator
+        run: cargo build --locked --release -p refemu
+      - name: Upload refemu artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: refemu
+          path: target/release/refemu
+
   refemu-reference-parity:
     # The committed traces regenerated and compared byte for byte, and the
     # whole demo3 run against the values its manifest records. Kept out of
@@ -230,7 +246,7 @@ jobs:
     # refemu fixture by stepping the ROM to icount 15,393,136, at about
     # 1,064,000 instructions/sec, so it needs the built ROM and takes about 20
     # seconds once it has it.
-    needs: [build-rom]
+    needs: [build-rom, build-refemu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -253,6 +269,11 @@ jobs:
         with:
           name: rom
           path: rom/build
+      - name: Download refemu artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: refemu
+          path: target/release
       - name: Install clickhouse-client
         run: |
           curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
@@ -263,6 +284,7 @@ jobs:
       - name: Frame readout and render tests
         run: |
           pipx install uv
+          chmod +x target/release/refemu
           ./driver/test_render.sh --host localhost --port 9000
 
   differential-smoke:
@@ -281,7 +303,7 @@ jobs:
     # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
     # would take about 13.9 minutes on every pull request. timeout-minutes is a
     # safety net for runner variance, not a substitute for that measurement.
-    needs: [build-rom, test-refemu, test-sqlcpu]
+    needs: [build-rom, build-refemu, test-refemu, test-sqlcpu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -305,7 +327,14 @@ jobs:
         with:
           name: rom
           path: rom/build
+      - name: Download refemu artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: refemu
+          path: target/release
       - name: Install uv
         run: pipx install uv
       - name: Smoke diff (100,000 instructions, full checkpoint trace)
-        run: ./scripts/diff_run.sh 100000 --host localhost --port 9000
+        run: |
+          chmod +x target/release/refemu
+          ./scripts/diff_run.sh 100000 --host localhost --port 9000

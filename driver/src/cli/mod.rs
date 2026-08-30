@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::bench;
 use crate::bench::canonical;
 use crate::bootstrap::{self, Seeded};
 use crate::client::ConnArgs;
@@ -71,7 +72,16 @@ pub struct BenchCmd {
 pub enum BenchMode {
     /// The canonical two-window, fold-alone-and-e2e throughput benchmark
     Canonical(CanonicalCmd),
+    /// The canonical benchmark, head to head across ClickHouse images
+    CompareVersions(CompareVersionsCmd),
+    /// Render Markdown from a bench history file, no run needed
+    Report(ReportCmd),
 }
+
+/// Default history file `bench canonical` appends to.
+const CANONICAL_RESULTS_DEFAULT: &str = "rom/bench/canonical_throughput/results.jsonl";
+/// Default history file `bench compare-versions` appends to.
+const COMPARE_RESULTS_DEFAULT: &str = "executor/bench/version_compare/results.jsonl";
 
 #[derive(Args)]
 pub struct CanonicalCmd {
@@ -98,6 +108,76 @@ pub struct CanonicalCmd {
     /// The refemu binary, for generating the gameplay window's snapshot
     #[arg(long, default_value = "./target/release/refemu")]
     pub refemu_bin: PathBuf,
+    /// History file to append this run's record to
+    #[arg(long, default_value = CANONICAL_RESULTS_DEFAULT)]
+    pub out: PathBuf,
+    /// How quiet the machine was, recorded with the run
+    #[arg(long)]
+    pub note: Option<String>,
+    /// Also print this run as Markdown (to PATH, or stdout if omitted)
+    #[arg(long, num_args = 0..=1, default_missing_value = "-")]
+    pub markdown: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct CompareVersionsCmd {
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    /// Flat ROM binary
+    #[arg(long)]
+    pub bin: PathBuf,
+    /// Manifest naming the binary's size, sha256 and text region
+    #[arg(long)]
+    pub manifest: PathBuf,
+    /// One arm per flag: NAME=<docker-image-ref>. Repeatable, at least 2
+    #[arg(long = "arm", required = true, value_parser = crate::bench::compare::parse_arm)]
+    pub arms: Vec<crate::bench::compare::Arm>,
+    /// Instructions per batch
+    #[arg(long, default_value_t = clickdoom_executor::config::K_DEFAULT)]
+    pub k: u32,
+    /// Write-log high-water mark
+    #[arg(long, default_value_t = clickdoom_executor::config::WRITE_LOG_HIGH_WATER_MARK_DEFAULT)]
+    pub hwm: u32,
+    /// Rotations through every arm, to cancel warm-up-order bias
+    #[arg(long, default_value_t = 3)]
+    pub repeats: u32,
+    /// Chained batches per window per mode, per repeat
+    #[arg(long, default_value_t = 3)]
+    pub batches: u32,
+    /// Where the gameplay window's snapshot is cached
+    #[arg(long, default_value = "/tmp/clickdoom-canonical-throughput")]
+    pub snapshot_dir: PathBuf,
+    /// The refemu binary, for generating the gameplay window's snapshot
+    #[arg(long, default_value = "./target/release/refemu")]
+    pub refemu_bin: PathBuf,
+    /// History file to append this comparison's record to
+    #[arg(long, default_value = COMPARE_RESULTS_DEFAULT)]
+    pub out: PathBuf,
+    /// How quiet the machine was, recorded with the run
+    #[arg(long)]
+    pub note: Option<String>,
+    /// Also print this run as Markdown (to PATH, or stdout if omitted)
+    #[arg(long, num_args = 0..=1, default_missing_value = "-")]
+    pub markdown: Option<PathBuf>,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+pub enum ReportKind {
+    Canonical,
+    CompareVersions,
+}
+
+#[derive(Args)]
+pub struct ReportCmd {
+    /// Which history file's record shape to render
+    #[arg(long, value_enum)]
+    pub kind: ReportKind,
+    /// History file to read
+    #[arg(long)]
+    pub from: PathBuf,
+    /// Which run to render: "latest" or a 0-based index
+    #[arg(long, default_value = "latest")]
+    pub run: String,
 }
 
 #[derive(Args)]
@@ -335,7 +415,18 @@ async fn cmd_preflight(cmd: &PreflightCmd) -> Result<Exit, Failure> {
 async fn cmd_bench(cmd: &BenchCmd) -> Result<Exit, Failure> {
     match &cmd.mode {
         BenchMode::Canonical(cmd) => cmd_bench_canonical(cmd).await,
+        BenchMode::CompareVersions(cmd) => cmd_bench_compare_versions(cmd).await,
+        BenchMode::Report(cmd) => cmd_bench_report(cmd),
     }
+}
+
+fn write_markdown(target: &std::path::Path, text: &str) -> Result<(), Failure> {
+    if target == std::path::Path::new("-") {
+        println!("{text}");
+    } else {
+        std::fs::write(target, text).map_err(|e| failed(format!("{}: {e}", target.display())))?;
+    }
+    Ok(())
 }
 
 async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
@@ -377,6 +468,71 @@ async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
             window.e2e.instr_per_sec()
         );
     }
+
+    let mut record = bench::report::CanonicalRecord::from(&report);
+    record.note = cmd.note.clone();
+    bench::report::append_canonical(&cmd.out, &record).map_err(|err| failed(err.to_string()))?;
+    if let Some(target) = &cmd.markdown {
+        write_markdown(target, &bench::report::render_canonical(&record))?;
+    }
+    Ok(Exit::Ok)
+}
+
+async fn cmd_bench_compare_versions(cmd: &CompareVersionsCmd) -> Result<Exit, Failure> {
+    if cmd.arms.len() < 2 {
+        return Err(failed("--arm needs at least 2 entries to compare anything"));
+    }
+    let args = bench::compare::Args {
+        bin: &cmd.bin,
+        manifest_path: &cmd.manifest,
+        k: cmd.k,
+        hwm: cmd.hwm,
+        repeats: cmd.repeats,
+        batches: cmd.batches,
+        windows: canonical::Windows::default(),
+        snapshot_dir: cmd.snapshot_dir.clone(),
+        refemu_bin: cmd.refemu_bin.clone(),
+        arms: cmd.arms.clone(),
+        note: cmd.note.clone(),
+    };
+    let record = bench::compare::run(&args)
+        .await
+        .map_err(|err| failed(err.to_string()))?;
+    bench::report::append_compare(&cmd.out, &record).map_err(|err| failed(err.to_string()))?;
+    let markdown = bench::report::render_compare(&record);
+    if let Some(target) = &cmd.markdown {
+        write_markdown(target, &markdown)?;
+    } else {
+        println!("{markdown}");
+    }
+    Ok(Exit::Ok)
+}
+
+fn cmd_bench_report(cmd: &ReportCmd) -> Result<Exit, Failure> {
+    let which = if cmd.run == "latest" {
+        bench::report::Selector::Latest
+    } else {
+        let i: usize = cmd.run.parse().map_err(|_| {
+            failed(format!(
+                "--run must be \"latest\" or a 0-based index, got {:?}",
+                cmd.run
+            ))
+        })?;
+        bench::report::Selector::Index(i)
+    };
+    let markdown = match cmd.kind {
+        ReportKind::Canonical => {
+            let record = bench::report::select_canonical(&cmd.from, which)
+                .map_err(|e| failed(e.to_string()))?;
+            bench::report::render_canonical(&record)
+        }
+        ReportKind::CompareVersions => {
+            let record = bench::report::select_compare(&cmd.from, which)
+                .map_err(|e| failed(e.to_string()))?;
+            bench::report::render_compare(&record)
+        }
+    };
+    println!("{markdown}");
     Ok(Exit::Ok)
 }
 

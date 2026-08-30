@@ -9,11 +9,14 @@ repository.workspace = true
 
 [dependencies]
 bytes.workspace = true
+chrono.workspace = true
 clap.workspace = true
 clickdoom-executor.workspace = true
 clickdoom-spec.workspace = true
 clickhouse.workspace = true
 refemu.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

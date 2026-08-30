@@ -15,7 +15,10 @@ repository = "https://github.com/MarcusKainth/ClickDOOM"
 clickdoom-spec = { path = "spec" }
 clickdoom-executor = { path = "executor" }
 refemu = { path = "refemu" }
+testcontainers = { version = "0.27", features = ["http_wait"] }
+testcontainers-modules = { version = "0.15", features = ["clickhouse"] }
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 clickhouse = "0.15"
 serde = { version = "1", features = ["derive"] }

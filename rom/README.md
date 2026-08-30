@@ -27,7 +27,7 @@ nondeterministic build; check `doom-rv32im.bin`'s sha256 (or
 `rom/PINNED_HASH`, once #10 lands), which is the thing SPEC §4 actually
 promises.
 
-## Toolchain (issue #5)
+## Toolchain
 
 **xPack GNU RISC-V Embedded GCC v15.2.0-1** (`riscv-none-elf-*`), a
 bare-metal ("no known OS") target — matches the charter, since rom/ brings
@@ -41,7 +41,7 @@ tag.
 Both are content-pinned, so a bump is a deliberate `ci:`/`rom:` PR that
 changes the pin, never something that happens by re-pulling `latest`.
 
-## crt0 and memory map (issue #6)
+## crt0 and the memory map
 
 `toolchain/link.ld` implements SPEC §2's memory map inside the 24 MiB RAM
 window at `0x8000_0000`: `.text` (crt0 + all compiled code) first and its
@@ -83,7 +83,7 @@ rebuilt this ELF from the branch and booted it in their own interpreter:
 at `pc=0x80000048` after correctly executing the `bss_counter` increment.
 First genuine cross-workstream integration on the project.
 
-## Vendored sources and licensing (issue #41)
+## Vendored sources and licensing
 
 `rom/vendor/` holds unmodified upstream doomgeneric (which already carries
 the full DOOM engine source) — see
@@ -99,7 +99,7 @@ sites, the `DG_*` MMIO wiring, anything RV32IM-bare-metal-specific — is a
 patch file in [`rom/patches/`](patches/README.md), never a hand-edit to
 `rom/vendor/`.
 
-## libc shims (issue #7)
+## libc shims
 
 The full DOOM engine (`toolchain/link.ld`'s `DOOM_SRCS` in `rom/Makefile`
 — every vendored `.c` file except the other platforms' `doomgeneric_*.c`
@@ -153,7 +153,7 @@ sitting in `.data`.
 section explains why that second half was missing until a real WAD made
 the bug visible.
 
-## DG_* platform hooks (issue #8)
+## DG_* platform hooks
 
 `src/dg_hooks.c` retires `src/dg_hooks_stub.c` with the real thing, wired
 against SPEC §3 MMIO instead of SDL/X11/Win32. No patch to `rom/vendor/`
@@ -217,7 +217,7 @@ palette matches expected pattern: True     # byte-exact, all 768 bytes
 Every hook, exercised, MMIO trace matching SPEC §3 exactly — not asserted,
 read back from the emulator's own memory after the run.
 
-## Embedding the WAD (issue #9), and a real bug it uncovered
+## Embedding the WAD
 
 `src/wad_embed.S` embeds `rom/wad/doom1.wad` (vendored in #60) as a rodata
 blob via `.incbin` — `_wad_doom1_start`/`_wad_doom1_end` bracket it.
@@ -271,7 +271,7 @@ computed exactly the 1:1 scaling it was designed for. This is the first
 time the real DOOM engine has run past its own startup sequence anywhere
 in this project.
 
-### ROM size, against SPEC §2's 24 MiB RAM window (post-wiring, real numbers)
+### ROM size against the RAM window
 
 Computed from the actual linked ELF's symbols, not estimated:
 
@@ -292,7 +292,7 @@ runtime (zone memory, level data, ...) — healthy, and slightly less than
 `.bss`, the 1 MiB stack reservation, or the ~193 KiB of non-WAD
 rodata/data the full link adds).
 
-### Does `-timedemo` pay `DG_SleepMs`'s elastic-time tax?
+### Does `-timedemo` pay the elastic-time tax?
 
 Raised during #59's review: `DG_SleepMs`'s busy-poll on `TICKS_MS` is the
 only correct implementation (SPEC §3.1's elastic time means "waiting" is
@@ -327,7 +327,7 @@ avoid. Doesn't change `IPMS` (still SPEC §9's deliberately-unratified
 open question, owned by `refemu` per SPEC §9), but rules out one way the
 elastic-time model could have quietly taxed the multi-week timedemo run.
 
-### Palette gamma (a note for whoever writes the render query, #29)
+### Palette gamma
 
 `colors[]` (the `CMAP256` extern this file reads for the `PALETTE`
 region) is gamma-corrected — `I_SetPalette` applies
@@ -338,7 +338,7 @@ whatever bytes the ROM writes, gamma-applied or not), but the render
 query turning `PALETTE` bytes into displayable RGB must not apply gamma a
 second time.
 
-## manifest.json and PINNED_HASH (issue #10)
+## manifest.json and PINNED_HASH
 
 Closes the ROM contract SPEC §4 defines: `manifest.json` and
 `rom/PINNED_HASH`, both emitted by the build, not hand-written.
@@ -382,7 +382,7 @@ CLAUDE.md's third non-negotiable is that a mismatch elsewhere is
 information (a nondeterminism P0), never something to "fix" by editing
 the pin.
 
-### The dependency runs the other way too: reference traces are PINNED_HASH-keyed (issue #214)
+### Reference traces are keyed by PINNED_HASH
 
 The paragraph above states the forward rule — a ROM-affecting change
 must update `PINNED_HASH` in the same PR. It doesn't state the reverse,
@@ -416,7 +416,7 @@ recipe for the demo3 trace generator, and an upfront trace-coverage
 check in the milestone runner so a short trace fails in under a second
 instead of after however much compute a real run has already spent).
 
-### A real P0, found by this exact check on its first real run
+### What this check catches
 
 `PINNED_HASH` failed CI the moment it landed — not a flake. CI's build
 (`22113f55...`) didn't match the hash I'd pinned locally on an Apple

@@ -1,5 +1,7 @@
 # Phase 0 benchmark results
 
+Harness and how to rerun: [README.md](README.md).
+
 Evidence for SPEC §9 and for ADR-0001 / ADR-0002.
 
 Reproduce with `make bench-phase0` (requires `make up`). Raw TSV is what

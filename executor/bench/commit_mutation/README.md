@@ -21,16 +21,6 @@ afterwards.
 - the gameplay-window snapshot — reuses
   `rom/bench/canonical_throughput/{gen,seed}_snapshot.py` and its cache.
 
-## Files
-
-| file | role |
-|---|---|
-| `arm.sh` | runs **one arm** in a **fresh container**; prints the idle-core headroom it observed and refuses below 8 idle cores |
-| `setup_db.sh` | schema + ROM + decode + bootstrap (+ optional gameplay snapshot seed) into one isolated database |
-| `bench.py` | the measurement: N chained e2e batches, per-statement `query_id`, `part_log`/`system.mutations` dump, standalone `RAMT`/`DEC`/`KEYQ` timings, a direct `select_only(K=0)` reading of the fixed setup cost, write-log occupancy per batch; emits JSON |
-| `ksweep.sh` | #180's fixed-instruction-window K-sweep |
-| `fit.py` | summarises arms and fits `S` from adjacent sweep arms |
-
 ## Measurement discipline this encodes
 
 **Fresh container per arm, not a fresh database.** ClickHouse's
@@ -110,10 +100,3 @@ four: it is the **upper bound** on what any retention change could recover.
 Add `--window gameplay --snapshot <file>` to `arm.sh` to measure the
 store-heavy gameplay window instead of boot; the snapshot is the one
 `rom/bench/canonical_throughput` already caches per ROM.
-
-## Results
-
-Recorded on **#180** and **#182**, not here — a results file in-tree drifts
-from the issue that owns the decision. Provenance for every number
-(git SHA, ROM sha256, ClickHouse version, K/HWM, headroom, JIT regime) is in
-each arm's JSON.

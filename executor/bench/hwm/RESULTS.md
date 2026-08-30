@@ -1,5 +1,7 @@
 # Write-log high-water mark: measured, not guessed
 
+Harness and how to rerun: [README.md](README.md).
+
 SPEC §6 requires a write-log high-water mark that ends a batch early. Phase 0
 didn't set one (its e2e harness never accumulated enough stores in one batch
 to matter). This measures the curve `RESULTS.md` in Phase 0 promised: does

@@ -1,60 +1,56 @@
 # driver/
 
-See CLAUDE.md for this workstream's charter and SPEC.md for its contracts.
-Ownership is claimed via issue self-assignment.
+The client side: the loop that ticks the batch statement and blits whatever
+frame SQL produced, and the frame-readout SQL that produces it.
 
-## render.py (issue #29)
+`PURITY.md` draws the line here, as PUR-5 to PUR-8 and PUR-10. The driver loops,
+ferries key events in, blits output, and does housekeeping that computes
+nothing. Frame readout is computation, so it is a SQL query that lives here and
+runs SQL-side.
 
-The frame readout: `frame_readout_sql()` reconstructs the raw
-`fb`/`palette` byte strings from word-addressed FRAMEBUFFER/PALETTE
-storage and inserts a `frames_out` row per commit; `ansi_render_sql()`
-converts a committed frame into a printable half-block-truecolor ANSI
-string, ready for the driver to print verbatim; `ppm_render_sql()`
-(issue #204) converts a committed frame into a complete binary PPM (P6)
-image, one String, for the driver to write to a file unmodified — an
-actual image file, since ANSI escape codes aren't something to commit to
-git or paste into a blog post. All three: SQL-side computation only
-(PURITY.md), the driver only blits/writes the result.
+## Frame readout
 
-**Originally built and validated against a fixture** (`fixture_schema.sql`),
-before the real FRAMEBUFFER/PALETTE persistence (#160) ratified and landed
-(#174). The fixture mirrors sqlcpu's proposed shape exactly (confirmed
-with `sqlcpu-2`, see issue #29's plan comment), and #174's real
-`sqlcpu/schema.sql` now matches it byte-for-byte — `refemu-2` independently
-confirmed this module's queries work unmodified against the real,
-persisted tables, reproducing `fb_hash fe5d82c0f42d45f1`. The fixture
-stays in the tree as this module's own fast, isolated test path.
+The readout reconstructs the raw framebuffer and palette bytes from
+word-addressed storage and records one row per committed frame. Two render
+forms sit on top of it: a half-block truecolor ANSI string the driver prints
+verbatim, and a binary PPM the driver writes to a file unmodified. An image
+file is what you want for anything outside a terminal.
 
-Validated two ways, both against real evidence, not eyeballed:
+There is also a hash-only readout, for a run that wants the frame check without
+carrying the bytes. `scripts/run_milestone.sh` uses both, calling into this
+module rather than reimplementing either.
 
-1. `frame_readout_sql()` against **real refemu data** at the milestone
-   icount (15,393,136, as of #175's R_DrawColumn/R_DrawSpan unroll,
-   `PINNED_HASH 9a6a47d0…`) — `gen_frame_fixture.py` dumps refemu's actual
-   FRAMEBUFFER/PALETTE bytes at that point (independently computing
-   `fb_hash` itself, not trusting a cited number), `seed_frame_fixture.py`
-   loads them into the fixture tables, and the readout reproduces
-   `fb_hash fe5d82c0f42d45f1` — the same number #110/#160 cite — using
-   `sqlcpu/checkpoint.py`'s real `fb_hash()`, never reimplemented.
-2. `ansi_render_sql()` against a small hand-computed synthetic case (a
-   2x2 image with known colors), checked byte-for-byte against an
-   independently-computed expected escape sequence.
-3. `ppm_render_sql()` two ways: against the same hand-computed 2x2
-   synthetic case (byte-exact), and against the same real, `fb_hash`-
-   verified milestone frame from check 1 — an independent Python
-   re-derivation of the expected RGB bytes from that frame's raw
-   `fb`/`palette` (not the SQL's own logic, mirrored), checked byte-exact
-   against the SQL's actual output. `fb_hash` is defined over a different
-   byte representation (indexed, SPEC §7) than PPM's (expanded RGB), so
-   there's no single hash value the two share directly — this real-data
-   check is what ties them together instead: same underlying frame, two
-   independently-computed representations, both correct.
+All of it is SQL text generated here and evaluated in the database. Nothing in
+this directory computes a pixel.
 
-Run all three: `driver/test_render.sh` (or `make test-render`).
+## Tests
 
-### Why this isn't wired into the milestone runner yet
+    make test-render
 
-#174 lands the persistence tables/columns, and `refemu-2` confirmed the
-composition works against them — but `scripts/run_milestone.sh` (#144)
-doesn't yet call `frame_readout_sql()`/`ansi_render_sql()` as part of its
-loop. That wiring is a separate, small follow-up, not part of this PR's
-scope.
+Needs a live ClickHouse, which the target starts. On a host without
+`clickhouse-client` on `PATH`, pass one:
+
+    make test-render CH_CLIENT="docker exec -i clickdoom-ch clickhouse-client"
+
+Runs against a throwaway `driver_render_test_<pid>` database, never the shared
+one. Four checks, none of them eyeballed:
+
+1. The readout against real reference-emulator data at the milestone icount,
+   reproducing `fb_hash fe5d82c0f42d45f1`. The check is computed by `sqlcpu/`'s
+   own frame hash, never reimplemented here.
+2. The PPM render of that same frame, byte-exact against an independent Python
+   re-derivation from the raw framebuffer and palette.
+3. The ANSI render of a hand-computed 2x2 case, byte-exact against an
+   independently computed escape sequence.
+4. The PPM render of that same 2x2 case.
+
+The frame hash is defined over the indexed representation and PPM over expanded
+RGB, so the two share no single value. Check 2 is what ties them together: one
+frame, two representations, each computed independently.
+
+## Fixtures
+
+The module has a fast test path that needs no ROM run: a fixture schema
+mirroring the real table shapes, plus generators that dump the reference
+emulator's framebuffer and palette at a target icount and load them in. Dense
+and sparse storage each have a pair.

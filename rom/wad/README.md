@@ -6,8 +6,7 @@ distributed as freely redistributable marketing material for the retail
 game. It contains one episode (nine maps: "Knee-Deep in the Dead") and
 none of the retail/commercial episodes.
 
-## Licensing position (this is the load-bearing claim; read it before
-touching this file)
+## Licensing position
 
 This file is **not** covered by DOOM's GPL source license -- it is game
 *data*, not source code. It is embedded here under id Software's own
@@ -55,7 +54,7 @@ Verify the vendored file hasn't drifted:
 cd rom/wad && shasum -a 256 -c doom1.wad.sha256sum
 ```
 
-## Size, against SPEC §2's 24 MiB RAM budget
+## Size against the RAM budget
 
 The WAD (4,196,020 B ≈ 4.00 MiB) plus the current engine binary
 (593,136 B ≈ 0.57 MiB, per issue #7's `doom-rv32im.bin`) totals
@@ -63,13 +62,3 @@ The WAD (4,196,020 B ≈ 4.00 MiB) plus the current engine binary
 heap, stack, `.bss`, and everything else the running engine allocates.
 Healthy headroom -- worth having on record now rather than discovering a
 tight fit during a boot that mysteriously fails to allocate.
-
-## Not wired up yet
-
-This directory is deliberately just the vendored file and its provenance
--- no embedding mechanism (`.incbin`, an object file, a `rom_vfs_register()`
-call) lands here. That's issue #9's wiring half, coordinated separately
-with the `rom` workstream since it touches files they're actively editing
-(`rom/Makefile`'s source list in particular). Landing the vendored file on
-its own first mirrors how issue #41/#44 vendored doomgeneric before #7
-wired it into the build.

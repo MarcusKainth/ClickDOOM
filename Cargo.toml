@@ -13,7 +13,7 @@ repository = "https://github.com/MarcusKainth/ClickDOOM"
 clickdoom-spec = { path = "spec" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 

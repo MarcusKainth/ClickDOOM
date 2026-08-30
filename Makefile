@@ -58,7 +58,8 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-riscv-tests-fixtures gen-reference-trace \
-        lint check-purity shellcheck ruff clang-format typos actionlint zizmor \
+        lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
+        clang-format typos actionlint zizmor \
         adr-new check-adr require-rom
 
 help: ## List every target
@@ -208,16 +209,22 @@ check-adr: ## The ADR set is numbered contiguously and fully indexed
 
 ##@ Lint
 
-lint: check-purity shellcheck ruff clang-format typos check-adr actionlint zizmor ## Everything a pull request must pass
+lint: check-purity shellcheck ruff cargo-fmt cargo-clippy clang-format typos check-adr actionlint zizmor ## Everything a pull request must pass
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
 
 shellcheck: ## Every shell script in the tree
-	find scripts driver sqlcpu executor rom -name '*.sh' -exec shellcheck {} +
+	find scripts driver sqlcpu executor rom refemu -name '*.sh' -exec shellcheck {} +
 
 ruff: ## Python, at the version refemu's lockfile pins. ruff.toml holds the rules
 	uv run --project refemu ruff check .
+
+cargo-fmt: ## Rust formatting, at the version rust-toolchain.toml pins
+	cargo fmt --all --check
+
+cargo-clippy: ## Rust lints. --all-targets so the test files are covered too
+	cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 clang-format: ## C sources. rom/vendor/.clang-format disables the vendored ones
 	find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +

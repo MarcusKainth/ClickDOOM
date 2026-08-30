@@ -31,7 +31,7 @@ scan() { # scan <rule> <dir> <description> <pattern...>
   # This script is excluded from its own scan. It names every forbidden pattern
   # as a literal, so scanning it would report itself.
   local files
-  files=$(git ls-files -- "$dir" | grep -E '\.(sql|py|sh)$' | grep -v '^scripts/check_purity\.sh$') || true
+  files=$(git ls-files -- "$dir" | grep -E '\.(sql|py|sh|rs)$' | grep -v '^scripts/check_purity\.sh$') || true
   [ -n "$files" ] || return 0
   for pat in "$@"; do
     if printf '%s\n' "$files" | xargs grep -InE "$pat" -- | grep -v 'purity-ok:' ; then
@@ -57,6 +57,7 @@ CLOCK_PATTERNS=(
   '\brand\(' '\brandom\(' '\brand32\(' '\brand64\(' 'randCanonical\('
   'randomString\(' 'randomPrintableASCII\(' 'generateRandom' 'generateUUIDv4\('
   'blockNumber\(' 'rowNumberInAllBlocks\('
+  'Instant::now' 'SystemTime::now' 'std::time::' '\brand::' 'thread_rng\(' 'getrandom'
 )
 for d in sqlcpu executor driver scripts; do
   scan PUR-12 "$d" "wall clock / randomness / block order" "${CLOCK_PATTERNS[@]}"

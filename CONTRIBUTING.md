@@ -36,8 +36,8 @@ A maintainer should respond within a few days, though it can take longer.
 
 ## Building and testing
 
-You need Docker, `uv`, `make`, `shellcheck` and `clang-format`. `DEVELOPING.md`
-covers versions and the rest of the mechanics.
+You need Docker, `uv`, `cargo`, `make`, `shellcheck` and `clang-format`.
+`DEVELOPING.md` covers versions and the rest of the mechanics.
 
     make help    # every target, grouped
     make lint    # what every pull request must pass

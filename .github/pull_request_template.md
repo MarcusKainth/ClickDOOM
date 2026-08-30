@@ -24,11 +24,11 @@
 $ just ...
 ```
 
-## Purity declaration
+## Purity
 
-- [ ] No computation moved outside SQL (no executable UDFs / subprocess delegation)
-- [ ] Driver changes (if any) remain within PURITY.md's four allowed actions
-- [ ] No wall-clock/randomness on any computation path
+<!-- Name the PUR-N rules this change touches and say how each property still
+     holds. Touching one is not a problem. Answer "None." if it touches none.
+     PURITY.md states each rule in full and is the only place that does. -->
 
 ## Author checklist
 
@@ -44,5 +44,5 @@ $ just ...
 - [ ] Re-ran the evidence commands locally — outputs match the paste
 - [ ] Change complies with SPEC.md as written (not as the author wishes it were)
 - [ ] Determinism: explicit ORDER BY where result-affecting; no block-order reliance
-- [ ] Purity items verified by reading the diff, not the declaration
+- [ ] Any PUR-N the author named still holds, verified by reading the diff
 - [ ] For `executor`/`sqlcpu`: no perf regression >10% without an ADR justifying it

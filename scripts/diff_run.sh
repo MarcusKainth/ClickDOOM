@@ -222,7 +222,7 @@ if [ "${#CH_CMD[@]}" -eq 0 ]; then
   fail "clickhouse client resolution produced an EMPTY command (--client was given as blank/whitespace-only, or auto-detection above found nothing usable) -- refusing to proceed. A downstream call would silently treat its own next flag (e.g. --host) as the program name instead of failing here, at the actual point of the problem."
 fi
 if ! "${CH_CMD[@]}" --version >/dev/null 2>&1; then
-  fail "resolved clickhouse client command '${CH_CMD[*]}' does not run (\`${CH_CMD[*]} --version\` failed) -- refusing to proceed rather than let this surface later as an unrelated-looking error from load_rom.py/bootstrap.py/a query. Check --client, or that the fetched/detected binary is actually executable."
+  fail "resolved clickhouse client command '${CH_CMD[*]}' does not run (\`${CH_CMD[*]} --version\` failed) -- refusing to proceed rather than let this surface later as an unrelated-looking error from load_rom.py/bootstrap.py/a query. Check --client, or that the fetched/detected binary is actually executable."  # purity-ok: the word appears in an error message, not as a ClickHouse executable UDF
 fi
 ch() {
   local args=(--host "$HOST" --port "$PORT" --user "$CH_USER" --database "$DATABASE")

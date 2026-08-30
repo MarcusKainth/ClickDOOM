@@ -25,8 +25,8 @@ the upstream engine.
 
 - `rom/vendor/doomgeneric/` is [ozkl/doomgeneric](https://github.com/ozkl/doomgeneric)
   at commit `dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284`, unmodified. It carries
-  id Software's DOOM engine sources. 176 of its files state "either version 2 of
-  the License, or (at your option) any later version", which is where the
+  id Software's DOOM engine sources. Its files state "either version 2 of the
+  License, or (at your option) any later version", which is where the
   `-or-later` comes from.
 - `rom/patches/` patches those sources at build time.
 - `rom/src/` (crt0, the linker script, libc shims, `dg_hooks.c`, `syscalls.c`)

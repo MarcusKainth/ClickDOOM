@@ -14,13 +14,13 @@ not repeat it.
 
 ## Invariants
 
-Two documents state properties the code cannot show you, and both are cited by
-name rather than restated.
+These documents state properties the code cannot show you, and both are cited
+by name rather than restated.
 
-[`PURITY.md`](PURITY.md) defines what "runs in ClickHouse" means, as `PUR-1` to
-`PUR-12`. Its Enforcement table says which rules `scripts/check_purity.sh`
-reaches and which are review-only. Eight of the twelve have no textual
-signature, so review is the only thing standing behind them.
+[`PURITY.md`](PURITY.md) defines what "runs in ClickHouse" means, as numbered
+`PUR-N` rules. Its Enforcement table says which of them
+`scripts/check_purity.sh` reaches and which are review-only. Most have no
+textual signature, so review is the only thing standing behind them.
 
 [`SPEC.md`](SPEC.md) is the contract: the CPU, the memory map, the MMIO surface,
 the batch execution contract, the trace format, the determinism rules. If a

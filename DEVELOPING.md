@@ -12,8 +12,8 @@ policy; this file covers how things run.
 | `make` | Every task. `make help` lists them |
 | `uv` | Python environments for `refemu` and `executor`, both with committed lockfiles |
 | `shellcheck` | `make shellcheck` |
-| `clang-format` | `make clang-format`'s CI equivalent, over `rom/src/` |
-| `actionlint`, `zizmor` | Workflow linting. `zizmor` also runs in CI, `actionlint` does not |
+| `clang-format` | `make clang-format`, over `rom/src/` |
+| `actionlint`, `zizmor` | Workflow linting, both in `make lint` |
 
 Python is 3.11 or newer. The rv32 toolchain is pinned to xPack
 `riscv-none-elf-gcc` 15.2.0-1 and built from `rom/toolchain/Dockerfile`; you
@@ -52,7 +52,7 @@ to `clickdoom` itself.
 ## The ClickHouse pin
 
 Pinned to `26.7.5.10` by image digest. The digest appears in
-`docker-compose.yml` and four times in `.github/workflows/`, because GitHub does
+`docker-compose.yml` and once per service block in the workflows, because GitHub does
 not expose the `env` context to `services.image` and the literal cannot be
 shared. All five must match.
 
@@ -68,21 +68,22 @@ project's whole output is an expression evaluated a few billion times.
 | `test-sqlcpu` | riscv-tests inside ClickHouse, decode vectors, execute and checkpoint checks |
 | `test-executor` | Fold, commit and MMIO, against a fixture schema |
 | `test-render` | Frame readout and the ANSI and PPM render queries |
-| `smoke` | The differential run CI uses, at 100,000 instructions |
+| `smoke` | The differential run at 100,000 instructions |
 
-`make test` runs the four suites. It does not run `smoke`, which needs a built
-ROM.
+`make test` runs the suites above. It does not run `smoke`, which needs a
+built ROM.
 
 ### What the smoke run does not cover
 
 `smoke` compares 100,000 instructions at `CHECKPOINT_INTERVAL` spacing, which is
 24 register comparisons and **zero memory comparisons**. It never reaches a
 `RAM_HASH_INTERVAL` boundary, so `ramhash` and `fbhash` are not checked. A green
-`differential-smoke` means registers and control flow agreed. It does not mean
-the engines agree.
+smoke run means registers and control flow agreed. It does not mean the
+engines agree.
 
-Only the nightly deep-diff compares memory. Reaching the first memory comparison
-on a pull request would cost about 14 minutes per run.
+Only a much longer run reaches a memory comparison, which is why one runs
+nightly rather than on every pull request. The first boundary alone costs about
+14 minutes.
 
 ## Benchmarks
 
@@ -97,9 +98,9 @@ Record the ClickHouse version and K with any number you report, and say how
 quiet the machine was. A throughput claim without those is not comparable to
 anything.
 
-CI runs no benchmark. A shared runner cannot give the timing a quiet machine
-gives, and a gate that fails for reasons unrelated to the change is worse than
-no gate.
+Nothing benchmarks automatically. A shared runner cannot give the timing a
+quiet machine gives, and a gate that fails for reasons unrelated to the change
+is worse than no gate.
 
 ## Reference traces
 
@@ -115,39 +116,13 @@ per second, which sets the cost of any regeneration.
 The `demo3` trace is not committed. It is large, changes with every ROM, and is
 regenerable.
 
-## CI
+## Labels
 
-Eight jobs, all required on `main`: `pr-title`, `lint`, `build-rom`,
-`test-refemu`, `test-sqlcpu`, `test-executor`, `test-render`,
-`differential-smoke`. There is no aggregating gate job, so **adding or renaming
-a CI job means updating the ruleset's required checks in the same change.**
+`.github/labels.yml` is the taxonomy and `scripts/sync-labels.sh` applies it.
+It never deletes, because deleting a label destroys the record of what was
+filed under it.
 
-Read results from the API, not `gh pr checks`, which renders a `cancelled`
-conclusion as `fail`:
-
-    gh api repos/:owner/:repo/actions/runs/<id>/jobs \
-      --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
-
-Every action is pinned to a full commit SHA. `zizmor` fails `lint` if a pin or a
-token scope regresses.
-
-## Repository settings
-
-Recorded here so they can be rebuilt rather than remembered.
-
-A ruleset on `main`: restrict deletions, block force pushes, require linear
-history, require a pull request with one approving review, dismiss stale
-approvals on new commits, require conversation resolution, require Code Owner
-review, and require the eight status checks above. The repository admin is a
-bypass actor.
-
-Merge-commit and rebase-merge remain enabled and branch auto-delete remains off,
-so squash-merge is a convention rather than a mechanism.
-
-Dependabot alerts, security updates and version updates are on; `dependabot.yml`
-covers Actions, the toolchain image, `docker-compose` and both uv projects.
-CodeQL default setup covers `actions`, `python` and `c-cpp`. Secret scanning,
-push protection and private vulnerability reporting are on.
-
-`.github/labels.yml` is the label taxonomy and `scripts/sync-labels.sh` applies
-it on push to `main`. It never deletes, so retiring a label is a manual step.
+Retiring one is a manual step, and the order matters: move its issues to the
+replacement first, then delete it. A label can only be renamed into a name that
+does not already exist, so once the replacement exists the rename that would
+have preserved the assignments is no longer available.

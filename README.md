@@ -82,7 +82,7 @@ place where computation has left SQL.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) is the entry point.
 [DEVELOPING.md](DEVELOPING.md) has the build, test and benchmark mechanics,
-[PURITY.md](PURITY.md) states the twelve rules the project is held to, and
+[PURITY.md](PURITY.md) states the rules the project is held to, and
 [AGENTS.md](AGENTS.md) is what a coding agent should read first.
 
 Much of this repository was written by AI agents. [AI_POLICY.md](AI_POLICY.md)

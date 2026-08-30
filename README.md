@@ -112,6 +112,14 @@ that govern how work lands here.
   ClickHouse SQL; proof the premise works.
 - [DOOMHouse](https://github.com/arniwesth/DoomHouse), DOOMQL (CedarDB),
   DuckDB-DOOM — the SQL Doom-like renaissance this project answers.
-- doomgeneric / the id Software DOOM source (GPL). Shareware `doom1.wad`
-  is embedded under its shareware distribution terms; no commercial WADs
-  in this repo.
+- [doomgeneric](https://github.com/ozkl/doomgeneric) and the id Software
+  DOOM source it carries.
+
+## License
+
+Copyright 2026 Marcus Kainth.
+
+The emulator is Apache-2.0. `rom/` builds the DOOM binary and is
+GPL-2.0-or-later. The embedded shareware `doom1.wad` is under id Software's
+own distribution terms and no commercial WADs go in this repo.
+[LICENSING.md](LICENSING.md) has the boundary in full.

@@ -6,6 +6,7 @@
 //! subcommand, because it needs every option `run` already has and would
 //! otherwise restate them and then drift.
 
+pub mod observe;
 pub mod point;
 pub mod report;
 
@@ -14,8 +15,8 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clickdoom_spec::{
-    Checkpoint, HaltReason, IPMS_DEFAULT, Manifest, MemoryMap, RAM_BASE, RAM_SIZE, TraceConfig,
-    assert_pinned_hash, sha256_hex,
+    Checkpoint, HaltReason, IPMS_DEFAULT, Manifest, MemoryMap, RAM_BASE, RAM_SIZE, Region,
+    TraceConfig, assert_pinned_hash, sha256_hex,
 };
 
 use crate::boot::{RETIRED_PC_HISTORY, format_report};
@@ -25,8 +26,9 @@ use crate::image::{Image, read_image};
 use crate::memory::Memory;
 use crate::mmio::Devices;
 use crate::snapshot::{self, Provenance, Snapshot};
-use crate::trace::{self, Step, Stop};
-use point::{Point, StopAt, parse_addr, parse_count, parse_hash64};
+use crate::trace::{self, Observer, Step, Stop};
+use observe::{PcHistogram, Recorders, TrapSpec, Traps};
+use point::{Point, StopAt, WatchFrom, parse_addr, parse_count, parse_hash64};
 use report::{FrameCommitJson, HaltJson, RunOutcome, RunReport, write_json};
 
 /// What the process reports.
@@ -220,6 +222,79 @@ pub struct RunCmd {
     pub console_out: Option<PathBuf>,
     #[command(flatten)]
     pub capture: CaptureArgs,
+    #[command(flatten)]
+    pub observe: ObserveArgs,
+}
+
+/// What a run records while it goes.
+#[derive(Args, Clone, Default)]
+pub struct ObserveArgs {
+    /// Start recording here
+    #[arg(long, value_name = "POINT", default_value = "start")]
+    pub watch_from: Option<WatchFrom>,
+    /// Write retired-instruction counts per program counter
+    #[arg(long, value_name = "PATH")]
+    pub pc_histogram: Option<PathBuf>,
+    /// Take a histogram snapshot here. Repeatable
+    #[arg(long, value_name = "POINT", requires = "pc_histogram")]
+    pub histogram_at: Vec<WatchFrom>,
+    /// Record a call whenever the program counter reaches ADDR. Repeatable
+    #[arg(long, value_name = "ADDR=NAME")]
+    pub trap_pc: Vec<TrapSpec>,
+    /// Read ADDR and NAME pairs from a file, one per line
+    #[arg(long, value_name = "PATH")]
+    pub trap_pcs: Option<PathBuf>,
+    /// Registers a trap records
+    #[arg(
+        long,
+        value_name = "REGS",
+        value_delimiter = ',',
+        default_value = "10,11,12"
+    )]
+    pub trap_regs: Vec<u8>,
+    /// Write the trap call log
+    #[arg(long, value_name = "PATH")]
+    pub trap_report: Option<PathBuf>,
+    /// Fail once the trap log passes this many rows
+    #[arg(long, value_name = "N", default_value_t = 5_000_000, value_parser = parse_count)]
+    pub trap_limit: u64,
+    /// Record which words these regions write
+    #[arg(long, value_name = "REGIONS", value_delimiter = ',')]
+    pub watch_writes: Vec<WatchRegion>,
+    /// Write the write-coverage report
+    #[arg(long, value_name = "PATH", requires = "watch_writes")]
+    pub write_coverage: Option<PathBuf>,
+    /// Fail unless every word of these regions is written in the window
+    #[arg(
+        long,
+        value_name = "REGIONS",
+        value_delimiter = ',',
+        requires = "watch_writes"
+    )]
+    pub require_coverage: Vec<WatchRegion>,
+    /// Write one row per announced frame
+    #[arg(long, value_name = "PATH")]
+    pub frame_log: Option<PathBuf>,
+}
+
+/// A region a run can watch writes to.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
+pub enum WatchRegion {
+    Ram,
+    #[value(name = "fb", alias = "framebuffer")]
+    Framebuffer,
+    #[value(name = "pal", alias = "palette")]
+    Palette,
+}
+
+impl WatchRegion {
+    const fn region(self) -> Region {
+        match self {
+            WatchRegion::Ram => Region::Ram,
+            WatchRegion::Framebuffer => Region::Framebuffer,
+            WatchRegion::Palette => Region::Palette,
+        }
+    }
 }
 
 /// What a run keeps of the machine it leaves behind.
@@ -266,6 +341,8 @@ pub struct TraceCmd {
     pub ram_hash_interval: u64,
     #[command(flatten)]
     pub capture: CaptureArgs,
+    #[command(flatten)]
+    pub observe: ObserveArgs,
 }
 
 #[derive(Args, Clone)]
@@ -441,55 +518,197 @@ struct Ending {
     outcome: RunOutcome,
     condition: Option<Point>,
     halt: Option<Halt>,
+    /// Snapshot points the run never reached.
+    unreached: Vec<String>,
+}
+
+/// Reads a file of ADDR and NAME pairs, one per line, skipping comments.
+///
+/// The address column is hex without a prefix, matching every other address
+/// column these reports write. A `0x` prefix is accepted too.
+fn read_trap_file(path: &Path) -> Result<Vec<TrapSpec>, Failure> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| failed(format!("reading {}: {e}", path.display())))?;
+    let mut specs = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (addr, name) = line
+            .split_once(|c: char| c.is_whitespace())
+            .ok_or_else(|| usage(format!("{}:{}: not ADDR NAME", path.display(), number + 1)))?;
+        let addr = addr.trim();
+        let digits = addr.strip_prefix("0x").unwrap_or(addr);
+        specs.push(TrapSpec {
+            addr: u32::from_str_radix(digits, 16).map_err(|_| {
+                usage(format!(
+                    "{}:{}: `{addr}` is not a hex address",
+                    path.display(),
+                    number + 1
+                ))
+            })?,
+            name: name.trim().to_owned(),
+        });
+    }
+    Ok(specs)
+}
+
+/// Sets up whatever the caller asked to record.
+fn recorders(cpu: &Cpu, observe: &ObserveArgs) -> Result<Recorders, Failure> {
+    let text = cpu.memory.text_region();
+    let mut specs = observe.trap_pc.clone();
+    if let Some(path) = &observe.trap_pcs {
+        specs.extend(read_trap_file(path)?);
+    }
+    Ok(Recorders {
+        histogram: observe
+            .pc_histogram
+            .is_some()
+            .then(|| PcHistogram::new(text)),
+        traps: (!specs.is_empty())
+            .then(|| Traps::new(&specs, observe.trap_regs.clone(), text, observe.trap_limit)),
+        watch_writes: observe.watch_writes.iter().map(|r| r.region()).collect(),
+        watching: false,
+    })
+}
+
+/// Whether a run has reached a position.
+fn reached(cpu: &Cpu, point: Point) -> bool {
+    match point {
+        Point::Icount(n) => cpu.icount() == n,
+        Point::Frame(n) => cpu
+            .memory
+            .devices()
+            .registers_ref()
+            .is_some_and(|r| r.frame_commits.len() as u64 == n + 1),
+        Point::Start => true,
+        _ => false,
+    }
+}
+
+/// The observer a command runs behind: it stops where the caller asked, feeds
+/// the trace to a sink, and drives whatever recording was turned on.
+struct Driver<'a, C: FnMut(Checkpoint)> {
+    stops: Vec<Point>,
+    fired: Option<Point>,
+    watch_from: Point,
+    watching: bool,
+    watch_regions: Vec<Region>,
+    histogram_at: Vec<Point>,
+    taken: Vec<bool>,
+    rec: &'a mut Recorders,
+    sink: C,
+}
+
+impl<C: FnMut(Checkpoint)> Driver<'_, C> {
+    /// Starts write watching once the run reaches its window, so the part
+    /// before it costs nothing.
+    fn maybe_start_watching(&mut self, cpu: &mut Cpu) {
+        if self.watching || self.watch_regions.is_empty() || !reached(cpu, self.watch_from) {
+            return;
+        }
+        cpu.memory.watch_writes(&self.watch_regions);
+        self.watching = true;
+    }
+
+    fn maybe_snapshot(&mut self, cpu: &Cpu) {
+        let Some(histogram) = &mut self.rec.histogram else {
+            return;
+        };
+        for (index, point) in self.histogram_at.iter().enumerate() {
+            if !self.taken[index] && reached(cpu, *point) {
+                self.taken[index] = true;
+                histogram.take_snapshot(point.to_string());
+            }
+        }
+    }
+}
+
+impl<C: FnMut(Checkpoint)> Observer for Driver<'_, C> {
+    fn before_step(&mut self, cpu: &mut Cpu) -> Step {
+        self.maybe_start_watching(cpu);
+        self.rec.before(cpu);
+        Step::Continue
+    }
+
+    fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, insn: crate::Instruction) -> Step {
+        self.rec.after(retired_pc, insn);
+        self.maybe_start_watching(cpu);
+        self.maybe_snapshot(cpu);
+        for stop in &self.stops {
+            if reached(cpu, *stop) {
+                self.fired = Some(*stop);
+                return Step::Stop;
+            }
+        }
+        Step::Continue
+    }
+
+    fn checkpoint(&mut self, checkpoint: Checkpoint) {
+        (self.sink)(checkpoint);
+    }
 }
 
 /// Drives the machine to its first stop, emitting checkpoints.
-fn drive<C>(cpu: &mut Cpu, config: TraceConfig, budget: &BudgetArgs, on_checkpoint: C) -> Ending
+fn drive<C>(
+    cpu: &mut Cpu,
+    config: TraceConfig,
+    budget: &BudgetArgs,
+    observe: &ObserveArgs,
+    rec: &mut Recorders,
+    on_checkpoint: C,
+) -> Ending
 where
     C: FnMut(Checkpoint),
 {
     let conditions = budget.conditions();
-    let mut fired: Option<Point> = None;
-    let stop = trace::run(
-        cpu,
-        config,
-        budget.max_instructions,
-        |cpu| {
-            for condition in &conditions {
-                let hit = match condition {
-                    Point::Icount(n) => cpu.icount() == *n,
-                    Point::Frame(n) => cpu
-                        .memory
-                        .devices()
-                        .registers_ref()
-                        .is_some_and(|r| r.frame_commits.len() as u64 == *n + 1),
-                    _ => false,
-                };
-                if hit {
-                    fired = Some(*condition);
-                    return Step::Stop;
-                }
-            }
-            Step::Continue
-        },
-        on_checkpoint,
-    );
+    let histogram_at: Vec<Point> = observe.histogram_at.iter().map(|p| p.0).collect();
+    let mut driver = Driver {
+        stops: conditions.clone(),
+        fired: None,
+        watch_from: observe.watch_from.map_or(Point::Start, |w| w.0),
+        watching: false,
+        watch_regions: observe.watch_writes.iter().map(|r| r.region()).collect(),
+        taken: vec![false; histogram_at.len()],
+        histogram_at,
+        rec,
+        sink: on_checkpoint,
+    };
+    let stop = trace::run(cpu, config, budget.max_instructions, &mut driver);
+    let fired = driver.fired;
+    // A point named for a snapshot but never reached would leave a window
+    // silently empty, so the run says so rather than reporting a difference
+    // against nothing.
+    let unreached: Vec<String> = driver
+        .histogram_at
+        .iter()
+        .zip(&driver.taken)
+        .filter(|(_, taken)| !**taken)
+        .map(|(point, _)| point.to_string())
+        .collect();
+    if let Some(histogram) = &mut driver.rec.histogram {
+        histogram.take_snapshot("end".to_owned());
+    }
 
     match stop {
         Stop::Halted(halt) => Ending {
             outcome: RunOutcome::Halt,
             condition: conditions.contains(&Point::Halt).then_some(Point::Halt),
             halt: Some(halt),
+            unreached,
         },
         Stop::Budget => Ending {
             outcome: RunOutcome::Budget,
             condition: conditions.contains(&Point::Budget).then_some(Point::Budget),
             halt: None,
+            unreached,
         },
         Stop::Observer => Ending {
             outcome: RunOutcome::Stop,
             condition: fired,
             halt: None,
+            unreached,
         },
     }
 }
@@ -583,6 +802,132 @@ fn check_budget_reachable(budget: &BudgetArgs) -> Result<(), Failure> {
         }
     }
     Ok(())
+}
+
+/// Writes whatever a run was asked to record, and returns the checks that
+/// did not hold.
+fn write_records(
+    cpu: &Cpu,
+    ending: &Ending,
+    observe: &ObserveArgs,
+    rec: &Recorders,
+) -> Result<Vec<String>, Failure> {
+    let mut failures: Vec<String> = ending
+        .unreached
+        .iter()
+        .map(|point| format!("the run never reached {point}, so its snapshot is missing"))
+        .collect();
+
+    if let (Some(path), Some(histogram)) = (&observe.pc_histogram, &rec.histogram) {
+        let mut out = String::from("# refemu-pc-histogram 1\n");
+        out.push_str("# columns\tsnapshot\tpc_hex\tcount\n");
+        for snapshot in &histogram.snapshots {
+            let counted: u64 = snapshot.rows.iter().map(|(_, count)| count).sum();
+            out.push_str(&format!(
+                "# snapshot\t{}\tretired={}\tdistinct={}\tcounted={counted}\n",
+                snapshot.label,
+                snapshot.retired,
+                snapshot.rows.len()
+            ));
+        }
+        for snapshot in &histogram.snapshots {
+            for (pc, count) in &snapshot.rows {
+                out.push_str(&format!("{}\t{pc:08x}\t{count}\n", snapshot.label));
+            }
+        }
+        write_text(path, &out)?;
+    }
+
+    if let (Some(path), Some(traps)) = (&observe.trap_report, &rec.traps) {
+        if traps.overflowed {
+            return Err(failed(format!(
+                "the trap log passed --trap-limit {} rows",
+                traps.limit
+            )));
+        }
+        let columns: Vec<String> = traps.regs.iter().map(|r| format!("x{r}")).collect();
+        let mut out = String::from("# refemu-pc-traps 1\n");
+        out.push_str(&format!(
+            "# columns\ticount_before\tpc_hex\tname\t{}\n",
+            columns.join("\t")
+        ));
+        for hit in &traps.hits {
+            let regs: Vec<String> = hit.regs.iter().map(|v| v.to_string()).collect();
+            out.push_str(&format!(
+                "{}\t{:08x}\t{}\t{}\n",
+                hit.icount_before,
+                hit.pc,
+                traps.names[hit.name_index],
+                regs.join("\t")
+            ));
+        }
+        write_text(path, &out)?;
+    }
+
+    if !observe.watch_writes.is_empty() {
+        let map = *cpu.memory.map();
+        let watch = cpu.memory.write_watch();
+        let mut out = String::from("# refemu-write-coverage 1\n");
+        out.push_str(&format!(
+            "# window\tfrom={}\tto={}\n",
+            observe
+                .watch_from
+                .map_or("start".to_owned(), |w| w.to_string()),
+            ending
+                .condition
+                .map_or_else(|| "end".to_owned(), |c| c.to_string())
+        ));
+        out.push_str("# columns\tregion\twords_written\twords_total\tstores\n");
+        for asked in &observe.watch_writes {
+            let region = asked.region();
+            let (written, total) = watch
+                .and_then(|w| w.words_written(region, &map))
+                .unwrap_or((0, 0));
+            let stores = watch.map_or(0, |w| w.stores(region));
+            out.push_str(&format!(
+                "{}\t{written}\t{total}\t{stores}\n",
+                region.as_str()
+            ));
+            if observe.require_coverage.contains(asked) && written != total {
+                failures.push(format!(
+                    "{} has {written} of {total} words written in the window",
+                    region.as_str()
+                ));
+            }
+        }
+        if let Some(path) = &observe.write_coverage {
+            write_text(path, &out)?;
+        }
+    }
+
+    if let Some(path) = &observe.frame_log {
+        let mut out = String::from("# refemu-frame-log 1\n");
+        out.push_str("# columns\tindex\tframe_no\tcommit_icount\tretired_icount\n");
+        if let Some(registers) = cpu.memory.devices().registers_ref() {
+            for (index, commit) in registers.frame_commits.iter().enumerate() {
+                out.push_str(&format!(
+                    "{index}\t{}\t{}\t{}\n",
+                    commit.frame_no,
+                    commit.commit_icount,
+                    commit.retired_icount()
+                ));
+            }
+        }
+        write_text(path, &out)?;
+    }
+
+    Ok(failures)
+}
+
+fn write_text(path: &Path, text: &str) -> Result<(), Failure> {
+    if path == Path::new("-") {
+        use std::io::Write as _;
+        std::io::stdout()
+            .write_all(text.as_bytes())
+            .map_err(|e| failed(format!("writing to stdout: {e}")))
+    } else {
+        std::fs::write(path, text).map_err(|e| failed(format!("writing {}: {e}", path.display())))
+    }
 }
 
 fn write_captures(
@@ -686,8 +1031,17 @@ fn cmd_run(cli: &Cli, cmd: &RunCmd) -> Result<Exit, Failure> {
         pinned,
         manifest,
     } = load(&cmd.image, &cmd.machine, &cmd.capture)?;
-    let ending = drive(&mut cpu, TraceConfig::default(), &cmd.budget, |_| {});
+    let mut rec = recorders(&cpu, &cmd.observe)?;
+    let ending = drive(
+        &mut cpu,
+        TraceConfig::default(),
+        &cmd.budget,
+        &cmd.observe,
+        &mut rec,
+        |_| {},
+    );
     let report = summarise(&cpu, &ending, &rom_sha256, pinned);
+    let mut failures = write_records(&cpu, &ending, &cmd.observe, &rec)?;
     write_captures(
         &cpu,
         &LoadedInfo {
@@ -705,7 +1059,7 @@ fn cmd_run(cli: &Cli, cmd: &RunCmd) -> Result<Exit, Failure> {
         cmd.console_out.as_ref(),
     )?;
     report_ending(cli.quiet, &cpu, &ending);
-    let failures = check_expectations(&report, &cmd.expect);
+    failures.extend(check_expectations(&report, &cmd.expect));
     if !failures.is_empty() {
         return Err(gate(failures.join("\n")));
     }
@@ -735,15 +1089,23 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         _ => Box::new(std::io::BufWriter::new(std::io::stdout())),
     };
 
+    let mut rec = recorders(&cpu, &cmd.observe)?;
     let mut write_error = None;
-    let ending = drive(&mut cpu, config, &cmd.budget, |checkpoint| {
-        use std::io::Write as _;
-        if write_error.is_none()
-            && let Err(e) = writeln!(out, "{checkpoint}")
-        {
-            write_error = Some(e);
-        }
-    });
+    let ending = drive(
+        &mut cpu,
+        config,
+        &cmd.budget,
+        &cmd.observe,
+        &mut rec,
+        |checkpoint| {
+            use std::io::Write as _;
+            if write_error.is_none()
+                && let Err(e) = writeln!(out, "{checkpoint}")
+            {
+                write_error = Some(e);
+            }
+        },
+    );
     {
         use std::io::Write as _;
         out.flush()
@@ -771,7 +1133,8 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         cmd.console_out.as_ref(),
     )?;
     report_ending(cli.quiet, &cpu, &ending);
-    let failures = check_expectations(&report, &cmd.expect);
+    let mut failures = write_records(&cpu, &ending, &cmd.observe, &rec)?;
+    failures.extend(check_expectations(&report, &cmd.expect));
     if !failures.is_empty() {
         return Err(gate(failures.join("\n")));
     }
@@ -877,6 +1240,7 @@ mod tests {
             outcome: RunOutcome::Budget,
             condition: Some(Point::Budget),
             halt: None,
+            unreached: Vec::new(),
         };
         assert_eq!(ending_exit(&ending), Exit::Ok);
     }
@@ -891,6 +1255,7 @@ mod tests {
                 outcome,
                 condition: None,
                 halt: None,
+                unreached: Vec::new(),
             };
             assert_eq!(ending_exit(&ending), exit);
         }

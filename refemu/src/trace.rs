@@ -12,6 +12,7 @@
 
 use clickdoom_spec::{Checkpoint, TraceConfig, fb_hash, ram_hash, reg_hash};
 
+use crate::decode::Instruction;
 use crate::exec::{Cpu, Halt};
 
 /// The register hash of the machine as it stands.
@@ -69,38 +70,96 @@ impl Stop {
     }
 }
 
-/// What an observer says after each retired instruction.
+/// What an observer says about carrying on.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Step {
     Continue,
     Stop,
 }
 
-/// Drives `cpu` to a stop, taking a checkpoint at each cadence point.
+/// What a run reports as it goes.
 ///
-/// `on_step` sees every retired instruction. `on_checkpoint` sees the cadence.
-/// A caller wanting only the trace passes an observer that does nothing, which
-/// compiles away.
-pub fn run<S, C>(
-    cpu: &mut Cpu,
-    config: TraceConfig,
-    budget: u64,
-    mut on_step: S,
-    mut on_checkpoint: C,
-) -> Stop
-where
-    S: FnMut(&Cpu) -> Step,
-    C: FnMut(Checkpoint),
-{
+/// Every method does nothing by default, and the empty observer below costs
+/// nothing: the loop is monomorphised, so a run recording none of this
+/// compiles to the same code as one that could not record it.
+pub trait Observer {
+    /// Before an instruction executes, with the program counter on it and the
+    /// registers as its caller left them. This is where a trap reads the
+    /// arguments of the call it is watching.
+    ///
+    /// The machine is mutable so an observer can switch its own recording on,
+    /// which is state the machine holds. An observer must not change
+    /// architectural state: the run is the thing being measured.
+    fn before_step(&mut self, _cpu: &mut Cpu) -> Step {
+        Step::Continue
+    }
+
+    /// After an instruction retires, naming the program counter it ran at.
+    fn after_step(&mut self, _cpu: &mut Cpu, _retired_pc: u32, _insn: Instruction) -> Step {
+        Step::Continue
+    }
+
+    fn checkpoint(&mut self, _checkpoint: Checkpoint) {}
+}
+
+/// An observer that records nothing.
+impl Observer for () {}
+
+/// Two observers, both watching.
+pub struct Both<A, B>(pub A, pub B);
+
+impl<A: Observer, B: Observer> Observer for Both<A, B> {
+    fn before_step(&mut self, cpu: &mut Cpu) -> Step {
+        match (self.0.before_step(cpu), self.1.before_step(cpu)) {
+            (Step::Continue, Step::Continue) => Step::Continue,
+            _ => Step::Stop,
+        }
+    }
+
+    fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, insn: Instruction) -> Step {
+        match (
+            self.0.after_step(cpu, retired_pc, insn),
+            self.1.after_step(cpu, retired_pc, insn),
+        ) {
+            (Step::Continue, Step::Continue) => Step::Continue,
+            _ => Step::Stop,
+        }
+    }
+
+    fn checkpoint(&mut self, checkpoint: Checkpoint) {
+        self.0.checkpoint(checkpoint);
+        self.1.checkpoint(checkpoint);
+    }
+}
+
+/// Collects the trace, for a caller small enough to hold it.
+#[derive(Default)]
+pub struct Collector {
+    pub lines: Vec<Checkpoint>,
+}
+
+impl Observer for Collector {
+    fn checkpoint(&mut self, checkpoint: Checkpoint) {
+        self.lines.push(checkpoint);
+    }
+}
+
+/// Drives `cpu` to a stop, taking a checkpoint at each cadence point.
+pub fn run<O: Observer>(cpu: &mut Cpu, config: TraceConfig, budget: u64, obs: &mut O) -> Stop {
     debug_assert!(config.validate().is_ok(), "the cadence hides a memory hash");
     while cpu.icount() < budget {
-        if let Err(halt) = cpu.step() {
-            return Stop::Halted(halt);
+        if obs.before_step(cpu) == Step::Stop {
+            return Stop::Observer;
         }
+        let retired_pc = cpu.pc();
+        let insn = match cpu.step_reporting() {
+            Ok((_, insn)) => insn,
+            Err(halt) => return Stop::Halted(halt),
+        };
         if config.is_checkpoint(cpu.icount()) {
-            on_checkpoint(checkpoint_of(cpu, config.is_ram_hash(cpu.icount())));
+            obs.checkpoint(checkpoint_of(cpu, config.is_ram_hash(cpu.icount())));
         }
-        if on_step(cpu) == Step::Stop {
+        if obs.after_step(cpu, retired_pc, insn) == Step::Stop {
             return Stop::Observer;
         }
     }
@@ -109,9 +168,9 @@ where
 
 /// Runs and collects, for a caller small enough to hold the whole trace.
 pub fn collect(cpu: &mut Cpu, config: TraceConfig, budget: u64) -> (Vec<Checkpoint>, Stop) {
-    let mut lines = Vec::new();
-    let stop = run(cpu, config, budget, |_| Step::Continue, |c| lines.push(c));
-    (lines, stop)
+    let mut collector = Collector::default();
+    let stop = run(cpu, config, budget, &mut collector);
+    (collector.lines, stop)
 }
 
 #[cfg(test)]
@@ -200,41 +259,51 @@ mod tests {
         assert_eq!(cpu.icount(), 3);
     }
 
+    #[derive(Default)]
+    struct Watcher {
+        counts: Vec<u64>,
+        pcs: Vec<u32>,
+        stop_at: Option<u64>,
+    }
+
+    impl Observer for Watcher {
+        fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, _insn: Instruction) -> Step {
+            self.counts.push(cpu.icount());
+            self.pcs.push(retired_pc);
+            if self.stop_at == Some(cpu.icount()) {
+                return Step::Stop;
+            }
+            Step::Continue
+        }
+    }
+
     #[test]
     fn the_observer_sees_every_retired_instruction_in_order() {
         let mut cpu = cpu_running(10, true);
-        let mut seen = Vec::new();
-        run(
-            &mut cpu,
-            SMALL,
-            100,
-            |cpu| {
-                seen.push(cpu.icount());
-                Step::Continue
-            },
-            |_| {},
-        );
-        assert_eq!(seen, (1..=10).collect::<Vec<u64>>());
+        let mut watcher = Watcher::default();
+        run(&mut cpu, SMALL, 100, &mut watcher);
+        assert_eq!(watcher.counts, (1..=10).collect::<Vec<u64>>());
+        assert_eq!(watcher.pcs[0], RAM_BASE);
+        assert_eq!(watcher.pcs[9], RAM_BASE + 36);
     }
 
     #[test]
     fn the_observer_can_stop_the_run_where_it_chooses() {
         let mut cpu = cpu_running(64, false);
-        let stop = run(
-            &mut cpu,
-            SMALL,
-            100,
-            |cpu| {
-                if cpu.icount() == 5 {
-                    Step::Stop
-                } else {
-                    Step::Continue
-                }
-            },
-            |_| {},
-        );
+        let mut watcher = Watcher {
+            stop_at: Some(5),
+            ..Watcher::default()
+        };
+        let stop = run(&mut cpu, SMALL, 100, &mut watcher);
         assert_eq!(stop, Stop::Observer);
         assert_eq!(cpu.icount(), 5);
+    }
+
+    #[test]
+    fn an_observer_that_records_nothing_still_runs_the_machine() {
+        let mut cpu = cpu_running(10, true);
+        assert!(run(&mut cpu, SMALL, 100, &mut ()).halt().is_some());
+        assert_eq!(cpu.icount(), 10);
     }
 
     #[test]

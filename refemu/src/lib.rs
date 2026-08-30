@@ -23,4 +23,6 @@ pub use image::{Image, ImageError, Segment, Symbol, read_image};
 pub use memory::{LoadError, MemFault, Memory};
 pub use mmio::{Devices, FrameCommit, KeyEvent, MmioExit, Registers};
 pub use predecode::DecodeCache;
-pub use trace::{Step, Stop, checkpoint_of, collect, fb_hash_of, ram_hash_of, reg_hash_of};
+pub use trace::{
+    Observer, Step, Stop, checkpoint_of, collect, fb_hash_of, ram_hash_of, reg_hash_of,
+};

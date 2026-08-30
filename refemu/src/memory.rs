@@ -45,6 +45,78 @@ pub enum LoadError {
     },
 }
 
+/// Which words a run wrote, and how many stores landed.
+///
+/// Words rather than bytes, because a sub-word store into the pixel regions
+/// is a fault and RAM's callers ask about words. Counting distinct words
+/// needs a bit each, so a bitset is exact where a set of addresses would be
+/// large.
+#[derive(Clone, Debug)]
+pub struct WriteWatch {
+    words: [Option<Box<[u64]>>; 4],
+    /// Stores that landed, which is not the same as words touched.
+    pub stores: [u64; 4],
+}
+
+const fn region_index(region: Region) -> usize {
+    match region {
+        Region::Ram => 0,
+        Region::Mmio => 1,
+        Region::Framebuffer => 2,
+        Region::Palette => 3,
+    }
+}
+
+impl WriteWatch {
+    /// Watches the named regions, sized from the map.
+    pub fn new(map: &MemoryMap, regions: &[Region]) -> Self {
+        let mut words: [Option<Box<[u64]>>; 4] = [None, None, None, None];
+        for region in regions {
+            let (_, size) = map.bounds(*region);
+            let count = (size as usize).div_ceil(4);
+            words[region_index(*region)] = Some(vec![0u64; count.div_ceil(64)].into_boxed_slice());
+        }
+        Self {
+            words,
+            stores: [0; 4],
+        }
+    }
+
+    #[inline]
+    fn record(&mut self, region: Region, offset: u32, width: u32) {
+        let at = region_index(region);
+        self.stores[at] += 1;
+        let Some(bits) = &mut self.words[at] else {
+            return;
+        };
+        // A store can span two words only when it is unaligned within a word,
+        // which the pixel regions refuse and RAM allows for halfwords.
+        let first = (offset / 4) as usize;
+        let last = ((offset + width - 1) / 4) as usize;
+        for word in first..=last {
+            if let Some(slot) = bits.get_mut(word / 64) {
+                *slot |= 1u64 << (word % 64);
+            }
+        }
+    }
+
+    /// Distinct words written in the region, and how many it has.
+    pub fn words_written(&self, region: Region, map: &MemoryMap) -> Option<(u64, u64)> {
+        let bits = self.words[region_index(region)].as_ref()?;
+        let (_, size) = map.bounds(region);
+        let written = bits.iter().map(|word| word.count_ones() as u64).sum();
+        Some((written, (size as u64).div_ceil(4)))
+    }
+
+    pub const fn stores(&self, region: Region) -> u64 {
+        self.stores[region_index(region)]
+    }
+
+    pub const fn watches(&self, region: Region) -> bool {
+        self.words[region_index(region)].is_some()
+    }
+}
+
 pub struct Memory {
     map: MemoryMap,
     ram: Box<[u8]>,
@@ -55,6 +127,8 @@ pub struct Memory {
     /// neither: a half-declared region protects nothing and would differ from
     /// an undeclared one only by accident.
     text: Option<(u32, u32)>,
+    /// Set while a run is recording which words it writes.
+    watch: Option<WriteWatch>,
 }
 
 impl Memory {
@@ -65,6 +139,7 @@ impl Memory {
             palette: vec![0; map.palette_size as usize].into_boxed_slice(),
             devices,
             text: None,
+            watch: None,
             map,
         }
     }
@@ -93,6 +168,17 @@ impl Memory {
 
     pub fn devices_mut(&mut self) -> &mut Devices {
         &mut self.devices
+    }
+
+    /// Starts recording which words land in the named regions. Recording is
+    /// switched on rather than gated on every store, so a run that has not
+    /// reached its window yet pays nothing.
+    pub fn watch_writes(&mut self, regions: &[Region]) {
+        self.watch = Some(WriteWatch::new(&self.map, regions));
+    }
+
+    pub const fn write_watch(&self) -> Option<&WriteWatch> {
+        self.watch.as_ref()
     }
 
     pub const fn text_region(&self) -> Option<(u32, u32)> {
@@ -211,6 +297,10 @@ impl Memory {
                 }
                 write_le(&mut self.palette, offset, width, value);
             }
+        }
+        // Recorded after the store lands, so one that faulted is not counted.
+        if let Some(watch) = &mut self.watch {
+            watch.record(region, offset, width);
         }
         Ok(())
     }

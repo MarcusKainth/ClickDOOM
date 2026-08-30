@@ -288,6 +288,54 @@ impl Cpu {
             Op::Or => self.set_reg(rd, self.reg(rs1) | self.reg(rs2)),
             Op::And => self.set_reg(rd, self.reg(rs1) & self.reg(rs2)),
 
+            // The multiply extension. The edge cases are the whole job:
+            // neither a division by zero nor the one overflowing division
+            // traps, and the mixed-signedness high multiply takes its first
+            // operand signed and its second unsigned.
+            Op::Mul => self.set_reg(rd, self.reg(rs1).wrapping_mul(self.reg(rs2))),
+            Op::Mulh => {
+                let product = (self.reg(rs1) as i32 as i64) * (self.reg(rs2) as i32 as i64);
+                self.set_reg(rd, (product >> 32) as u32);
+            }
+            Op::Mulhsu => {
+                let product = (self.reg(rs1) as i32 as i64) * (self.reg(rs2) as i64);
+                self.set_reg(rd, (product >> 32) as u32);
+            }
+            Op::Mulhu => {
+                let product = (self.reg(rs1) as u64) * (self.reg(rs2) as u64);
+                self.set_reg(rd, (product >> 32) as u32);
+            }
+            Op::Div => {
+                let (a, b) = (self.reg(rs1), self.reg(rs2));
+                let result = if b == 0 {
+                    u32::MAX
+                } else if a == INT_MIN && b == MINUS_ONE {
+                    INT_MIN
+                } else {
+                    ((a as i32) / (b as i32)) as u32
+                };
+                self.set_reg(rd, result);
+            }
+            Op::Divu => {
+                let (a, b) = (self.reg(rs1), self.reg(rs2));
+                self.set_reg(rd, a.checked_div(b).unwrap_or(u32::MAX));
+            }
+            Op::Rem => {
+                let (a, b) = (self.reg(rs1), self.reg(rs2));
+                let result = if b == 0 {
+                    a
+                } else if a == INT_MIN && b == MINUS_ONE {
+                    0
+                } else {
+                    ((a as i32) % (b as i32)) as u32
+                };
+                self.set_reg(rd, result);
+            }
+            Op::Remu => {
+                let (a, b) = (self.reg(rs1), self.reg(rs2));
+                self.set_reg(rd, a.checked_rem(b).unwrap_or(a));
+            }
+
             Op::Fence => {}
 
             Op::Ecall => return Err(Halt::with_insn(HaltReason::Ecall, pc, word)),
@@ -298,6 +346,11 @@ impl Cpu {
         Ok(next)
     }
 }
+
+/// The one dividend whose signed division overflows, and the divisor it
+/// overflows against.
+const INT_MIN: u32 = 0x8000_0000;
+const MINUS_ONE: u32 = 0xFFFF_FFFF;
 
 const fn sign_extend(value: u32, bits: u32) -> u32 {
     (((value << (32 - bits)) as i32) >> (32 - bits)) as u32
@@ -805,6 +858,97 @@ mod tests {
         assert_eq!(cpu.regs(), &regs);
         // A second attempt reports the same halt, since nothing moved.
         assert_eq!(cpu.step().unwrap_err().reason, HaltReason::Ecall);
+    }
+
+    // -- the multiply extension -------------------------------------------
+
+    /// Runs one register-register instruction over `a` and `b`, returning what
+    /// it wrote.
+    fn arith(word_of: fn(u32, u32, u32) -> u32, a: u32, b: u32) -> u32 {
+        let mut cpu = Cpu::inert();
+        cpu.set_register(1, a);
+        cpu.set_register(2, b);
+        load(&mut cpu, &[word_of(3, 1, 2)]);
+        cpu.step().unwrap();
+        cpu.reg(3)
+    }
+
+    const NEG: fn(i32) -> u32 = |v| v as u32;
+
+    #[test]
+    fn multiply_keeps_the_low_word_and_wraps() {
+        assert_eq!(arith(mul, 6, 7), 42);
+        assert_eq!(arith(mul, 0x10000, 0x10000), 0);
+        assert_eq!(arith(mul, NEG(-6), 7), NEG(-42));
+    }
+
+    #[test]
+    fn the_high_word_of_a_signed_multiply() {
+        assert_eq!(arith(mulh, NEG(-1), NEG(-1)), 0);
+        assert_eq!(arith(mulh, INT_MIN, INT_MIN), 0x4000_0000);
+    }
+
+    #[test]
+    fn the_mixed_multiply_takes_its_first_operand_signed_and_its_second_unsigned() {
+        assert_eq!(arith(mulhsu, NEG(-1), 2), u32::MAX);
+        assert_eq!(arith(mulhsu, NEG(-1), u32::MAX), u32::MAX);
+        // Reversing the operands is a different answer, which is what makes
+        // getting the order backwards a silent divergence rather than a crash.
+        assert_ne!(arith(mulhsu, 2, NEG(-1)), arith(mulhsu, NEG(-1), 2));
+    }
+
+    #[test]
+    fn the_high_word_of_an_unsigned_multiply() {
+        assert_eq!(arith(mulhu, u32::MAX, u32::MAX), 0xFFFF_FFFE);
+    }
+
+    #[test]
+    fn division_truncates_toward_zero_rather_than_flooring() {
+        assert_eq!(arith(div, 7, 2), 3);
+        assert_eq!(arith(div, NEG(-7), 2), NEG(-3));
+        assert_eq!(arith(div, 7, NEG(-2)), NEG(-3));
+        assert_eq!(arith(div, NEG(-7), NEG(-2)), 3);
+    }
+
+    #[test]
+    fn dividing_by_zero_gives_all_ones_and_does_not_trap() {
+        assert_eq!(arith(div, 5, 0), u32::MAX);
+        assert_eq!(arith(div, NEG(-5), 0), u32::MAX);
+        assert_eq!(arith(divu, 5, 0), u32::MAX);
+    }
+
+    #[test]
+    fn the_one_overflowing_division_gives_the_dividend_and_does_not_trap() {
+        assert_eq!(arith(div, INT_MIN, MINUS_ONE), INT_MIN);
+        assert_eq!(arith(rem, INT_MIN, MINUS_ONE), 0);
+    }
+
+    #[test]
+    fn unsigned_division_reads_both_operands_unsigned() {
+        assert_eq!(arith(divu, u32::MAX, 2), 0x7FFF_FFFF);
+        assert_eq!(arith(remu, u32::MAX, 2), 1);
+    }
+
+    #[test]
+    fn a_remainder_takes_the_sign_of_its_dividend() {
+        assert_eq!(arith(rem, 7, 2), 1);
+        assert_eq!(arith(rem, NEG(-7), 2), NEG(-1));
+        assert_eq!(arith(rem, 7, NEG(-2)), 1);
+        assert_eq!(arith(rem, NEG(-7), NEG(-2)), NEG(-1));
+    }
+
+    #[test]
+    fn a_remainder_by_zero_gives_the_dividend_and_does_not_trap() {
+        assert_eq!(arith(rem, 42, 0), 42);
+        assert_eq!(arith(rem, NEG(-42), 0), NEG(-42));
+        assert_eq!(arith(remu, u32::MAX, 0), u32::MAX);
+    }
+
+    #[test]
+    fn a_multiply_is_not_an_illegal_instruction() {
+        let mut cpu = Cpu::inert();
+        load(&mut cpu, &[mul(3, 1, 2)]);
+        assert!(cpu.step().is_ok());
     }
 
     #[test]

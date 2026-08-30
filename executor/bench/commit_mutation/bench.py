@@ -169,7 +169,7 @@ def main():
     if args.wide_parts:
         ch.run(f"ALTER TABLE {args.db}.batch_commit MODIFY SETTING min_bytes_for_wide_part = 0")
     part_setting = ch.scalar(
-        f"SELECT value FROM system.merge_tree_settings WHERE name = 'min_bytes_for_wide_part'")
+        "SELECT value FROM system.merge_tree_settings WHERE name = 'min_bytes_for_wide_part'")
     # Read the *table*'s effective override back rather than trusting the
     # ALTER to have applied -- `min_bytes_for_wide_part` is a MergeTree table
     # setting, and the server-level default above is NOT what governs this

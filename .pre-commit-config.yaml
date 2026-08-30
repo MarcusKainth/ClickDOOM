@@ -1,0 +1,50 @@
+# Hooks pinned to full commit SHAs. `pre-commit autoupdate --freeze` produces
+# this form, and Dependabot cannot update it; a bump is a deliberate change.
+#
+# These overlap with `make lint` rather than replacing it. `make lint` is what
+# CI runs and what a pull request must pass.
+
+# Vendored upstream is never reformatted, and whitespace inside a patch file is
+# significant: stripping it breaks the apply and changes the built ROM's hash.
+exclude: '^(rom/vendor/|rom/patches/)'
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-added-large-files
+        # The WAD and the riscv-tests fixtures are already in history. This
+        # catches the next large file, not those.
+        args: [--maxkb=512]
+
+  - repo: https://github.com/crate-ci/typos
+    rev: 4d9c206a77c041268485162b8e2579ad7a5cb9a3  # frozen: v1.50.0
+    hooks:
+      - id: typos
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 1f1e8bf348ff38fc88619a38d3ca4d9c56abea49  # frozen: v0.16.5
+    hooks:
+      - id: ruff-check
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: 451b56af716f9f0d0c2b816503a3fd0cf8b036fa  # frozen: v1.29.0
+    hooks:
+      - id: zizmor
+
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 12e63946db2c5cfcc9030fac21c3883ba88c6ed8  # frozen: 0.38.0
+    hooks:
+      - id: check-github-workflows
+
+  # Slow, so it is manual. `make actionlint` is the same check.
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+        stages: [manual]

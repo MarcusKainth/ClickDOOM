@@ -58,8 +58,8 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-riscv-tests-fixtures gen-reference-trace \
-        lint check-purity shellcheck ruff clang-format actionlint zizmor \
-        require-rom
+        lint check-purity shellcheck ruff clang-format typos actionlint zizmor \
+        adr-new check-adr require-rom
 
 help: ## List every target
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage: make <target>\n"} \
@@ -197,9 +197,18 @@ build-riscv-tests-fixtures: ## Regenerate refemu's committed riscv-tests fixture
 gen-reference-trace: require-rom ## Regenerate the committed reference trace. Refuses to run against an unpinned ROM
 	cd refemu && uv run python scripts/gen_reference_trace.py
 
+##@ Docs
+
+SLUG ?=
+adr-new: ## Scaffold an ADR: make adr-new SLUG=some-decision
+	./scripts/adr.sh --new "$(SLUG)"
+
+check-adr: ## The ADR set is numbered contiguously and fully indexed
+	./scripts/adr.sh --check
+
 ##@ Lint
 
-lint: check-purity shellcheck ruff clang-format actionlint zizmor ## Everything a pull request must pass
+lint: check-purity shellcheck ruff clang-format typos check-adr actionlint zizmor ## Everything a pull request must pass
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
@@ -207,11 +216,14 @@ check-purity: ## Mechanical enforcement of PURITY.md
 shellcheck: ## Every shell script in the tree
 	find scripts driver sqlcpu executor rom -name '*.sh' -exec shellcheck {} +
 
-ruff: ## Python, at the version refemu's lockfile pins
-	uv run --project refemu ruff check refemu driver
+ruff: ## Python, at the version refemu's lockfile pins. ruff.toml holds the rules
+	uv run --project refemu ruff check .
 
 clang-format: ## C sources. rom/vendor/.clang-format disables the vendored ones
 	find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
+
+typos: ## Spelling, over prose and identifiers. _typos.toml holds the exceptions
+	uvx typos@1.50.0 --config _typos.toml
 
 actionlint: ## Workflow syntax. Has no CI job, so run it before pushing a workflow change
 	actionlint .github/workflows/*.yml

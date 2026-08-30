@@ -25,7 +25,7 @@ B    = f"acc.2[{RS2}+1]"          # rs2 value (UInt32)
 SA   = f"toInt32({A})"            # signed rs1
 SB   = f"toInt32({B})"            # signed rs2
 SHAMT= f"bitAnd({B},31)"
-SHI  = f"bitAnd(bitShiftRight(w,20),31)"   # shamt for immediate shifts
+SHI  = "bitAnd(bitShiftRight(w,20),31)"   # shamt for immediate shifts
 
 # sign-extended immediates
 IIMM = "toUInt32(toInt32(bitShiftRight(w,20)) - if(bitAnd(w,2147483648)!=0,4096,0))"
@@ -161,5 +161,6 @@ SELECT (arrayFold(
 ) AS r).1, length(r.3) SETTINGS max_threads=1"""
 
 if __name__ == "__main__":
-    K = int(sys.argv[1]); variant = sys.argv[2]
+    K = int(sys.argv[1])
+    variant = sys.argv[2]
     print(query(K, variant))

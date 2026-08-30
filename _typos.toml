@@ -1,0 +1,29 @@
+[files]
+# Data and vendored sources. A hex digest column reads as prose to a spell
+# checker, and none of this is ours to correct.
+extend-exclude = [
+    "rom/vendor/**",
+    "rom/wad/**",
+    "refemu/reference_traces/**",
+    "refemu/tests/fixtures/**",
+    "rom/bench/e7_memfns/results/**",
+    "sqlcpu/fixtures/**",
+    "*.tsv",
+    "*.lock",
+    "*.bin",
+]
+
+[default.extend-words]
+# Identifiers and domain vocabulary, each with the reason it is not a typo.
+mis = "mis"                       # tgt_mis: the target-misaligned flag column
+wih = "wih"                       # write-log icount hash, a SQL alias
+compilability = "compilability"   # whether ClickHouse's JIT can compile an expression
+Parm = "Parm"                     # M_CheckParm, a DOOM engine function
+
+[default]
+extend-ignore-re = [
+    # Commit SHAs, sha256 digests and frame hashes quoted in prose.
+    "\\b[0-9a-f]{7,64}\\b",
+    # SQL keywords pluralised in prose: "both SELECTs", "the driver INSERTs".
+    "\\b(SELECT|INSERT|UPDATE|DELETE|CREATE)s\\b",
+]

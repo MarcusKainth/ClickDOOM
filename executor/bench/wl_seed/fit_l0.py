@@ -214,7 +214,7 @@ def main():
         g_ns = 1e6 * per_k[ref_k]["theil_sen"] / ref_k
         lo_ns = 1e6 * per_k[ref_k]["ci95"][0] / ref_k
         hi_ns = 1e6 * per_k[ref_k]["ci95"][1] / ref_k
-        print(f"\n=== reconciliation, ns per write-log element per step ===")
+        print("\n=== reconciliation, ns per write-log element per step ===")
         print(f"  measured here (K={ref_k:,})     : {g_ns:.3f}  "
               f"95% CI [{lo_ns:.3f}, {hi_ns:.3f}]")
 
@@ -228,7 +228,7 @@ def main():
             c = micro["copy"]["ns_per_element"]
             mult = micro["scan_multiplicity_paid"]
             pred = micro["predicted_ns_per_element_per_step"]
-            print(f"\n=== attribution, from separately measured primitives ===")
+            print("\n=== attribution, from separately measured primitives ===")
             print(f"  scan  {s:6.3f} ns/element   x{mult} paid "
                   f"(6 in the text; CSE probe ratio "
                   f"{micro['cse_ratio_x6_over_x1']:.2f}x)")

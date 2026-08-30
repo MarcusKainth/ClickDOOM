@@ -1,0 +1,18 @@
+# Ruff settings for the whole tree. refemu/ and executor/ carry their own
+# pyproject.toml for packaging; the lint configuration lives here so one file
+# decides what the repository is held to.
+line-length = 100
+target-version = "py311"
+
+[lint]
+# ruff's default set, named rather than inherited, so a ruff upgrade cannot
+# widen or narrow what CI enforces without somebody deciding to.
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# Both files are dispatch tables written one branch per line, mirroring the
+# instruction tables they implement. Expanding them to two lines each would
+# make the correspondence harder to check against the reference, which is the
+# only reason these files exist.
+"sqlcpu/test_execute.py" = ["E701"]
+"executor/tests/reference.py" = ["E701"]

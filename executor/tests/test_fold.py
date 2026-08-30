@@ -135,7 +135,7 @@ def run_case(insns, ram=None, pc0=None, regs0=None, k=None, hwm=10_000, ram_word
     return actual, expected
 
 
-def I(**kw):
+def I(**kw):  # noqa: E743 - one letter for one instruction, so a table of them reads as a table
     return reference.Insn(**kw)
 
 

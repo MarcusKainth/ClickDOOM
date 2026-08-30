@@ -49,7 +49,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "refemu" / "src"))
-from refemu.trace import fb_hash
+from refemu.trace import fb_hash  # noqa: E402 - import follows the sys.path insertion above
 
 # Same word counts as driver/render.py's FRAMEBUFFER_WORDS/PALETTE_WORDS
 # (SPEC §2) -- duplicated as plain literals, not imported, so this

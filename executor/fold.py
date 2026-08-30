@@ -364,7 +364,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # popped; KEYQT is the queue captured in event_seq order. An empty-queue
     # read returns 0 and pops nothing, so the position advance is guarded by
     # the same bounds test that selects the value.
-    KEYQ_HAS = f"(acc.6.2 < toUInt32(length(KEYQT)))"
+    KEYQ_HAS = "(acc.6.2 < toUInt32(length(KEYQT)))"
     KEYQ_VAL = f"if({KEYQ_HAS}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1].1), toUInt32(0))"
 
     MMIO_READ = (f"multiIf({mmio_is(config.MMIO_TICKS_MS)}, {TICKS_MS},"
@@ -642,7 +642,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # above (`WA`'s underflow-clamp for an FB/PAL address is a meaningless
     # index into RAM, same as an MMIO store's).
     is_retiring_store = f"({step_retires} AND {is_store} AND NOT {is_mmio} AND NOT {is_fb_or_pal_store})"
-    new_wl_len_after_store = f"(toUInt32(length(acc.3.1)) + 1)"
+    new_wl_len_after_store = "(toUInt32(length(acc.3.1)) + 1)"
     hits_hwm = f"({is_retiring_store} AND {new_wl_len_after_store} >= {hwm})"
 
     # SPEC §6 (#223): a FRAME_COMMIT write ends the batch early, same as the

@@ -25,6 +25,7 @@ refemu/reference_traces/demo3/*.progress.json.tmp
 __pycache__/
 *.pyc
 .venv/
+.ruff_cache/
 # Editors / OS
 .DS_Store
 .idea/
@@ -35,3 +36,7 @@ worktrees/
 
 # Local agent configuration and notes. Nothing here is part of the project.
 /.claude/
+
+# Local working notes, deliberately not part of the project.
+/HANDOVER.md
+/docs/phase-3.md

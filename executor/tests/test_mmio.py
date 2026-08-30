@@ -87,7 +87,7 @@ def schema():
         ch(f.read())
 
 
-def I(**kw):
+def I(**kw):  # noqa: E743 - one letter for one instruction, so a table of them reads as a table
     return reference.Insn(**kw)
 
 

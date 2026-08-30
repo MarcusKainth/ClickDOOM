@@ -49,7 +49,8 @@ def variants(k, links, salt):
             for b in range(n))
         v[f"arraymap_{n}blocks"] = fold(f"tuple(acc.1 + 1 + {blocks}, acc.2 + 1)", k)
     # fault probes: the guarded body divides by toUInt64(COND) = 0 if it is evaluated
-    fc = lambda tag: fault_link(chain('acc.1', 4, salt, tag), COND)
+    def fc(tag):
+        return fault_link(chain('acc.1', 4, salt, tag), COND)
     v["fault_if"] = fold(f"tuple(if({COND}, {fc('fi')}, acc.1 + 1), acc.2 + 1)", 100)
     v["fault_multiif"] = fold(f"tuple(multiIf({COND}, {fc('fm')}, acc.1 + 1), acc.2 + 1)", 100)
     v["fault_arraymap"] = fold(
@@ -69,7 +70,8 @@ def main():
     a = ap.parse_args()
     v = variants(a.k, a.links, a.salt)
     if a.list:
-        print("\n".join(v)); return
+        print("\n".join(v))
+        return
     for name in (a.names or v):
         print(f"{name}\t{v[name]}")
 

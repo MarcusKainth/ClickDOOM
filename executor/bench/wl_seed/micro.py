@@ -329,7 +329,7 @@ def main():
 
     if result["predicted_ns_per_element_per_step"] is not None:
         m = result["scan_multiplicity_paid"]
-        print(f"\npredicted fold cost, per write-log element per step:")
+        print("\npredicted fold cost, per write-log element per step:")
         print(f"   {m} x scan {scan['ns_per_element']:.3f} + copy "
               f"{copy['ns_per_element']:.3f} = "
               f"{result['predicted_ns_per_element_per_step']:.3f} ns")

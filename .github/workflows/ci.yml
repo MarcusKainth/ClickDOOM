@@ -67,13 +67,17 @@ jobs:
         # The version refemu's lockfile pins, so CI and a local run agree.
         run: |
           pipx install uv
-          uv run --project refemu ruff check refemu driver
+          uv run --project refemu ruff check .
       - name: clang-format
         # rom/vendor/.clang-format sets DisableFormat, so the 192 vendored files
         # are skipped and only rom/src/ is checked.
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q clang-format
           find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
+      - name: typos
+        run: |
+          pipx install typos==1.50.0
+          typos --config _typos.toml
       - name: zizmor
         run: |
           pipx install zizmor==1.28.0

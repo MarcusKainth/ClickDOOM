@@ -155,6 +155,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "clickdoom-executor",
  "clickdoom-spec",
  "clickhouse",
  "serde",

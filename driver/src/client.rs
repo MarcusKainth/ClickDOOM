@@ -80,6 +80,19 @@ impl Db {
         Ok(self.client.query(sql).fetch_one::<T>().await?)
     }
 
+    /// Runs a statement and fetches every row.
+    pub async fn fetch_all<T>(&self, sql: &str) -> Result<Vec<T>, Error>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead,
+    {
+        let mut cursor = self.client.query(sql).fetch::<T>()?;
+        let mut rows = Vec::new();
+        while let Some(row) = cursor.next().await? {
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
     /// Runs a statement that returns no rows, with `param_<name>` query
     /// parameters bound for a `{name:Type}` placeholder in the SQL text.
     pub async fn run_with_params(&self, sql: &str, params: &[(&str, u32)]) -> Result<(), Error> {

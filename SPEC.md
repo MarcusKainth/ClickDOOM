@@ -450,7 +450,7 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
   exists for. Agreed by `refemu` and `sqlcpu` independently (issue #55).
 - Trace file: one checkpoint per line, TSV:
   `icount<TAB>pc_hex<TAB>reghash_hex[<TAB>ramhash_hex<TAB>fbhash_hex]`.
-- First divergence = first line that differs. `just diff N` runs both
+- First divergence = first line that differs. `make diff N=<count>` runs both
   engines N instructions and reports it; divergences are filed with the
   `divergence-report` issue form.
 

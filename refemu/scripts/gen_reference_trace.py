@@ -6,7 +6,7 @@ instruction 4,000,000 is caught at instruction 4,000,000, not after ~2.8
 hours of compute produces a final hash that doesn't match.
 
 Run from the repo root (needs `rom/build/doom-rv32im.bin` +
-`rom/build/manifest.json` -- build them first with `just build-rom`; this
+`rom/build/manifest.json` -- build them first with `make build-rom`; this
 script does not invoke the toolchain itself, since building the ROM is
 `rom`'s job, not `refemu`'s):
 
@@ -261,7 +261,7 @@ def main() -> int:
         print(
             f"FATAL: {e}\n"
             "Refusing to generate a reference trace against an unpinned ROM -- "
-            "rebuild with `just build-rom` from a clean checkout, or pass "
+            "rebuild with `make build-rom` from a clean checkout, or pass "
             "--pinned-hash if this is deliberate (e.g. reviewing a ROM PR).",
             file=sys.stderr,
         )

@@ -2,7 +2,7 @@
 # Regenerate refemu/tests/fixtures/riscv_tests/*.bin from upstream
 # riscv-tests sources, built against ClickDOOM's minimal environment
 # (riscv-tests-env/, see riscv_test.h for why upstream's env/p won't work
-# here). This is a maintenance script, not part of `just test-refemu` --
+# here). This is a maintenance script, not part of `make test-refemu` --
 # the fixtures it produces are committed, deterministic, tiny (a few KB
 # each), and CI never needs a RISC-V toolchain to run the test suite.
 # Re-run this only when bumping RISCV_TESTS_REV or fixing the environment.

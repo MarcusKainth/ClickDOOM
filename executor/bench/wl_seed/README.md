@@ -210,7 +210,7 @@ database first (reusing `commit_mutation`'s sequencer — never a second copy):
     python3 executor/bench/wl_seed/fit_l0.py /tmp/wl257-boot-k*.json \
         --micro /tmp/wl257-micro.json
 
-or via `just bench-wl-seed`.
+or via `make bench-wl-seed`.
 
 For the `slope/K` constancy check, run `bench_l0.py` at several K against the
 same database and pass all the JSONs to `fit_l0.py` at once.

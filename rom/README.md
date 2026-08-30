@@ -5,7 +5,7 @@ Ownership is claimed via issue self-assignment.
 
 ## Build
 
-    just build-rom
+    make build-rom
 
 produces `rom/build/doom-rv32im.bin` (and `.elf`). Nothing beyond Docker is
 required on the host — `rom/Makefile` builds a toolchain container

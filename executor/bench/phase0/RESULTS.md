@@ -2,7 +2,7 @@
 
 Evidence for SPEC §9 and for ADR-0001 / ADR-0002.
 
-Reproduce with `just bench-phase0` (requires `just up`). Raw TSV is what
+Reproduce with `make bench-phase0` (requires `make up`). Raw TSV is what
 `run.sh` prints; the tables below are that output, arranged.
 
 ## Environment

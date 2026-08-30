@@ -89,14 +89,14 @@ timelapse is the demo. Interactive play is the stretch goal
 ## Quick start
 
 ```sh
-just up          # pinned ClickHouse via docker compose
-just build-rom   # reproducible DOOM ROM (dockerized rv32 toolchain)
-just test-sqlcpu # riscv-tests, inside the database
-just smoke       # 1M-instruction differential run vs the oracle
+make up          # pinned ClickHouse via docker compose
+make build-rom   # reproducible DOOM ROM (dockerized rv32 toolchain)
+make test-sqlcpu # riscv-tests, inside the database
+make smoke       # 100,000-instruction differential run against the oracle
 ```
 
-`just lint` runs the purity check plus linters and is what CI runs on
-every PR; see the [justfile](justfile) for the full recipe list.
+`make lint` runs the purity check plus the linters, and is what CI runs on
+every pull request. `make help` lists every target.
 
 ## Contributing
 

@@ -8,7 +8,7 @@ narrower, real thing: does the fold correctly implement the collapsed
 op_id/halt semantics #23's design claims, for hand-built instruction
 streams covering every arm and every halt reason.
 
-Requires a reachable ClickHouse: locally, `just up` (clickdoom-ch via
+Requires a reachable ClickHouse: locally, `make up` (clickdoom-ch via
 `docker exec` -- the default below, unchanged for local dev). In CI (#116),
 `docker exec clickdoom-ch` doesn't exist -- GitHub Actions' `services:`
 containers are reached over the network at `localhost:<port>`, not by a
@@ -603,7 +603,7 @@ def test_every_halt_reason_is_reachable_somewhere_in_this_file():
 # `select_only(wl0=...)` exists so a benchmark can vary write-log length
 # INDEPENDENTLY of K (issue #257: is per-step cost O(write-log length)?).
 # These tests guard the two properties the measurement rests on, so a
-# regression is caught by `just test-executor` and not by a silently wrong
+# regression is caught by `make test-executor` and not by a silently wrong
 # number six hours into a sweep.
 
 def test_wl0_default_is_byte_identical_to_the_previous_seed():

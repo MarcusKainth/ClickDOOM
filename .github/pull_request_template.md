@@ -17,8 +17,8 @@
 ## Test evidence
 
 <!-- Paste the actual commands and their real output. "Tests pass" is not evidence.
-     rom/refemu/sqlcpu: riscv-tests pass count. executor: `just bench` before/after.
-     Anything touching execution semantics: `just diff` result. -->
+     rom/refemu/sqlcpu: riscv-tests pass count. executor: `make bench-canonical-throughput` before/after.
+     Anything touching execution semantics: `make diff` result. -->
 
 ```
 $ just ...

@@ -42,7 +42,7 @@ reasoning:
 - **Purity.** Show `scripts/check_purity.sh` failing before your change and
   passing after, naming the rule it enforces.
 - **Divergence.** Show a checkpoint trace from both sides, with the icount
-  where they agree or disagree. `just diff N` produces it.
+  where they agree or disagree. `make diff N=<count>` produces it.
 - **Throughput.** Show a before-and-after measurement, on the same machine, with
   the ClickHouse version and K recorded, and say how quiet the machine was.
 
@@ -54,7 +54,7 @@ One clear problem and one clear solution per pull request gets read and merged
 faster than a large change doing several things.
 
 - Tie it to a need, ideally an open issue.
-- Run `just lint` and check it by exit code.
+- Run `make lint` and check it by exit code.
 - A diff past roughly 400 lines is worth splitting, or at least flagging.
 - Skip the drive-by cleanup. A formatting sweep bundled with a fix makes the fix
   harder to review and harder to revert.

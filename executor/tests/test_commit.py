@@ -24,7 +24,7 @@ late (#69, #81, #83, #101):
      `word_array_hash`, not a hand-rolled comparison), per the plan posted
      on issue #25.
 
-Requires a reachable ClickHouse: locally, `just up` (clickdoom-ch via
+Requires a reachable ClickHouse: locally, `make up` (clickdoom-ch via
 `docker exec` -- the default below, unchanged for local dev). In CI (#116),
 `docker exec clickdoom-ch` doesn't exist -- see test_fold.py's matching
 comment for the full reasoning. Set CLICKHOUSE_HOST to switch modes.

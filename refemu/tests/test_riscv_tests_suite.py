@@ -13,7 +13,7 @@ require CPU behavior SPEC.md explicitly rules out:
              access a fatal halt.
 See scripts/build_riscv_tests.sh for the exclusion list and rationale.
 
-Each fixture is its own parametrized pytest case, so `just test-refemu`'s
+Each fixture is its own parametrized pytest case, so `make test-refemu`'s
 plain `pytest -q` summary line ("N passed") is the pass count issue #14
 asks for -- no separate counting mechanism to keep in sync.
 """

@@ -23,8 +23,8 @@ The same binary is the client for all three arms.
 ## Run
 
     # take the machine lock (kind: timing) first
-    just bench-native            # 3 repeats, 3 arms, 3 batches per mode and window
-    just bench-native 1 1 C      # smoke test: one batch, native only
+    make bench-native            # 3 repeats, 3 arms, 3 batches per mode and window
+    make bench-native REPEATS=1 BATCHES=1 ARMS=C      # smoke test: one batch, native only
 
 Arm order rotates per repeat (ABC, BCA, CAB).
 Output goes to `$TMPDIR/clickdoom-b1-native/<stamp>/`. `results.tsv` has one row per repeat, arm, window and mode.

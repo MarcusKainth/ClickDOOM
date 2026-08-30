@@ -81,7 +81,7 @@ prints them individually and their spread is the error bar.
 
 ## Running it
 
-Needs a pinned `rom/build/` (`just build-rom`) and Docker. Each arm creates
+Needs a pinned `rom/build/` (`make build-rom`) and Docker. Each arm creates
 and destroys its own container, so **nothing else should be running on the
 box** — check that first, per #182's protocol.
 
@@ -94,7 +94,7 @@ box** — check that first, per #182's protocol.
     # read the results
     python3 executor/bench/commit_mutation/fit.py /tmp/sq2-bench/*.json
 
-or via `just bench-commit-attribution` / `just bench-ksweep`.
+or via `make bench-commit-attribution` / `make bench-ksweep`.
 
 `bench.py` also carries `--wide-parts`, `--lightweight-deletes-sync`,
 `--retention-every` and `--skip-retention`, which vary #182's retention

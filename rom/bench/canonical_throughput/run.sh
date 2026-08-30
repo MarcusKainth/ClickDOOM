@@ -170,7 +170,7 @@ check_contention() {
   else
     cpu_pct=$(docker stats --no-stream --format '{{.CPUPerc}}' "$CONTAINER" 2>/dev/null | tr -d '%' | head -1)
     if [ -z "$cpu_pct" ]; then
-      fail "couldn't read docker stats for $CONTAINER -- is it running? (just up)"
+      fail "couldn't read docker stats for $CONTAINER -- is it running? (make up)"
     fi
   fi
   # Integer compare only (bash has no float arithmetic) -- truncates

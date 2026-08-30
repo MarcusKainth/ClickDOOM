@@ -212,7 +212,7 @@ else
 fi
 MANIFEST_SHA=$(python3 -c "import json; print(json.load(open('$MANIFEST'))['sha256'])")
 if [ "$ACTUAL" != "$PINNED" ]; then
-  fail "$BIN sha256 ($ACTUAL) != rom/PINNED_HASH ($PINNED). main has carried multiple ROMs in one day -- a run against the wrong binary produces an fb_hash mismatch hours in that looks like a CPU divergence, not a stale artifact. Rebuild (just build-rom) or check out the right commit."
+  fail "$BIN sha256 ($ACTUAL) != rom/PINNED_HASH ($PINNED). main has carried multiple ROMs in one day -- a run against the wrong binary produces an fb_hash mismatch hours in that looks like a CPU divergence, not a stale artifact. Rebuild (make build-rom) or check out the right commit."
 fi
 if [ "$ACTUAL" != "$MANIFEST_SHA" ]; then
   fail "$BIN sha256 ($ACTUAL) != $MANIFEST's own sha256 field ($MANIFEST_SHA) -- the binary and its manifest were built at different times and don't belong together, even though the binary happens to match PINNED_HASH."

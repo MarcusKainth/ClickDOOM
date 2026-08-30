@@ -1,5 +1,5 @@
 name: Spec change proposal
-description: Propose a change to a SPEC.md contract. Requires human-owner ratification.
+description: Propose a change to a SPEC.md contract. Requires maintainer ratification.
 title: "spec: <summary>"
 labels: ["spec-change"]
 body:

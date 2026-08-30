@@ -1,0 +1,135 @@
+# The label taxonomy.
+#
+# Applied by `.github/workflows/labels.yml` on push to main. That workflow does
+# not prune: a label absent from this file is left alone. Retiring one is a
+# manual step, because deleting a label destroys the record of what was filed
+# under it.
+#
+# The namespaces:
+#
+#   area:   which part of the tree. Reuses the commit scopes verbatim.
+#   needs:  what the issue is waiting on, not what it is about.
+#
+# An `area:` label is a topic, not an ownership claim. Nobody owns a directory
+# here and self-assignment claims nothing.
+#
+# The unnamespaced labels below are classes of bug with their own triage
+# priority, plus the one label dependabot.yml requires.
+
+# -------------------------------------------------------------------- area ---
+
+- name: "area: rom"
+  color: "0052cc"
+  description: "The ROM build: toolchain, crt0, libc shims, MMIO glue, the embedded WAD"
+
+- name: "area: refemu"
+  color: "0052cc"
+  description: "The Python RV32IM interpreter that serves as the oracle"
+
+- name: "area: sqlcpu"
+  color: "0052cc"
+  description: "Instruction decode and execute as ClickHouse SQL, and the schema"
+
+- name: "area: executor"
+  color: "0052cc"
+  description: "The arrayFold batch loop, write-log memory, batch commit, MMIO plumbing"
+
+- name: "area: driver"
+  color: "0052cc"
+  description: "The client loop that ticks the batch statement and blits frames"
+
+- name: "area: render"
+  color: "0052cc"
+  description: "The frame-readout SQL: framebuffer and palette to a displayable form"
+
+- name: "area: spec"
+  color: "0052cc"
+  description: "SPEC.md and PURITY.md"
+
+- name: "area: ci"
+  color: "0052cc"
+  description: "Workflows, the Makefile, and the scripts they run"
+
+- name: "area: bench"
+  color: "0052cc"
+  description: "The benchmark harnesses and how a change is measured"
+
+- name: "area: docs"
+  color: "0052cc"
+  description: "The prose: READMEs, ADRs, and the contributor documents"
+
+# ------------------------------------------------------------------- needs ---
+#
+# An issue keeps its `area:` label for life and sheds a `needs:` one once it is
+# answered.
+
+- name: "needs: repro"
+  color: "e99695"
+  description: "Waiting on a reproduction"
+
+- name: "needs: decision"
+  color: "e99695"
+  description: "Waiting on a design call before anything can be built"
+
+- name: "needs: more-info"
+  color: "e99695"
+  description: "Waiting on the reporter"
+
+- name: "needs: maintainer"
+  color: "e99695"
+  description: "Waiting on a maintainer. SPEC and PURITY changes always are"
+
+# ------------------------------------------------------------ bug classes ---
+#
+# `divergence` and `purity` are the two that falsify the project's central
+# claim, so they are triaged ahead of anything else.
+
+- name: "divergence"
+  color: "d876e3"
+  description: "refemu and sqlcpu disagree on the same ROM"
+
+- name: "purity"
+  color: "d93f0b"
+  description: "Computation has left SQL, or a purity rule is unenforced"
+
+- name: "performance"
+  color: "0e8a16"
+  description: "Throughput below expectation, or a regression"
+
+- name: "P0"
+  color: "b60205"
+  description: "Drop everything"
+
+- name: "spec-change"
+  color: "0052cc"
+  description: "A proposed change to the SPEC.md contract. Maintainer gated"
+
+# ----------------------------------------------------------------- general ---
+
+- name: "bug"
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: "enhancement"
+  color: "a2eeef"
+  description: "A new feature or request"
+
+- name: "documentation"
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+
+- name: "question"
+  color: "d876e3"
+  description: "Further information is requested"
+
+- name: "good first issue"
+  color: "7057ff"
+  description: "Open season. No permission needed to start"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Open season, and larger than a first issue"
+
+- name: "dependencies"
+  color: "0366d6"
+  description: "A dependency version bump"

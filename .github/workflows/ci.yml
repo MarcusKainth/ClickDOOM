@@ -1,27 +1,34 @@
-# ClickDOOM CI
+# ClickDOOM CI.
 #
-# Design: every workstream-specific step is guarded with hashFiles() on a
-# marker file, so this pipeline is GREEN on the empty skeleton and activates
-# job-by-job as agents land code. Do not delete guards to "enable" a job —
-# land the marker file (Makefile / test entrypoint) instead.
+# ClickHouse is pinned to 26.7.5.10 by image digest, once per service block
+# below. GitHub does not expose the `env` context to `services.image`, so the
+# literal is repeated rather than shared. All of them, and docker-compose.yml,
+# must carry the same digest. Bumping the pin needs a `ci:` pull request with
+# nightly deep-diff evidence.
 #
-# PINNED VERSIONS (keep in sync with docker-compose.yml; bumps are `ci:` PRs
-# with nightly deep-diff evidence — see SPEC §8):
-#   ClickHouse: 26.7.5.10, digest-pinned (bumped from 26.3 on the evidence in #260)
+# Every third-party action is pinned to a full commit SHA. `zizmor` fails the
+# lint job if a pin or a token scope regresses.
 
 name: ci
 
 on:
   pull_request:
+    # `edited` is here for pr-title, which reads the title rather than the diff.
     types: [opened, edited, reopened, synchronize]
   push:
     branches: [main]
 
+# Superseded pull request runs are cancelled. Pushes to main are left to finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
 env:
-  CLICKHOUSE_VERSION: "26.7.5.10"
-  # Credentials for the service containers below. Local-dev only: this database
-  # holds an emulator's RAM, never a secret. docker-compose.yml must match.
   CLICKHOUSE_USER: default
+  # Local-only. This database holds an emulator's RAM and nothing secret.
+  # docker-compose.yml carries the same value.
   CLICKHOUSE_PASSWORD: clickdoom
   CLICKHOUSE_DATABASE: clickdoom
 
@@ -29,8 +36,12 @@ jobs:
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Lint PR title against commit convention
         env:
           TITLE: ${{ github.event.pull_request.title }}
@@ -38,207 +49,220 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - name: Purity check (always on)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Purity check
         run: ./scripts/check_purity.sh
       - name: shellcheck
-        # scripts/driver only, until now -- predated sqlcpu/executor landing
-        # shell scripts (justfile's own `lint` recipe comment flagged this
-        # exact gap as a `ci:` follow-up). Matches `just lint`'s scope,
-        # found auditing for CI/justfile orphans alongside #116.
+        # `-exec … +` rather than a pipe into xargs: a pipeline reports only the
+        # last command's exit status, so a failing find would pass silently.
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
-          find scripts driver sqlcpu executor rom -name '*.sh' -print0 2>/dev/null | xargs -0 -r shellcheck
-      - name: "ruff (Python: refemu, driver)"
-        if: hashFiles('refemu/pyproject.toml', 'driver/pyproject.toml') != ''
+          find scripts driver sqlcpu executor rom -name '*.sh' -exec shellcheck {} +
+      - name: ruff
+        # The version refemu's lockfile pins, so CI and a local run agree.
         run: |
-          pipx install ruff
-          ruff check refemu driver
-      - name: clang-format (rom C sources)
-        if: hashFiles('rom/**/*.c', 'rom/**/*.h') != ''
+          pipx install uv
+          uv run --project refemu ruff check refemu driver
+      - name: clang-format
+        # rom/vendor/.clang-format sets DisableFormat, so the 192 vendored files
+        # are skipped and only rom/src/ is checked.
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q clang-format
-          find rom -name '*.c' -o -name '*.h' | xargs -r clang-format --dry-run --Werror
+          find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
+      - name: zizmor
+        run: |
+          pipx install zizmor==1.28.0
+          zizmor --persona=regular .github/
 
   build-rom:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build ROM (dockerized rv32 toolchain)
-        if: hashFiles('rom/Makefile') != ''
         run: make -C rom
       - name: Verify reproducible-build hash pin
-        if: hashFiles('rom/Makefile') != '' && hashFiles('rom/PINNED_HASH') != ''
+        # Recomputed here rather than calling `make -C rom check-pinned-hash`,
+        # so the pin is checked by something other than the tool that built it.
         run: |
           built=$(sha256sum rom/build/doom-rv32im.bin | cut -d' ' -f1)
           pinned=$(cat rom/PINNED_HASH)
           if [ "$built" != "$pinned" ]; then
             echo "::error::ROM hash mismatch: built=$built pinned=$pinned."
-            echo "::error::Either the build went nondeterministic (P0) or you changed the ROM without updating rom/PINNED_HASH in the same PR."
+            echo "::error::Either the build went nondeterministic (P0) or the ROM changed without rom/PINNED_HASH being updated in the same PR."
             exit 1
           fi
       - name: Upload ROM artifact
-        if: hashFiles('rom/Makefile') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rom
           path: |
             rom/build/doom-rv32im.bin
             rom/build/manifest.json
-      - name: Skipped (rom/ not landed yet)
-        if: hashFiles('rom/Makefile') == ''
-        run: echo "rom workstream not landed — step group skipped by design"
 
   test-refemu:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - name: riscv-tests against reference emulator
-        if: hashFiles('refemu/pyproject.toml') != ''
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: riscv-tests against the reference emulator
         run: |
           pipx install uv
           cd refemu && uv sync --frozen && uv run pytest -q
-      - name: Skipped (refemu/ not landed yet)
-        if: hashFiles('refemu/pyproject.toml') == ''
-        run: echo "refemu workstream not landed — skipped by design"
 
   test-sqlcpu:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e   # keep literal in sync with env.CLICKHOUSE_VERSION
+        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
         env:
           CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
+          CLICKHOUSE_PASSWORD: clickdoom
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: riscv-tests inside ClickHouse
-        if: hashFiles('sqlcpu/schema.sql') != ''
         run: ./sqlcpu/run_tests.sh --host localhost --port 9000
-      - name: Skipped (sqlcpu/ not landed yet)
-        if: hashFiles('sqlcpu/schema.sql') == ''
-        run: echo "sqlcpu workstream not landed — skipped by design"
 
-  # #116: since #88, three benches AND the whole 16-case test_fold.py suite
-  # were broken (missing input_queue in their schema fixtures) with no CI
-  # job to catch it -- a green PR page said nothing about any of it for
-  # every executor PR in that window. Same shape as #83: a check that
-  # silently does nothing looks identical to one that passes.
   test-executor:
+    # The only job covering the fold tests and the schema fixtures they share
+    # with the benches. Without it a break in either is invisible on a green
+    # pull request page.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e   # keep in sync
+        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
         env:
           CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
+          CLICKHOUSE_PASSWORD: clickdoom
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      # executor/tests/*.py's ch() talks to `clickhouse-client` directly
-      # over the network (CLICKHOUSE_HOST switches it out of the
-      # docker-exec-a-container-named-clickdoom-ch path local dev uses,
-      # which has no equivalent here -- GitHub Actions' `services:`
-      # containers are reached at localhost:<port>, not by a fixed
-      # container name). ubuntu-latest ships neither `clickhouse-client`
-      # nor `clickhouse` (same gap sqlcpu/run_tests.sh already works
-      # around) -- fetch the official single-file binary and expose it
-      # under the name the tests (and every other script in this repo)
-      # actually invoke, via a one-line wrapper rather than a rename, since
-      # the binary's `client` subcommand is what the fetched form supports.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install clickhouse-client
-        if: hashFiles('executor/pyproject.toml') != ''
+        # The runner ships neither `clickhouse-client` nor `clickhouse`. The
+        # tests invoke `clickhouse-client` by name, and the fetched binary
+        # exposes the same thing as a `client` subcommand, so a wrapper stands
+        # in for it rather than a rename.
         run: |
           curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
           sh /tmp/install.sh
           sudo install -m 0755 clickhouse /usr/local/bin/clickhouse
           printf '#!/bin/sh\nexec /usr/local/bin/clickhouse client "$@"\n' | sudo tee /usr/local/bin/clickhouse-client >/dev/null
           sudo chmod +x /usr/local/bin/clickhouse-client
-      - name: Fold unit tests (executor)
-        if: hashFiles('executor/pyproject.toml') != ''
+      - name: Fold unit tests
         env:
           CLICKHOUSE_HOST: localhost
           CLICKHOUSE_PORT: "9000"
         run: |
           pipx install uv
           cd executor && uv sync --frozen && uv run pytest tests/ -v
-      - name: Skipped (executor/ not landed yet)
-        if: hashFiles('executor/pyproject.toml') == ''
-        run: echo "executor workstream not landed — skipped by design"
 
-  differential-smoke:
-    # Highest-value check in the repo: N instructions of the DOOM ROM on
-    # refemu vs sqlcpu, the FULL SPEC §7 trace compared (every
-    # CHECKPOINT_INTERVAL, not just RAM_HASH_INTERVAL -- #227/#230), not a
-    # sampled subset.
-    #
-    # N=100,000, NOT the 1,000,000 this job used to (unreachably) claim:
-    # #227/#230's diff_run.sh clamps every sqlcpu batch to
-    # <= CHECKPOINT_INTERVAL (4,096) so it cannot skip a checkpoint row --
-    # correct by construction, but slower than run_milestone.sh's
-    # instructions/sec at the same K. MEASURED (not projected -- #227's own
-    # container, N=100,000): **990 instructions/sec, 101 seconds wall
-    # clock** -- 21% slower than #180's ~1,253 fold+commit-only projection,
-    # which didn't include this tool's own per-4,096-batch overhead (a
-    # checkpoint_query.py invocation, a client round-trip, a trace-file
-    # lookup, once per landing). 1,000,000 at this rate is ~16.8 minutes,
-    # well past this job's old "~5 minutes" budget; 100,000 is the ~1.7
-    # minutes actually measured. `timeout-minutes` below is a safety net
-    # for CI-runner variance, not a substitute for the measurement above.
-    #
-    # ## THIS JOB NEVER CHECKS MEMORY. Read this before trusting a green run.
-    #
-    # 100,000 instructions at CHECKPOINT_INTERVAL=4,096 spacing is 24
-    # register-only comparisons and ZERO RAM_HASH_INTERVAL (1,048,576)
-    # boundaries -- the first one needs 1,048,576 instructions, which
-    # projects to ~13.9 minutes here, on every PR, just to reach it. That
-    # is not an acceptable tax on this job (test-executor is already the
-    # slow one), and there is no cheaper way to buy partial coverage: the
-    # trace only carries `ramhash`/`fbhash` at the 1,048,576 cadence --
-    # SPEC §7 defines no finer one, and adding one is a human-gated
-    # spec-change, not a CI tuning knob.
-    #
-    # So: A GREEN `differential-smoke` MEANS "registers and control flow
-    # agreed over 24 comparisons." IT DOES NOT MEAN "the engines agree."
-    # The memory-divergence check does not run on this job, on any PR, ever
-    # -- only nightly's `deep-diff` (5,000,000 instructions, 4
-    # RAM_HASH_INTERVAL boundaries) exercises `ramhash`/`fbhash` at all.
-    # #191 is the concrete shape of what this leaves uncaught: a corrupt
-    # RAM word that left the register file bit-identical to refemu across
-    # 250,000 instructions, zero footprint in any register the entire
-    # time. A PR reintroducing that exact class of defect passes this job
-    # and is only caught the following night. Deliberate, not an oversight
-    # -- but read a green check here as "smoke on registers," not as "the
-    # highest-value check in the repo confirmed nothing is wrong."
-    needs: [build-rom, test-refemu, test-sqlcpu]
+  test-render:
+    # Runs against a throwaway database, never `clickdoom`. Builds its own
+    # refemu fixture by stepping the ROM to icount 15,393,136, at about
+    # 1,064,000 instructions/sec, so it needs the built ROM and takes about 20
+    # seconds once it has it.
+    needs: [build-rom]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    permissions:
+      contents: read
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e   # keep in sync
+        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
         env:
           CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom   # keep in sync with docker-compose.yml
+          CLICKHOUSE_PASSWORD: clickdoom
         ports: ["8123:8123", "9000:9000"]
         options: >-
           --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download ROM artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rom
           path: rom/build
-      - name: Install uv (for refemu's side of the comparison)
+      - name: Install clickhouse-client
+        run: |
+          curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
+          sh /tmp/install.sh
+          sudo install -m 0755 clickhouse /usr/local/bin/clickhouse
+          printf '#!/bin/sh\nexec /usr/local/bin/clickhouse client "$@"\n' | sudo tee /usr/local/bin/clickhouse-client >/dev/null
+          sudo chmod +x /usr/local/bin/clickhouse-client
+      - name: Frame readout and render tests
+        run: |
+          pipx install uv
+          ./driver/test_render.sh --host localhost --port 9000
+
+  differential-smoke:
+    # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
+    # full checkpoint trace at every CHECKPOINT_INTERVAL rather than a sample.
+    #
+    # A GREEN RUN HERE MEANS "registers and control flow agreed over 24
+    # comparisons". IT DOES NOT MEAN "the engines agree". 100,000 instructions
+    # at CHECKPOINT_INTERVAL=4,096 spacing reaches no RAM_HASH_INTERVAL
+    # (1,048,576) boundary, so `ramhash` and `fbhash` are never compared. That
+    # leaves uncaught a corrupt RAM word which keeps every register
+    # bit-identical. Only nightly's deep-diff exercises memory.
+    #
+    # N=100,000 because diff_run.sh clamps every sqlcpu batch to
+    # <= CHECKPOINT_INTERVAL so it cannot skip a checkpoint row. Measured at
+    # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
+    # would take about 13.9 minutes on every pull request. timeout-minutes is a
+    # safety net for runner variance, not a substitute for that measurement.
+    needs: [build-rom, test-refemu, test-sqlcpu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
+        env:
+          CLICKHOUSE_DB: clickdoom
+          CLICKHOUSE_PASSWORD: clickdoom
+        ports: ["8123:8123", "9000:9000"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download ROM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rom
+          path: rom/build
+      - name: Install uv
         run: pipx install uv
-      - name: Run smoke diff (100,000 instructions, full SPEC §7 trace)
+      - name: Smoke diff (100,000 instructions, full checkpoint trace)
         run: ./scripts/diff_run.sh 100000 --host localhost --port 9000

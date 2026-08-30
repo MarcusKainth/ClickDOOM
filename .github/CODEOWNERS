@@ -1,9 +1,26 @@
-# CODEOWNERS — the human control plane.
-# Agents may PROPOSE changes to these files; only the human owner may approve them.
-# Everything not listed here is owned end-to-end by the agent team.
+# The maintainer control plane.
 #
+# Anyone may propose a change to a path below. Only a maintainer may approve it.
+# Everything not listed here needs an ordinary review.
+#
+# There is deliberately no `*` catch-all. It would name an owner for every path
+# in the repository and make the entries below look like they carry no more
+# weight than the rest.
+#
+# `.github/` is owned in full, not just the workflows. A pull request runs the
+# workflow files as they exist in that pull request, so a change deleting a
+# check disables the very thing that would have objected to it. The same
+# argument covers `scripts/`, which the workflows call.
 
 /SPEC.md              @MarcusKainth
 /PURITY.md            @MarcusKainth
-/.github/workflows/   @MarcusKainth
-/.github/CODEOWNERS   @MarcusKainth
+
+/.github/             @MarcusKainth
+/scripts/             @MarcusKainth
+
+/LICENSE              @MarcusKainth
+/LICENSING.md         @MarcusKainth
+/rom/LICENSE          @MarcusKainth
+/SECURITY.md          @MarcusKainth
+/AI_POLICY.md         @MarcusKainth
+/CODE_OF_CONDUCT.md   @MarcusKainth

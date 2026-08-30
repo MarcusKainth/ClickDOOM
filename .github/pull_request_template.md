@@ -12,7 +12,7 @@
 ## Spec impact
 
 - [ ] None — no contract in SPEC.md is touched
-- [ ] SPEC.md change included (requires human-owner approval; `spec-change` issue: #N)
+- [ ] SPEC.md change included (requires maintainer approval; `spec-change` issue: #N)
 
 ## Test evidence
 

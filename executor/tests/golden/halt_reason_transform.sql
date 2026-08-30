@@ -1,0 +1,1 @@
+transform(toUInt8(r.4.3), [1,2,3,4,5,6,7,8], ['ILLEGAL_INSN','SELF_MODIFY','BAD_ADDR','MISALIGNED','ECALL','EBREAK','CSR','EXIT'], '')

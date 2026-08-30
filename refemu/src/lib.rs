@@ -13,6 +13,7 @@ pub mod image;
 pub mod memory;
 pub mod mmio;
 pub mod predecode;
+pub mod snapshot;
 pub mod trace;
 
 pub use boot::{BootReport, Outcome, boot, format_report};

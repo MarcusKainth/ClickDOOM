@@ -24,6 +24,7 @@ use crate::exec::{Cpu, Halt};
 use crate::image::{Image, read_image};
 use crate::memory::Memory;
 use crate::mmio::Devices;
+use crate::snapshot::{self, Provenance, Snapshot};
 use crate::trace::{self, Step, Stop};
 use point::{Point, StopAt, parse_addr, parse_count, parse_hash64};
 use report::{FrameCommitJson, HaltJson, RunOutcome, RunReport, write_json};
@@ -217,6 +218,25 @@ pub struct RunCmd {
     /// Write the bytes the program printed
     #[arg(long, value_name = "PATH")]
     pub console_out: Option<PathBuf>,
+    #[command(flatten)]
+    pub capture: CaptureArgs,
+}
+
+/// What a run keeps of the machine it leaves behind.
+#[derive(Args, Clone, Default)]
+pub struct CaptureArgs {
+    /// Write the whole machine at the stop
+    #[arg(long, value_name = "PATH")]
+    pub dump_state: Option<PathBuf>,
+    /// Write the framebuffer and palette at the stop
+    #[arg(long, value_name = "PATH")]
+    pub dump_frame: Option<PathBuf>,
+    /// Start from a captured machine instead of the image's entry
+    #[arg(long, value_name = "PATH")]
+    pub resume: Option<PathBuf>,
+    /// Resume even from a machine captured under different settings
+    #[arg(long, requires = "resume")]
+    pub force_resume: bool,
 }
 
 #[derive(Args, Clone)]
@@ -244,6 +264,8 @@ pub struct TraceCmd {
     /// Instructions between the memory hashes
     #[arg(long, value_name = "N", default_value_t = TraceConfig::default().ram_hash_interval, value_parser = parse_count)]
     pub ram_hash_interval: u64,
+    #[command(flatten)]
+    pub capture: CaptureArgs,
 }
 
 #[derive(Args, Clone)]
@@ -327,9 +349,14 @@ struct Loaded {
     cpu: Cpu,
     rom_sha256: String,
     pinned: bool,
+    manifest: Manifest,
 }
 
-fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
+fn load(
+    image: &ImageArgs,
+    machine: &MachineArgs,
+    capture: &CaptureArgs,
+) -> Result<Loaded, Failure> {
     let bytes = std::fs::read(&image.image)
         .map_err(|e| failed(format!("reading {}: {e}", image.image.display())))?;
 
@@ -386,6 +413,17 @@ fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
         cpu.set_pc(entry);
     }
     cpu.set_text_region(text);
+
+    // A resumed machine replaces everything the image just put there. The
+    // image still loads first, because the region bounds and the map come
+    // from it and the capture is checked against them.
+    if let Some(path) = &capture.resume {
+        let snapshot = Snapshot::read(path, &["ram", "framebuffer", "palette"])
+            .map_err(|e| failed(e.to_string()))?;
+        snapshot::restore(&mut cpu, &snapshot, path, capture.force_resume)
+            .map_err(|e| failed(e.to_string()))?;
+    }
+
     // Decoding the read-only region up front is what makes a long run cheap.
     // A machine with no declared region has nothing to cache.
     cpu.enable_decode_cache();
@@ -394,6 +432,7 @@ fn load(image: &ImageArgs, machine: &MachineArgs) -> Result<Loaded, Failure> {
         cpu,
         rom_sha256,
         pinned,
+        manifest,
     })
 }
 
@@ -546,6 +585,38 @@ fn check_budget_reachable(budget: &BudgetArgs) -> Result<(), Failure> {
     Ok(())
 }
 
+fn write_captures(
+    cpu: &Cpu,
+    loaded: &LoadedInfo<'_>,
+    ending: &Ending,
+    capture: &CaptureArgs,
+) -> Result<(), Failure> {
+    let from = Provenance {
+        rom_sha256: Some(loaded.rom_sha256.to_owned()),
+        pinned: loaded.pinned,
+        rom_manifest: Some(loaded.manifest.clone()),
+    };
+    let stop = ending.condition.map(|c| c.to_string());
+    if let Some(path) = &capture.dump_state {
+        snapshot::machine_snapshot(cpu, from.clone(), stop.clone())
+            .write(path)
+            .map_err(|e| failed(e.to_string()))?;
+    }
+    if let Some(path) = &capture.dump_frame {
+        snapshot::frame_snapshot(cpu, from, stop)
+            .write(path)
+            .map_err(|e| failed(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// What a capture records about where the image came from.
+struct LoadedInfo<'a> {
+    rom_sha256: &'a str,
+    pinned: bool,
+    manifest: &'a Manifest,
+}
+
 fn write_side_outputs(
     cpu: &Cpu,
     report: &RunReport,
@@ -613,9 +684,20 @@ fn cmd_run(cli: &Cli, cmd: &RunCmd) -> Result<Exit, Failure> {
         mut cpu,
         rom_sha256,
         pinned,
-    } = load(&cmd.image, &cmd.machine)?;
+        manifest,
+    } = load(&cmd.image, &cmd.machine, &cmd.capture)?;
     let ending = drive(&mut cpu, TraceConfig::default(), &cmd.budget, |_| {});
     let report = summarise(&cpu, &ending, &rom_sha256, pinned);
+    write_captures(
+        &cpu,
+        &LoadedInfo {
+            rom_sha256: &rom_sha256,
+            pinned,
+            manifest: &manifest,
+        },
+        &ending,
+        &cmd.capture,
+    )?;
     write_side_outputs(
         &cpu,
         &report,
@@ -642,7 +724,8 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
         mut cpu,
         rom_sha256,
         pinned,
-    } = load(&cmd.image, &cmd.machine)?;
+        manifest,
+    } = load(&cmd.image, &cmd.machine, &cmd.capture)?;
 
     let mut out: Box<dyn std::io::Write> = match &cmd.out {
         Some(path) if path != Path::new("-") => Box::new(std::io::BufWriter::new(
@@ -671,6 +754,16 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
     }
 
     let report = summarise(&cpu, &ending, &rom_sha256, pinned);
+    write_captures(
+        &cpu,
+        &LoadedInfo {
+            rom_sha256: &rom_sha256,
+            pinned,
+            manifest: &manifest,
+        },
+        &ending,
+        &cmd.capture,
+    )?;
     write_side_outputs(
         &cpu,
         &report,
@@ -686,7 +779,7 @@ fn cmd_trace(cli: &Cli, cmd: &TraceCmd) -> Result<Exit, Failure> {
 }
 
 fn cmd_boot(_cli: &Cli, cmd: &BootCmd) -> Result<Exit, Failure> {
-    let Loaded { mut cpu, .. } = load(&cmd.image, &cmd.machine)?;
+    let Loaded { mut cpu, .. } = load(&cmd.image, &cmd.machine, &CaptureArgs::default())?;
     let report = crate::boot::boot(&mut cpu, cmd.max_instructions, cmd.retired_pcs);
     println!("{}", format_report(&report));
     Ok(match report.outcome {
@@ -700,7 +793,7 @@ fn cmd_boot(_cli: &Cli, cmd: &BootCmd) -> Result<Exit, Failure> {
 }
 
 fn cmd_disasm(cmd: &DisasmCmd, machine: &MachineArgs) -> Result<Exit, Failure> {
-    let Loaded { mut cpu, .. } = load(&cmd.image, machine)?;
+    let Loaded { mut cpu, .. } = load(&cmd.image, machine, &CaptureArgs::default())?;
     let start = cmd.start.unwrap_or_else(|| cpu.pc());
     for index in 0..cmd.count {
         let addr = start.wrapping_add((index * 4) as u32);

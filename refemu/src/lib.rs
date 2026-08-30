@@ -11,6 +11,7 @@ pub mod decode;
 pub mod exec;
 pub mod memory;
 pub mod mmio;
+pub mod predecode;
 pub mod trace;
 
 pub use boot::{BootReport, Outcome, boot, format_report};
@@ -18,4 +19,5 @@ pub use decode::{Instruction, Op, decode};
 pub use exec::{Cpu, DidNotHalt, Halt};
 pub use memory::{LoadError, MemFault, Memory};
 pub use mmio::{Devices, FrameCommit, KeyEvent, MmioExit, Registers};
+pub use predecode::DecodeCache;
 pub use trace::{Step, Stop, checkpoint_of, collect, fb_hash_of, ram_hash_of, reg_hash_of};

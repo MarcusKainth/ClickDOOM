@@ -120,9 +120,14 @@ encoders! {
 /// Opcode bits all zero, which no RV32IM instruction uses.
 pub const RESERVED_OPCODE: u32 = 0;
 
-/// The canonical no-op, which is what the shrinker replaces an instruction
+/// The canonical no-op, which is what a shrinker replaces an instruction
 /// with when it is trying to make a failing case smaller.
 pub const NOP: u32 = addi(0, 0, 0);
+
+/// The canonical no-op, as a call, for building a program with `vec!`.
+pub const fn nop() -> u32 {
+    NOP
+}
 
 /// Packs words into the bytes a loader takes.
 pub fn program(words: &[u32]) -> Vec<u8> {

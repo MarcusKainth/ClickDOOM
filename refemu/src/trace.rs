@@ -133,7 +133,7 @@ mod tests {
         if then_halt {
             words.push(ecall());
         }
-        cpu.memory.load_image(&program(&words), RAM_BASE).unwrap();
+        cpu.load_image(&program(&words), RAM_BASE).unwrap();
         cpu
     }
 

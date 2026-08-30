@@ -80,14 +80,16 @@ python3 ../../fold.py "$K" --hwm "$HWM" --db "$BENCH_DB" > /tmp/clickdoom_select
 python3 ../../commit.py ram --db "$BENCH_DB" > /tmp/clickdoom_ram_flush.sql
 python3 ../../commit.py cpu_state --db "$BENCH_DB" > /tmp/clickdoom_cpu_state_flush.sql
 
-# now64(6), not the second-resolution variant: whole-second granularity
+# purity-ok: PUR-12 covers computation paths. This is a harness bracketing its
+# own query_log window, and no emulator result depends on it.
+# Microsecond resolution rather than whole seconds. Whole-second granularity
 # lets this script's OWN setup DDL
 # fall inside the window when setup finishes in the same second RUN_START is
 # taken — a false-positive abort that fires only on fast runs (small K), which
 # is exactly when someone is iterating. Found by hand-auditing a "3 DDL
 # statements" abort whose three hits were this script's own schema.sql and
 # setup.sql, timestamped in the same second as RUN_START.
-RUN_START=$(ch --query "SELECT toString(now64(6, 'UTC'))")
+RUN_START=$(ch --query "SELECT toString(now64(6, 'UTC'))")  # purity-ok: harness window boundary, not a computation path
 
 BATCH_TOTAL=0
 RAM_FLUSH_TOTAL=0
@@ -133,7 +135,7 @@ for _ in $(seq 1 "$BATCHES"); do
   SELECT_ONLY_TOTAL=$(python3 -c "print($SELECT_ONLY_TOTAL + ($E - $S))")
 done
 
-RUN_END=$(ch --query "SELECT toString(now64(6, 'UTC'))")
+RUN_END=$(ch --query "SELECT toString(now64(6, 'UTC'))")  # purity-ok: harness window boundary, not a computation path
 
 # The pre-flight guard: query_log is the diagnostic that root-caused the
 # first corrupted run (system.query_log showed 101 TRUNCATE/CREATE/DROP

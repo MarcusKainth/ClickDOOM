@@ -239,6 +239,7 @@ async fn run_sparse_case(conn: &ConnArgs, testdb: &str, which: &str, written: u3
 }
 
 #[tokio::test]
+#[ignore = "needs a reachable ClickHouse server and a built refemu against the pinned ROM"]
 async fn render_sql_matches_the_bytes_it_claims_to_produce() {
     let conn = conn_args();
     let testdb = format!("driver_render_live_test_{}", std::process::id());

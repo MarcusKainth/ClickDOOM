@@ -26,21 +26,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
+import subprocess
+import tempfile
 import json
 import sys
-import time
-from bisect import bisect_right
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROM_DIR = HERE.parent.parent  # rom/
 REPO = ROM_DIR.parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(REPO / "refemu" / "src"))
 
 from elfsyms import read_func_symbols  # noqa: E402
 
-from refemu.cpu import Halted, new_cpu  # noqa: E402
 
 # Functions whose calls we instrument at entry. Argument registers are the
 # RISC-V ilp32 ABI's: a0=x10, a1=x11, a2=x12.
@@ -57,8 +56,68 @@ INSTRUMENTED = {
 }
 
 
+REFEMU = os.environ.get("REFEMU", "./target/release/refemu")
+
+
+def read_rows(path: Path, columns: tuple[str, ...]) -> list[dict[str, int]]:
+    """Every non-comment row of a report, as ints keyed by column name."""
+    rows = []
+    for line in path.read_text().splitlines():
+        if line.startswith("#") or not line:
+            continue
+        rows.append(dict(zip(columns, (int(v) for v in line.split("\t")), strict=True)))
+    return rows
+
+
+def read_histogram(path: Path) -> list[tuple[str, list[tuple[int, int]], int]]:
+    """Each snapshot as (label, [(pc, count)] ascending by pc, retired)."""
+    retired_of: dict[str, int] = {}
+    rows: dict[str, list[tuple[int, int]]] = {}
+    order: list[str] = []
+    for line in path.read_text().splitlines():
+        if line.startswith("# snapshot"):
+            _, label, retired, _distinct, _counted = line.split("\t")
+            retired_of[label] = int(retired.split("=")[1])
+            order.append(label)
+            rows.setdefault(label, [])
+        elif not line.startswith("#") and line:
+            label, pc_hex, count = line.split("\t")
+            rows[label].append((int(pc_hex, 16), int(count)))
+    return [(label, rows[label], retired_of[label]) for label in order]
+
+
+def read_traps(path: Path) -> list[tuple[int, str, dict[int, int]]]:
+    """Each call as (count before it, name, register number to value)."""
+    out = []
+    registers: list[int] = []
+    for line in path.read_text().splitlines():
+        if line.startswith("# columns"):
+            registers = [int(name[1:]) for name in line.split("\t")[4:]]
+        elif not line.startswith("#") and line:
+            fields = line.split("\t")
+            out.append(
+                (
+                    int(fields[0]),
+                    fields[2],
+                    dict(zip(registers, (int(v) for v in fields[3:]), strict=True)),
+                )
+            )
+    return out
+
+
 def build_symbol_table(elf_path: Path):
     syms = read_func_symbols(elf_path)
+    # Two symbols can share an address. Attribution walks the histogram in
+    # address order and takes the first match, so collapse each equal-address
+    # run to one entry rather than leaving which of them wins to the order the
+    # ELF happens to list them in.
+    collapsed = []
+    for sym in syms:
+        if collapsed and collapsed[-1][0] == sym[0]:
+            collapsed[-1] = sym
+        else:
+            collapsed.append(sym)
+    syms = collapsed
     starts = [s[0] for s in syms]
     names = [s[2] for s in syms]
     ends = []
@@ -99,9 +158,9 @@ def main() -> int:
     print(f"# rom sha256: {rom_sha}")
     print(f"# PINNED_HASH: {pinned}  ({'MATCH' if rom_sha == pinned else 'MISMATCH'})")
 
-    manifest = json.loads(Path(args.manifest).read_text())
     starts, ends, names = build_symbol_table(elf_path)
     nsym = len(names)
+    unknown = nsym  # the slot for a program counter in no known symbol
     print(f"# symbols  : {nsym} STT_FUNC")
 
     entry_of = {}
@@ -110,84 +169,103 @@ def main() -> int:
             entry_of[starts[i]] = nm
     print(f"# instrumented entries: {sorted(entry_of.values())}")
 
-    cpu = new_cpu(text_start=manifest["text_start"], text_end=manifest["text_end"])
-    cpu.memory.load_image(image, base=manifest["load_addr"])
-    cpu.pc = manifest["load_addr"]
-
-    counts = [0] * (nsym + 1)  # last slot: pc outside every known symbol
-    unknown = nsym
-    # call stats: name -> dict
-    calls = {
-        nm: {"calls": 0, "bytes": 0, "aligned_calls": 0, "aligned_bytes": 0, "len_hist": {}}
-        for nm in INSTRUMENTED
-    }
-    snapshots = []  # (label, icount, counts copy, calls copy)
-
-    def snapshot(label):
-        snapshots.append(
-            (
-                label,
-                cpu.icount,
-                counts[:],
-                {k: {kk: (dict(vv) if isinstance(vv, dict) else vv) for kk, vv in v.items()} for k, v in calls.items()},
-            )
-        )
-
-    fc = cpu.memory.mmio.frame_commits
+    # Which frames the report needs a snapshot at. The run announces many
+    # more; asking for a snapshot at every one would copy the whole histogram
+    # each time for windows nobody reports.
     target_frames = max(args.frames, 1)
-    budget = args.max_instructions
-    halted = None
-    t0 = time.time()
-    next_tick = 5_000_000
+    wanted = {0, target_frames - 1}
+    for spec in args.extra_window:
+        lo, hi = (int(v) for v in spec.split(":"))
+        wanted.update((lo, hi))
+    points = [f"frame:{n}" for n in sorted(wanted)]
 
-    # -- hot loop --------------------------------------------------------
-    step = cpu.step
-    br = bisect_right
-    try:
-        while cpu.icount < budget:
-            pc = cpu.pc
-            i = br(starts, pc) - 1
-            if i >= 0 and pc < ends[i]:
-                counts[i] += 1
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        trap_file = tmp / "traps.txt"
+        trap_file.write_text(
+            "".join(f"{addr:08x}\t{name}\n" for addr, name in sorted(entry_of.items()))
+        )
+        hist_file, trap_report, frame_log, halt_report = (
+            tmp / "hist.tsv",
+            tmp / "traps.tsv",
+            tmp / "frames.tsv",
+            tmp / "halt.json",
+        )
+        command = [
+            REFEMU, "run", str(rom_path),
+            "--manifest", str(args.manifest),
+            "--stop-at", f"frame:{target_frames - 1}",
+            "--stop-at", "halt",
+            "--stop-at", "budget",
+            "--max-instructions", str(args.max_instructions),
+            "--pc-histogram", str(hist_file),
+            "--trap-pcs", str(trap_file),
+            "--trap-report", str(trap_report),
+            "--frame-log", str(frame_log),
+            "--halt-report", str(halt_report),
+        ]
+        for point in points:
+            command += ["--histogram-at", point]
+        result = subprocess.run(command, check=False)  # purity-ok: measurement tooling; refemu does the emulation and this reads its reports
+        if result.returncode != 0:
+            print(f"::error::refemu exited {result.returncode}", file=sys.stderr)
+            return 1
+
+        histogram = read_histogram(hist_file)
+        traps = read_traps(trap_report)
+        fc = [
+            (row["frame_no"], row["commit_icount"])
+            for row in read_rows(frame_log, ("index", "frame_no", "commit_icount", "retired_icount"))
+        ]
+        report = json.loads(halt_report.read_text())
+
+    total = report["icount"]
+    halted = report["halt"]
+
+    # Attribution: the histogram rows are in address order and the symbol
+    # ranges are sorted and non-overlapping, so this is a linear merge.
+    def attribute(rows):
+        out = [0] * (nsym + 1)
+        index = 0
+        for pc, count in rows:
+            while index < nsym and ends[index] <= pc:
+                index += 1
+            if index < nsym and starts[index] <= pc:
+                out[index] += count
             else:
-                counts[unknown] += 1
-            nm = entry_of.get(pc)
-            if nm is not None:
-                regs = cpu.regs
-                d, s, ln = INSTRUMENTED[nm]
-                c = calls[nm]
-                c["calls"] += 1
-                n = regs[ln] if ln is not None else 0
-                c["bytes"] += n
-                if s is not None and ((regs[d] ^ regs[s]) & 3) == 0:
-                    c["aligned_calls"] += 1
-                    c["aligned_bytes"] += n
-                elif s is None and (regs[d] & 3) == 0:
-                    c["aligned_calls"] += 1
-                    c["aligned_bytes"] += n
-                bucket = "0" if n == 0 else str(1 << (n.bit_length() - 1))
-                c["len_hist"][bucket] = c["len_hist"].get(bucket, 0) + 1
-            step()
-            if len(fc) != len(snapshots):
-                snapshot(f"frame_{len(fc) - 1}")
-                if len(fc) >= target_frames:
-                    break
-            if cpu.icount >= next_tick:
-                next_tick += 5_000_000
-                print(
-                    f"#   ... icount={cpu.icount:,} frames={len(fc)} "
-                    f"({cpu.icount / max(time.time() - t0, 1e-9) / 1000:.0f} kips)",
-                    file=sys.stderr,
-                )
-    except Halted as h:
-        halted = h
-        snapshot("halt")
-    # --------------------------------------------------------------------
+                out[unknown] += count
+        return out
 
-    if not snapshots:
-        snapshot("end")
-    total = cpu.icount
-    print(f"# outcome  : {'HALT ' + halted.reason if halted else 'frame budget reached'}")
+    def call_stats(lo_icount, hi_icount):
+        out = {
+            nm: {"calls": 0, "bytes": 0, "aligned_calls": 0, "aligned_bytes": 0, "len_hist": {}}
+            for nm in INSTRUMENTED
+        }
+        for icount, name, regs in traps:
+            if not lo_icount <= icount < hi_icount or name not in INSTRUMENTED:
+                continue
+            d, s, ln = INSTRUMENTED[name]
+            c = out[name]
+            c["calls"] += 1
+            n = regs.get(ln, 0) if ln is not None else 0
+            c["bytes"] += n
+            aligned = ((regs[d] ^ regs[s]) & 3) == 0 if s is not None else (regs[d] & 3) == 0
+            if aligned:
+                c["aligned_calls"] += 1
+                c["aligned_bytes"] += n
+            bucket = "0" if n == 0 else str(1 << (n.bit_length() - 1))
+            c["len_hist"][bucket] = c["len_hist"].get(bucket, 0) + 1
+        return out
+
+    # Snapshots in the shape the reporting below already expects.
+    snapshots = []
+    for label, rows, retired in histogram:
+        name = "end" if label == "end" else f"frame_{label.split(':')[1]}"
+        snapshots.append((name, retired, attribute(rows), call_stats(0, retired)))
+
+    assert snapshots, "the emulator reported no histogram snapshots"
+    total = report["icount"]
+    print(f"# outcome  : {'HALT ' + halted['reason'] if halted else 'frame budget reached'}")
     print(f"# icount   : {total:,}   frame_commits: {len(fc)}")
     if fc:
         print(f"# frame commit icounts: {[c for _, c in fc]}")
@@ -198,11 +276,7 @@ def main() -> int:
         "pinned_match": rom_sha == pinned,
         "icount": total,
         "frame_commits": [{"frame": f, "icount": c} for f, c in fc],
-        "halt": (
-            {"reason": halted.reason, "pc": halted.pc, "exit_code": halted.exit_code}
-            if halted
-            else None
-        ),
+        "halt": halted,
         "windows": [],
     }
 
@@ -261,7 +335,7 @@ def main() -> int:
     window("boot: 0 -> first FRAME_COMMIT", zero_counts, first[2], zero_calls, first[3], first[1])
     if len(snapshots) > 1:
         window(
-            f"steady state: frame 0 -> frame {len(snapshots) - 1} (excludes crt0/boot)",
+            f"steady state: frame 0 -> frame {target_frames - 1} (excludes crt0/boot)",
             first[2],
             last[2],
             first[3],
@@ -284,11 +358,12 @@ def main() -> int:
             snapshots[hi][1] - snapshots[lo][1],
         )
 
-    result["len_hist"] = {nm: calls[nm]["len_hist"] for nm in INSTRUMENTED}
+    whole_run_calls = snapshots[-1][3]
+    result["len_hist"] = {nm: whole_run_calls[nm]["len_hist"] for nm in INSTRUMENTED}
     print()
     print("=== memcpy/memset call-size histogram (whole run, power-of-two buckets) ===")
     for nm in ("memcpy", "memset", "memmove"):
-        h = calls[nm]["len_hist"]
+        h = whole_run_calls[nm]["len_hist"]
         if not h:
             continue
         ordered = sorted(h.items(), key=lambda kv: int(kv[0]))

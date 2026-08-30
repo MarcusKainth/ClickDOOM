@@ -142,10 +142,10 @@ bench-phase0: up ## arrayFold characterisation, the evidence behind ADR-0001 and
 bench-e1-cse: up ## Does arrayFold deduplicate repeated subexpressions, and at what node cost
 	./executor/bench/e1_cse/run.sh $(no_stdin)
 
-bench-e7-memfns: require-rom ## Per-symbol instruction attribution for the real ROM. No ClickHouse
-	cd refemu && uv run python ../rom/bench/e7_memfns/profile_memfns.py --frames 40
+bench-e7-memfns: require-rom build-refemu ## Per-symbol instruction attribution for the real ROM. No ClickHouse
+	python3 rom/bench/e7_memfns/profile_memfns.py --frames 40
 
-bench-canonical-throughput: up require-rom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
+bench-canonical-throughput: up require-rom build-refemu ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
 	./rom/bench/canonical_throughput/run.sh \
 		--bin $(ROM_BIN) --manifest $(ROM_MANIFEST) $(conn) $(no_stdin)
 

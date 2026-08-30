@@ -117,23 +117,28 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-sys.path.insert(0, str(REPO / "refemu" / "src"))
-sys.path.insert(0, str(REPO / "driver"))
 
-import render  # FRAMEBUFFER_WORDS / PALETTE_WORDS -- SPEC §2, not re-declared here  # noqa: E402 - import follows the sys.path insertion above
-from refemu.cpu import Halted, new_cpu  # noqa: E402
-from refemu.memory import Memory  # noqa: E402
-from refemu.trace import fb_hash  # noqa: E402
+REFEMU = os.environ.get("REFEMU", "./target/release/refemu")
 
-FRAMEBUFFER_BASE = 0x1100_0000
-PALETTE_BASE = 0x1101_0000
+
+def read_coverage(path: Path) -> dict[str, tuple[int, int]]:
+    """Region name to (words written, words the region has)."""
+    out = {}
+    for line in path.read_text().splitlines():
+        if line.startswith("#"):
+            continue
+        region, written, total, _stores = line.split("\t")
+        out[region] = (int(written), int(total))
+    return out
 
 
 def main() -> int:
@@ -148,7 +153,7 @@ def main() -> int:
                           "didn't perturb execution, not just that some writes were counted")
     ap.add_argument("--seed-has-pixels", action="store_true",
                      help="(#251) the seed itself already carries real framebuffer/palette content "
-                          "at --seed-icount (a format-2+ gen_snapshot.py/seed_snapshot.py snapshot), "
+                          "at --seed-icount (a captured machine carries them), "
                           "so incomplete coverage in this window is expected/fine, not a failure -- "
                           "the coverage numbers are still printed, just not gating. REQUIRES "
                           "--expect-fbhash (enforced below): without it nothing would gate the run "
@@ -169,90 +174,69 @@ def main() -> int:
 
     rom_path = Path(args.rom)
     manifest_path = Path(args.manifest)
-    pinned = (REPO / "rom" / "PINNED_HASH").read_text().strip()
-    image = rom_path.read_bytes()
-    rom_sha256 = hashlib.sha256(image).hexdigest()
-    if rom_sha256 != pinned:
-        print(f"::error::{rom_path}: sha256 {rom_sha256} != PINNED_HASH {pinned} -- "
-              f"refusing to verify coverage against an unpinned ROM", file=sys.stderr)
-        return 1
-    manifest = json.loads(manifest_path.read_text())
 
-    cpu = new_cpu(text_start=manifest.get("text_start"), text_end=manifest.get("text_end"))
-    cpu.memory.load_image(image, base=manifest["load_addr"])
-    cpu.pc = manifest["load_addr"]
+    # One pass, recording only inside the window. The emulator gates the
+    # pinned hash, so an unpinned ROM stops the run before anything is
+    # measured.
+    with tempfile.TemporaryDirectory() as tmp:
+        coverage_path = Path(tmp) / "coverage.tsv"
+        report_path = Path(tmp) / "report.json"
+        command = [
+            REFEMU, "run", str(rom_path),
+            "--manifest", str(manifest_path),
+            "--pinned-hash", str(REPO / "rom" / "PINNED_HASH"),
+            "--watch-from", f"icount:{args.seed_icount}",
+            "--stop-at", f"icount:{args.target_icount}",
+            "--max-instructions", str(args.target_icount),
+            "--watch-writes", "fb,pal",
+            "--write-coverage", str(coverage_path),
+            "--halt-report", str(report_path),
+        ]
+        result = subprocess.run(command, check=False)  # purity-ok: measurement tooling, not the runtime driver; refemu does the emulation and this reads its report
+        if result.returncode != 0:
+            print(f"::error::refemu exited {result.returncode}; it stopped before "
+                  f"--target-icount={args.target_icount}, so there is no window to report on",
+                  file=sys.stderr)
+            return 1
+        coverage = read_coverage(coverage_path)
+        report = json.loads(report_path.read_text())
 
-    fb_written: set[int] = set()
-    pal_written: set[int] = set()
-    recording = False
+    fb_words, fb_total = coverage["framebuffer"]
+    pal_words, pal_total = coverage["palette"]
+    actual_hash = report["fbhash"]
 
-    orig_write = Memory.write
-
-    def tracking_write(self: Memory, addr: int, width: int, value: int) -> None:
-        if recording:
-            if FRAMEBUFFER_BASE <= addr < FRAMEBUFFER_BASE + render.FRAMEBUFFER_WORDS * 4:
-                fb_written.add((addr - FRAMEBUFFER_BASE) // 4)
-            elif PALETTE_BASE <= addr < PALETTE_BASE + render.PALETTE_WORDS * 4:
-                pal_written.add((addr - PALETTE_BASE) // 4)
-        return orig_write(self, addr, width, value)
-
-    Memory.write = tracking_write  # type: ignore[method-assign]
-    try:
-        while cpu.icount < args.seed_icount:
-            try:
-                cpu.step()
-            except Halted as h:
-                print(f"::error::CPU halted (reason={h.reason}) at icount={cpu.icount}, "
-                      f"short of --seed-icount={args.seed_icount}", file=sys.stderr)
-                return 1
-        print(f"# reached seed icount={cpu.icount:,} (unrecorded)", file=sys.stderr)
-
-        recording = True
-        while cpu.icount < args.target_icount:
-            try:
-                cpu.step()
-            except Halted as h:
-                print(f"::error::CPU halted (reason={h.reason}) at icount={cpu.icount}, "
-                      f"short of --target-icount={args.target_icount}", file=sys.stderr)
-                return 1
-        print(f"# reached target icount={cpu.icount:,} (recorded)", file=sys.stderr)
-
-        actual_hash = f"{fb_hash(cpu.memory.framebuffer, cpu.memory.palette):016x}"
-    finally:
-        Memory.write = orig_write  # type: ignore[method-assign]
-
-    fb_full = len(fb_written) == render.FRAMEBUFFER_WORDS
-    pal_full = len(pal_written) == render.PALETTE_WORDS
-    print(f"distinct_fb_words_written_in_window={len(fb_written)}/{render.FRAMEBUFFER_WORDS}")
-    print(f"distinct_pal_words_written_in_window={len(pal_written)}/{render.PALETTE_WORDS}")
+    fb_full = fb_words == fb_total
+    pal_full = pal_words == pal_total
+    print(f"distinct_fb_words_written_in_window={fb_words}/{fb_total}")
+    print(f"distinct_pal_words_written_in_window={pal_words}/{pal_total}")
     print(f"actual_fbhash_at_target={actual_hash}")
 
     ok = True
     if not fb_full:
         if args.seed_has_pixels:
-            print(f"# FRAMEBUFFER coverage incomplete: {len(fb_written)}/{render.FRAMEBUFFER_WORDS} words "
+            print(f"# FRAMEBUFFER coverage incomplete: {fb_words}/{fb_total} words "
                   f"written in [{args.seed_icount}, {args.target_icount}) -- not a failure with "
                   f"--seed-has-pixels: the missing words carry forward the seed's own real value.",
                   file=sys.stderr)
         else:
-            print(f"::error::FRAMEBUFFER coverage incomplete: {len(fb_written)}/{render.FRAMEBUFFER_WORDS} words "
+            print(f"::error::FRAMEBUFFER coverage incomplete: {fb_words}/{fb_total} words "
                   f"written in [{args.seed_icount}, {args.target_icount}) -- a seeded resume from "
                   f"--seed-icount would read the missing words as 0 (post-#220) instead of their real value, "
                   f"producing a clean but WRONG fb_hash. (If your seed already carries real pixel state -- "
-                  f"a #251-format snapshot -- pass --seed-has-pixels.)", file=sys.stderr)
+                  f"a captured machine -- pass --seed-has-pixels.)", file=sys.stderr)
             ok = False
     if not pal_full:
         if args.seed_has_pixels:
-            print(f"# PALETTE coverage incomplete: {len(pal_written)}/{render.PALETTE_WORDS} words "
+            print(f"# PALETTE coverage incomplete: {pal_words}/{pal_total} words "
                   f"written in [{args.seed_icount}, {args.target_icount}) -- not a failure with "
                   f"--seed-has-pixels: the missing words carry forward the seed's own real value.",
                   file=sys.stderr)
         else:
-            print(f"::error::PALETTE coverage incomplete: {len(pal_written)}/{render.PALETTE_WORDS} words "
+            print(f"::error::PALETTE coverage incomplete: {pal_words}/{pal_total} words "
                   f"written in [{args.seed_icount}, {args.target_icount}) -- same failure mode as above, "
                   f"and the one SPEC §2/schema.sql's own 'palette writes are rare' note predicts: don't "
                   f"assume a prior frame's coverage result carries over to this seed point. (If your seed "
-                  f"already carries real pixel state -- a #251-format snapshot -- pass --seed-has-pixels.)",
+                  f"already carries real pixel state -- a captured machine -- pass --seed-has-pixels.)",
                   file=sys.stderr)
             ok = False
     if not ok:

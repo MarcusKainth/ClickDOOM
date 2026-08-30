@@ -45,8 +45,8 @@ convention):
 The SQL CPU runs at roughly 1,000-2,000 instr/sec (ADR-0004). Reaching
 icount 233,932,753 by live execution would cost tens of hours -- payable
 once, not every sprint measurement. `refemu run --dump-state` runs the same ROM
-through `refemu` instead (~0.9-1.0M instr/sec measured), reaching that
-icount in about four minutes, and dumps the full CPU state (`pc`, `regs`,
+through `refemu` instead (about 170M instr/sec measured), reaching that
+icount in under two seconds, and dumps the full CPU state (`pc`, `regs`,
 `ram`). `seed_snapshot.py` loads that dump directly into an isolated
 database's `ram`/`batch_commit`, so the SQL CPU's *first* batch in the
 gameplay window starts from real, representative mid-run state -- not a

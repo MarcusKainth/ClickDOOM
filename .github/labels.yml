@@ -24,7 +24,7 @@
 
 - name: "area: refemu"
   color: "0052cc"
-  description: "The Python RV32IM interpreter that serves as the oracle"
+  description: "The RV32IM interpreter that serves as the oracle"
 
 - name: "area: sqlcpu"
   color: "0052cc"

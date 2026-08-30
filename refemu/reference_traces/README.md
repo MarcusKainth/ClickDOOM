@@ -93,7 +93,8 @@ not a correctness concern for a boot-time console-output milestone.
 The full `-timedemo demo3` run against the frozen `eabb12ed…` ROM. **Only the
 manifest is committed** — the `.tsv` trace itself (2,836,207,097
 instructions, ~700K `CHECKPOINT_INTERVAL` lines, ~25 MB) is derived data,
-gitignored, regenerable with `make gen-demo3-trace`, same reasoning as the
+gitignored, regenerable with `make gen-demo3-trace` in under twenty seconds,
+same reasoning as the
 `demo-boot-to-first-frame` and this file's size difference above, just applied
 at the far end of the scale.
 

@@ -400,14 +400,7 @@ impl Cpu {
             }
             Op::Divu => {
                 let (a, b) = (self.reg(rs1), self.reg(rs2));
-                // The self-test feature makes an unsigned division by zero
-                // give zero instead of all ones, so the differential has
-                // something real to find.
-                #[cfg(feature = "fuzz-selftest")]
-                let fallback = 0;
-                #[cfg(not(feature = "fuzz-selftest"))]
-                let fallback = u32::MAX;
-                self.set_reg(rd, a.checked_div(b).unwrap_or(fallback));
+                self.set_reg(rd, a.checked_div(b).unwrap_or(u32::MAX));
             }
             Op::Rem => {
                 let (a, b) = (self.reg(rs1), self.reg(rs2));

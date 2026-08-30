@@ -2,14 +2,14 @@
 """SPEC §7 checkpoint trace emitter — sqlcpu workstream, issue #22.
 
 The differential contract: refemu and sqlcpu must emit byte-identical trace
-files. Every format decision here is refemu's (`refemu/src/refemu/trace.py`,
+files. Every format decision here is the contract crate's (`spec/src/checkpoint.rs`,
 issues #15/#22) — this module reproduces it in SQL, not a second opinion on
 it. Settled and cross-verified against a live ClickHouse instance before
 this file existed (issue #15's comment thread has the worked examples);
 `test_checkpoint.py` re-verifies the same examples here as committed,
 runnable evidence rather than a one-off paste.
 
-Decisions carried over verbatim from refemu's trace.py:
+Decisions carried over verbatim from the contract crate:
   * xxh64 seed 0 — matches ClickHouse's `xxHash64(x)` with no seed argument.
   * Hex fields: lowercase, zero-padded, no `0x` prefix. `pc_hex` is 8 digits,
     `reghash_hex`/`ramhash_hex`/`fbhash_hex` are 16. ClickHouse's `hex()` is

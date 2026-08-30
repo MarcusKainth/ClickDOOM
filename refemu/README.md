@@ -1,6 +1,6 @@
 # refemu/
 
-The reference RV32IM interpreter, in Python. It is the oracle: the known-good
+The reference RV32IM interpreter, in Rust. It is the oracle: the known-good
 run that the SQL implementation is checked against, instruction by instruction.
 
 It must stay an independent implementation. It shares no code with `sqlcpu/`,
@@ -14,8 +14,19 @@ differential runner compares.
 
     make test-refemu
 
-No ClickHouse needed. The suite covers the committed riscv-tests fixtures, the
-MMIO devices, halt semantics, and the trace emitters.
+No ClickHouse and no ROM. The suite covers the committed riscv-tests fixtures,
+the device model, halt semantics, the decode cache's equivalence with decoding
+on every fetch, and the formats.
+
+    make test-refemu-reference
+
+Regenerates the committed traces from the pinned ROM and compares them, and
+runs the whole `demo3` demo against the values its manifest records. Needs
+`make build-rom` first.
+
+    make fuzz
+
+Coverage-guided fuzzing. See `../fuzz/README.md`.
 
 ## Reference traces
 
@@ -24,5 +35,6 @@ from so a re-pinned ROM cannot silently reuse the previous one's.
 [Its README](reference_traces/README.md) records what each one is.
 
 Regenerating one is `make gen-reference-trace`, which refuses to run against an
-unpinned ROM. The interpreter runs at roughly a million instructions per second,
-which sets the cost.
+unpinned ROM. The interpreter runs at about 170 million instructions per second
+on a quiet machine, so the whole `demo3` run regenerates in under twenty
+seconds.

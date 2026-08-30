@@ -20,13 +20,6 @@ thiserror.workspace = true
 # not, and a missing ROM is a failure rather than an "ignored" line nobody
 # reads.
 rom-tests = []
-# Compares this interpreter against the Python one, which has to be present.
-# Both this feature and the oracle it drives go when the Python does.
-py-oracle = []
-# Breaks one semantic on purpose, so the differential can be shown catching
-# something. A fuzzer that has never failed is indistinguishable from one that
-# compares nothing.
-fuzz-selftest = []
 
 [[bin]]
 name = "refemu"

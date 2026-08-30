@@ -60,7 +60,7 @@ DEMO3_MAX ?= 4000000000
 reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12 rom/PINNED_HASH).tsv
 
 .PHONY: help up down build-rom \
-        test test-refemu test-refemu-rust test-refemu-python test-refemu-reference \
+        test test-refemu test-refemu-reference \
         test-sqlcpu test-executor test-render smoke diff \
         bench-phase0 bench-e1-cse bench-e7-memfns bench-canonical-throughput \
         bench-native bench-commit-attribution bench-ksweep bench-wl-seed \
@@ -68,7 +68,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-b2-block-dispatch bench-b3-dict-lookup \
         preflight-milestone run-milestone \
         build-refemu build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
-        fuzz fuzz-refemu-vs-python fuzz-refemu-selftest \
+        fuzz \
         lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
         clang-format typos actionlint zizmor \
         adr-new check-adr require-rom
@@ -102,13 +102,8 @@ require-rom:
 
 test: test-refemu test-refemu-reference test-sqlcpu test-executor test-render ## Every suite that has one
 
-test-refemu: test-refemu-rust test-refemu-python ## Every reference-emulator suite. No ClickHouse, no ROM
-
-test-refemu-rust: ## The Rust suites: units, the riscv-tests fixtures, the formats
+test-refemu: ## Units, the riscv-tests fixtures and the formats. No ClickHouse, no ROM
 	cargo test --locked --workspace
-
-test-refemu-python: ## The Python interpreter's own suite, until it is removed
-	cd refemu && uv run pytest -q
 
 test-refemu-reference: require-rom ## Regenerate the committed traces and compare them, and run demo3
 	cargo test --locked --release --workspace --features refemu/rom-tests \
@@ -215,17 +210,6 @@ run-milestone: up ## The resumable batch loop. Runs its own preflight and refuse
 
 ##@ Maintenance
 
-FUZZ_CASES ?= 200000
-FUZZ_SEED ?= 1
-fuzz-refemu-vs-python: ## Compare the Rust interpreter against the Python one over generated cases
-	FUZZ_CASES=$(FUZZ_CASES) FUZZ_SEED=$(FUZZ_SEED) \
-	    cargo test --locked --release --features refemu/py-oracle \
-	    --test py_differential -- --nocapture --test-threads=1
-
-fuzz-refemu-selftest: ## Show the differential failing, against a deliberately broken build
-	cargo test --locked --release --features refemu/py-oracle,refemu/fuzz-selftest \
-	    --test py_differential the_differential_catches -- --nocapture
-
 FUZZ_SECONDS ?= 60
 FUZZ_TARGETS ?= predecode_equivalence step_invariants elf_loader snapshot_reader
 fuzz: ## Coverage-guided fuzzing. Needs the nightly fuzz/ pins and cargo-fuzz
@@ -274,8 +258,8 @@ check-purity: ## Mechanical enforcement of PURITY.md
 shellcheck: ## Every shell script in the tree
 	find scripts driver sqlcpu executor rom refemu -name '*.sh' -exec shellcheck {} +
 
-ruff: ## Python, at the version refemu's lockfile pins. ruff.toml holds the rules
-	uv run --project refemu ruff check .
+ruff: ## Python, at the version the root lockfile pins. ruff.toml holds the rules
+	uv run ruff check .
 
 cargo-fmt: ## Rust formatting, at the version rust-toolchain.toml pins
 	cargo fmt --all --check

@@ -104,6 +104,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "refemu"
+version = "0.1.0"
+dependencies = [
+ "clickdoom-spec",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"

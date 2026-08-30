@@ -1,0 +1,4 @@
+# libFuzzer needs the sanitizer flags, which are nightly-only. The rest of the
+# tree stays on the pinned stable in the root rust-toolchain.toml.
+[toolchain]
+channel = "nightly"

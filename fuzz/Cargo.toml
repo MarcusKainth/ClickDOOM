@@ -1,0 +1,50 @@
+# Detached from the root workspace on purpose. The sanitizer flags libFuzzer
+# needs are nightly-only, and this is the only part of the tree that wants a
+# second toolchain.
+[package]
+name = "refemu-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+clickdoom-spec = { path = "../spec" }
+libfuzzer-sys = "0.4"
+refemu = { path = "../refemu" }
+
+[workspace]
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "predecode_equivalence"
+path = "fuzz_targets/predecode_equivalence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "step_invariants"
+path = "fuzz_targets/step_invariants.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elf_loader"
+path = "fuzz_targets/elf_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_reader"
+path = "fuzz_targets/snapshot_reader.rs"
+test = false
+doc = false
+bench = false

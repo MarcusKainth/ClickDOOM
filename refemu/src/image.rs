@@ -40,6 +40,8 @@ pub enum ImageError {
     NoSegments,
     #[error("segment at {vaddr:#010x} has {filesz} bytes of file for {memsz} bytes of memory")]
     SegmentTooLong { vaddr: u32, filesz: u32, memsz: u32 },
+    #[error("segment at {vaddr:#010x} runs {memsz} bytes past the end of the address space")]
+    SegmentWraps { vaddr: u32, memsz: u32 },
 }
 
 /// One piece of a program, and where it goes.
@@ -102,7 +104,11 @@ impl Image {
     }
 
     /// The bounds of the executable segments, which is the region a store
-    /// must not reach. `None` when the image declares none.
+    /// must not reach.
+    ///
+    /// `None` when the image declares none, and also when the bounds come out
+    /// empty: a region with nothing in it protects nothing, so it is the same
+    /// answer as no region rather than a different one to carry around.
     pub fn text_region(&self) -> Option<(u32, u32)> {
         let mut bounds: Option<(u32, u32)> = None;
         for segment in self.segments.iter().filter(|s| s.executable) {
@@ -112,7 +118,7 @@ impl Image {
                 Some((lo, hi)) => (lo.min(segment.vaddr), hi.max(end)),
             });
         }
-        bounds
+        bounds.filter(|(start, end)| start < end)
     }
 
     /// Parses an ELF, taking its loadable segments and function symbols.
@@ -164,6 +170,11 @@ impl Image {
                 }
                 if memsz == 0 {
                     continue;
+                }
+                // A segment whose address range runs off the end of the
+                // address space describes memory that cannot exist.
+                if vaddr.checked_add(memsz).is_none() {
+                    return Err(ImageError::SegmentWraps { vaddr, memsz });
                 }
                 let end = offset
                     .checked_add(filesz as usize)
@@ -396,6 +407,35 @@ mod tests {
             Image::parse_elf(&truncated),
             Err(ImageError::Truncated { .. })
         ));
+    }
+
+    #[test]
+    fn a_segment_running_off_the_end_of_the_address_space_is_refused() {
+        // Found by the fuzzer: this parsed, and its executable segment then
+        // produced a text region of zero length, which protects nothing.
+        assert_eq!(
+            Image::parse_elf(&elf_with(0, 0xFFFF_FFFF, &[1], PF_X, 2)),
+            Err(ImageError::SegmentWraps {
+                vaddr: 0xFFFF_FFFF,
+                memsz: 2
+            })
+        );
+    }
+
+    #[test]
+    fn an_empty_text_region_reads_as_no_region_at_all() {
+        let image = Image {
+            entry: 0,
+            segments: vec![Segment {
+                vaddr: 0xFFFF_FFFF,
+                bytes: vec![0],
+                mem_len: 1,
+                executable: true,
+            }],
+            symbols: Vec::new(),
+        };
+        // The one address that saturates: a region from here to here.
+        assert_eq!(image.text_region(), None);
     }
 
     #[test]

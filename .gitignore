@@ -28,6 +28,11 @@ __pycache__/
 .ruff_cache/
 # Rust
 target/
+# libFuzzer's own exploration and its crash dumps. A case worth keeping is
+# copied into fuzz/corpus/ by hand, named for what it exercises.
+fuzz/artifacts/
+fuzz/corpus/*/
+!fuzz/corpus/*/.gitkeep
 
 # Editors / OS
 .DS_Store

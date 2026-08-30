@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["spec", "refemu"]
+# Pins its own nightly for libFuzzer, so it is not a member.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

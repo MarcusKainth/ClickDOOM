@@ -83,3 +83,50 @@ Docker 26.7.5.10, three repeats of three batches: fold-alone 3,732.3 / 3,736.5 /
 `scripts/diff_run.sh 1048576` against a fresh 26.7.5.10 Docker container: 256 of 256 register checkpoints and 1 of 1 RAM and framebuffer checkpoints match refemu. No divergence. 1,474 instr/s at the clamped batch size, against 846 on 26.3.25.2.
 
 Decisions: the run box stays on Docker. Native macOS ClickHouse is rejected for this workload. A pin bump from 26.3 to 26.7 is worth a `ci:` PR with the nightly deep-diff evidence SPEC section 8.3 requires.
+
+### 26.8.1.2041 against 26.7.5.10
+
+Same instrument, boot window, K=60,000, HWM=20,000, three repeats of three chained
+batches, arms rotated (A before B in repeats 1 and 3, B before A in repeat 2) to
+cancel warm-up order.
+
+Arm A, Docker 26.7.5.10:
+
+| repeat | fold-alone instr/s | e2e instr/s |
+|---|---|---|
+| 1 | 3,857.8 | 3,829.9 |
+| 2 | 3,644.3 | 3,814.1 |
+| 3 | 3,787.4 | 3,839.3 |
+
+Per-batch fold time was 14.9 to 16.8 s.
+
+Arm B, Docker 26.8.1.2041, same day, same SQL text, same settings:
+
+| repeat | fold-alone instr/s | e2e instr/s |
+|---|---|---|
+| 1 | 2,835.9 | 2,774.3 |
+| 2 | 2,988.3 | 2,822.1 |
+| 3 | 3,082.4 | 3,029.1 |
+
+Per-batch fold time was 19.2 to 22.7 s.
+
+26.8.1.2041 folds this boot window 1.27x slower than 26.7.5.10 (mean fold-alone
+2,968.9 against 3,763.2 instr/s) and 1.33x slower end to end (2,875.2 against
+3,827.8). The gap holds in both rotation orders, so it is not warm-up bias. Both
+images resolved to native `linux/arm64` on this host (`docker image inspect`), so it
+is not emulation either.
+
+The gameplay window did not produce a number on either image. Its first batch retired
+10,942 instructions and stopped on the write-log high-water mark, the same truncation
+recorded above for the 26.3-vs-26.7 comparison on this window.
+
+`scripts/diff_run.sh 1048576` against a fresh 26.8.1.2041 Docker container: 256 of 256
+register checkpoints and 1 of 1 RAM and framebuffer checkpoints match refemu. No
+divergence. 1,756 instr/s at the clamped 4,096-instruction batch size, against 1,474 on
+26.7.5.10 — faster at this batch size despite the boot-window regression at
+K=60,000. A single, unrotated sample at a different batch size: worth a second look,
+not a contradiction to resolve here.
+
+Decision: 26.8.1.2041 regresses the boot-window fold by roughly a quarter at
+production batch size. That regression, not the differential trace, is what should
+gate the pending pin bump.

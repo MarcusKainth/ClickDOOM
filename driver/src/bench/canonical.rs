@@ -155,7 +155,7 @@ fn wrap_regs(regs: &[u32]) -> Vec<String> {
     regs.iter().map(|r| format!("toUInt32({r})")).collect()
 }
 
-async fn create_and_load_database(
+pub(crate) async fn create_and_load_database(
     db: &Db,
     conn: &ConnArgs,
     database: &str,
@@ -749,7 +749,7 @@ async fn run_both_windows(
     Ok(vec![boot, gameplay])
 }
 
-fn db_at(conn: &ConnArgs, database: &str) -> Db {
+pub(crate) fn db_at(conn: &ConnArgs, database: &str) -> Db {
     let mut c = conn.clone();
     c.database = database.to_string();
     c.connect()

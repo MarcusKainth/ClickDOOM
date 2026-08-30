@@ -128,10 +128,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: riscv-tests against the reference emulator
+      - name: The Rust suites
+        # No ROM and no ClickHouse. The comparisons that need the built ROM
+        # are behind the rom-tests feature and run in their own job.
+        run: cargo test --locked --workspace
+      - name: The Python interpreter's own suite, until it is removed
         run: |
           pipx install uv
           cd refemu && uv sync --frozen && uv run pytest -q
+
+  refemu-reference-parity:
+    # The committed traces regenerated and compared byte for byte, and the
+    # whole demo3 run against the values its manifest records. Kept out of
+    # test-refemu so the ROM dependency stays off differential-smoke's
+    # critical path, and runs alongside test-render instead.
+    #
+    # demo3 is 2,300,210,133 instructions and takes about ten seconds. The
+    # timeout is sized for a runner having a bad day, not for that figure.
+    needs: [build-rom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download ROM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rom
+          path: rom/build
+      - name: Reference traces and the whole demo
+        run: |
+          cargo test --locked --release --workspace --features refemu/rom-tests \
+              --test reference_trace --test demo3_parity -- --nocapture
 
   test-sqlcpu:
     runs-on: ubuntu-latest

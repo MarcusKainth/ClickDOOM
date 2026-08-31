@@ -75,8 +75,8 @@ project's whole output is an expression evaluated a few billion times.
 |---|---|
 | `test-refemu` | riscv-tests and the trace emitter, against the reference interpreter |
 | `test-sqlcpu` | riscv-tests inside ClickHouse, decode vectors, execute and checkpoint checks |
-| `test-executor` | Fold, commit and MMIO, against a fixture schema |
-| `test-render` | Frame readout and the ANSI and PPM render queries |
+| `test-executor` | Fold, commit and MMIO semantics, against the real schema |
+| `test-render` | Frame readout, the ANSI and PPM render queries, and reset-row seeding |
 | `smoke` | The differential run at 100,000 instructions |
 | `gates` | `lint`, the ROM hash check, every suite above, and `smoke` |
 

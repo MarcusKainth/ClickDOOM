@@ -182,9 +182,9 @@ jobs:
         run: ./sqlcpu/run_tests.sh --host localhost --port 9000
 
   test-executor:
-    # The only job covering the fold tests and the schema fixtures they share
-    # with the benches. Without it a break in either is invisible on a green
-    # pull request page.
+    # The only job covering the fold, commit and MMIO semantics against a real
+    # server. Without it a break in any of them is invisible on a green pull
+    # request page.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -202,24 +202,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install clickhouse-client
-        # The runner ships neither `clickhouse-client` nor `clickhouse`. The
-        # tests invoke `clickhouse-client` by name, and the fetched binary
-        # exposes the same thing as a `client` subcommand, so a wrapper stands
-        # in for it rather than a rename.
-        run: |
-          curl -fsSL https://clickhouse.com/ -o /tmp/install.sh
-          sh /tmp/install.sh
-          sudo install -m 0755 clickhouse /usr/local/bin/clickhouse
-          printf '#!/bin/sh\nexec /usr/local/bin/clickhouse client "$@"\n' | sudo tee /usr/local/bin/clickhouse-client >/dev/null
-          sudo chmod +x /usr/local/bin/clickhouse-client
-      - name: Fold unit tests
+      - name: Fold, commit and MMIO tests
         env:
           CLICKHOUSE_HOST: localhost
-          CLICKHOUSE_PORT: "9000"
-        run: |
-          pipx install uv
-          cd executor && uv sync --frozen && uv run pytest tests/ -v
+          CLICKHOUSE_HTTP_PORT: "8123"
+          CLICKHOUSE_PASSWORD: clickdoom
+        run: cargo test --locked -p clickdoom-executor --features clickhouse-tests
 
   test-render:
     # Runs against a throwaway database, never `clickdoom`. Builds its own
@@ -254,13 +242,15 @@ jobs:
         with:
           name: refemu
           path: target/release
-      - name: Frame readout and render tests
+      - name: Frame readout, render and bootstrap tests
         env:
           CLICKHOUSE_HOST: localhost
           CLICKHOUSE_HTTP_PORT: "8123"
+          CLICKHOUSE_PASSWORD: clickdoom
         run: |
           chmod +x target/release/refemu
-          cargo test --locked -p clickdoom-driver --test render_live -- --include-ignored --nocapture
+          cargo test --locked -p clickdoom-driver --features clickhouse-tests \
+              --test render_live --test bootstrap_live -- --nocapture
 
   differential-smoke:
     # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the

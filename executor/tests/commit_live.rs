@@ -41,7 +41,7 @@ fn retention_sql_carries_the_async_setting() {
 
 #[cfg(feature = "clickhouse-tests")]
 mod live {
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant}; // purity-ok: a harness timeout while an async DELETE finishes, off every computation path
 
     use clickdoom_executor::commit::{
         console_out_flush_sql, cpu_state_flush_sql, fbpal_flush_sql, ram_flush_sql, retention_sql,
@@ -160,14 +160,14 @@ mod live {
              WHERE database = '{}' AND table = '{table}' AND is_done = 0",
             fx.database
         );
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(30); // purity-ok: harness timeout, see the import
         loop {
             let pending: u64 = fx.db.fetch_one(&sql).await.unwrap();
             if pending == 0 {
                 return;
             }
             assert!(
-                Instant::now() < deadline,
+                Instant::now() < deadline, // purity-ok: harness timeout, see the import
                 "mutations on {table} did not finish"
             );
             std::thread::sleep(Duration::from_millis(50));

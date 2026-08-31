@@ -54,7 +54,10 @@ version, while every node of the unselected branch is still called and still
 costs the full per-node price.
 
 The probe divides by the guard value, which is computed from the accumulator.
-A constant divisor is not masked and raises through any guard.
+A constant divisor is not masked and raises through any guard. Both fold
+queries pin `short_circuit_function_evaluation = 'disable'`
+(`executor/src/fold.rs`), so no fault is masked in the production step and
+every guarded expression in it has to be total on its own.
 `docs/adr/0002-predecoded-instruction-table.md` carries the rule.
 
 `if` and `multiIf` give nothing: an unselected arm costs the same as an

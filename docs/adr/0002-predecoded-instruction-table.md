@@ -43,21 +43,26 @@ were verified rather than assumed:
   costs the same as evaluating the expensive branch. A binary dispatch tree over
   40 leaves measured *worse* than the flat `multiIf` (1.861s vs 1.648s).
   Ordering arms by opcode frequency buys nothing. This is a cost-equivalence
-  result, measured by timing, and it does not carry to faults. What raises
-  from an unselected arm on 26.7.5.10 is narrower, and it is the standing
-  constraint on every fold expression written after this ADR:
-  - **A guarded `intDiv` or `modulo` whose divisor is a constant raises.** The
-    guard, `if` or `multiIf`, does not protect it.
+  result, measured by timing. Whether an unselected arm raises its faults as
+  well is decided by `short_circuit_function_evaluation`, and both fold
+  queries pin that setting to `'disable'` in their own `SETTINGS` clause
+  (`executor/src/fold.rs`). Under that pin no argument is lazy. Every arm of
+  every `if` and `multiIf` evaluates on every step, including the steps its
+  guard rejects. Two rules follow, and they are the standing constraint on
+  every fold expression written after this ADR:
+  - **A guarded `intDiv` or `modulo` raises on a zero divisor.** The guard,
+    `if` or `multiIf`, picks which value the step takes and does not decide
+    whether the division runs, so a divisor has to be non-zero for every
+    input rather than for the inputs its guard admits. The divide and
+    remainder arms divide by `if(d = 0, 1, d)` and take their RISC-V result
+    for a zero divisor from the enclosing guard. A constant divisor has no
+    such rewrite and has to be non-zero as written. It is not a
+    short-circuit argument at any setting, because
     `FunctionBinaryArithmetic.h`'s `isSuitableForShortCircuitArgumentsExecution`
-    returns false when the divisor argument is constant, so the division is not
-    lazy and runs on every row. `intDiv(INT_MIN, -1)` behind a guard that is
-    always false for real data is exactly this shape (#99). It was caught by
-    code review the same day it was filed and never observed in a real run.
-  - **A guarded `intDiv` or `modulo` whose divisor is computed from data does
-    not raise**, because the same predicate makes it a short-circuit argument
-    and the guard skips it. It does raise at
-    `short_circuit_function_evaluation = 'disable'`, which the executor does
-    not set.
+    returns false when the divisor argument is constant.
+    `intDiv(INT_MIN, -1)` behind a guard that is always false for real data
+    is exactly this shape (#99). It was caught by code review the same day it
+    was filed and never observed in a real run.
   - **A guarded array index does not raise.** An `arrayElement` index computed
     from data returns the element type's default when it is zero or out of
     range. A literal index of `0` raises whether it is guarded or not, so no

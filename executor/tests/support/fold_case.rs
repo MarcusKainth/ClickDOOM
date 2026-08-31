@@ -12,7 +12,7 @@
 //! rejects the whole query on a type mismatch before a single instruction
 //! runs.
 
-use clickdoom_executor::fold::{self, SelectOnlyArgs};
+use clickdoom_executor::fold::{self, SelectOnlyArgs, Variant};
 use clickhouse::Row;
 use serde::Deserialize;
 
@@ -148,12 +148,35 @@ fn prepare(case: &FoldCase<'_>) -> Prepared {
     }
 }
 
+/// The step formulation every case runs against, named by
+/// `CLICKDOOM_STEP_VARIANT` in the kebab-case spelling
+/// `examples/step_variants.rs` takes. Unset is the shipped one, so an
+/// ordinary run covers what production executes. Setting it reruns this
+/// whole suite, reference comparison included, against one other arm.
+fn variant() -> Variant {
+    let name = match std::env::var("CLICKDOOM_STEP_VARIANT") {
+        Ok(name) if !name.is_empty() => name,
+        _ => return Variant::Baseline,
+    };
+    let variant = match name.as_str() {
+        "baseline" => Variant::Baseline,
+        "inline-halt-code" => Variant::InlineHaltCode,
+        "short-binding-param" => Variant::ShortBindingParam,
+        "bind-repeated" => Variant::BindRepeated,
+        "fewer-constants" => Variant::FewerConstants,
+        "more-constants" => Variant::MoreConstants,
+        other => panic!("CLICKDOOM_STEP_VARIANT={other:?} is not a step variant"),
+    };
+    println!("CLICKDOOM_STEP_VARIANT={name}: running against {variant:?}");
+    variant
+}
+
 async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> FoldRow {
     fx.truncate(&["decoded", "ram", "input_queue"]).await;
     fx.seed_decoded(&p.insns).await;
     fx.seed_ram(&p.ram).await;
     fx.seed_input_queue(case.keyq_events).await;
-    let sql = fold::select_only(
+    let sql = fold::select_only_variant(
         p.k,
         0,
         p.decn,
@@ -166,6 +189,7 @@ async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> Fo
             wl0: case.wl0,
             ..Default::default()
         },
+        variant(),
     );
     db.fetch_one::<FoldRow>(&sql).await.unwrap()
 }

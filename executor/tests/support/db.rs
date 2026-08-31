@@ -46,6 +46,10 @@ impl Conn {
             .with_url(format!("http://{}:{}", self.host, self.port))
             .with_user(&self.user)
             .with_password(&self.password)
+            // The parser stops at this many bytes before it reaches the
+            // SETTINGS clause that raises it, so the value the generated
+            // fold SQL asks for has to be set on the connection too.
+            .with_setting("max_query_size", "2000000")
             .with_database(database);
         for (name, value) in settings {
             client = client.with_setting(*name, *value);

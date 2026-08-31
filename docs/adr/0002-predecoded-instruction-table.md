@@ -34,21 +34,26 @@ were verified rather than assumed:
   (1.648s vs 1.601s over 20,000 steps), and `if(false, <expensive>, cheap)`
   costs the same as evaluating the expensive branch. A binary dispatch tree over
   40 leaves measured *worse* than the flat `multiIf` (1.861s vs 1.648s).
-  Ordering arms by opcode frequency buys nothing. This is a *cost*-equivalence
-  result (measured via timing); issue #183 establishes the stronger
-  *fault*-equivalence claim the timing result only suggests — every arm of
-  every `if`/`multiIf` inside an `arrayFold` executes for its faults too,
-  unconditionally, regardless of its guard (a data-dependent, non-foldable
-  guard; a literal `false` guard is constant-folded away and proves nothing).
-  A standing constraint on every fold expression written after this ADR, not
-  just this decision's own justification — see that issue before adding a
-  guarded **division, modulo, or array index** inside a fold: each is an
-  *unconditional* fault, not a conditional one, once it's inside the lambda.
-  `intDiv(INT_MIN, -1)` behind a guard that's always false for real data is
-  exactly this shape (#99) — it would have stalled a multi-day run
-  permanently, had one been attempted; #99 was actually caught by code
-  review the same day it was filed (10:59→12:18Z), never observed in a
-  real run.
+  Ordering arms by opcode frequency buys nothing. This is a cost-equivalence
+  result, measured by timing, and it does not carry to faults. What raises
+  from an unselected arm on 26.7.5.10 is narrower, and it is the standing
+  constraint on every fold expression written after this ADR:
+  - **A guarded `intDiv` or `modulo` whose divisor is a constant raises.** The
+    guard, `if` or `multiIf`, does not protect it.
+    `FunctionBinaryArithmetic.h`'s `isSuitableForShortCircuitArgumentsExecution`
+    returns false when the divisor argument is constant, so the division is not
+    lazy and runs on every row. `intDiv(INT_MIN, -1)` behind a guard that is
+    always false for real data is exactly this shape (#99). It was caught by
+    code review the same day it was filed and never observed in a real run.
+  - **A guarded `intDiv` or `modulo` whose divisor is computed from data does
+    not raise**, because the same predicate makes it a short-circuit argument
+    and the guard skips it. It does raise at
+    `short_circuit_function_evaluation = 'disable'`, which the executor does
+    not set.
+  - **A guarded array index does not raise.** An `arrayElement` index computed
+    from data returns the element type's default when it is zero or out of
+    range. A literal index of `0` raises whether it is guarded or not, so no
+    guard was ever standing between it and the fault.
 
 So the only lever on throughput is the total node count of the fold body. The
 obvious implementation — fetch the word, pull fields apart with bit ops,

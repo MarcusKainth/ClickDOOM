@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant; // purity-ok: timing the benchmark harness itself, never a value the emulated machine computes with
 
 use clickdoom_executor::commit;
-use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
+use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
 use refemu::snapshot::{Kind, Snapshot};
@@ -28,15 +28,27 @@ use crate::sql::split_statements;
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalError {
     #[error(
-        "{window} {mode} batch {batch}: retired {retired}, not K={k}, and did not halt. A truncated batch measures different work than a full one. If this is the write-log high-water mark ({hwm}) binding on this window's real store density, that is itself a real finding: report it, don't paper over it by lowering K or raising HWM without saying so."
+        "{window} {mode} batch {batch}: the write log reached the high-water mark ({hwm}) after {retired} of K={k} instructions. A truncated batch measures different work than a full one. That the mark binds on this window's real store density is itself a finding: report it, don't paper over it by lowering K or raising HWM without saying so."
     )]
-    Truncated {
+    HighWaterMarkBound {
         window: String,
         mode: &'static str,
         batch: u32,
         retired: u64,
         k: u32,
         hwm: u32,
+    },
+    #[error(
+        "{window} {mode} batch {batch}: retired {retired}, not K={k}. It did not halt, it committed no frame, and its write log holds {write_log_len} of HWM={hwm}. Nothing else ends a batch early, so either the batch execution contract moved or this is reading the wrong columns."
+    )]
+    UnexplainedShortBatch {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        retired: u64,
+        k: u32,
+        hwm: u32,
+        write_log_len: u32,
     },
     #[error("{0}: sha256 ({1}) != rom/PINNED_HASH ({2})")]
     RomHash(PathBuf, String, String),
@@ -77,6 +89,107 @@ pub enum CanonicalError {
     Db(#[from] Error),
     #[error(transparent)]
     Bootstrap(#[from] crate::bootstrap::SeedError),
+}
+
+/// Why a batch stopped. The batch execution contract ends a batch on a
+/// halt, on the write-log high-water mark, or on a FRAME_COMMIT store, and
+/// otherwise when K instructions have retired.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Stop {
+    /// It retired K instructions.
+    FullK,
+    /// The machine halted.
+    Halt,
+    /// A FRAME_COMMIT store ended it.
+    FrameCommit,
+    /// The write log reached the high-water mark.
+    HighWaterMark,
+}
+
+impl Stop {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Stop::FullK => "full_k",
+            Stop::Halt => "halt",
+            Stop::FrameCommit => "frame_commit",
+            Stop::HighWaterMark => "high_water_mark",
+        }
+    }
+}
+
+/// What one batch did, in the terms the stop causes are told apart by.
+struct BatchOutcome {
+    seconds: f64,
+    retired: u64,
+    halted: u8,
+    halt_reason: String,
+    /// `length(wl_addr)` at the end of the batch, which is what the
+    /// high-water mark binds on.
+    write_log_len: u32,
+    frame_committed: u8,
+}
+
+/// Names why a batch stopped. `None` means nothing in the batch execution
+/// contract accounts for it.
+fn classify(outcome: &BatchOutcome, k: u32, hwm: u32) -> Option<Stop> {
+    if outcome.halted != 0 {
+        return Some(Stop::Halt);
+    }
+    if outcome.retired == u64::from(k) {
+        return Some(Stop::FullK);
+    }
+    if outcome.frame_committed != 0 {
+        return Some(Stop::FrameCommit);
+    }
+    if outcome.write_log_len >= hwm {
+        return Some(Stop::HighWaterMark);
+    }
+    None
+}
+
+/// Refuses a batch the report cannot stand behind, and names the stop
+/// otherwise. A batch that ends on a FRAME_COMMIT store retired fewer than
+/// K instructions for a reason the batch execution contract states, so its
+/// seconds and its retired count are both real.
+fn check_stop(
+    outcome: &BatchOutcome,
+    window: &str,
+    mode: &'static str,
+    batch: u32,
+    k: u32,
+    hwm: u32,
+) -> Result<Stop, CanonicalError> {
+    match classify(outcome, k, hwm) {
+        Some(Stop::HighWaterMark) => Err(CanonicalError::HighWaterMarkBound {
+            window: window.to_string(),
+            mode,
+            batch,
+            retired: outcome.retired,
+            k,
+            hwm,
+        }),
+        Some(stop) => Ok(stop),
+        None => Err(CanonicalError::UnexplainedShortBatch {
+            window: window.to_string(),
+            mode,
+            batch,
+            retired: outcome.retired,
+            k,
+            hwm,
+            write_log_len: outcome.write_log_len,
+        }),
+    }
+}
+
+/// The name `fold::batch` would put in `halt_reason`, for a fold-alone
+/// result that carries the raw code instead. Both modes then report a halt
+/// the same way.
+fn halt_reason_name(code: u8) -> String {
+    HALT_REASON_NAMES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, name)| (*name).to_string())
+        .unwrap_or_default()
 }
 
 /// The two windows this benchmark always measures, in order.
@@ -206,7 +319,7 @@ async fn run_fold_batch(
     shape: &Shape<'_>,
     pc: u32,
     regs: &[String],
-) -> Result<(FoldResult, f64), Error> {
+) -> Result<(FoldResult, BatchOutcome), Error> {
     let args = SelectOnlyArgs {
         pc0: Some(pc),
         regs0: Some(regs),
@@ -224,17 +337,18 @@ async fn run_fold_batch(
     );
     let t0 = Instant::now(); // purity-ok: timing this batch for the report, not used in any query
     let result: FoldResult = db.fetch_one(&sql).await?;
-    Ok((result, t0.elapsed().as_secs_f64()))
+    let outcome = BatchOutcome {
+        seconds: t0.elapsed().as_secs_f64(),
+        retired: result.retired as u64,
+        halted: result.halted,
+        halt_reason: halt_reason_name(result.halt_reason),
+        write_log_len: result.wl_addr.len() as u32,
+        frame_committed: result.frame_committed,
+    };
+    Ok((result, outcome))
 }
 
-struct E2eResult {
-    seconds: f64,
-    retired: u64,
-    halted: u8,
-    halt_reason: String,
-}
-
-async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<E2eResult, Error> {
+async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<BatchOutcome, Error> {
     let database = shape.database;
     let cpu_state_rows: u64 = db
         .fetch_one(&format!("SELECT count() FROM {database}.cpu_state"))
@@ -276,11 +390,18 @@ async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<E2eResult, Error> {
             "SELECT icount, halted, halt_reason FROM {database}.cpu_state ORDER BY batch_id DESC LIMIT 1"
         ))
         .await?;
-    Ok(E2eResult {
+    let (has_frame, write_log_len): (u8, u32) = db
+        .fetch_one(&format!(
+            "SELECT has_frame, toUInt32(length(wl_addr)) FROM {database}.batch_commit ORDER BY batch_id DESC LIMIT 1"
+        ))
+        .await?;
+    Ok(BatchOutcome {
         seconds,
         retired: icount - prev_icount,
         halted,
         halt_reason,
+        write_log_len,
+        frame_committed: has_frame,
     })
 }
 
@@ -303,23 +424,17 @@ async fn run_window(
         seconds: 0.0,
     };
     for batch_no in 1..=batches {
-        let (result, seconds) = run_fold_batch(db, shape, pc, &regs).await?;
-        if result.halted == 0 && result.retired != k {
-            return Err(CanonicalError::Truncated {
-                window: label.to_string(),
-                mode: "fold-alone",
-                batch: batch_no,
-                retired: result.retired as u64,
-                k,
-                hwm,
-            });
-        }
+        let (result, outcome) = run_fold_batch(db, shape, pc, &regs).await?;
+        let stop = check_stop(&outcome, label, "fold-alone", batch_no, k, hwm)?;
         eprintln!(
-            "#   fold batch {batch_no}: {seconds:.2}s retired={} halted={} halt_reason={}",
-            result.retired, result.halted, result.halt_reason
+            "#   fold batch {batch_no}: {:.2}s retired={} wl={} stop={}",
+            outcome.seconds,
+            outcome.retired,
+            outcome.write_log_len,
+            stop.label()
         );
-        fold.retired += result.retired as u64;
-        fold.seconds += seconds;
+        fold.retired += outcome.retired;
+        fold.seconds += outcome.seconds;
         pc = result.pc;
         regs = wrap_regs(&result.regs);
     }
@@ -337,24 +452,18 @@ async fn run_window(
     };
     let mut e2e_halt_reason = String::new();
     for batch_no in 1..=batches {
-        let result = run_e2e_batch(db, shape).await?;
-        if result.halted == 0 && result.retired != k as u64 {
-            return Err(CanonicalError::Truncated {
-                window: label.to_string(),
-                mode: "e2e",
-                batch: batch_no,
-                retired: result.retired,
-                k,
-                hwm,
-            });
-        }
+        let outcome = run_e2e_batch(db, shape).await?;
+        let stop = check_stop(&outcome, label, "e2e", batch_no, k, hwm)?;
         eprintln!(
-            "#   e2e batch {batch_no}: {:.2}s retired={} halted={} halt_reason={}",
-            result.seconds, result.retired, result.halted, result.halt_reason
+            "#   e2e batch {batch_no}: {:.2}s retired={} wl={} stop={}",
+            outcome.seconds,
+            outcome.retired,
+            outcome.write_log_len,
+            stop.label()
         );
-        e2e.retired += result.retired;
-        e2e.seconds += result.seconds;
-        e2e_halt_reason = result.halt_reason;
+        e2e.retired += outcome.retired;
+        e2e.seconds += outcome.seconds;
+        e2e_halt_reason = outcome.halt_reason;
     }
     eprintln!(
         "# e2e total: retired={} seconds={:.2} instr/sec={:.1}",
@@ -755,4 +864,80 @@ pub(crate) fn db_at(conn: &ConnArgs, database: &str) -> Db {
     let mut c = conn.clone();
     c.database = database.to_string();
     c.connect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outcome(retired: u64, halted: u8, frame: u8, wl: u32) -> BatchOutcome {
+        BatchOutcome {
+            seconds: 1.0,
+            retired,
+            halted,
+            halt_reason: String::new(),
+            write_log_len: wl,
+            frame_committed: frame,
+        }
+    }
+
+    #[test]
+    fn a_full_batch_is_full_k() {
+        assert_eq!(
+            classify(&outcome(60_000, 0, 0, 100), 60_000, 20_000),
+            Some(Stop::FullK)
+        );
+    }
+
+    #[test]
+    fn a_halt_outranks_the_retired_count() {
+        assert_eq!(
+            classify(&outcome(113, 1, 0, 3), 60_000, 20_000),
+            Some(Stop::Halt)
+        );
+    }
+
+    #[test]
+    fn a_short_batch_that_committed_a_frame_is_a_frame_commit() {
+        // 10,942 retired with 42 stores logged: far too few for the
+        // high-water mark to be the cause, and it did not halt.
+        assert_eq!(
+            classify(&outcome(10_942, 0, 1, 42), 60_000, 20_000),
+            Some(Stop::FrameCommit)
+        );
+    }
+
+    #[test]
+    fn a_frame_commit_is_reported_rather_than_refused() {
+        let stop = check_stop(&outcome(10_942, 0, 1, 42), "boot", "e2e", 1, 60_000, 20_000)
+            .expect("a frame commit is a legal stop");
+        assert_eq!(stop, Stop::FrameCommit);
+    }
+
+    #[test]
+    fn the_high_water_mark_is_refused_by_name() {
+        let err = check_stop(
+            &outcome(31_500, 0, 0, 20_000),
+            "boot",
+            "fold-alone",
+            2,
+            60_000,
+            20_000,
+        )
+        .expect_err("a truncated batch measures different work");
+        assert!(
+            matches!(err, CanonicalError::HighWaterMarkBound { batch: 2, .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_short_batch_with_no_cause_is_refused() {
+        let err = check_stop(&outcome(31_500, 0, 0, 7), "boot", "e2e", 3, 60_000, 20_000)
+            .expect_err("nothing accounts for this");
+        assert!(
+            matches!(err, CanonicalError::UnexplainedShortBatch { batch: 3, .. }),
+            "{err}"
+        );
+    }
 }

@@ -209,6 +209,17 @@ per island, at or below the cost of a four-function-node island. So the step
 expression compiles into 58 very small islands, half a megabyte of machine
 code and 205 ms of LLVM work.
 
+Those numbers belong to the 324,444-byte lambda body in the table. The
+production generator compiles 65 islands for the step on a cold container,
+66 counting the batch-level projection, at 284,705 us of LLVM and 548,864
+bytes, read from ProfileEvents and matched one for one against the island
+DAGs `ExpressionJIT` logs at trace level. Of the 65, 41 execute per step at
+`short_circuit_function_evaluation = 'enable'`, absorbing 123 of the step's
+318 actions at 3.0 nodes each, counted in
+[`compiled-node-cost.md`](compiled-node-cost.md). Both readings say the same
+thing about shape. The islands are small and most of the step is
+interpreted.
+
 What that buys is not measurable. Paired runs at K = 100 for fixed cost only
 and K = 100,100, interleaved so machine load is common-mode, n = 3, times in
 milliseconds.

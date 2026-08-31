@@ -208,10 +208,8 @@ typos: ## Spelling, over prose and identifiers. _typos.toml holds the exceptions
 actionlint: ## Workflow syntax. Has no CI job, so run it before pushing a workflow change
 	actionlint .github/workflows/*.yml
 
-zizmor: ## Workflow security posture. Needs zizmor 1.28.0 on PATH
-	# Not `cargo install`: zizmor 1.28.0 pulls a dependency wanting rustc
-	# 1.97.0, and rust-toolchain.toml pins 1.96.1. Its release binaries are
-	# what CI uses.
+zizmor: ## Workflow security posture
+	cargo install --locked --quiet zizmor@1.28.0
 	zizmor --persona=regular .github/
 
 ##@ Gates

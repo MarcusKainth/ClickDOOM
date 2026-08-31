@@ -49,7 +49,7 @@ pub enum CompareError {
         source: std::io::Error,
     },
     #[error("starting arm {0} ({1}): {2}")]
-    DockerStart(String, String, super::docker::DockerError),
+    DockerStart(String, String, Box<super::docker::DockerError>),
     #[error("arm {0}: {1}")]
     Canonical(String, canonical::CanonicalError),
     #[error(transparent)]
@@ -143,9 +143,9 @@ pub async fn run(args: &Args<'_>) -> Result<CompareRecord, CompareError> {
                 "# repeat {repeat} arm {}: starting fresh container",
                 arm.name
             );
-            let container = super::docker::start(&arm.image)
-                .await
-                .map_err(|e| CompareError::DockerStart(arm.name.clone(), arm.image.clone(), e))?;
+            let container = super::docker::start(&arm.image).await.map_err(|e| {
+                CompareError::DockerStart(arm.name.clone(), arm.image.clone(), Box::new(e))
+            })?;
 
             let conn = ConnArgs {
                 host: "127.0.0.1".to_string(),

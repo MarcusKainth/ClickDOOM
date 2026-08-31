@@ -40,18 +40,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Non-Rust lint tools
-        # shellcheck, clang-format, actionlint and zizmor are not installable
-        # with the pinned toolchain. `make typos` cargo-installs the one that is.
+        # shellcheck, clang-format and actionlint have no cargo distribution.
+        # `make lint` installs typos and zizmor through cargo itself.
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q shellcheck clang-format
           curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
               | bash -s -- 1.7.12
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
-          curl -fsSL -o zizmor.tgz \
-              https://github.com/zizmorcore/zizmor/releases/download/v1.28.0/zizmor-x86_64-unknown-linux-gnu.tar.gz
-          tar xzf zizmor.tgz
-          sudo install -m 0755 zizmor*/zizmor /usr/local/bin/zizmor
       - name: Every static check
         # The same target a contributor runs, so CI and local cannot drift.
         run: make lint

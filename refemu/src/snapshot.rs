@@ -460,13 +460,13 @@ pub fn restore(
     if let Some(registers) = cpu.memory.devices_mut().registers_mut() {
         registers.console = need("console")?.to_vec();
         registers.key_queue.clear();
-        for pair in need("keyq")?.chunks_exact(2) {
+        for pair in need("keyq")?.as_chunks::<2>().0 {
             registers.push_key(pair[0] != 0, pair[1]);
         }
         registers.frame_commits.clear();
         // Twelve bytes each: a frame number and the count the device saw,
         // which is 64 bits here as it is everywhere else.
-        for row in need("frame_commits")?.chunks_exact(12) {
+        for row in need("frame_commits")?.as_chunks::<12>().0 {
             registers.frame_commits.push(FrameCommit {
                 frame_no: u32::from_le_bytes([row[0], row[1], row[2], row[3]]),
                 commit_icount: u64::from_le_bytes([

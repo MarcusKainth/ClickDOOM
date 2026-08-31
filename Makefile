@@ -109,8 +109,10 @@ test-refemu-reference: require-rom ## Regenerate the committed traces and compar
 	cargo test --locked --release --workspace --features refemu/rom-tests \
 	    --test reference_trace --test demo3_parity -- --nocapture
 
-test-sqlcpu: up ## riscv-tests inside ClickHouse
-	./sqlcpu/run_tests.sh $(conn) $(no_stdin)
+test-sqlcpu: up ## The SQL CPU's own suite, inside ClickHouse
+	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
+	    cargo test --locked -p clickdoom-driver --features clickhouse-tests \
+	    --test sqlcpu_live -- --nocapture
 
 test-executor: up ## Fold, commit and MMIO tests against a live ClickHouse
 	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \

@@ -179,7 +179,13 @@ jobs:
         with:
           persist-credentials: false
       - name: riscv-tests inside ClickHouse
-        run: ./sqlcpu/run_tests.sh --host localhost --port 9000
+        env:
+          CLICKHOUSE_HOST: localhost
+          CLICKHOUSE_HTTP_PORT: "8123"
+          CLICKHOUSE_PASSWORD: clickdoom
+        run: |
+          cargo test --locked -p clickdoom-driver --features clickhouse-tests \
+              --test sqlcpu_live -- --nocapture
 
   test-executor:
     # The only job covering the fold, commit and MMIO semantics against a real

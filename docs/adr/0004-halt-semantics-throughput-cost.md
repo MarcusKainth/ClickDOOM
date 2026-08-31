@@ -84,7 +84,7 @@ distinct corrections landed in sequence, each with its own real cost:
    represent a target with bit 1 set, silently destroying exactly the bit a
    MISALIGNED check needs), found independently by `sqlcpu` reviewing this
    PR and by re-reading issue #37's ruling, and confirmed as the same defect
-   `sqlcpu` had already found and fixed in their own `execute.py`/`decode.sql`
+   `sqlcpu` had already found and fixed in their own execute and decode SQL
    (PR #46/#49) before either of us built further on the wrong
    representation.
 
@@ -253,7 +253,7 @@ matters) is not optional, and Phase 0's prototype explicitly disclaimed
 correctness in exchange for its higher number. Three of the corrections here
 -- the register file, the jal/jalr link-value/jump-target split, and the
 word-indexed-PC/MISALIGNED-truncation bug -- are defects `sqlcpu` and the
-team lead found reviewing this PR against `schema.sql`/`execute.py`, not
+team lead found reviewing this PR against the schema and the execute SQL, not
 choices this PR made freely.
 
 **This ADR is amending ADR-0001's acceptance criterion.** 1,159 instr/sec
@@ -294,7 +294,7 @@ of this document.
   now-expensive byte-address conversion) is evaluated once per step instead
   of the ~40+ times it currently is across three separate dispatches that
   mostly key off disjoint `op_id` ranges. `sqlcpu` hit the identical
-  AST-multiplication problem in `execute.py` and solved it differently --
+  AST-multiplication problem in the execute SQL and solved it differently --
   their `next_pc()`/`halted()`/`halt_reason()` all accept an optional
   `misaligned=` parameter so a *single-row* caller can bind the condition
   once via a query-level `WITH` clause. That doesn't transfer here: there is

@@ -6,17 +6,11 @@
 -- not an expression, because arrayFold costs ~0.8us per expression node
 -- almost independent of the data touched (docs/adr/0002-predecoded-instruction-table.md).
 --
--- This is CI's marker file: `.github/workflows/ci.yml`'s test-sqlcpu job runs
--- `sqlcpu/run_tests.sh` unconditionally the moment this file exists on a PR
--- branch, with no guard of its own on run_tests.sh's presence. That script
--- lands in the same PR as this one so no PR — from any workstream — sees a
--- broken test-sqlcpu job in between.
---
 -- Idempotent: safe to re-run against an already-provisioned database.
 --
 -- ---------------------------------------------------------------------------
--- Two ClickHouse (26.3) traps hit writing sqlcpu/run_riscv_tests.py's
--- density guard (#93/#98) that anyone writing NEW fold/flush/query SQL
+-- Two ClickHouse (26.3) traps hit writing the decoded-table density
+-- guard, which anyone writing NEW fold/flush/query SQL
 -- against this schema -- executor's batch loop and commit flush chief among
 -- them -- will hit too if they aren't warned. Both are silent-wrong-answer
 -- shaped, not error-shaped, which is this project's signature failure mode.

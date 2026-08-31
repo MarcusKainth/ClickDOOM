@@ -103,7 +103,7 @@ against the measured slope, which is two instruments sharing no assumption.
 | K | 60,000 for the headline, also 30,000 and 15,000 |
 | HWM | 200,000, raised deliberately and held constant |
 | Settings | `max_threads = 1` |
-| Regime | `CompileFunction = 0` on every arm, uniformly uncompiled |
+| Regime | uniformly compiled, cache warmed before the first arm |
 | Headroom | 12 to 16 idle cores of 18, gated live throughout |
 | Baseline | `pc = 0x80000020`, `retired = 60000`, `halted = 0`, `wl_len = 19998` |
 
@@ -284,7 +284,7 @@ enough to argue the line of work should stop.
 
 ## What went wrong along the way
 
-Both mistakes are easy to repeat and are recorded for that reason.
+Every mistake here is easy to repeat and is recorded for that reason.
 
 The copy rate was overstated by about 30x by a microbenchmark that built the
 three lanes outside a fold and forced materialisation with `cityHash64` over
@@ -300,6 +300,14 @@ They sum to the right total, which is why three instruments agreeing to within
 3% looked like corroboration. Agreement on a total is not agreement on its
 terms, and the terms are what a plan to remove the scan is costed against.
 
+The compilation regime was read off the wrong counter. `CompileFunction`
+counts compilations, so it increments on the arm that misses the
+compiled-expression cache and reads 0 on every arm after it. The four
+warm-ups cross `min_count_to_compile_expression`, 3 by default, so every
+recorded arm ran compiled and a reading of 0 was taken for uncompiled. The
+slope needs the regime to be uniform and does not need it to be any
+particular regime, so it stands either way.
+
 The growth exponent was read too early. At N up to 80,000 it reads about
 1.43, which is ambiguous between linear and quadratic; it only reaches 1.97
 by N = 320,000. An exponent has to be read where the asymptote is, not where
@@ -313,12 +321,6 @@ machine was quiet when the run began. The contaminated arms were discarded
 and re-run rather than reported.
 
 ## Limits
-
-`CompileFunction` reads 0 on every arm despite four warm-ups, whereas the
-per-batch attribution measurement saw compilation fire on the 4th batch. The
-regime is at least uniform, which is what the slope needs, but the
-discrepancy is unexplained and matters before anyone compares absolute batch
-times across the two.
 
 The gameplay window is not measured. Its general-RAM store density is about
 9.4% against boot's about 33%, because framebuffer and palette stores go to

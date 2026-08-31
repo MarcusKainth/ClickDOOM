@@ -162,6 +162,7 @@ fn variant() -> Variant {
         "baseline" => Variant::Baseline,
         "inline-halt-code" => Variant::InlineHaltCode,
         "short-binding-param" => Variant::ShortBindingParam,
+        "bind-decode-row" => Variant::BindDecodeRow,
         "bind-repeated" => Variant::BindRepeated,
         "fewer-constants" => Variant::FewerConstants,
         "more-constants" => Variant::MoreConstants,

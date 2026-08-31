@@ -42,11 +42,12 @@ fn variant_by_name(name: &str) -> Variant {
         "baseline" => Variant::Baseline,
         "inline-halt-code" => Variant::InlineHaltCode,
         "short-binding-param" => Variant::ShortBindingParam,
+        "bind-decode-row" => Variant::BindDecodeRow,
         "bind-repeated" => Variant::BindRepeated,
         "fewer-constants" => Variant::FewerConstants,
         "more-constants" => Variant::MoreConstants,
         other => panic!(
-            "unknown variant {other:?}: expected one of baseline, inline-halt-code, short-binding-param, bind-repeated, fewer-constants, more-constants"
+            "unknown variant {other:?}: expected one of baseline, inline-halt-code, short-binding-param, bind-decode-row, bind-repeated, fewer-constants, more-constants"
         ),
     }
 }

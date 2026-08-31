@@ -30,9 +30,15 @@ pub enum Variant {
     /// The `arrayMap` binding kept with a one-character lambda parameter.
     /// The DAG is the baseline's node for node.
     ShortBindingParam,
-    /// One further `arrayMap` binding for each of the step's most repeated
-    /// subexpressions, nested outside the `halt_code` binding. Each binding
-    /// adds four nodes and shortens every name that reads it.
+    /// One further `arrayMap` binding for the decode row, nested outside
+    /// the `halt_code` binding. That is the step's most repeated
+    /// subexpression, and one binding is one further lambda scope for the
+    /// captured decode and RAM arrays to pass through.
+    BindDecodeRow,
+    /// [`Variant::BindDecodeRow`]'s binding plus one for each of the other
+    /// repeated subexpressions the step reads: both register operands, the
+    /// store value, the byte address, the word address and the loaded RAM
+    /// word.
     BindRepeated,
     /// The same result reached from fewer distinct captured constants.
     /// [`FEWER_CONSTANTS_ASSUMES_MK`] states the one input-domain
@@ -72,16 +78,15 @@ enum Emit {
 
 /// Collects the `arrayMap` bindings a variant introduces, outermost first.
 /// [`Binder::bind`] returns the name to read the expression by, which is
-/// the expression itself when the variant introduces no bindings, so a
-/// caller's text is byte-identical to the baseline's in that case.
+/// the expression itself when `on` is false, so a caller's text is
+/// byte-identical to the baseline's for a variant that binds nothing.
 struct Binder {
-    on: bool,
     bindings: Vec<(&'static str, String)>,
 }
 
 impl Binder {
-    fn bind(&mut self, name: &'static str, expr: String) -> String {
-        if !self.on {
+    fn bind(&mut self, on: bool, name: &'static str, expr: String) -> String {
+        if !on {
             return expr;
         }
         self.bindings.push((name, expr));
@@ -369,8 +374,11 @@ fn build_step_inner(
     let fb_pal_wa_outside_text =
         fb_pal_wa_provably_outside_text(ram_base, ram_words, text_end_widx);
 
+    // BindDecodeRow takes the first binding only; BindRepeated takes all
+    // of them.
+    let bind_all = variant == Variant::BindRepeated;
+    let bind_dec = bind_all || variant == Variant::BindDecodeRow;
     let mut binder = Binder {
-        on: variant == Variant::BindRepeated,
         bindings: Vec::new(),
     };
 
@@ -382,7 +390,7 @@ fn build_step_inner(
         decn - 1
     );
 
-    let dec = binder.bind("d", format!("DEC[{idx}]"));
+    let dec = binder.bind(bind_dec, "d", format!("DEC[{idx}]"));
 
     let id = format!("{dec}.1");
     let rd = format!("{dec}.2");
@@ -399,18 +407,27 @@ fn build_step_inner(
     } else {
         "toUInt8(1)"
     };
-    let a = binder.bind("va", format!("if({r1} = 0, toUInt32(0), acc.2[{r1}])"));
+    let a = binder.bind(
+        bind_all,
+        "va",
+        format!("if({r1} = 0, toUInt32(0), acc.2[{r1}])"),
+    );
     let b = binder.bind(
+        bind_all,
         "vb",
         format!("toUInt32(if({r2} = 0, toUInt32(0), acc.2[{r2}]) + {imm})"),
     );
-    let rs2v = binder.bind("vr2", format!("if({r2} = 0, toUInt32(0), acc.2[{r2}])"));
+    let rs2v = binder.bind(
+        bind_all,
+        "vr2",
+        format!("if({r2} = 0, toUInt32(0), acc.2[{r2}])"),
+    );
     let sa = format!("toInt32({a})");
     let sb = format!("toInt32({b})");
 
-    let addr = binder.bind("ad", format!("toUInt32({a} + {imm})"));
+    let addr = binder.bind(bind_all, "ad", format!("toUInt32({a} + {imm})"));
     let addr_align = addr_and_align(&addr, &dmkv, ram_base, ram_words, variant);
-    let wa = binder.bind("wx", addr_align.wa_safe);
+    let wa = binder.bind(bind_all, "wx", addr_align.wa_safe);
     let misaligned_cond = addr_align.misaligned_cond;
 
     assert_eq!(MMIO_SIZE, 4096, "window mask below assumes a 4 KiB window");
@@ -459,6 +476,7 @@ fn build_step_inner(
     let sh = format!("(8 * bitAnd({addr}, 3))");
 
     let lw = binder.bind(
+        bind_all,
         "mw",
         format!(
             "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1])"

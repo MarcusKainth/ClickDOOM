@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant; // purity-ok: timing the benchmark harness itself, never a value the emulated machine computes with
 
 use clickdoom_executor::commit;
-use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_REASON_NAMES};
+use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_EXIT, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
 use refemu::cli::report::RunReport;
@@ -464,66 +464,62 @@ fn halt_reason_name(code: u8) -> String {
         .unwrap_or_default()
 }
 
-/// Applies a fold-alone batch's write logs, the way `commit`'s flushes do
-/// for the end-to-end arm. Untimed, and outside the fold statement: the
-/// next chained batch has to read what this one wrote, and a fold that
-/// reads stale RAM executes a different instruction stream.
-async fn flush_fold_write_logs(db: &Db, result: &FoldResult) -> Result<(), Error> {
-    // `wl_addr` is RAM_BASE-relative and `ram.word_addr` is absolute;
-    // `fb_wl_addr`/`pal_wl_addr` are already relative to their own region's
-    // base. Same asymmetry `commit::ram_flush_sql` and
-    // `commit::fbpal_flush_sql` carry.
-    insert_words(
-        db,
-        "ram",
-        RAM_BASE >> 2,
-        &result.wl_addr,
-        &result.wl_val,
-        &result.wl_icount,
-    )
-    .await?;
-    insert_words(
-        db,
-        "framebuffer",
-        0,
-        &result.fb_wl_addr,
-        &result.fb_wl_val,
-        &result.fb_wl_icount,
-    )
-    .await?;
-    insert_words(
-        db,
-        "palette",
-        0,
-        &result.pal_wl_addr,
-        &result.pal_wl_val,
-        &result.pal_wl_icount,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn insert_words(
+/// Merges a fold-alone batch's write logs into `ram`/`framebuffer`/
+/// `palette`, using `commit`'s own flush statements. `fold::select_only`
+/// writes nothing, so the row it returns goes into `batch_commit` first and
+/// the flushes read it from there. Unnesting each log and rebasing
+/// `wl_addr` onto `ram.word_addr` happen inside those statements.
+///
+/// It runs untimed, after the timed statement, because the next chained
+/// batch has to read what this one wrote. A fold that reads stale RAM
+/// executes a different instruction stream.
+///
+/// `icount` is the batch's ending count, the value `fold::batch` takes from
+/// the fold's own accumulator.
+async fn commit_fold_batch(
     db: &Db,
-    table: &str,
-    base_word: u32,
-    addr: &[u32],
-    val: &[u32],
-    icount: &[u64],
+    database: &str,
+    result: FoldResult,
+    icount: u64,
 ) -> Result<(), Error> {
-    if addr.is_empty() {
-        return Ok(());
+    let prev_batch_id: u64 = db
+        .fetch_one(&format!(
+            "SELECT max(batch_id) FROM {database}.batch_commit"
+        ))
+        .await?;
+    let row = BatchCommitRow {
+        batch_id: prev_batch_id + 1,
+        icount,
+        pc: result.pc,
+        regs: result.regs,
+        halted: result.halted,
+        halt_reason: halt_reason_name(result.halt_reason),
+        exit_code: if result.halt_reason == HALT_EXIT {
+            result.halt_extra
+        } else {
+            0
+        },
+        keyq_pos: u64::from(result.keyq_pos),
+        has_frame: result.frame_committed,
+        frame_no: result.frame_no,
+        wl_addr: result.wl_addr,
+        wl_val: result.wl_val,
+        wl_icount: result.wl_icount,
+        fb_wl_addr: result.fb_wl_addr,
+        fb_wl_val: result.fb_wl_val,
+        fb_wl_icount: result.fb_wl_icount,
+        pal_wl_addr: result.pal_wl_addr,
+        pal_wl_val: result.pal_wl_val,
+        pal_wl_icount: result.pal_wl_icount,
+        console_bytes: result.console_bytes,
+    };
+    db.insert_all("batch_commit", std::iter::once(row)).await?;
+    db.run(&commit::ram_flush_sql(database)).await?;
+    // fbpal_flush_sql returns two statements (framebuffer, then palette).
+    for statement in split_statements(&commit::fbpal_flush_sql(database)) {
+        db.run(statement).await?;
     }
-    let rows = addr
-        .iter()
-        .zip(val)
-        .zip(icount)
-        .map(|((&word, &value), &version)| WordRow {
-            word_addr: base_word + word,
-            value,
-            version,
-        });
-    db.insert_all(table, rows).await
+    Ok(())
 }
 
 async fn run_e2e_batch(db: &Db, shape: &Shape<'_>, tag: &Tag<'_>) -> Result<BatchOutcome, Error> {
@@ -656,11 +652,11 @@ async fn run_arm(
         let outcome = match args.mode {
             Mode::Fold => {
                 let (outcome, fold_result) = run_fold_batch(db, shape, &tag, &chain).await?;
-                flush_fold_write_logs(db, &fold_result).await?;
                 chain.pc = fold_result.pc;
                 chain.regs = wrap_regs(&fold_result.regs);
                 chain.icount += outcome.retired;
                 chain.keyq = fold_result.keyq_pos;
+                commit_fold_batch(db, shape.database, fold_result, chain.icount).await?;
                 outcome
             }
             Mode::E2e => run_e2e_batch(db, shape, &tag).await?,

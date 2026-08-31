@@ -104,6 +104,10 @@ pub fn build_step(
         text_start_widx <= text_end_widx && text_end_widx <= ram_words,
         "text_start_widx={text_start_widx}/text_end_widx={text_end_widx} must be RAM_BASE-relative word indices with text_start_widx <= text_end_widx <= ram_words={ram_words}"
     );
+    assert!(
+        ipms != 0,
+        "ipms is 0, which makes the TICKS_MS read divide by zero"
+    );
 
     let fb_pal_wa_outside_text =
         fb_pal_wa_provably_outside_text(ram_base, ram_words, text_end_widx);
@@ -191,6 +195,16 @@ pub fn build_step(
     let sa64 = format!("toInt64({sa})");
     let sb64 = format!("toInt64({sb})");
 
+    // Divisors the divide and remainder arms can evaluate for any input.
+    // ClickHouse decides per session whether an `if` arm holding a division
+    // runs when its guard is false, and `rs2 = x0` makes the second operand
+    // 0 on ordinary instructions. Substituting 1 for a zero divisor changes
+    // no result: the enclosing `if` returns RISC-V's div-by-zero and
+    // rem-by-zero values from its own arm. The signed divisor stays Int64,
+    // so `DIV(INT_MIN, -1)` gives INT_MIN rather than overflowing Int32.
+    let nz_b = format!("if({b}=0, toUInt32(1), {b})");
+    let nz_sb64 = format!("if({sb}=0, toInt64(1), {sb64})");
+
     let result = format!(
         "multiIf({id}=0, toUInt32({a} + {b}),\
          {id}=1, toUInt32({a} - {b}),\
@@ -206,10 +220,10 @@ pub fn build_step(
          {id}=11, toUInt32(bitShiftRight(toInt64({sa}) * toInt64({sb}), 32)),\
          {id}=12, toUInt32(bitShiftRight(toInt64({sa}) * toInt64({b}), 32)),\
          {id}=13, toUInt32(bitShiftRight(toUInt64({a}) * toUInt64({b}), 32)),\
-         {id}=14, if({sb}=0, 4294967295, toUInt32(intDiv({sa64}, {sb64}))),\
-         {id}=15, if({b}=0, 4294967295, toUInt32(intDiv({a}, {b}))),\
-         {id}=16, if({sb}=0, {a}, toUInt32(modulo({sa64}, {sb64}))),\
-         {id}=17, if({b}=0, {a}, toUInt32(modulo({a}, {b}))),\
+         {id}=14, if({sb}=0, 4294967295, toUInt32(intDiv({sa64}, {nz_sb64}))),\
+         {id}=15, if({b}=0, 4294967295, toUInt32(intDiv({a}, {nz_b}))),\
+         {id}=16, if({sb}=0, {a}, toUInt32(modulo({sa64}, {nz_sb64}))),\
+         {id}=17, if({b}=0, {a}, toUInt32(modulo({a}, {nz_b}))),\
          {id}={OP_LOAD}, {loadv},\
          {link_value})"
     );

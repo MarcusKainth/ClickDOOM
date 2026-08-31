@@ -14,7 +14,9 @@
 //!   * `ppm_render_sql()` on that same frame byte-matches an independent
 //!     re-derivation from the frame's own raw pixels and palette;
 //!   * `ansi_render_sql()` and `ppm_render_sql()` byte-match a hand-computed
-//!     escape sequence and a hand-computed PPM on a small synthetic frame.
+//!     escape sequence and a hand-computed PPM on a small synthetic frame;
+//!   * the file `--frame-dir` writes during a run carries those same PPM
+//!     bytes, under a name taken from the frame rather than a counter.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`/`clickdoom`) and a
@@ -26,6 +28,7 @@ use std::process::Command;
 
 use bytes::Bytes;
 use clickdoom_driver::client::{ConnArgs, Db};
+use clickdoom_driver::frames;
 use clickdoom_driver::render::{self, FB_HEIGHT, FB_WIDTH, FRAMEBUFFER_WORDS, PALETTE_WORDS};
 use clickdoom_driver::sql::split_statements;
 use clickhouse::Row;
@@ -353,6 +356,26 @@ async fn render_sql_matches_the_bytes_it_claims_to_produce() {
         expected_ppm.as_slice(),
         "ppm_render_sql() did not byte-match an independent re-derivation from the same real frame"
     );
+
+    // What `--frame-dir` writes during a run, on the same verified frame.
+    // The file has to carry the bytes the query produced and nothing else,
+    // and it has to be named after the frame rather than a counter.
+    let frame_dir = std::env::temp_dir().join(format!("{testdb}-frames"));
+    frames::prepare(&frame_dir).unwrap();
+    let written = frames::write_committed(&db, &testdb, &frame_dir, 220)
+        .await
+        .unwrap();
+    assert_eq!(
+        written,
+        frame_dir.join("frame-00220.ppm"),
+        "write_committed() did not name the file after frame_no, zero-padded to five digits"
+    );
+    assert_eq!(
+        std::fs::read(&written).unwrap(),
+        expected_ppm,
+        "the frame written to disk is not the PPM the same query returns"
+    );
+    std::fs::remove_dir_all(&frame_dir).unwrap();
 
     // --- a small hand-computed synthetic frame ---
     db.run(&format!("TRUNCATE TABLE {testdb}.frames_out"))

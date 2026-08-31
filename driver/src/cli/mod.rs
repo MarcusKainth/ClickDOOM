@@ -281,6 +281,10 @@ pub struct RunCmd {
     /// Stop cleanly once a committed frame's frame_no reaches this
     #[arg(long)]
     pub stop_at_frame: Option<u32>,
+    /// Write every committed frame here as a binary PPM, named by frame_no.
+    /// Created if absent
+    #[arg(long)]
+    pub frame_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -455,6 +459,7 @@ async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
         trace_path: &cmd.trace,
         target_icount: cmd.target_icount,
         stop_at_frame: cmd.stop_at_frame,
+        frame_dir: cmd.frame_dir.as_deref(),
     };
     let outcome = crate::run::run(&cmd.conn, &args)
         .await

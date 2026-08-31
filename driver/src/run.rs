@@ -24,6 +24,7 @@ use clickdoom_spec::{Manifest, RAM_BASE, RAM_HASH_INTERVAL};
 
 use crate::checkpoint::checkpoint_sql;
 use crate::client::{ConnArgs, Error};
+use crate::frames;
 use crate::preflight;
 use crate::render;
 use crate::rom::RAM_WORDS_DEFAULT;
@@ -44,6 +45,8 @@ pub enum RunError {
         #[source]
         source: std::io::Error,
     },
+    #[error(transparent)]
+    Frame(#[from] crate::frames::Error),
     #[error("no reference trace line for icount={0} in {1}: trace/run icount cadence disagree")]
     NoTraceLine(u64, std::path::PathBuf),
     #[error(
@@ -70,6 +73,8 @@ pub struct Args<'a> {
     pub trace_path: &'a Path,
     pub target_icount: u64,
     pub stop_at_frame: Option<u32>,
+    /// Where to write each committed frame as a PPM. `None` writes none.
+    pub frame_dir: Option<&'a Path>,
 }
 
 pub enum Stop {
@@ -104,6 +109,10 @@ fn trace_line_for(trace_path: &Path, icount: u64) -> Result<String, RunError> {
 /// error here: the loop always re-reads the real retired icount rather
 /// than assuming a batch reached what it was asked for.
 pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> {
+    if let Some(dir) = args.frame_dir {
+        frames::prepare(dir)?;
+    }
+
     let db = conn.connect();
 
     preflight::check(&db, conn, args.bin, args.manifest_path, args.k, args.hwm).await?;
@@ -230,6 +239,10 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             eprintln!(
                 "# FRAME_COMMIT observed: frame_no={frame_no} icount={icount} fb_hash={fb_hash} (frames_observed={frames_observed})"
             );
+            if let Some(dir) = args.frame_dir {
+                let path = frames::write_committed(&db, &conn.database, dir, frame_no).await?;
+                eprintln!("# wrote {}", path.display());
+            }
             if let Some(stop_at_frame) = args.stop_at_frame
                 && frame_no >= stop_at_frame
             {

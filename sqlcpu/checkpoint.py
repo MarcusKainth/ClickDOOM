@@ -5,9 +5,7 @@ The differential contract: refemu and sqlcpu must emit byte-identical trace
 files. Every format decision here is the contract crate's (`spec/src/checkpoint.rs`,
 issues #15/#22) — this module reproduces it in SQL, not a second opinion on
 it. Settled and cross-verified against a live ClickHouse instance before
-this file existed (issue #15's comment thread has the worked examples);
-`test_checkpoint.py` re-verifies the same examples here as committed,
-runnable evidence rather than a one-off paste.
+this file existed (issue #15's comment thread has the worked examples).
 
 Decisions carried over verbatim from the contract crate:
   * xxh64 seed 0 — matches ClickHouse's `xxHash64(x)` with no seed argument.
@@ -34,13 +32,10 @@ instead (fixed small argument count, so this is fine); `word_array_hash()`
 (RAM, arbitrary length) goes through hex text first, where there are no
 null bytes to trip over, then one `unhex()` at the end.
 
-This module builds SQL expression *text*, like decode.sql/execute.py's
+This module builds SQL expression *text*, like `executor/fold.py`'s
 composable functions — it does not read from any particular table.
-Framebuffer/palette storage doesn't exist yet (the "first
-FRAME_COMMIT" milestone, executor's MMIO plumbing, SPEC §6) — `fb_hash()`
-takes the current bytes as a caller-supplied expression rather than
-assuming where they live, the same interface posture execute.py's
-`alu_result()` takes for `loaded_word_expr`.
+`fb_hash()` takes the current bytes as a caller-supplied expression rather
+than assuming where they live.
 """
 
 # ---- hashing -----------------------------------------------------------
@@ -65,9 +60,9 @@ def word_array_hash(words_expr: str) -> str:
     """xxh64 over an Array(UInt32), each word little-endian, in array
     order — refemu's ram_hash() (caller supplies the array already
     address-ascending, e.g. `groupArray(value) FROM (... ORDER BY
-    word_addr)` — see run_riscv_tests.py's decode_arrays() comment for why
-    that capture needs the word_addr-paired-tuple form, not a bare
-    per-column groupArray, to be trustworthy in the first place).
+    word_addr)` — see `executor/src/fold.rs`'s decode_with() for why that
+    capture needs the word_addr-paired-tuple form, not a bare per-column
+    groupArray, to be trustworthy in the first place).
 
     Goes through hex text rather than `concat()`-ing raw FixedStrings:
     `arrayStringConcat` truncates at embedded nulls (this module's

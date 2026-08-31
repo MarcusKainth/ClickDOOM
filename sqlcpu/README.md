@@ -8,13 +8,17 @@ hashes. `PURITY.md` states what that means and what may not leave it.
 
 Decoding the ROM inside ClickHouse is allowed; doing it in Python and inserting
 the result is not, which is PUR-11. That is why the decode step is SQL rather
-than a script. The Python here generates SQL text and executes nothing itself.
+than a script. `schema.sql` and `decode.sql` are the CPU; the Python beside
+them generates SQL text and executes nothing itself.
 
 ## Tests
 
     make test-sqlcpu
 
-Needs a live ClickHouse, which the target starts. It runs, in sequence, the
-riscv-tests inside the database, the committed decode vectors, the execute
-checks, and the checkpoint checks against the reference interpreter's worked
-examples.
+Needs a live ClickHouse, which the target starts. `driver/tests/sqlcpu_live.rs`
+is the suite: the committed decode vectors against `decode.sql`, one
+instruction at a time against an independent RV32I reference, the riscv-tests
+corpus run to completion inside the database, and the checkpoint expressions
+against `clickdoom-spec`'s own hashes. Every instruction executes through the
+fold `executor/src/fold.rs` builds, which is the fold the DOOM run itself
+folds.

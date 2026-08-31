@@ -4,7 +4,7 @@
 Unlike test_fold.py (which builds its own schema_fixture.sql, since it
 predates sqlcpu/schema.sql landing), this file applies the REAL
 sqlcpu/schema.sql -- renamed onto an isolated private database, the same
-technique executor/bench/batch_overhead/run.sh uses -- so batch_commit's
+technique the batch-overhead harness used -- so batch_commit's
 column shape can never drift from what sqlcpu actually ships. Every test
 gets its own fresh database: cheap here (small fixtures), and it removes
 any cross-test batch_id ordering assumptions.
@@ -84,7 +84,7 @@ def scalar(sql):
 def db():
     """Fresh, isolated database per test -- real sqlcpu/schema.sql, renamed
     (not a hand-copied approximation, same reasoning as
-    executor/bench/batch_overhead/run.sh: this can't drift from what
+    the batch-overhead harness: this can't drift from what
     sqlcpu maintains, and won't collide with anything else touching the
     shared `clickdoom` database)."""
     ch(f"DROP DATABASE IF EXISTS {DB}")
@@ -114,7 +114,7 @@ def seed_decoded_and_ram(db, decoded_rows, ram_words):
     word_addr RAM_BASE_WORD+0, +1, .... `ram` is filled dense with zeros
     over [RAM_BASE, RAM_BASE + ram_words*4) -- the density invariant
     RAMT/decode positional indexing requires (#81), same as
-    sqlcpu/load_rom.py."""
+    the ROM loader."""
     ch(f"TRUNCATE TABLE {db}.decoded; TRUNCATE TABLE {db}.ram")
     rows = []
     for i, (id_, rd, rs1, rs2, imm, tgt, mk, sg, raw) in enumerate(decoded_rows):

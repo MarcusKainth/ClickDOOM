@@ -1,11 +1,10 @@
--- Isolated fixture for driver/render.py's tests (issue #29). Written
+-- Isolated fixture for the render tests. Written
 -- against sqlcpu's #130 design comment for framebuffer/palette, confirmed
 -- with sqlcpu-2 before use (issue #29's plan comment) -- #174 has since
 -- landed that exact shape for real in sqlcpu/schema.sql (framebuffer,
 -- palette, and batch_commit's six fb_wl_*/pal_wl_* columns all match
 -- byte-for-byte). This file still exists as a fast, isolated fixture for
--- render.py's own tests rather than requiring the real, shared schema --
--- see render.py's module docstring.
+-- the render tests rather than requiring the real, shared schema.
 --
 -- {{DB}} is substituted by the caller (same convention as sqlcpu/
 -- schema.sql's `clickdoom` placeholder database name, substituted the
@@ -36,7 +35,7 @@ ORDER BY word_addr;
 
 -- frames_out and batch_commit's has_frame/frame_no/icount columns: copied
 -- from sqlcpu/schema.sql's real DDL verbatim (not reinvented), since
--- render.py's frame_readout_sql() reads batch_commit and writes
+-- frame_readout_sql() reads batch_commit and writes
 -- frames_out exactly as the real schema defines them.
 CREATE TABLE {{DB}}.frames_out
 (

@@ -10,10 +10,6 @@ ferries key events in, blits output, and does housekeeping that computes
 nothing. Frame readout is computation, so it is a SQL query that lives here and
 runs SQL-side.
 
-`render.py` is the Python module `render.rs` replaced. It stays in the tree
-solely as `rom/bench/canonical_throughput/seed_snapshot.py`'s dependency,
-which is unrelated to `clickdoom` and not covered by anything below.
-
 ## Frame readout
 
 The readout reconstructs the raw framebuffer and palette bytes from

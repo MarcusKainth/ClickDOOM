@@ -85,7 +85,7 @@ pub enum BenchMode {
 /// Default history file `bench canonical` appends to.
 const CANONICAL_RESULTS_DEFAULT: &str = "rom/bench/canonical_throughput/results.jsonl";
 /// Default history file `bench compare-versions` appends to.
-const COMPARE_RESULTS_DEFAULT: &str = "executor/bench/version_compare/results.jsonl";
+const COMPARE_RESULTS_DEFAULT: &str = "rom/bench/version_compare/results.jsonl";
 
 #[derive(Args)]
 pub struct CanonicalCmd {

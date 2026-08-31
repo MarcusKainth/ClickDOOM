@@ -9,7 +9,7 @@ batch_commit.icount), and the write-log versioning fix (SPEC §5, flagged on
 PR #30 and in issue #35): every write-log entry carries its own retiring
 instruction's icount, not the batch's final icount.
 
-Starting point: executor/bench/phase0/fold_predecoded.py (ADR-0002). Reused:
+Starting point: the pre-decoded baseline fold (ADR-0002). Reused:
 the collapsed op_id space 0-27 (agreed with sqlcpu, PR #42/#46/#49), the
 accumulator's RAM/write-log addressing idiom, the register-write guard on
 rd=0. NOT reused, despite looking similar at a glance: the bench's word-
@@ -612,7 +612,7 @@ def build_step(K, text_start_widx, text_end_widx, decn, ram_words,
     # this change). `HC` is a nested-lambda parameter (see step_tuple's
     # arrayMap wrapper below) that HALT_CODE is bound to exactly once;
     # every reference below is a cheap parameter read, not a re-expansion
-    # -- executor/bench/e1_cse's own n40_bound finding, applied to the
+    # -- the subexpression-dedup finding on bound copies, applied to the
     # actual bottleneck instead of a synthetic one.
     HC = "hc"
     step_halts_now = f"({active} AND ({HC}) != 0)"

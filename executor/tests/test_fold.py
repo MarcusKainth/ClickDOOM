@@ -26,11 +26,9 @@ import sys
 import pytest
 
 sys.path.insert(0, ".")
-sys.path.insert(0, "bench/wl_seed")
 import config  # noqa: E402
 import fold  # noqa: E402
-import seed  # noqa: E402
-from tests import reference  # noqa: E402
+from tests import reference, seed  # noqa: E402
 
 CONTAINER = "clickdoom-ch"
 DB = "clickdoom_executor"

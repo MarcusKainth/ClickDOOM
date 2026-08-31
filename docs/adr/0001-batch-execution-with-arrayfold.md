@@ -51,7 +51,7 @@ contract in SPEC §6.
 ## Phase 0 results
 
 Benchmarked on the repo pin (ClickHouse 26.3.17.4). Full tables, method and
-caveats in [`executor/bench/phase0/RESULTS.md`](../../executor/bench/phase0/RESULTS.md);
+caveats in [`docs/experiments/arrayfold-baseline.md`](../experiments/arrayfold-baseline.md);
 reproduce with `make bench-phase0`.
 
 **Verdict: accepted.** Sustained end-to-end throughput is **11,894

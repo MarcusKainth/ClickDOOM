@@ -9,7 +9,7 @@ pub const K_DEFAULT: u32 = 50_000;
 
 /// A batch ends early once the write-log reaches this many entries. The
 /// bottom of the measured per-step-cost curve for an all-store worst case
-/// (`executor/bench/hwm/RESULTS.md`).
+/// (`docs/experiments/write-log-high-water-mark.md`).
 pub const WRITE_LOG_HIGH_WATER_MARK_DEFAULT: u32 = 20_000;
 
 /// `batch_commit` retention, in batch_id lag.

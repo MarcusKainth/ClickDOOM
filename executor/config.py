@@ -11,7 +11,7 @@ sqlcpu/schema.sql (#17) hasn't landed -- they are not contract values.
 K_DEFAULT = 50_000
 
 # SPEC §6: batch ends early once the write-log reaches this many entries.
-# Measured, not guessed -- see executor/bench/hwm/RESULTS.md. 20,000 is the
+# Measured, not guessed -- see docs/experiments/write-log-high-water-mark.md. 20,000 is the
 # bottom of the measured per-step-cost curve for an all-store worst case.
 #
 # Re-confirmed against the real ROM by #257, which measured the realistic

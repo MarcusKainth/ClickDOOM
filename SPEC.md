@@ -369,7 +369,7 @@ shape. All tables carry `spec_version String`.
   caught in review (issue discussion on PR #42/#48) before it shipped as a
   real bug: harmless in the Phase 0 benchmark this design is descended from,
   since that benchmark's decode data is synthetic and never executed
-  (`executor/bench/phase0/RESULTS.md` §6), but a genuine correctness bug in a
+  (`docs/experiments/arrayfold-baseline.md`), but a genuine correctness bug in a
   table meant to produce correct results. `raw` carries the original
   instruction word, needed only for the `ILLEGAL_INSN` halt record (§1) since
   every other column replaces the raw word rather than preserving it.
@@ -384,13 +384,13 @@ Materialize `ram` into the batch's constant array with `FINAL`, **not**
 
 The driver invokes one batch = one `INSERT ... SELECT` executing up to `K`
 instructions (`K` default **50,000**; tunable). **50,000 was Phase 0's
-measured optimum for its prototype fold** (`executor/bench/phase0/
-fold_predecoded.py`, before SPEC §1's halt semantics, the real 31-element
-(no-`x0`-slot) register file, `SELF_MODIFY` detection, or MMIO (§3)
-existed): below it the ~0.30 s per-batch fixed cost dominated, above it the
-write-log's superlinear growth cancelled the remaining amortization (8,721 /
+measured optimum for its prototype fold** (the pre-decoded baseline in
+`docs/experiments/arrayfold-baseline.md`, before SPEC §1's halt semantics,
+the real 31-element (no-`x0`-slot) register file, `SELF_MODIFY` detection,
+or MMIO (§3) existed): below it the ~0.30 s per-batch fixed cost dominated,
+above it the write-log's superlinear growth cancelled the remaining amortization (8,721 /
 11,894 / 11,628 instructions/sec end-to-end at K = 10,000 / 50,000 / 200,000 —
-`executor/bench/phase0/RESULTS.md`).
+`docs/experiments/arrayfold-baseline.md`).
 
 **Those are historical prototype numbers, not the current fold's
 throughput, and citing them without that label is actively misleading —
@@ -468,7 +468,7 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
 ## 9. Phase 0 resolutions and remaining open questions
 
 Resolved by the Phase 0 benchmark (evidence:
-`executor/bench/phase0/RESULTS.md`; decisions: ADR-0001, ADR-0002):
+`docs/experiments/arrayfold-baseline.md`; decisions: ADR-0001, ADR-0002):
 
 - [x] **arrayFold throughput.** Phase 0's *prototype* fold measured 8,721 /
       11,894 / 11,628 instructions per second end-to-end at K = 10,000 /

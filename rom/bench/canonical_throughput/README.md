@@ -18,7 +18,7 @@ This is the one instrument every sprint number should come from.
 
 ## What it measures
 
-Two windows, identified from `rom/bench/e7_memfns`'s exact per-symbol
+Two windows, identified from the memory-function profile's exact per-symbol
 attribution against the current frozen ROM (`rom/PINNED_HASH`):
 
 | window | icount range | what's happening |

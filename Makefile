@@ -61,10 +61,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
 .PHONY: help up down build-rom \
         test test-refemu test-refemu-reference \
         test-sqlcpu test-executor test-render smoke diff \
-        bench-phase0 bench-e1-cse bench-e7-memfns bench-canonical-throughput \
-        bench-commit-attribution bench-ksweep bench-wl-seed \
-        bench-batch-overhead bench-halt-overhead bench-hwm bench-a1-jit \
-        bench-b2-block-dispatch bench-b3-dict-lookup \
+        bench-canonical-throughput \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         fuzz \
@@ -132,62 +129,13 @@ smoke: ## The differential run CI uses, at 100,000 instructions
 
 ##@ Bench
 #
-# Timings need a quiet machine. Several of these create and destroy their own
-# container per arm, because the compiled-expression cache is server-global and
-# would otherwise carry state between arms.
-
-bench-phase0: up ## arrayFold characterisation, the evidence behind ADR-0001 and ADR-0002
-	./executor/bench/phase0/run.sh $(no_stdin)
-
-bench-e1-cse: up ## Does arrayFold deduplicate repeated subexpressions, and at what node cost
-	./executor/bench/e1_cse/run.sh $(no_stdin)
-
-bench-e7-memfns: require-rom build-refemu ## Per-symbol instruction attribution for the real ROM. No ClickHouse
-	python3 rom/bench/e7_memfns/profile_memfns.py --frames 40
+# Timings need a quiet machine. docs/benchmarks.md indexes what has already
+# been measured, and DEVELOPING.md says what to record alongside a number.
 
 bench-canonical-throughput: up require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
 	$(CLICKDOOM) bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
 		--refemu-bin $(REFEMU) $(clickdoom_conn)
-
-BATCHES ?= 3
-LABEL ?= baseline
-K ?= 60000
-bench-commit-attribution: require-rom ## Per-statement attribution of one end-to-end batch. Own container per arm
-	./executor/bench/commit_mutation/arm.sh --label $(LABEL) -- --k $(K) --batches $(BATCHES) $(no_stdin)
-
-WINDOW ?= 120000
-bench-ksweep: require-rom ## Fixed instruction window cut into different batch counts, so arms differ only by setup count
-	./executor/bench/commit_mutation/ksweep.sh --window $(WINDOW) $(no_stdin)
-	python3 executor/bench/commit_mutation/fit.py /tmp/sq2-bench/K_sweep_*.json $(no_stdin)
-
-DB ?= wl257_boot
-REPS ?= 5
-bench-wl-seed: require-rom ## Does per-instruction cost grow within a batch? Seeds the write-log and reads the slope directly
-	./executor/bench/commit_mutation/setup_db.sh --container clickdoom-ch --db $(DB) --window boot $(no_stdin)
-	python3 executor/bench/wl_seed/micro.py --out /tmp/wl257-micro.json $(no_stdin)
-	python3 executor/bench/wl_seed/bench_l0.py --db $(DB) --k 60000 --reps $(REPS) --out /tmp/wl257-k60000.json $(no_stdin)
-	python3 executor/bench/wl_seed/bench_l0.py --db $(DB) --k 30000 --reps $(REPS) --out /tmp/wl257-k30000.json $(no_stdin)
-	python3 executor/bench/wl_seed/bench_l0.py --db $(DB) --k 15000 --reps $(REPS) --out /tmp/wl257-k15000.json $(no_stdin)
-	python3 executor/bench/wl_seed/fit_l0.py /tmp/wl257-k*.json --micro /tmp/wl257-micro.json $(no_stdin)
-
-bench-batch-overhead: up ## Fixed per-batch cost, with its own query_log window guard
-	./executor/bench/batch_overhead/run.sh $(no_stdin)
-
-bench-halt-overhead: up ## What the halt check costs per batch, swept over K
-	./executor/bench/halt_overhead/run.sh $(no_stdin)
-
-bench-hwm: up ## Write-log high-water mark, swept over K
-	./executor/bench/hwm/run.sh $(no_stdin)
-
-bench-a1-jit: up ## Which parts of the fold expression ClickHouse's JIT compiles, and what that buys
-	cd executor/bench/a1_jit && ./run.sh $(no_stdin)
-
-bench-b2-block-dispatch: ## What an unselected branch costs inside arrayFold
-	./executor/bench/b2_block_dispatch/run.sh $(no_stdin)
-
-bench-b3-dict-lookup: ## dictGet against arrayElement for RAM reads in the fold
-	./executor/bench/b3_dict_lookup/run.sh $(no_stdin)
 
 ##@ Milestone
 

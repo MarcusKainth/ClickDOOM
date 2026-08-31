@@ -5,8 +5,9 @@
 //! that the RAM hash covers plain address-ascending bytes, and that the
 //! framebuffer hash concatenates in that order.
 //!
-//! They are pinned in two other places: `sqlcpu/test_checkpoint.py` and
-//! `scripts/test_checkpoint_query.py`. All three move together.
+//! This is the only place they are pinned. `driver/tests/sqlcpu_live.rs`
+//! checks the SQL against the functions below rather than against a second
+//! copy of the numbers.
 //!
 //! Running with `--nocapture` prints the query that re-derives each one, so
 //! the check can be reproduced against the pinned server rather than trusted.

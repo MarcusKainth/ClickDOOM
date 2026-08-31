@@ -162,7 +162,7 @@ pub fn build_step(
 
     let ticks_ms = format!("toUInt32(intDiv(acc.5, {ipms}))");
     let keyq_has = "(acc.6.2 < toUInt32(length(KEYQT)))".to_string();
-    let keyq_val = format!("if({keyq_has}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1].1), toUInt32(0))");
+    let keyq_val = format!("if({keyq_has}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1]), toUInt32(0))");
     let mmio_read = format!(
         "multiIf({}, {ticks_ms}, {}, {keyq_val}, toUInt32(0))",
         mmio_is(clickdoom_spec::mmio::TICKS_MS),
@@ -172,7 +172,7 @@ pub fn build_step(
     let sh = format!("(8 * bitAnd({addr}, 3))");
 
     let lw = format!(
-        "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1].1)"
+        "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1])"
     );
 
     let extracted = format!("bitAnd(bitShiftRight({lw}, {sh}), {dmkv})");
@@ -355,21 +355,26 @@ pub fn build_step(
     format!("arrayMap({hc} -> {step_tuple_inner}, [{halt_code}])[1]")
 }
 
-/// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`: one combined
-/// `groupArray(tuple(...))` per table, not one `groupArray` per column, so
-/// `optimize_read_in_order` cannot stream one column straight from its
-/// physically sorted storage and silently misalign it against `word_addr`
-/// while sibling columns, captured the same way in the same query, stay
-/// correct.
+/// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`.
+///
+/// `DEC` captures its columns as one `groupArray(tuple(...))`. Separate
+/// `groupArray`s over one subquery let `optimize_read_in_order` stream a
+/// column straight from its physically sorted storage and silently
+/// misalign it against `word_addr` while its sibling columns stay correct.
+/// A single tuple aggregate carries every column, so they stay aligned.
+///
+/// `RAMT` and `KEYQT` capture one column each, so they have no sibling
+/// column to misalign against and use a bare `groupArray`.
+/// `driver/src/checkpoint.rs` captures `ram` the same way.
 pub fn decode_with(db: &str) -> String {
     format!(
         "\n  \
-         (SELECT groupArray(tuple(value))\n     \
+         (SELECT groupArray(value)\n     \
          FROM (SELECT value, word_addr FROM {db}.ram FINAL ORDER BY word_addr)) AS RAMT,\n  \
          (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw))\n     \
          FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr\n           \
          FROM {db}.decoded ORDER BY word_addr)) AS DEC,\n  \
-         (SELECT groupArray(tuple(key_event))\n     \
+         (SELECT groupArray(key_event)\n     \
          FROM (SELECT key_event, event_seq FROM {db}.input_queue\n           \
          ORDER BY event_seq)) AS KEYQT"
     )

@@ -55,6 +55,21 @@ pub const FEWER_CONSTANTS_ASSUMES_MK: [u32; 4] = [0, 255, 65_535, 4_294_967_295]
 pub const ADDED_CONSTANTS: u8 = 60;
 const ADDED_CONSTANTS_FIRST: u8 = 33;
 
+/// What [`build_step_inner`] returns: the step itself, or the same
+/// expressions with every lambda binding replaced by a free column
+/// reference. No `EXPLAIN` form descends into a lambda, so the flat form
+/// is the only way to read one ActionsDAG holding every action node the
+/// step needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Emit {
+    Nested,
+    Flat,
+    /// The step with its `n` outermost bindings left free and the rest
+    /// still nested. `EXPLAIN` over this prints scope `n`'s own DAG, which
+    /// is what one `ExpressionActions` run executes per fold step.
+    Peel(usize),
+}
+
 /// Collects the `arrayMap` bindings a variant introduces, outermost first.
 /// [`Binder::bind`] returns the name to read the expression by, which is
 /// the expression itself when the variant introduces no bindings, so a
@@ -74,16 +89,50 @@ impl Binder {
     }
 
     /// `body` wrapped in one `arrayMap` per binding, so a binding pushed
-    /// later sits inside one pushed earlier and may read it.
-    fn wrap(self, body: String) -> String {
+    /// later sits inside one pushed earlier and may read it. `peel` leaves
+    /// that many outermost bindings unwrapped, so their names stay free
+    /// column references.
+    fn wrap_peeled(self, body: String, peel: usize) -> String {
+        let kept = self.bindings.len().saturating_sub(peel);
         self.bindings
             .into_iter()
+            .skip(peel)
+            .take(kept)
             .rev()
             .fold(body, |inner, (name, expr)| {
                 format!("arrayMap({name} -> {inner}, [{expr}])[1]")
             })
     }
+
+    fn wrap(self, body: String) -> String {
+        self.wrap_peeled(body, 0)
+    }
+
+    /// `body` and every bound expression as one comma-separated list, for
+    /// [`Emit::Flat`].
+    fn flatten(self, body: String) -> String {
+        let mut parts = vec![body];
+        parts.extend(self.bindings.into_iter().map(|(_, expr)| expr));
+        parts.join(", ")
+    }
 }
+
+/// The column names [`build_step_flat`] leaves free, in the types
+/// `step_variants`'s probe table has to declare them with.
+pub const FLAT_COLUMNS: &[(&str, &str)] = &[
+    ("hc", "UInt8"),
+    ("h", "UInt8"),
+    (
+        "d",
+        "Tuple(UInt8, UInt8, UInt8, UInt8, UInt32, UInt32, UInt32, UInt8, UInt32)",
+    ),
+    ("va", "UInt32"),
+    ("vb", "UInt32"),
+    ("vr2", "UInt32"),
+    ("ad", "UInt32"),
+    ("wx", "UInt32"),
+    ("mw", "UInt32"),
+];
 
 /// `(ADDR, bad_addr_cond, misaligned_cond, WA_safe)`. `wa_safe` is masked
 /// into `[0, ram_words)` unconditionally, so `arrayElement` on RAM/write-log
@@ -213,6 +262,90 @@ pub fn build_step_variant(
     hwm: u32,
     ipms: u32,
     variant: Variant,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Nested,
+    )
+}
+
+/// [`build_step_variant`]'s expressions as a SELECT list, with every lambda
+/// binding replaced by a reference to the [`FLAT_COLUMNS`] column of the
+/// same name. `EXPLAIN actions = 1` over this prints one ActionsDAG holding
+/// every action node the step needs, across the lambda scopes the nested
+/// form splits them over.
+#[allow(clippy::too_many_arguments)]
+pub fn build_step_flat(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Flat,
+    )
+}
+
+/// [`build_step_variant`] with its `peel` outermost bindings left as free
+/// [`FLAT_COLUMNS`] references. `EXPLAIN actions = 1` over this prints the
+/// DAG of the scope that binding `peel` opens, which is one of the
+/// `ExpressionActions` a fold step runs. Summing over `peel` from 0 up to
+/// the arm's binding count gives the step's whole per-scope cost.
+#[allow(clippy::too_many_arguments)]
+pub fn build_step_peeled(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+    peel: usize,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Peel(peel),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_step_inner(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+    emit: Emit,
 ) -> String {
     assert!(
         text_start_widx <= text_end_widx && text_end_widx <= ram_words,
@@ -545,12 +678,16 @@ pub fn build_step_variant(
          {new_mmio},\
          {new_fbpal_wl})"
     );
-    // The `halt_code` binding is the innermost one, so it nests inside
-    // every binding a variant introduces of its own.
+    // The `halt_code` binding is the innermost one, so the probes reach its
+    // scope the same way they reach a variant's own bindings.
     if variant != Variant::InlineHaltCode {
         binder.bindings.push((hc_param, halt_code));
     }
-    binder.wrap(step_tuple_inner)
+    match emit {
+        Emit::Flat => binder.flatten(step_tuple_inner),
+        Emit::Nested => binder.wrap(step_tuple_inner),
+        Emit::Peel(n) => binder.wrap_peeled(step_tuple_inner, n),
+    }
 }
 
 /// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`.

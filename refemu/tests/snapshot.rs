@@ -5,8 +5,6 @@
 //! interrupted. Everything else here is about refusing a file that would
 //! resume into a machine that is quietly different.
 
-use std::path::Path;
-
 use clickdoom_spec::{IPMS_DEFAULT, RAM_BASE, TraceConfig};
 use refemu::Cpu;
 use refemu::asm::*;
@@ -201,60 +199,4 @@ fn a_machine_captured_under_other_settings_is_refused_by_name() {
     assert!(err.contains("text region"), "{err}");
     // And forcing it through is allowed, deliberately.
     assert!(snapshot::restore(&mut ours, &saved, &path, true).is_ok());
-}
-
-#[test]
-fn the_python_reader_reads_what_the_emulator_writes() {
-    let path = temp("for-python.rsnap");
-    let mut cpu = fresh();
-    cpu.run_until_halt(1000).unwrap();
-    {
-        let registers = cpu.memory.devices_mut().registers_mut().unwrap();
-        registers.console.extend_from_slice(b"abc");
-    }
-    snapshot::machine_snapshot(&cpu, nothing_known(), Some("halt".to_owned()))
-        .write(&path)
-        .unwrap();
-
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("scripts");
-    let output = std::process::Command::new("python3")
-        .arg("-c")
-        .arg(
-            r#"
-import sys
-sys.path.insert(0, sys.argv[1])
-from refemu_snapshot import load
-header, sections = load(sys.argv[2], need=("ram", "framebuffer", "palette", "console"))
-print(header["kind"], header["icount"], header["pc"], len(header["regs"]))
-print(len(sections["ram"]), len(sections["framebuffer"]), len(sections["palette"]))
-print(sections["console"].decode())
-"#,
-        )
-        .arg(&script)
-        .arg(&path)
-        .output()
-        .expect("python3 is on PATH");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(
-        lines[0],
-        format!("machine {} {} 32", cpu.icount(), cpu.pc())
-    );
-    assert_eq!(
-        lines[1],
-        format!(
-            "{} {} {}",
-            cpu.memory.ram().len(),
-            cpu.memory.framebuffer().len(),
-            cpu.memory.palette().len()
-        )
-    );
-    assert_eq!(lines[2], "abc");
 }

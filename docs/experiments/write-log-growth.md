@@ -173,11 +173,11 @@ Two instruments sharing no assumption agree within a factor of 0.74.
 Verified against the generated expression:
 
 ```
-$ python3 -c "import sys; sys.path.insert(0,'executor'); import fold
-s = fold.build_step(60000, 0, 98824, 98824, 6291456, hwm=20000)
-print(len(s), s.count('arrayLastIndex'), s.count('arrayPushBack(acc.3'))"
-57006 6 3
+57006 bytes, 6 arrayLastIndex, 3 arrayPushBack(acc.3)
 ```
+
+Counted over the text `build_step` emits at K = 60,000 with the write-log
+high-water mark at 20,000, over a 98,824-word text region.
 
 The load word carries two `arrayLastIndex` calls and is textually expanded
 three times, so the step expression asks for six scans per step, not two.

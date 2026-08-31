@@ -53,7 +53,7 @@ there.
 - **PUR-11.** Precomputed answers: no tables of pre-decoded instructions
   generated outside ClickHouse, no imported traces. Decoding the ROM *inside*
   ClickHouse into a decoded-instruction table is fine, because that is SQL
-  doing the work. Doing it in Python and inserting the result is not.
+  doing the work. Decoding it in the driver and inserting the result is not.
 - **PUR-12.** Wall-clock or host-environment dependence on any computation
   path.
 

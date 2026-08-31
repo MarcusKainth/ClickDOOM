@@ -19,6 +19,14 @@ N trivial `bitXor` nodes in a fold body over 20,000 elements:
 | 100 | 1.260 | 0.63 |
 | 400 | 7.881 | 0.99 |
 
+That chain carries new literals alongside its nodes, so the per-node column
+prices both together. `docs/experiments/compiled-node-cost.md` separates them
+on 26.7.5.10: a node is 4.4 ns compiled and 0.29 us interpreted, and each
+distinct literal costs 0.16 to 0.28 us per step. Read "the only lever on
+throughput is the total node count" below as the reasoning this decision was
+taken under. The decision itself rests on a measured before and after on the
+same fold, 7.4x, which does not depend on the model.
+
 The reason is that `arrayFold` evaluates its lambda as a full expression pass
 over a one-row block per element, and ClickHouse's per-function-call overhead is
 paid on every node regardless of block width. Two consequences follow, and both

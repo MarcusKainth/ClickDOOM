@@ -314,16 +314,28 @@ struct Shape<'a> {
     database: &'a str,
 }
 
+/// Where a chained fold-alone arm has got to. `icount` and `keyq` are
+/// threaded as well as `pc`/`regs`: emulated time is a function of the
+/// retired count, so a batch restarted at icount 0 executes a different
+/// instruction stream than the end-to-end arm's batch at the same point.
+struct Chain {
+    pc: u32,
+    regs: Vec<String>,
+    icount: u64,
+    keyq: u32,
+}
+
 async fn run_fold_batch(
     db: &Db,
     shape: &Shape<'_>,
-    pc: u32,
-    regs: &[String],
+    chain: &Chain,
 ) -> Result<(FoldResult, BatchOutcome), Error> {
     let args = SelectOnlyArgs {
-        pc0: Some(pc),
-        regs0: Some(regs),
+        pc0: Some(chain.pc),
+        regs0: Some(&chain.regs),
         db: shape.database,
+        icount0: chain.icount,
+        keyq0: chain.keyq,
         ..Default::default()
     };
     let sql = fold::select_only(
@@ -346,6 +358,68 @@ async fn run_fold_batch(
         frame_committed: result.frame_committed,
     };
     Ok((result, outcome))
+}
+
+/// Applies a fold-alone batch's write logs to `ram`/`framebuffer`/
+/// `palette`, the way `commit`'s flushes do for the end-to-end arm. Runs
+/// outside the timed statement: the next chained batch has to read what
+/// this one wrote.
+async fn flush_fold_write_logs(db: &Db, result: &FoldResult) -> Result<(), Error> {
+    // `wl_addr` is RAM_BASE-relative and `ram.word_addr` is absolute;
+    // `fb_wl_addr`/`pal_wl_addr` are already relative to their own region's
+    // base. Same asymmetry `commit::ram_flush_sql` and
+    // `commit::fbpal_flush_sql` carry.
+    insert_words(
+        db,
+        "ram",
+        RAM_BASE >> 2,
+        &result.wl_addr,
+        &result.wl_val,
+        &result.wl_icount,
+    )
+    .await?;
+    insert_words(
+        db,
+        "framebuffer",
+        0,
+        &result.fb_wl_addr,
+        &result.fb_wl_val,
+        &result.fb_wl_icount,
+    )
+    .await?;
+    insert_words(
+        db,
+        "palette",
+        0,
+        &result.pal_wl_addr,
+        &result.pal_wl_val,
+        &result.pal_wl_icount,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn insert_words(
+    db: &Db,
+    table: &str,
+    base_word: u32,
+    addr: &[u32],
+    val: &[u32],
+    icount: &[u64],
+) -> Result<(), Error> {
+    if addr.is_empty() {
+        return Ok(());
+    }
+    let rows = addr
+        .iter()
+        .zip(val)
+        .zip(icount)
+        .map(|((&word, &value), &version)| WordRow {
+            word_addr: base_word + word,
+            value,
+            version,
+        });
+    db.insert_all(table, rows).await
 }
 
 async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<BatchOutcome, Error> {
@@ -410,21 +484,20 @@ async fn run_window(
     label: &str,
     shape: &Shape<'_>,
     batches: u32,
-    pc0: u32,
-    regs0: &[String],
+    start: Chain,
 ) -> Result<WindowResult, CanonicalError> {
     let k = shape.k;
     let hwm = shape.hwm;
     eprintln!("# === window: {label} (database={}) ===", shape.database);
     eprintln!("# fold-alone: {batches} batches of K={k}, chained");
-    let mut pc = pc0;
-    let mut regs = regs0.to_vec();
+    let mut chain = start;
     let mut fold = ModeResult {
         retired: 0,
         seconds: 0.0,
     };
     for batch_no in 1..=batches {
-        let (result, outcome) = run_fold_batch(db, shape, pc, &regs).await?;
+        let (result, outcome) = run_fold_batch(db, shape, &chain).await?;
+        flush_fold_write_logs(db, &result).await?;
         let stop = check_stop(&outcome, label, "fold-alone", batch_no, k, hwm)?;
         eprintln!(
             "#   fold batch {batch_no}: {:.2}s retired={} wl={} stop={}",
@@ -435,8 +508,10 @@ async fn run_window(
         );
         fold.retired += outcome.retired;
         fold.seconds += outcome.seconds;
-        pc = result.pc;
-        regs = wrap_regs(&result.regs);
+        chain.pc = result.pc;
+        chain.regs = wrap_regs(&result.regs);
+        chain.icount += outcome.retired;
+        chain.keyq = result.keyq_pos;
     }
     eprintln!(
         "# fold-alone total: retired={} seconds={:.2} instr/sec={:.1}",
@@ -820,8 +895,12 @@ async fn run_both_windows(
         &boot_label,
         &boot_shape,
         args.batches,
-        RAM_BASE,
-        &boot_regs0,
+        Chain {
+            pc: RAM_BASE,
+            regs: boot_regs0,
+            icount: 0,
+            keyq: 0,
+        },
     )
     .await?;
 
@@ -852,8 +931,12 @@ async fn run_both_windows(
         &gameplay_label,
         &gameplay_shape,
         args.batches,
-        snapshot_pc,
-        &gameplay_regs0,
+        Chain {
+            pc: snapshot_pc,
+            regs: gameplay_regs0,
+            icount: snapshot.header.icount,
+            keyq: 0,
+        },
     )
     .await?;
 

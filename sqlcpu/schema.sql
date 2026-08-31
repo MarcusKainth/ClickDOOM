@@ -344,7 +344,7 @@ ORDER BY seq;
 --        bench's placeholder `tgt` column conflated "jump target" and "link
 --        value" into one field for the same id — harmless there since the
 --        bench's decode table is synthetic and never executed, see
---        executor/bench/phase0/RESULTS.md §6, but it would have been a
+--        docs/experiments/arrayfold-baseline.md, but it would have been a
 --        real bug in a table meant to produce correct results, so this
 --        schema splits the concern by not storing the link value at all.)
 --   mk   load/store width mask (0xFF / 0xFFFF / 0xFFFFFFFF); meaningful

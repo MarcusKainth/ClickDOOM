@@ -1,7 +1,7 @@
 -- sqlcpu/decode.sql — build clickdoom.decoded from clickdoom.ram (SPEC §1,
 -- ADR-0002, issue #18). PURITY.md's purity-critical statement: this decode
 -- happens entirely inside ClickHouse. The driver's only involvement is
--- loading ROM bytes into `ram` beforehand (sqlcpu/load_rom.py, housekeeping
+-- loading ROM bytes into `ram` beforehand (`clickdoom load-rom`, housekeeping
 -- that computes nothing) and invoking this file; nothing here nor there
 -- decodes a RISC-V instruction outside SQL.
 --

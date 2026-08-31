@@ -47,7 +47,7 @@ def ram_flush_sql(db=DB):
     deterministic corruption, no error anywhere.
 
     `t.1/t.2/t.3` reference one subquery-materialized `arrayJoin`, not three
-    separate calls to it (contrast `executor/bench/batch_overhead`'s inline
+    separate calls to it (contrast an inline
     `arrayJoin(arrayZip(...)).1/.2/.3`, which re-evaluates the join per
     reference) -- cheaper and, since this isn't inside `arrayFold`,
     correctness-equivalent either way; the subquery form is just tidier."""

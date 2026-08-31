@@ -103,5 +103,6 @@ feature worth supporting.
   branch arms 11%, everything else 52%. Further gains have to come from more
   collapsing (signedness-driven `mul`/`div` arms are the obvious next target),
   not from finding a hotspot.
-- The naive decode-in-lambda generator is kept in `executor/bench/phase0/` as
+- The naive decode-in-lambda generator was the baseline measured in
+  `docs/experiments/arrayfold-baseline.md` as
   the control, so this claim stays reproducible rather than becoming folklore.

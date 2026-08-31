@@ -1,7 +1,6 @@
 //! Comparing throughput across an arbitrary number of ClickHouse versions,
-//! head to head on the same ROM: generalizes
-//! `executor/bench/b1_native/run.sh`'s hardcoded two-Docker-images
-//! comparison to any number of arms, each named by a caller-chosen label.
+//! head to head on the same ROM. Any number of arms, each named by a
+//! caller-chosen label.
 //!
 //! Every (repeat, arm) pair calls [`crate::bench::canonical::run`]
 //! in-process against that arm's freshly started container, rather than

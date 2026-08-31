@@ -37,7 +37,7 @@ would actually halt.
 
 ## What was measured
 
-`executor/bench/halt_overhead/` reruns Phase 0's own synthetic DOOM-shaped
+The halt-overhead harness reran Phase 0's own synthetic DOOM-shaped
 mix (unchanged: same fractions, same deterministic hash-based fixture) through
 `fold.py` instead of `fold_predecoded.py`, same K values, same harness shape.
 
@@ -124,7 +124,7 @@ sustained end-to-end (batch + commit + state reload)"**, not fold alone.
 Comparing fold-to-fold hides a unit mismatch -- both numbers move together,
 the ratio looks like a stable ~68% regression, and nobody notices the
 absolute e2e number crossing the threshold because it's never actually
-measured. `executor/bench/halt_overhead/run.sh` now has an `e2e` mode
+measured. The harness gained an `e2e` mode
 (added for this measurement, same ad-hoc flush shape Phase 0's e2e harness
 used -- the real atomic-commit design is #25, still blocked on
 ratification) alongside the fold-only mode:
@@ -138,7 +138,7 @@ ratification) alongside the fold-only mode:
 **The first e2e measurement (2,004) was invalid, not just imprecise --
 found by checking `batch_out.retired` after the fact, not by trusting the
 wall-clock number.** Two real bugs in this PR's own benchmark harness (not
-in `fold.py`/#23's shipped design), both in `executor/bench/halt_overhead/`:
+in the shipped fold design), both in the halt-overhead harness:
 
 1. **The synthetic mix halted on its first load/store, then stayed halted.**
    Phase 0's mix used raw small `imm` values as load/store addresses,
@@ -162,7 +162,7 @@ in `fold.py`/#23's shipped design), both in `executor/bench/halt_overhead/`:
    `arrayZip(wl_addr, wl_val, wl_icount)` call, referenced identically three
    times (`.1`/`.2`/`.3`) so ClickHouse recognizes it as one join.
 
-Both are fixed in `executor/bench/halt_overhead/{setup.sql,run.sh}`.
+Both were fixed in the harness.
 **The corrected number, 1,916 instr/sec, is close to the invalid one** --
 confirming, rather than undermining, Phase 0's own finding that `arrayFold`
 evaluates every step's full expression cost regardless of whether the step
@@ -309,5 +309,5 @@ of this document.
   and can't be; but a narrower win may exist for `SELF_MODIFY` specifically,
   since the *text* window is static and only the *runtime address* is
   dynamic -- not explored here.
-- `executor/bench/halt_overhead/` stays in the tree as the reproducible
-  before/after, the same role `executor/bench/phase0/` plays for ADR-0002.
+- The before/after is recorded in `docs/experiments/halt-semantics-cost.md`,
+  the same role `docs/experiments/arrayfold-baseline.md` plays for ADR-0002.

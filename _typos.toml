@@ -6,7 +6,6 @@ extend-exclude = [
     "rom/wad/**",
     "refemu/reference_traces/**",
     "refemu/tests/fixtures/**",
-    "rom/bench/e7_memfns/results/**",
     "sqlcpu/fixtures/**",
     "*.tsv",
     "*.lock",

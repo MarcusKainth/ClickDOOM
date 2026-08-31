@@ -87,7 +87,7 @@ pub struct Windows {
     pub gameplay_target_icount: u64,
     /// Where the gameplay window ends, for the report label only: this
     /// names the slice of a real `demo3` playback the snapshot represents
-    /// (frames 200 to 299 of the `e7_memfns` profile), not a bound this
+    /// (frames 200 to 299 of the memory-function profile), not a bound this
     /// benchmark itself measures up to.
     pub gameplay_window_end_icount: u64,
 }

@@ -3,10 +3,10 @@
 0x8000_0000`, `x1..x31 = 0`), so the first real batch's `PREV` lookup
 (`fold.py`'s `batch()`, `ORDER BY batch_id DESC LIMIT 1`) has a row to read.
 A fixed-literal insert with no computation -- PURITY.md action 4
-("housekeeping that computes nothing"), same category as `load_rom.py`
+("housekeeping that computes nothing"), same category as the ROM loader
 loading ROM bytes: this establishes batch-execution state (SPEC §6), not
 ROM/memory state (SPEC §4), so it's its own script rather than folded into
-`sqlcpu/load_rom.py`.
+`clickdoom load-rom`.
 
 Run once, before the driver's first batch. Idempotent in the sense that
 re-running it is harmless *before* any real batch has committed (batch_id=0

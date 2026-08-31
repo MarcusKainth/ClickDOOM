@@ -66,7 +66,7 @@ derivation from that row, safe to redo any number of times.
    partial-apply bookkeeping.
 3a. **The flush must preserve `ram`'s density.** Both readers index the
    captured RAM array positionally, so `ram` must hold a row for *every* word in
-   SPEC §2's 24 MiB region, not only the touched ones — `sqlcpu/load_rom.py`
+   SPEC §2's 24 MiB region, not only the touched ones — the ROM loader
    establishes that by zero-filling above the image (#81). The flush preserves
    it for free: a store's `word_addr` already exists as a zero row, and
    `ReplacingMergeTree` amends it in place rather than adding a row. Nothing

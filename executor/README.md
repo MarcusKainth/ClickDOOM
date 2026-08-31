@@ -21,5 +21,5 @@ path and MMIO against a fixture schema, so the tests need no ROM run.
 
 ## Benchmarks
 
-`bench/` holds the harnesses. [docs/benchmarks.md](../docs/benchmarks.md) says
+[docs/benchmarks.md](../docs/benchmarks.md) says
 what each one settles and where its findings are.

@@ -25,7 +25,6 @@
 "area: render":
   - changed-files:
       - any-glob-to-any-file:
-          - driver/render.py
           - driver/src/render.rs
           - driver/tests/render_golden.rs
           - driver/tests/render_live.rs
@@ -57,7 +56,6 @@
 "area: bench":
   - changed-files:
       - any-glob-to-any-file:
-          - executor/bench/**
           - rom/bench/**
 
 # The two match keys are ORed. `actions/labeler` wraps a bare `changed-files`

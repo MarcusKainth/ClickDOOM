@@ -472,6 +472,10 @@ name = "clickdoom-executor"
 version = "0.1.0"
 dependencies = [
  "clickdoom-spec",
+ "clickhouse",
+ "serde",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

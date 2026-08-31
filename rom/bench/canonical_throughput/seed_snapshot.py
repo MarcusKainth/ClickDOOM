@@ -81,8 +81,7 @@ from refemu_snapshot import load as load_snapshot  # noqa: E402
 
 # FRAMEBUFFER_WORDS/PALETTE_WORDS from driver/render.py, not re-declared --
 # that module is the SQL-side render query's own authority on these two
-# constants (SPEC §2: 16,000/192), and `verify_snapshot_pixel_coverage.py`
-# already established the pattern of reusing them from there rather than a
+# constants (SPEC §2: 16,000/192), reused from there rather than kept as a
 # second hardcoded copy.
 import render  # noqa: E402
 

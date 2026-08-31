@@ -13,10 +13,17 @@
 //! offset 4096 the sections, at the offsets the header states
 //! ```
 //!
-//! The magic line is checked first, so a pickle, a truncated file or a
-//! foreign format fails on the first byte rather than deep inside a parse.
-//! Each section carries its own sha256, so a file that was cut short is an
-//! error and not a machine that quietly starts from the wrong state.
+//! The magic line is checked first, so a truncated file or a foreign format
+//! fails on the first byte rather than deep inside a parse. Each section
+//! carries its own sha256, so a file that was cut short is an error and not a
+//! machine that quietly starts from the wrong state.
+//!
+//! The header describes the rest of the file, so a reader needs nothing from
+//! this crate to take a container apart. Its `sections` list names every
+//! section with the offset it starts at, the length it runs for and the
+//! sha256 it must hash to. A reader seeks, takes the length, checks the hash.
+//! Sections are found by name rather than by position, so a file carrying one
+//! the reader has no use for still reads.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

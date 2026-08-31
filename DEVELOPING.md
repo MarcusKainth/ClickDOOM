@@ -116,6 +116,12 @@ Every batch in the output carries `CompileFunction`,
 `CompileExpressionsMicroseconds`, its write-log length, its retired count and
 why it stopped.
 
+Two numbers come out of each arm. Instructions per second is the SQL CPU's
+own rate. Seconds to first frame divides the ROM's instructions to first
+frame, measured by `refemu` in the same run, by that rate, so a ROM change
+that retires fewer instructions for the same frame shows up even when the
+rate does not move.
+
 Record the ClickHouse version and K with any number you report, and say how
 quiet the machine was. A throughput claim without those is not comparable to
 anything.

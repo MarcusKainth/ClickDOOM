@@ -91,8 +91,11 @@ mod tests {
 
     #[test]
     fn a_query_id_carries_no_sql() {
-        let id = query_id(7, "boot: from icount 0", "fold", 3, 0);
-        assert_eq!(id, "clickdoom_bench_7_boot__from_icount_0_fold_3_0");
+        let id = query_id(7, "boot: from icount 0, to frame 0", "fold", 3, 0);
+        assert_eq!(
+            id,
+            "clickdoom_bench_7_boot__from_icount_0__to_frame_0_fold_3_0"
+        );
         assert!(
             id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "{id}"

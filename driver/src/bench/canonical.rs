@@ -29,6 +29,7 @@ use clickdoom_executor::commit;
 use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
+use refemu::cli::report::RunReport;
 use refemu::snapshot::{Kind, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -133,6 +134,12 @@ pub enum CanonicalError {
     Spawn(String, std::io::Error),
     #[error("{0} exited with {1}")]
     RefemuFailed(String, std::process::ExitStatus),
+    #[error("reading {0}'s run report: {1}")]
+    RefemuReport(String, serde_json::Error),
+    #[error(
+        "{0} announced no frame within {1} instructions. --first-frame-max-instructions bounds how far it looks; raise it, or the ROM no longer reaches a frame."
+    )]
+    NoFrameInBudget(String, u64),
     #[error("starting a container from {0}: {1}")]
     DockerStart(String, Box<super::docker::DockerError>),
     #[error("snapshot is a {0:?} capture, not a whole machine")]
@@ -240,6 +247,13 @@ impl ArmResult {
     pub fn instr_per_sec(&self) -> f64 {
         self.retired as f64 / self.seconds
     }
+
+    /// What this arm's rate makes of the ROM's own instructions to first
+    /// frame. A change inside the ROM that retires fewer instructions for
+    /// the same frame moves this and leaves `instr_per_sec` alone.
+    pub fn seconds_to_first_frame(&self, first_frame: &FirstFrame) -> f64 {
+        first_frame.instructions as f64 / self.instr_per_sec()
+    }
 }
 
 pub struct WindowResult {
@@ -248,6 +262,16 @@ pub struct WindowResult {
     pub hwm: u32,
     pub fold: ArmResult,
     pub e2e: ArmResult,
+}
+
+/// What the ROM costs to produce a frame, measured by `refemu` against the
+/// same pinned binary the SQL CPU runs.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FirstFrame {
+    /// Retired instructions from reset to the first FRAME_COMMIT.
+    pub instructions: u64,
+    /// The number the program wrote, which is the program's to choose.
+    pub frame_no: u32,
 }
 
 pub struct Report {
@@ -260,6 +284,7 @@ pub struct Report {
     pub warmup: u32,
     pub batches: u32,
     pub git_sha: String,
+    pub first_frame: FirstFrame,
     pub windows: Vec<WindowResult>,
 }
 
@@ -288,6 +313,8 @@ pub struct Args<'a> {
     pub warmup: u32,
     /// Timed batches per arm.
     pub batches: u32,
+    /// How far `refemu` looks for the first frame.
+    pub first_frame_max_instructions: u64,
     pub windows: Windows,
     pub snapshot_dir: PathBuf,
     pub refemu_bin: PathBuf,
@@ -889,6 +916,47 @@ async fn seed_snapshot(db: &Db, snapshot: &Snapshot) -> Result<(), CanonicalErro
     Ok(())
 }
 
+/// Runs `refemu run --stop-at frame:0 --halt-report -` to measure what the
+/// ROM costs to produce a frame. `refemu` writes the report as JSON on
+/// stdout and its own human summary on stderr.
+fn measure_first_frame(
+    refemu_bin: &Path,
+    bin: &Path,
+    manifest_path: &Path,
+    max_instructions: u64,
+) -> Result<FirstFrame, CanonicalError> {
+    let output = std::process::Command::new(refemu_bin)
+        .arg("run")
+        .arg(bin)
+        .arg("--manifest")
+        .arg(manifest_path)
+        .arg("--pinned-hash")
+        .arg("rom/PINNED_HASH")
+        .arg("--stop-at")
+        .arg("frame:0")
+        .arg("--max-instructions")
+        .arg(max_instructions.to_string())
+        .arg("--halt-report")
+        .arg("-")
+        .output()
+        .map_err(|e| CanonicalError::Spawn(refemu_bin.display().to_string(), e))?;
+    if !output.status.success() {
+        return Err(CanonicalError::RefemuFailed(
+            refemu_bin.display().to_string(),
+            output.status,
+        ));
+    }
+    let report: RunReport = serde_json::from_slice(&output.stdout)
+        .map_err(|e| CanonicalError::RefemuReport(refemu_bin.display().to_string(), e))?;
+    let commit = report.first_frame_commit.ok_or_else(|| {
+        CanonicalError::NoFrameInBudget(refemu_bin.display().to_string(), max_instructions)
+    })?;
+    Ok(FirstFrame {
+        instructions: commit.retired_icount,
+        frame_no: commit.frame_no,
+    })
+}
+
 /// Runs `refemu run --stop-at icount:N --dump-state` to reach
 /// `target_icount` in minutes instead of the tens of hours live execution
 /// through the SQL CPU would cost, caching the result: the format version is
@@ -995,6 +1063,17 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
     .trim()
     .to_string();
 
+    let first_frame = measure_first_frame(
+        &args.refemu_bin,
+        args.bin,
+        args.manifest_path,
+        args.first_frame_max_instructions,
+    )?;
+    eprintln!(
+        "# ROM: first frame (frame_no {}) at icount {}",
+        first_frame.frame_no, first_frame.instructions
+    );
+
     eprintln!(
         "# --- generating/reusing gameplay-window snapshot (icount={}) ---",
         args.windows.gameplay_target_icount
@@ -1017,7 +1096,7 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
 
     let windows = [
         Window {
-            label: "boot: from icount 0".to_string(),
+            label: format!("boot: from icount 0, to frame {}", first_frame.frame_no),
             seed: Seed::Reset,
             start: Chain {
                 pc: RAM_BASE,
@@ -1129,6 +1208,7 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
         warmup: args.warmup,
         batches: args.batches,
         git_sha,
+        first_frame,
         windows: results,
     })
 }

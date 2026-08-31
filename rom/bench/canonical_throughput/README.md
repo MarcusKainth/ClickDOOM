@@ -26,6 +26,10 @@ attribution against the current frozen ROM (`rom/PINNED_HASH`):
 | boot-phase | icount 0 | WAD load, `R_Init*`, `strncasecmp`-heavy lump lookups -- read/scan-dominated |
 | store-heavy gameplay | icount 233,932,753 | real `-timedemo demo3` playback -- `R_DrawColumn`/`R_DrawSpan` dominate, both pixel-store-bound rasterizers |
 
+The gameplay window's label names the frame its snapshot header carries, and
+the boot window's names the frame the ROM reaches, so a measurement says
+which game state it covers.
+
 One blended whole-run average would hide exactly the effect `executor`
 found in #130: added correctness checks compound on memory-heavy code
 rather than diluting evenly across the instruction stream. The two windows
@@ -44,6 +48,11 @@ convention):
 
 Both arms execute the same instruction stream from the same start, and the
 run is refused unless they end at the same `pc` and `icount`.
+
+Alongside instructions per second, each arm reports seconds to first frame:
+the ROM's instructions to first frame, measured by `refemu` in the same run,
+divided by that arm's rate. A ROM change that retires fewer instructions for
+the same frame moves it and leaves instructions per second alone.
 
 ## Warm-up and the compilation regime
 
@@ -108,8 +117,8 @@ execution contract ends a batch there, so it is reported with
 ## Provenance
 
 Every run prints: ROM sha256, `decoded` row count, the image and the server
-version that answered, K, HWM, warm-up and timed batches per arm, and the
-git SHA the measurement was taken at.
+version that answered, K, HWM, warm-up and timed batches per arm, the ROM's
+instructions to first frame, and the git SHA the measurement was taken at.
 Every number this project has retracted lost its meaning by being separated
 from what produced it.
 

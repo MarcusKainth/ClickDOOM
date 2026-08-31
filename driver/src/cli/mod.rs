@@ -95,6 +95,10 @@ const COMPARE_RESULTS_DEFAULT: &str = "rom/bench/version_compare/results.jsonl";
 /// trusting this number.
 const WARMUP_DEFAULT: u32 = 4;
 
+/// How far `refemu` looks for the first frame. The pinned ROM announces one
+/// at icount 15,393,136 (`CLICKDOOM_TARGET_ICOUNT`).
+const FIRST_FRAME_MAX_INSTRUCTIONS_DEFAULT: u64 = 100_000_000;
+
 #[derive(Args)]
 pub struct CanonicalCmd {
     /// Flat ROM binary
@@ -118,6 +122,9 @@ pub struct CanonicalCmd {
     /// Timed chained batches per window per mode
     #[arg(long, default_value_t = 3)]
     pub batches: u32,
+    /// How far refemu looks for the ROM's first frame
+    #[arg(long, default_value_t = FIRST_FRAME_MAX_INSTRUCTIONS_DEFAULT)]
+    pub first_frame_max_instructions: u64,
     /// Where the gameplay window's snapshot is cached
     #[arg(long, default_value = "/tmp/clickdoom-canonical-throughput")]
     pub snapshot_dir: PathBuf,
@@ -163,6 +170,9 @@ pub struct CompareVersionsCmd {
     /// Timed chained batches per window per mode, per repeat
     #[arg(long, default_value_t = 3)]
     pub batches: u32,
+    /// How far refemu looks for the ROM's first frame
+    #[arg(long, default_value_t = FIRST_FRAME_MAX_INSTRUCTIONS_DEFAULT)]
+    pub first_frame_max_instructions: u64,
     /// Where the gameplay window's snapshot is cached
     #[arg(long, default_value = "/tmp/clickdoom-canonical-throughput")]
     pub snapshot_dir: PathBuf,
@@ -600,6 +610,7 @@ async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
         hwm: cmd.hwm,
         warmup: cmd.warmup,
         batches: cmd.batches,
+        first_frame_max_instructions: cmd.first_frame_max_instructions,
         windows: canonical::Windows::default(),
         snapshot_dir: cmd.snapshot_dir.clone(),
         refemu_bin: cmd.refemu_bin.clone(),
@@ -615,9 +626,14 @@ async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
     eprintln!("HWM\t{}", report.hwm);
     eprintln!("warmup_batches_per_arm\t{}", report.warmup);
     eprintln!("timed_batches_per_arm\t{}", report.batches);
+    eprintln!(
+        "instructions_to_first_frame\t{}",
+        report.first_frame.instructions
+    );
+    eprintln!("first_frame_no\t{}", report.first_frame.frame_no);
     eprintln!("git_sha\t{}", report.git_sha);
     println!(
-        "window\tmode\tk\thwm\tretired\tinstr_per_sec\twrite_log_len\tcompile_function\tcompile_micros"
+        "window\tmode\tk\thwm\tretired\tinstr_per_sec\tseconds_to_first_frame\twrite_log_len\tcompile_function\tcompile_micros"
     );
     for window in &report.windows {
         for (mode, arm) in [("fold", &window.fold), ("e2e", &window.e2e)] {
@@ -626,12 +642,13 @@ async fn cmd_bench_canonical(cmd: &CanonicalCmd) -> Result<Exit, Failure> {
             let compile_function: u64 = timed().map(|b| b.regime.compile_function).sum();
             let compile_micros: u64 = timed().map(|b| b.regime.compile_micros).sum();
             println!(
-                "{}\t{mode}\t{}\t{}\t{}\t{:.1}\t{write_log_len}\t{compile_function}\t{compile_micros}",
+                "{}\t{mode}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{write_log_len}\t{compile_function}\t{compile_micros}",
                 window.label,
                 window.k,
                 window.hwm,
                 arm.retired,
-                arm.instr_per_sec()
+                arm.instr_per_sec(),
+                arm.seconds_to_first_frame(&report.first_frame)
             );
         }
     }
@@ -657,6 +674,7 @@ async fn cmd_bench_compare_versions(cmd: &CompareVersionsCmd) -> Result<Exit, Fa
         repeats: cmd.repeats,
         warmup: cmd.warmup,
         batches: cmd.batches,
+        first_frame_max_instructions: cmd.first_frame_max_instructions,
         windows: canonical::Windows::default(),
         snapshot_dir: cmd.snapshot_dir.clone(),
         refemu_bin: cmd.refemu_bin.clone(),

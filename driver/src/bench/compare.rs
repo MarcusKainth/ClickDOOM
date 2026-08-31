@@ -62,6 +62,7 @@ pub struct Args<'a> {
     pub repeats: u32,
     pub warmup: u32,
     pub batches: u32,
+    pub first_frame_max_instructions: u64,
     pub windows: Windows,
     pub snapshot_dir: PathBuf,
     pub refemu_bin: PathBuf,
@@ -151,6 +152,7 @@ pub async fn run(args: &Args<'_>) -> Result<CompareRecord, CompareError> {
                 hwm: args.hwm,
                 warmup: args.warmup,
                 batches: args.batches,
+                first_frame_max_instructions: args.first_frame_max_instructions,
                 windows: Windows {
                     gameplay_target_icount: args.windows.gameplay_target_icount,
                 },

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::canonical::{ArmResult, BatchRecord, Report as CanonicalReport};
+use super::canonical::{ArmResult, BatchRecord, FirstFrame, Report as CanonicalReport};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {
@@ -86,6 +86,10 @@ pub struct CanonicalRecord {
     pub image: String,
     #[serde(default)]
     pub clickhouse_version: String,
+    /// What the ROM costs to produce a frame. Moves when the ROM changes,
+    /// and stays put when only the SQL does.
+    #[serde(default)]
+    pub first_frame: Option<FirstFrame>,
     pub note: Option<String>,
     pub windows: Vec<WindowRecord>,
 }
@@ -102,6 +106,7 @@ impl From<&CanonicalReport> for CanonicalRecord {
             batches: report.batches,
             image: report.image.clone(),
             clickhouse_version: report.clickhouse_version.clone(),
+            first_frame: Some(report.first_frame),
             note: None,
             windows: report
                 .windows
@@ -205,17 +210,26 @@ fn pick<T>(mut records: Vec<T>, path: &Path, which: Selector) -> Result<T, Repor
     }
 }
 
-fn window_table(windows: &[WindowRecord]) -> String {
+/// Instructions per second, and what that rate makes of the ROM's own
+/// instructions to first frame. A ROM change that retires fewer
+/// instructions for the same frame moves the second column and leaves the
+/// first alone, so a correct optimisation cannot read as a regression.
+fn window_table(windows: &[WindowRecord], first_frame: Option<&FirstFrame>) -> String {
     let mut out = String::from(
-        "| window | mode | k | hwm | retired | instr/s |\n|---|---|---|---|---|---|\n",
+        "| window | mode | k | hwm | retired | instr/s | s to first frame |\n\
+         |---|---|---|---|---|---|---|\n",
     );
     for w in windows {
         for (mode, retired, rate) in [
             ("fold-alone", w.fold_retired, w.fold_instr_per_sec()),
             ("e2e", w.e2e_retired, w.e2e_instr_per_sec()),
         ] {
+            let to_frame = match first_frame {
+                Some(f) => format!("{:.1}", f.instructions as f64 / rate),
+                None => "-".to_string(),
+            };
             out.push_str(&format!(
-                "| {} | {mode} | {} | {} | {retired} | {rate:.1} |\n",
+                "| {} | {mode} | {} | {} | {retired} | {rate:.1} | {to_frame} |\n",
                 w.label, w.k, w.hwm
             ));
         }
@@ -266,12 +280,18 @@ pub fn render_canonical(record: &CanonicalRecord) -> String {
         "Server: {} ({}), one fresh container per arm\n\n",
         record.clickhouse_version, record.image
     ));
+    if let Some(f) = &record.first_frame {
+        out.push_str(&format!(
+            "ROM: {} instructions to first frame (frame_no {})\n\n",
+            f.instructions, f.frame_no
+        ));
+    }
     if let Some(note) = &record.note {
         out.push_str(&format!("Machine: {note}\n\n"));
     } else {
         out.push_str("Machine: TODO -- how quiet was it?\n\n");
     }
-    out.push_str(&window_table(&record.windows));
+    out.push_str(&window_table(&record.windows, record.first_frame.as_ref()));
     out.push('\n');
     out.push_str(&batch_table(&record.windows));
     out
@@ -298,7 +318,7 @@ pub fn render_compare(record: &CompareRecord) -> String {
             "### {} ({}, {})\n\n",
             arm.name, arm.spec, arm.version
         ));
-        out.push_str(&window_table(&arm.windows));
+        out.push_str(&window_table(&arm.windows, None));
         out.push('\n');
     }
 

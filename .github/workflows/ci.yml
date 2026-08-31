@@ -39,41 +39,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Purity check
-        run: ./scripts/check_purity.sh
-      - name: shellcheck
-        # `-exec … +` rather than a pipe into xargs: a pipeline reports only the
-        # last command's exit status, so a failing find would pass silently.
+      - name: Non-Rust lint tools
+        # shellcheck, clang-format and actionlint have no cargo distribution.
+        # `make lint` installs typos and zizmor through cargo itself.
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q shellcheck
-          find scripts driver sqlcpu executor rom refemu -name '*.sh' -exec shellcheck {} +
-      - name: ruff
-        # The version the root lockfile pins, so CI and a local run agree.
-        run: |
-          pipx install uv
-          uv run ruff check .
-      - name: cargo fmt
-        # rust-toolchain.toml pins the version, so the first cargo call
-        # installs it and a local `make lint` speaks the same rustfmt.
-        run: cargo fmt --all --check
-      - name: cargo clippy
-        # --all-targets so tests/ is linted too. Without it a test file behind
-        # an unenabled feature never compiles and nothing says so.
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: clang-format
-        # rom/vendor/.clang-format sets DisableFormat, so the 192 vendored files
-        # are skipped and only rom/src/ is checked.
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y -q clang-format
-          find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
-      - name: typos
-        run: |
-          pipx install typos==1.50.0
-          typos --config _typos.toml
-      - name: zizmor
-        run: |
-          pipx install zizmor==1.28.0
-          zizmor --persona=regular .github/
+          sudo apt-get update -q
+          sudo apt-get install -y -q shellcheck clang-format
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+              | bash -s -- 1.7.12
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+      - name: Every static check
+        # The same target a contributor runs, so CI and local cannot drift.
+        run: make lint
 
   build-rom:
     runs-on: ubuntu-latest
@@ -104,19 +81,6 @@ jobs:
             rom/build/doom-rv32im.bin
             rom/build/manifest.json
 
-  test-refemu:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: The Rust suites
-        # No ROM and no ClickHouse. The comparisons that need the built ROM
-        # are behind the rom-tests feature and run in their own job.
-        run: cargo test --locked --workspace
-
   build-refemu:
     runs-on: ubuntu-latest
     permissions:
@@ -133,93 +97,9 @@ jobs:
           name: refemu
           path: target/release/refemu
 
-  refemu-reference-parity:
-    # The committed traces regenerated and compared byte for byte, and the
-    # whole demo3 run against the values its manifest records. Kept out of
-    # test-refemu so the ROM dependency stays off differential-smoke's
-    # critical path, and runs alongside test-render instead.
-    #
-    # demo3 is 2,300,210,133 instructions and takes about ten seconds. The
-    # timeout is sized for a runner having a bad day, not for that figure.
-    needs: [build-rom]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Download ROM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: rom
-          path: rom/build
-      - name: Reference traces and the whole demo
-        run: |
-          cargo test --locked --release --workspace --features refemu/rom-tests \
-              --test reference_trace --test demo3_parity -- --nocapture
-
-  test-sqlcpu:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
-        env:
-          CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom
-        ports: ["8123:8123", "9000:9000"]
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: riscv-tests inside ClickHouse
-        env:
-          CLICKHOUSE_HOST: localhost
-          CLICKHOUSE_HTTP_PORT: "8123"
-          CLICKHOUSE_PASSWORD: clickdoom
-        run: |
-          cargo test --locked -p clickdoom-driver --features clickhouse-tests \
-              --test sqlcpu_live -- --nocapture
-
-  test-executor:
-    # The only job covering the fold, commit and MMIO semantics against a real
-    # server. Without it a break in any of them is invisible on a green pull
-    # request page.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
-        env:
-          CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom
-        ports: ["8123:8123", "9000:9000"]
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
-          --health-interval 5s --health-timeout 3s --health-retries 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Fold, commit and MMIO tests
-        env:
-          CLICKHOUSE_HOST: localhost
-          CLICKHOUSE_HTTP_PORT: "8123"
-          CLICKHOUSE_PASSWORD: clickdoom
-        run: cargo test --locked -p clickdoom-executor --features clickhouse-tests
-
-  test-render:
-    # Runs against a throwaway database, never `clickdoom`. Builds its own
-    # refemu fixture by stepping the ROM to icount 15,393,136, at about
-    # 1,064,000 instructions/sec, so it needs the built ROM and takes about 20
-    # seconds once it has it.
+  test:
+    # Every suite, through the same `make test` a contributor runs, so CI and
+    # a local run cannot drift. Throwaway databases only; never `clickdoom`.
     needs: [build-rom, build-refemu]
     runs-on: ubuntu-latest
     permissions:
@@ -248,15 +128,14 @@ jobs:
         with:
           name: refemu
           path: target/release
-      - name: Frame readout, render and bootstrap tests
+      - name: Every suite
         env:
           CLICKHOUSE_HOST: localhost
           CLICKHOUSE_HTTP_PORT: "8123"
           CLICKHOUSE_PASSWORD: clickdoom
         run: |
           chmod +x target/release/refemu
-          cargo test --locked -p clickdoom-driver --features clickhouse-tests \
-              --test render_live --test bootstrap_live -- --nocapture
+          make test
 
   differential-smoke:
     # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
@@ -274,7 +153,7 @@ jobs:
     # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
     # would take about 13.9 minutes on every pull request. timeout-minutes is a
     # safety net for runner variance, not a substitute for that measurement.
-    needs: [build-rom, build-refemu, test-refemu, test-sqlcpu]
+    needs: [build-rom, build-refemu, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

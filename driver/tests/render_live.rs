@@ -305,7 +305,9 @@ async fn render_sql_matches_the_bytes_it_claims_to_produce() {
     assert_eq!(pal_bytes.len(), 768);
 
     let fb_word_rows: Vec<WordRow> = fb_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
         .map(|(i, w)| WordRow {
             word_addr: i as u32,
@@ -314,7 +316,9 @@ async fn render_sql_matches_the_bytes_it_claims_to_produce() {
         })
         .collect();
     let pal_word_rows: Vec<WordRow> = pal_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
         .map(|(i, w)| WordRow {
             word_addr: i as u32,

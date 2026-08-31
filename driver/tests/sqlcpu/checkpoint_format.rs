@@ -52,7 +52,9 @@ fn checks() -> Vec<Check> {
     // 0x00 through 0x3f.
     let ram: Vec<u8> = (0..64u8).collect();
     let words: Vec<String> = ram
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]).to_string())
         .collect();
 

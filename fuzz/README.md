@@ -4,7 +4,7 @@ Coverage-guided targets for the parts of the emulator that take input it did
 not write, and for the one acceleration that owes a proof.
 
 These answer questions no oracle is needed for, which is why they are separate
-from the differential against the Python interpreter. That one compares two
+from the differential against the SQL CPU. That one compares two
 implementations and runs at twenty thousand cases a second. These check a
 property against itself and run at a hundred thousand, which is what makes the
 coverage guidance worth having.

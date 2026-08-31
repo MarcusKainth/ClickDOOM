@@ -254,7 +254,7 @@ Fixed by adding the missing loop (`for (;;) { doomgeneric_Tick(); }`).
 Rebuilt and re-booted the same way:
 
 ```
-$ uv run python3 -c '<boot rom/build/doom-rv32im.bin through refemu new_cpu(), run 60M instructions>'
+$ refemu run --bin rom/build/doom-rv32im.bin --stop-at icount:60000000
 did not halt within 60000000: icount=60000000 pc=0x80037aa4
 total frame_commits: 100
 first 10: [(0, 13243964), (1, 13715122), (2, 14185231), (3, 14656377), (4, 15127523), ...]

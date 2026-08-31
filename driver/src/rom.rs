@@ -140,11 +140,16 @@ pub async fn load(
 
     let base_word = load_addr / 4;
     let word_count = (blob.len() / 4) as u32;
-    let rows = blob.chunks_exact(4).enumerate().map(|(i, w)| WordRow {
-        word_addr: base_word + i as u32,
-        value: u32::from_le_bytes([w[0], w[1], w[2], w[3]]),
-        version: 0,
-    });
+    let rows = blob
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(i, w)| WordRow {
+            word_addr: base_word + i as u32,
+            value: u32::from_le_bytes([w[0], w[1], w[2], w[3]]),
+            version: 0,
+        });
     db.insert_all("ram", rows).await?;
 
     let fill_start = base_word + word_count;

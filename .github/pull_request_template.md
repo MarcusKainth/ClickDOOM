@@ -1,5 +1,7 @@
 <!--
-Delete every section that does not apply, and every comment like this one.
+Delete every section that does not apply, and every comment like this one. If
+the commit message already carries the argument, a link and a sentence is a
+complete description.
 
 Title is `scope: imperative summary`, at most 72 characters.
 
@@ -16,6 +18,11 @@ No need to repeat what that issue says. The diff shows the code and the issue
 states the problem, so use this space for what neither can tell a reviewer: the
 approach, the decisions that were not forced, and what someone running this
 sees differently.
+
+When no issue tracks this, state the problem here, in terms of what someone
+running it hits. "`commit.py` writes the wrong high-water mark" is a symptom of
+the implementation. "A resumed run replays stores it already committed" is the
+problem.
 
 Say where this delivers less, more, or something other than the issue asked
 for. That comparison is the one a reviewer cannot make alone.
@@ -54,6 +61,8 @@ enforced by review alone, and its Enforcement table says which.
 
 ## Spec impact
 
+<!-- Delete all but one. -->
+
 - [ ] None. No contract in SPEC.md is touched
 - [ ] SPEC.md changes are included, and a `spec-change` issue tracks the decision
 
@@ -61,8 +70,7 @@ enforced by review alone, and its Enforcement table says which.
 
 <!-- Tick what you ran, by exit code. Nothing else belongs under this heading. -->
 
-- [ ] `make gates`
-- [ ] The suites covering what this touches
+- [ ] `make gates`. If you could not run it, say which suites you ran instead
 - [ ] No AI attribution trailers in the commits
 
 ## Anything else
@@ -72,7 +80,8 @@ Most changes delete this section.
 
 Keep it to point a reviewer at the lines worth their attention, to say how to
 reject one part without blocking the rest, or to report something you verified
-by hand that no automated test captures.
+by hand that no automated test captures. A change with no runtime behaviour has
+nothing of that last kind to report.
 
 A defect you found along the way and left alone belongs in its own issue rather
 than here.

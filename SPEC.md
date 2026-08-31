@@ -394,18 +394,31 @@ above it the write-log's superlinear growth cancelled the remaining amortization
 
 **Those are historical prototype numbers, not the current fold's
 throughput, and citing them without that label is actively misleading —
-see #96.** Under this fold's own established cost model (~0.8 µs per
-evaluated expression node per step, independent of whether the step
-retires — Phase 0's own finding, ADR-0001), correctness the prototype
-never implemented is paid on every instruction, not only the ones that
-exercise it: ADR-0004 measured SPEC §1's halt semantics alone at 1,159
-instructions/sec end-to-end (K=50,000) and retired the ≥10,000 instr/sec
-threshold ADR-0001 originally checked the Phase 0 numbers against (§9).
-`#86` (a state-reload fix) and `#88` (MMIO, §3) have moved the number
-again since; current measured real-ROM throughput is **~1,300
-instructions/sec**. #104 sets the actual target this needs to clear:
-**≥5,000 instructions/sec** (a week-long `-timedemo demo3` run, ~3.7× the
-current figure), stretch **≥11,000** (restores the ~3-day run the phase
+see #96.** Under this fold's own cost model as Phase 0 stated it
+(~0.8 µs per evaluated expression node per step, independent of
+whether the step retires — ADR-0001), correctness the prototype
+never implemented is paid on every instruction, not only the ones
+that exercise it: ADR-0004 measured SPEC §1's halt semantics alone
+at 1,159 instructions/sec end-to-end (K=50,000) and retired the
+≥10,000 instr/sec threshold ADR-0001 originally checked the Phase 0
+numbers against (§9). That cost model is superseded. An expression
+node prices at 4.4 ns compiled and 0.225 to 0.293 µs interpreted,
+and the remainder of the 0.8 µs sits in the distinct constants the
+nodes capture, at 0.35 to 0.42 µs each per step on the production
+fold. The independent-of-retirement half stands: 88% of the step's
+nodes compute before anything tests whether the step retires. `#86`
+(a state-reload fix) and `#88` (MMIO, §3) have moved the number
+again since. Current measured real-ROM throughput is **5,334
+instructions/sec** end to end on the boot window and **4,899** on
+the store-heavy gameplay window, both at K = 60,000 and HWM = 20,000
+on ClickHouse 26.7.5.10, chained batches past the compile threshold,
+one fresh container per arm. A figure taken over the first three
+batches of a series reads 18.3% lower, because those are both the
+uncompiled batches and, in boot, the write-log-saturated ones. Quote
+the window, K, the high-water mark, the batch range and the server
+version with any number here. #104 sets the actual target this needs
+to clear: **≥5,000 instructions/sec** (a week-long `-timedemo demo3`
+run), stretch **≥11,000** (restores the ~3-day run the phase
 plan implicitly assumed when Phase 0's fictional 11,894 was still believed
 current). Whether `K = 50,000` itself is still the right default under the
 current cost structure is a separate, open question — issue #80 tracks
@@ -464,6 +477,12 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
    and workflow files — keep in sync). Bumps are `ci:` PRs with full
    nightly deep-diff evidence.
 4. The ROM build must be byte-reproducible (§4).
+5. Every query setting a computation depends on is pinned in that query's
+   own `SETTINGS` clause, never inherited from a session, a user profile or
+   a server default. `short_circuit_function_evaluation` is one such
+   setting: whether an unselected `if` or `multiIf` arm evaluates decides
+   whether a guarded division faults, so the fold names it rather than
+   inheriting it. A setting that only affects speed does not belong here.
 
 ## 9. Phase 0 resolutions and remaining open questions
 
@@ -479,7 +498,10 @@ Resolved by the Phase 0 benchmark (evidence:
       implemented) does not clear that threshold. ADR-0004 measured 1,159
       instructions/sec end-to-end at K=50,000 (issue #23) and retired the
       ≥10,000 figure as a merge gate for correctness work; current
-      real-ROM throughput is **~1,300 instructions/sec** after `#86`/`#88`.
+      real-ROM throughput is **5,334 instructions/sec** end to end on the
+      boot window and **4,899** on gameplay, at K = 60,000 and HWM = 20,000
+      on 26.7.5.10, after `#86`/`#88`, the 26.3 to 26.7 pin bump and the
+      short-circuit pin.
       Issue #104 sets the number that actually matters now — ≥5,000
       instr/sec for a week-long `demo3` run, stretch ≥11,000 to restore
       the ~3-day run Phase 0's number implied — and issue #96 is the fuller

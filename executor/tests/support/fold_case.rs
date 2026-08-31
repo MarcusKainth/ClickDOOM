@@ -17,6 +17,7 @@ use clickhouse::Row;
 use serde::Deserialize;
 
 use super::RAM_BASE;
+use super::db::Db;
 use super::fixture::Fixture;
 use super::reference::{self, Insn, Outcome};
 
@@ -147,7 +148,7 @@ fn prepare(case: &FoldCase<'_>) -> Prepared {
     }
 }
 
-async fn execute(fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> FoldRow {
+async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> FoldRow {
     fx.truncate(&["decoded", "ram", "input_queue"]).await;
     fx.seed_decoded(&p.insns).await;
     fx.seed_ram(&p.ram).await;
@@ -166,7 +167,7 @@ async fn execute(fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> FoldRow {
             ..Default::default()
         },
     );
-    fx.db.fetch_one::<FoldRow>(&sql).await.unwrap()
+    db.fetch_one::<FoldRow>(&sql).await.unwrap()
 }
 
 fn model(p: &Prepared, hwm: u32) -> Outcome {
@@ -192,8 +193,19 @@ pub async fn run_checked(fx: &Fixture, case: &FoldCase<'_>) -> FoldRow {
 
 /// [`run_checked`] with a label naming which case in a loop failed.
 pub async fn run_checked_labelled(fx: &Fixture, case: &FoldCase<'_>, label: &str) -> FoldRow {
+    checked(&fx.db, fx, case, label).await
+}
+
+/// [`run_checked`] with the query issued through `db` rather than the
+/// fixture's own client, for a case whose session has to ask the server
+/// for something the fold's own `SETTINGS` clause overrides.
+pub async fn run_checked_through(db: &Db, fx: &Fixture, case: &FoldCase<'_>) -> FoldRow {
+    checked(db, fx, case, "").await
+}
+
+async fn checked(db: &Db, fx: &Fixture, case: &FoldCase<'_>, label: &str) -> FoldRow {
     let p = prepare(case);
-    let row = execute(fx, case, &p).await;
+    let row = execute(db, fx, case, &p).await;
     assert_eq!(
         row.outcome(),
         model(&p, case.hwm),
@@ -208,5 +220,5 @@ pub async fn run_checked_labelled(fx: &Fixture, case: &FoldCase<'_>, label: &str
 /// and PALETTE.
 pub async fn run_raw(fx: &Fixture, case: &FoldCase<'_>) -> FoldRow {
     let p = prepare(case);
-    execute(fx, case, &p).await
+    execute(&fx.db, fx, case, &p).await
 }

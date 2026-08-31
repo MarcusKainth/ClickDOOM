@@ -35,11 +35,21 @@ impl Conn {
     /// Opens a client against `database`. Opening does not connect; the
     /// first statement does.
     pub fn open(&self, database: &str) -> Db {
-        let client = Client::default()
+        self.open_with(database, &[])
+    }
+
+    /// [`open`](Conn::open) with `settings` on every statement the client
+    /// issues, for asking the server for something a query's own
+    /// `SETTINGS` clause has to override.
+    pub fn open_with(&self, database: &str, settings: &[(&str, &str)]) -> Db {
+        let mut client = Client::default()
             .with_url(format!("http://{}:{}", self.host, self.port))
             .with_user(&self.user)
             .with_password(&self.password)
             .with_database(database);
+        for (name, value) in settings {
+            client = client.with_setting(*name, *value);
+        }
         Db { client }
     }
 }

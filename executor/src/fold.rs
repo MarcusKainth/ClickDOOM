@@ -380,6 +380,23 @@ pub fn decode_with(db: &str) -> String {
     )
 }
 
+/// The `SETTINGS` clause both fold queries carry. A query's own clause
+/// wins over the session and over the server profile, so nothing outside
+/// the query decides how the fold evaluates or how large a query text the
+/// server accepts.
+///
+/// `short_circuit_function_evaluation = 'disable'` makes ClickHouse
+/// evaluate every argument of an `if` or a `multiIf` on every row, so an
+/// arm runs even on the rows its guard rejects. The step holds under that
+/// rule because the only functions in it that fault on data are `intDiv`
+/// and `modulo`, and every divisor reaching them is non-zero for any
+/// input. An arm added later that can fault on data needs the same
+/// treatment.
+const FOLD_SETTINGS: &str = "SETTINGS max_threads = 1,\n         \
+                             max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
+                             max_query_size = 2000000,\n         \
+                             short_circuit_function_evaluation = 'disable'";
+
 /// RAM's write-log seed, empty at the start of every real batch.
 pub const WL0_EMPTY: &str = "tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64())";
 
@@ -490,9 +507,7 @@ pub fn select_only(
          r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,\n       \
          r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
-         SETTINGS max_threads = 1,\n         \
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
-         max_query_size = 2000000",
+         {FOLD_SETTINGS}",
         decode_with(db)
     )
 }
@@ -577,9 +592,7 @@ pub fn batch(
          r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount,\n       \
          r.6.1 AS console_bytes\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
-         SETTINGS max_threads = 1,\n         \
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
-         max_query_size = 2000000",
+         {FOLD_SETTINGS}",
         decode_with(db)
     )
 }

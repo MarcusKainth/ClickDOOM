@@ -195,6 +195,15 @@ in between:
 instead of it, so the production step runs 41 compiled actions and 122
 interpreted ones.
 
+Every per-step count in this section is read with
+`short_circuit_function_evaluation` at `'enable'`. Both fold queries pin
+`'disable'` in their own `SETTINGS` clause (`executor/src/fold.rs`), and under
+that pin an arm runs on the steps its guard rejects as well, so more of the
+318 actions execute per step and more of the 65 islands run with them. How
+many more is not measured here. The node and literal rates above come from
+chains that are not `if` or `multiIf` arguments, so the setting does not reach
+them.
+
 ## Verdict
 
 A node is not a unit of cost. What a node costs depends on whether it is

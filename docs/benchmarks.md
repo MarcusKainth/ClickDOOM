@@ -1,40 +1,49 @@
 # Benchmarks
 
-Every harness in the tree, what it settles, and where its findings are. A
+Every experiment this project has run, what it settles, and what came out. A
 finding nobody can find is not evidence.
 
-Each directory holds a `README.md` describing the harness and how to run it. A
-`RESULTS.md` beside it holds the findings, dated and with the ClickHouse version
-they were taken against. A directory with no `RESULTS.md` has had no findings
-recorded for it; the table below says which.
+[`experiments/`](experiments/) holds one record per experiment. Each carries
+the question it settles, how it was measured, the numbers with the
+ClickHouse version and K they were taken at, the verdict, and the date. Each
+one stands on its own, so they can be read in any order and none of them
+needs a second document to make sense.
 
-Timings need a quiet machine. `DEVELOPING.md` says what that means and what to
-record alongside a number.
+Timings need a quiet machine. `DEVELOPING.md` says what that means and what
+to record alongside a number.
+
+## The live instrument
+
+`clickdoom bench canonical`, or `make bench-canonical-throughput`, measures
+real-ROM throughput on a boot window and a store-heavy gameplay window,
+fold-alone and end to end, reported separately. A throughput claim should
+come from it. It is an instrument rather than an experiment, so it has no
+record here; `rom/bench/canonical_throughput/README.md` describes what it
+measures and how it reaches the gameplay window without a multi-hour run.
 
 ## Throughput and the batch loop
 
-| Harness | Question it settles | Findings |
+| Record | Question it settles | What came out |
 |---|---|---|
-| `executor/bench/phase0/` | Can `arrayFold` carry a CPU step, and what is the lever? Evidence for ADR-0001 and ADR-0002 | `RESULTS.md` |
-| `rom/bench/canonical_throughput/` | Real-ROM throughput on boot and gameplay windows, fold-alone and end to end | none recorded |
-| `executor/bench/batch_overhead/` | Splits end-to-end overhead into state reload and write-log flush | none recorded |
-| `executor/bench/halt_overhead/` | What the fold's halt semantics cost. The before-and-after for ADR-0004 | none recorded |
-| `executor/bench/commit_mutation/` | Per-statement attribution of one end-to-end batch | `RESULTS.md` |
-| `executor/bench/wl_seed/` | Does per-instruction cost grow within a batch? | `RESULTS.md` |
-| `executor/bench/hwm/` | Where the write-log flush stops being cheap. Sets the high-water mark default | `RESULTS.md` |
+| [`arrayfold-baseline`](experiments/arrayfold-baseline.md) | Can `arrayFold` carry a CPU step, and what is the lever? | Yes. Pre-decoding is worth 7.4x, and node count sets the per-step price. |
+| [`batch-attribution`](experiments/batch-attribution.md) | Where does one end-to-end batch's time go, and would a larger K amortise the setup? | A batch is 99.86% fold. Raising K is rejected. |
+| [`write-log-growth`](experiments/write-log-growth.md) | Does per-instruction cost grow within a batch? | Yes, linearly in write-log length, at 3.41 ns per element per step. The whole mechanism is about 8% of a batch. |
+| [`write-log-high-water-mark`](experiments/write-log-high-water-mark.md) | Where does the write-log flush stop being cheap? | The default of 20,000, at the bottom of the measured curve. Boot runs six instructions below it. |
+| [`batch-overhead-split`](experiments/batch-overhead-split.md) | Does end-to-end overhead come from state reload or the write-log flush? | No result recorded. |
+| [`halt-semantics-cost`](experiments/halt-semantics-cost.md) | What do the fold's halt semantics cost? | No result recorded. |
 
 ## Expression evaluation
 
-| Harness | Question it settles | Findings |
+| Record | Question it settles | What came out |
 |---|---|---|
-| `executor/bench/a1_jit/` | What ClickHouse's expression JIT compiles in the fold step, and what that buys | `RESULTS.md` |
-| `executor/bench/e1_cse/` | Does `arrayFold` deduplicate repeated subexpressions, and at what node cost | `RESULTS.md` |
-| `executor/bench/b2_block_dispatch/` | What an unselected branch costs inside `arrayFold` | `RESULTS.md` |
-| `executor/bench/b3_dict_lookup/` | `dictGet` against `arrayElement` for RAM reads | `RESULTS.md` |
+| [`expression-jit`](experiments/expression-jit.md) | What does ClickHouse's expression JIT compile in the fold step, and what does that buy? | 58 small islands compile, worth 1.014x. Rejected as a lever. |
+| [`subexpression-dedup`](experiments/subexpression-dedup.md) | Does `arrayFold` deduplicate repeated subexpressions, and at what node cost? | Dedup is structural rather than textual, and partial. Binding wins at the depth the fold emits. |
+| [`block-dispatch`](experiments/block-dispatch.md) | What does an unselected branch cost inside `arrayFold`? | An unselected arm costs what a selected one costs. Static block translation rejected. |
+| [`dict-lookup`](experiments/dict-lookup.md) | Would a dictionary beat the captured array for RAM reads? | No lever. The fold keeps the captured array. |
 
 ## Environment and the ROM
 
-| Harness | Question it settles | Findings |
+| Record | Question it settles | What came out |
 |---|---|---|
-| `executor/bench/b1_native/` | Native ClickHouse against Docker Desktop | `RESULTS.md` |
-| `rom/bench/e7_memfns/` | Are `memcpy` and `memset` byte-loop shims, and what do they cost? | `RESULTS.md` |
+| [`native-vs-docker`](experiments/native-vs-docker.md) | Is native ClickHouse faster than Docker, and how do two releases compare? | Docker is 2.07x faster than native on 26.3.25.2. Native rejected. |
+| [`memcpy-memset-cost`](experiments/memcpy-memset-cost.md) | Are `memcpy` and `memset` byte-loop shims, and what do they cost? | They are newlib's and already word-wise, at 0.836 instructions per byte. Rejected. |

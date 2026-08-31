@@ -18,6 +18,10 @@ use crate::config::{
 /// much expression text the planner prints into each action node's
 /// `result_name`, and in how many distinct constants the lambda captures.
 /// [`Variant::Baseline`] is the one production runs.
+///
+/// Every arm reaches the server through the same `SETTINGS` clause as the
+/// baseline, so the totality rule stated on `FOLD_SETTINGS` covers all of
+/// them and not only [`Variant::Baseline`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Variant {
     /// The formulation [`build_step`] emits.

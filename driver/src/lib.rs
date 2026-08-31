@@ -9,6 +9,7 @@ pub mod client;
 pub mod decode;
 pub mod diff;
 pub mod fold_result;
+pub mod frames;
 pub mod preflight;
 pub mod render;
 pub mod rom;

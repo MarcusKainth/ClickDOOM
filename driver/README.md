@@ -2,7 +2,8 @@
 
 The client side: `clickdoom`, the Rust binary that ticks the batch statement,
 ferries key events in, and blits whatever frame SQL produced. `src/render.rs`
-is the frame-readout SQL that produces it.
+is the frame-readout SQL that produces it, and `src/frames.rs` is the blit:
+it runs the PPM query and writes the bytes back out unchanged.
 
 `PURITY.md` draws the line here, as PUR-5 to PUR-8 and PUR-10. The driver loops,
 ferries key events in, blits output, and does housekeeping that computes
@@ -48,6 +49,8 @@ against a live ClickHouse. None of its checks are eyeballed:
 4. The ANSI render of a hand-computed 2x2 case, byte-exact against an
    independently computed escape sequence.
 5. The PPM render of that same 2x2 case.
+6. The file `clickdoom run --frame-dir` writes for a committed frame, byte
+   for byte against what the same query returns, and named after the frame.
 
 The frame hash is defined over the indexed representation and PPM over
 expanded RGB, so the two share no single value. Check 3 is what ties them

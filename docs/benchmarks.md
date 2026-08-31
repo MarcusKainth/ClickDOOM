@@ -25,7 +25,7 @@ measures and how it reaches the gameplay window without a multi-hour run.
 
 | Record | Question it settles | What came out |
 |---|---|---|
-| [`arrayfold-baseline`](experiments/arrayfold-baseline.md) | Can `arrayFold` carry a CPU step, and what is the lever? | Yes. Pre-decoding is worth 7.4x. The price follows the step expression rather than the data it touches. |
+| [`arrayfold-baseline`](experiments/arrayfold-baseline.md) | Can `arrayFold` carry a CPU step, and what is the lever? | Yes. Pre-decoding is worth 7.4x. The price follows the step expression rather than the data it touches, and `short_circuit_function_evaluation = 'disable'` takes 11.7% off the production fold. |
 | [`batch-attribution`](experiments/batch-attribution.md) | Where does one end-to-end batch's time go, and would a larger K amortise the setup? | A batch is 99.86% fold. Raising K is rejected. |
 | [`write-log-growth`](experiments/write-log-growth.md) | Does per-instruction cost grow within a batch? | Yes, linearly in write-log length, at 3.41 ns per element per step, of which 79% is accumulator copy. Removing the scan is worth about 2% of a batch. |
 | [`write-log-high-water-mark`](experiments/write-log-high-water-mark.md) | Where does the write-log flush stop being cheap? | The default of 20,000, at the bottom of the measured curve. Boot runs six instructions below it. |

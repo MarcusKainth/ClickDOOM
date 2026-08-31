@@ -51,6 +51,7 @@ pub enum SeedError {
 }
 
 /// What seeding did, for the caller to report.
+#[derive(Debug)]
 pub enum Seeded {
     /// A `batch_id = 0` row was written, with this many registers.
     Fresh { registers: usize },

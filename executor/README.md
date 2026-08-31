@@ -17,7 +17,8 @@ stays in the database.
     make test-executor
 
 Needs a live ClickHouse, which the target starts. Covers the fold, the commit
-path and MMIO against a fixture schema, so the tests need no ROM run.
+path and MMIO against the real schema, so the tests need no ROM run. Each test
+gets its own database, so a case cannot see another's rows.
 
 ## Benchmarks
 

@@ -22,6 +22,13 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
+[features]
+# The tests that execute generated SQL against a real ClickHouse server.
+# Behind a feature rather than behind `#[ignore]`, so a run either includes
+# them or visibly does not, and an unreachable server is a failure rather
+# than an "ignored" line nobody reads.
+clickhouse-tests = []
+
 [[bin]]
 name = "clickdoom"
 path = "src/bin/clickdoom.rs"

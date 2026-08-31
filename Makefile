@@ -112,12 +112,14 @@ test-refemu-reference: require-rom ## Regenerate the committed traces and compar
 test-sqlcpu: up ## riscv-tests inside ClickHouse
 	./sqlcpu/run_tests.sh $(conn) $(no_stdin)
 
-test-executor: up ## Fold, commit and MMIO unit tests
-	cd executor && uv run pytest tests/ -v $(no_stdin)
-
-test-render: up require-rom build-refemu ## Live render checks: sparse tables, a real refemu frame, ANSI/PPM byte checks
+test-executor: up ## Fold, commit and MMIO tests against a live ClickHouse
 	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
-	    cargo test --locked -p clickdoom-driver --test render_live -- --include-ignored --nocapture
+	    cargo test --locked -p clickdoom-executor --features clickhouse-tests
+
+test-render: up require-rom build-refemu ## Live driver checks: frame readout, ANSI/PPM bytes, reset-row seeding
+	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
+	    cargo test --locked -p clickdoom-driver --features clickhouse-tests \
+	    --test render_live --test bootstrap_live -- --nocapture
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence

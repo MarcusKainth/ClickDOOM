@@ -55,9 +55,8 @@ What `make help` does not say:
 ### Databases
 
 Tests use throwaway databases and never the shared `clickdoom` one.
-`test-render` creates `driver_render_live_test_<pid>`, the benches use
-`clickdoom_exec_bench` and similar. `run-milestone` is the exception and writes
-to `clickdoom` itself.
+`test-render` creates `driver_render_live_test_<pid>` and the benches use
+their own. `run-milestone` is the exception and writes to `clickdoom` itself.
 
 ## The ClickHouse pin
 
@@ -98,12 +97,13 @@ nightly rather than on every pull request. The first boundary alone costs about
 
 ## Benchmarks
 
-Timings need a quiet machine, and the numbers in the committed `RESULTS.md`
-files were taken on one.
+Timings need a quiet machine, and the numbers in `docs/experiments/` were
+taken on one.
 
-Several benches create and destroy their own container per arm, because the
-compiled-expression cache is server-global and would otherwise carry state
-between arms. Those do not depend on `make up`.
+`make bench-canonical-throughput` is the instrument a throughput claim comes
+from. `clickdoom bench compare-versions` creates and destroys its own
+container per arm, because the compiled-expression cache is server-global and
+would otherwise carry state between arms.
 
 Record the ClickHouse version and K with any number you report, and say how
 quiet the machine was. A throughput claim without those is not comparable to

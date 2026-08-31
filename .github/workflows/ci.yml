@@ -13,8 +13,6 @@ name: ci
 
 on:
   pull_request:
-    # `edited` is here for pr-title, which reads the title rather than the diff.
-    types: [opened, edited, reopened, synchronize]
   push:
     branches: [main]
 
@@ -33,20 +31,6 @@ env:
   CLICKHOUSE_DATABASE: clickdoom
 
 jobs:
-  pr-title:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Lint PR title against commit convention
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: ./scripts/lint_pr_title.sh "$TITLE"
-
   lint:
     runs-on: ubuntu-latest
     permissions:

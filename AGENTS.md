@@ -54,7 +54,7 @@ as machine-written. Replacing one with another is not a fix.
 
 ## Commits and pull requests
 
-Title is `scope: imperative summary`, at most 72 characters, and CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 `CONTRIBUTING.md` lists the scopes. Branches are `scope/short-desc`.
 
 Messages have to make sense to outsiders: no plan or phase references, no
@@ -64,6 +64,42 @@ shorthand that only resolves in one session. **No AI attribution in git.** No
 One logical change per commit. A diff past roughly 400 lines is worth
 splitting. Skip the drive-by cleanup: a formatting sweep bundled with a fix
 makes the fix harder to review and harder to revert.
+
+## Opening a pull request
+
+Read [`.github/pull_request_template.md`](.github/pull_request_template.md) and
+use it as the body structure. It asks for evidence, for the `PUR-N` rules the
+change touches, and for spec impact.
+
+`gh pr create` has no template flag, and `--fill` takes the commit message
+instead, which leaves the body without an Evidence section. Write the body to a
+file and pass it:
+
+    gh pr create --title 'driver: add a live integration test' \
+      --body-file <filled.md>
+
+If a model did most of the work, name it in the description. That is not held
+against the change, and it is the one place the attribution belongs.
+
+## Filing an issue
+
+Blank issues are off, so every issue starts from a form in
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Each form's `name` and
+`description` say what it is for.
+
+`gh` cannot read these forms. `--template` handles markdown templates only and
+these are `.yml` forms, so it is ignored whatever flags you pass
+([cli/cli#5865](https://github.com/cli/cli/issues/5865)). Read the form, render
+its fields to markdown yourself, and post that: each field's `label` as a `###`
+heading, and a `render:` field inside a fenced block of that language.
+
+    gh issue create --body-file <rendered.md> \
+      --title 'sqlcpu: divergence at icount 48211008' \
+      --label divergence
+
+Each form sets its own `title` prefix and `labels`. Nothing applies them to a
+`--body-file`, so pass them yourself. `--label` is dropped silently without
+triage permission, so read the issue back after creating it.
 
 ## Non-negotiables
 
@@ -84,7 +120,7 @@ makes the fix harder to review and harder to revert.
 
 ## Done means
 
-- `make lint` green, checked by exit code.
+- `make gates` green, checked by exit code.
 - Normative documents changed in the same commit as the behaviour they
   describe.
 - Evidence in the pull request body: real command output, not a claim that

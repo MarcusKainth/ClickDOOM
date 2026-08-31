@@ -1,7 +1,7 @@
 <!--
 Delete every section that does not apply, and every comment like this one.
 
-Title is `scope: imperative summary`, at most 72 characters. CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 
 Contributions are accepted under the terms of the directory they land in:
 Apache-2.0 outside rom/, GPL-2.0-or-later inside it. There is no CLA to sign.
@@ -48,8 +48,8 @@ $ make ...
 Name the PUR-N rules this change touches and say how each property still holds.
 Touching one is not a problem. Answer "None." if it touches none.
 
-PURITY.md states each rule in full and is the only place that does. Eight of
-the twelve are enforced by review alone.
+PURITY.md states each rule in full and is the only place that does. Most are
+enforced by review alone, and its Enforcement table says which.
 -->
 
 ## Spec impact
@@ -61,7 +61,7 @@ the twelve are enforced by review alone.
 
 <!-- Tick what you ran, by exit code. Nothing else belongs under this heading. -->
 
-- [ ] `make lint`
+- [ ] `make gates`
 - [ ] The suites covering what this touches
 - [ ] No AI attribution trailers in the commits
 

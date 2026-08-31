@@ -40,15 +40,18 @@ You need Docker, `uv`, `cargo`, `make`, `shellcheck` and `clang-format`.
 `DEVELOPING.md` covers versions and the rest of the mechanics.
 
     make help    # every target, grouped
-    make lint    # what every pull request must pass
+    make gates   # every check CI runs on a pull request
     make test    # every suite that has one
 
-`make lint` is what CI runs, so a target that passes here is what runs there. It
-is necessary and not sufficient: other jobs spell out invocations of their own,
-and the differential smoke needs a built ROM.
+`make gates` calls the same targets CI does, so a target that passes here is
+what runs there. Expect upwards of ten minutes, most of it the ROM build and the
+differential smoke.
+
+It is necessary and not sufficient. The nightly deep-diff is the only run that
+compares memory, and no pull request makes it.
 
 Check by exit code. A pipeline reports only its last command's status, so
-`make lint | tail` can hide a failure.
+`make gates | tail` can hide a failure.
 
 ## Opening a pull request
 
@@ -60,7 +63,7 @@ A workflow from a fork needs maintainer approval before it runs. A workflow runs
 as it exists in the pull request, so an unreviewed run is an unreviewed change
 to what CI proves. It costs you one round-trip.
 
-Title is `scope: imperative summary`, at most 72 characters, and CI lints it.
+Title is `scope: imperative summary`, at most 72 characters.
 The scopes are `spec`, `rom`, `refemu`, `sqlcpu`, `executor`, `driver`,
 `render`, `test`, `bench`, `ci` and `docs`. A change that breaks a contract is
 `scope!:`.

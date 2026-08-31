@@ -3,10 +3,11 @@
 //! caller-chosen label.
 //!
 //! Every (repeat, arm) pair calls [`crate::bench::canonical::run`]
-//! in-process against that arm's freshly started container, rather than
-//! shelling out to a separate binary and re-parsing its output. Repeats
-//! rotate arm order (`repeat 1: A,B,C`, `repeat 2: B,C,A`, ...) to cancel
-//! warm-up bias between arms.
+//! in-process with that arm's image, rather than shelling out to a separate
+//! binary and re-parsing its output. `canonical::run` starts a container of
+//! its own per fold-alone/end-to-end arm, so this one only says which image
+//! each arm uses. Repeats rotate arm order (`repeat 1: A,B,C`, `repeat 2:
+//! B,C,A`, ...) to cancel warm-up bias between arms.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,6 @@ use clickdoom_spec::sha256_hex;
 
 use super::canonical::{self, Windows};
 use super::report::{self, ArmRecord, CompareRecord, WindowRecord};
-use crate::client::ConnArgs;
 
 #[derive(Clone, Debug)]
 pub struct Arm {
@@ -48,8 +48,6 @@ pub enum CompareError {
         #[source]
         source: std::io::Error,
     },
-    #[error("starting arm {0} ({1}): {2}")]
-    DockerStart(String, String, Box<super::docker::DockerError>),
     #[error("arm {0}: {1}")]
     Canonical(String, canonical::CanonicalError),
     #[error(transparent)]
@@ -62,6 +60,7 @@ pub struct Args<'a> {
     pub k: u32,
     pub hwm: u32,
     pub repeats: u32,
+    pub warmup: u32,
     pub batches: u32,
     pub windows: Windows,
     pub snapshot_dir: PathBuf,
@@ -83,6 +82,8 @@ fn merge(totals: &mut Vec<WindowRecord>, report: &canonical::Report) {
             existing.fold_seconds += w.fold.seconds;
             existing.e2e_retired += w.e2e.retired;
             existing.e2e_seconds += w.e2e.seconds;
+            existing.fold_batches.extend(w.fold.batches.iter().cloned());
+            existing.e2e_batches.extend(w.e2e.batches.iter().cloned());
         } else {
             totals.push(WindowRecord {
                 label: w.label.clone(),
@@ -92,6 +93,8 @@ fn merge(totals: &mut Vec<WindowRecord>, report: &canonical::Report) {
                 fold_seconds: w.fold.seconds,
                 e2e_retired: w.e2e.retired,
                 e2e_seconds: w.e2e.seconds,
+                fold_batches: w.fold.batches.clone(),
+                e2e_batches: w.e2e.batches.clone(),
             });
         }
     }
@@ -139,46 +142,25 @@ pub async fn run(args: &Args<'_>) -> Result<CompareRecord, CompareError> {
                 .iter()
                 .position(|a| a.name == arm.name)
                 .expect("arm came from args.arms");
-            eprintln!(
-                "# repeat {repeat} arm {}: starting fresh container",
-                arm.name
-            );
-            let container = super::docker::start(&arm.image).await.map_err(|e| {
-                CompareError::DockerStart(arm.name.clone(), arm.image.clone(), Box::new(e))
-            })?;
-
-            let conn = ConnArgs {
-                host: "127.0.0.1".to_string(),
-                port: container.http_port,
-                user: "default".to_string(),
-                database: "default".to_string(),
-                password: Some("clickdoom".to_string()),
-            };
-            let db = conn.connect();
-            let version: String = db.fetch_one("SELECT version()").await?;
-            versions[idx] = version.clone();
-            eprintln!(
-                "# repeat {repeat} arm {}: version={version} port={}",
-                arm.name, container.http_port
-            );
-
+            eprintln!("# repeat {repeat} arm {}: image {}", arm.name, arm.image);
             let canonical_args = canonical::Args {
                 bin: args.bin,
                 manifest_path: args.manifest_path,
+                image: &arm.image,
                 k: args.k,
                 hwm: args.hwm,
+                warmup: args.warmup,
                 batches: args.batches,
                 windows: Windows {
-                    boot_end_icount: args.windows.boot_end_icount,
                     gameplay_target_icount: args.windows.gameplay_target_icount,
-                    gameplay_window_end_icount: args.windows.gameplay_window_end_icount,
                 },
                 snapshot_dir: args.snapshot_dir.clone(),
                 refemu_bin: args.refemu_bin.clone(),
             };
-            let result = canonical::run(&conn, &canonical_args).await;
-            drop(container);
-            let bench_report = result.map_err(|e| CompareError::Canonical(arm.name.clone(), e))?;
+            let bench_report = canonical::run(&canonical_args)
+                .await
+                .map_err(|e| CompareError::Canonical(arm.name.clone(), e))?;
+            versions[idx] = bench_report.clickhouse_version.clone();
             merge(&mut totals[idx].2, &bench_report);
         }
     }

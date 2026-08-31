@@ -124,10 +124,17 @@ smoke: ## The differential run CI uses, at 100,000 instructions
 # Timings need a quiet machine. docs/benchmarks.md indexes what has already
 # been measured, and DEVELOPING.md says what to record alongside a number.
 
-bench-canonical-throughput: up require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
+# The image each bench arm starts its own container from, read out of
+# docker-compose.yml so the pin is stated in one place.
+clickhouse_image = $(shell sed -n 's|^ *image: \(clickhouse/clickhouse-server.*\)$$|\1|p' docker-compose.yml)
+
+# No `up`: each arm starts and removes a container of its own, so this target
+# does not touch the shared one.
+bench-canonical-throughput: require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
 	$(CLICKDOOM) bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+		--image "$(clickhouse_image)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
-		--refemu-bin $(REFEMU) $(clickdoom_conn)
+		--refemu-bin $(REFEMU)
 
 ##@ Milestone
 

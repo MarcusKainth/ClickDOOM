@@ -12,15 +12,15 @@ differential runner compares.
 
 ## Tests
 
-    make test-refemu
+    cargo test --workspace
 
 No ClickHouse and no ROM. The suite covers the committed riscv-tests fixtures,
 the device model, halt semantics, the decode cache's equivalence with decoding
 on every fetch, and the formats.
 
-    make test-refemu-reference
+    make test
 
-Regenerates the committed traces from the pinned ROM and compares them, and
+Also regenerates the committed traces from the pinned ROM and compares them, and
 runs the whole `demo3` demo against the values its manifest records. Needs
 `make build-rom` first.
 

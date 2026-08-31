@@ -21,11 +21,6 @@ refemu/reference_traces/demo3/*.state.pkl
 refemu/reference_traces/demo3/*.state.pkl.tmp
 refemu/reference_traces/demo3/*.progress.json
 refemu/reference_traces/demo3/*.progress.json.tmp
-# Python
-__pycache__/
-*.pyc
-.venv/
-.ruff_cache/
 # Rust
 target/
 # libFuzzer's own exploration and its crash dumps. A case worth keeping is

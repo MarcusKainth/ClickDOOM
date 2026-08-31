@@ -88,7 +88,7 @@ guarantee nobody made.
 | PUR-1 to PUR-4 | Review only. No textual signature | |
 | PUR-5 to PUR-8 | Review only. No textual signature | |
 | PUR-9 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `scripts/` |
-| PUR-10 | `check_purity.sh` | `driver/` |
+| PUR-10 | Review only. No textual signature | |
 | PUR-11 | Review only. No textual signature | |
 | PUR-12 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `scripts/` |
 

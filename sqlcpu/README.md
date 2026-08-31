@@ -13,7 +13,7 @@ them generates SQL text and executes nothing itself.
 
 ## Tests
 
-    make test-sqlcpu
+    make test
 
 Needs a live ClickHouse, which the target starts. `driver/tests/sqlcpu_live.rs`
 is the suite: the committed decode vectors against `decode.sql`, one

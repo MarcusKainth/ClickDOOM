@@ -31,7 +31,7 @@ scan() { # scan <rule> <dir> <description> <pattern...>
   # This script is excluded from its own scan. It names every forbidden pattern
   # as a literal, so scanning it would report itself.
   local files
-  files=$(git ls-files -- "$dir" | grep -E '\.(sql|py|sh|rs)$' | grep -v '^scripts/check_purity\.sh$') || true
+  files=$(git ls-files -- "$dir" | grep -E '\.(sql|sh|rs)$' | grep -v '^scripts/check_purity\.sh$') || true
   [ -n "$files" ] || return 0
   for pat in "$@"; do
     if printf '%s\n' "$files" | xargs grep -InE "$pat" -- | grep -v 'purity-ok:' ; then
@@ -62,14 +62,6 @@ CLOCK_PATTERNS=(
 for d in sqlcpu executor driver scripts; do
   scan PUR-12 "$d" "wall clock / randomness / block order" "${CLOCK_PATTERNS[@]}"
 done
-
-# PUR-10: the driver computes nothing. Driver-only by design. `subprocess` is
-# ordinary in the test harnesses under executor/ and sqlcpu/ and in scripts/,
-# which drive ClickHouse rather than compute with it.
-#
-# \bPIL\b, not PIL: the unbounded form matches inside COMPILED.
-scan PUR-10 driver "computation smuggled into the driver" \
-  'subprocess' 'numpy' 'struct\.unpack.*fb' '\bPIL\b|Pillow'
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "Purity check passed."

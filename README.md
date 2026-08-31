@@ -51,7 +51,7 @@ execute as ClickHouse SQL, driven by an `arrayFold` batch loop with
 write-log memory and MMIO plumbing, so a batch of instructions commits to
 RAM in one statement rather than one round trip each.
 
-**driver** is deliberately dumb — a Python loop that ticks the batch
+**driver** is deliberately dumb — a Rust loop that ticks the batch
 statement, feeds key events in, and blits whatever frame SQL produced.
 [PURITY.md](PURITY.md) is the enforceable boundary here: no game logic,
 no CPU logic, no rendering logic reaches the driver. Frame readout — 8bpp
@@ -65,10 +65,10 @@ testing is checked against (SPEC §7). Everything else is workstream-local.
 ## Quick start
 
 ```sh
-make up          # pinned ClickHouse via docker compose
-make build-rom   # reproducible DOOM ROM (dockerized rv32 toolchain)
-make test-sqlcpu # riscv-tests, inside the database
-make smoke       # 100,000-instruction differential run against the oracle
+make up        # pinned ClickHouse via docker compose
+make build-rom # reproducible DOOM ROM (dockerized rv32 toolchain)
+make test      # every suite, riscv-tests inside the database included
+make smoke     # 100,000-instruction differential run against the oracle
 ```
 
 `make lint` runs the purity check plus the linters, and is what CI runs on

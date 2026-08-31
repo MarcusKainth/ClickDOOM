@@ -59,14 +59,12 @@ DEMO3_MAX ?= 4000000000
 reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12 rom/PINNED_HASH).tsv
 
 .PHONY: help up down build-rom \
-        test test-refemu test-refemu-reference \
-        test-sqlcpu test-executor test-render smoke diff \
+        test smoke diff \
         bench-canonical-throughput \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         fuzz \
-        lint check-purity shellcheck ruff cargo-fmt cargo-clippy \
-        clang-format typos actionlint zizmor \
+        lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
         gates check-rom-hash
 
@@ -79,7 +77,11 @@ help: ## List every target
 ##@ Environment
 
 up: ## Start the pinned ClickHouse container
-	docker compose up -d --wait
+	# A server already answering is left alone, so `make test` behaves the
+	# same against a local compose container and against CI's service
+	# container, which binds these ports before make ever runs.
+	curl -fsS "http://$(CH_HOST):$(CH_HTTP_PORT)/ping" >/dev/null 2>&1 \
+	    || docker compose up -d --wait
 
 down: ## Stop it
 	docker compose down
@@ -100,28 +102,14 @@ require-rom:
 
 ##@ Test
 
-test: test-refemu test-refemu-reference test-sqlcpu test-executor test-render ## Every suite that has one
-
-test-refemu: ## Units, the riscv-tests fixtures and the formats. No ClickHouse, no ROM
-	cargo test --locked --workspace
-
-test-refemu-reference: require-rom ## Regenerate the committed traces and compare them, and run demo3
+# Two invocations, not one: the reference-trace and demo3 comparisons need
+# --release to finish in reasonable time, and everything else runs in debug.
+# The live suites need the container `up` starts; the rest do not.
+test: up require-rom build-refemu ## Every suite, live ones included
+	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
+	    cargo test --locked --workspace --features clickhouse-tests -- --nocapture
 	cargo test --locked --release --workspace --features refemu/rom-tests \
 	    --test reference_trace --test demo3_parity -- --nocapture
-
-test-sqlcpu: up ## The SQL CPU's own suite, inside ClickHouse
-	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
-	    cargo test --locked -p clickdoom-driver --features clickhouse-tests \
-	    --test sqlcpu_live -- --nocapture
-
-test-executor: up ## Fold, commit and MMIO tests against a live ClickHouse
-	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
-	    cargo test --locked -p clickdoom-executor --features clickhouse-tests
-
-test-render: up require-rom build-refemu ## Live driver checks: frame readout, ANSI/PPM bytes, reset-row seeding
-	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
-	    cargo test --locked -p clickdoom-driver --features clickhouse-tests \
-	    --test render_live --test bootstrap_live -- --nocapture
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence
@@ -198,40 +186,38 @@ check-adr: ## The ADR set is numbered contiguously and fully indexed
 
 ##@ Lint
 
-lint: check-purity shellcheck ruff cargo-fmt cargo-clippy clang-format typos check-adr actionlint zizmor ## Every static check. No container, no ROM
+lint: check-purity shellcheck format clippy typos check-adr actionlint zizmor ## Every static check. No container, no ROM
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
 
 shellcheck: ## Every shell script in the tree
-	find scripts driver sqlcpu executor rom refemu -name '*.sh' -exec shellcheck {} +
+	git ls-files '*.sh' | xargs shellcheck
 
-ruff: ## Python, at the version the root lockfile pins. ruff.toml holds the rules
-	uv run ruff check .
-
-cargo-fmt: ## Rust formatting, at the version rust-toolchain.toml pins
+format: ## Formatting, every language. Rust at rust-toolchain.toml's version
 	cargo fmt --all --check
-
-cargo-clippy: ## Rust lints. --all-targets so the test files are covered too
-	cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-
-clang-format: ## C sources. rom/vendor/.clang-format disables the vendored ones
 	find rom \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror {} +
 
+clippy: ## Rust lints. --all-targets so the test files are covered too
+	cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
 typos: ## Spelling, over prose and identifiers. _typos.toml holds the exceptions
-	uvx typos@1.50.0 --config _typos.toml
+	cargo install --locked --quiet typos-cli@1.50.0
+	typos --config _typos.toml
 
 actionlint: ## Workflow syntax. Has no CI job, so run it before pushing a workflow change
 	actionlint .github/workflows/*.yml
 
-zizmor: ## Workflow security posture
+zizmor: ## Workflow security posture. Needs zizmor 1.28.0 on PATH
+	# Not `cargo install`: zizmor 1.28.0 pulls a dependency wanting rustc
+	# 1.97.0, and rust-toolchain.toml pins 1.96.1. Its release binaries are
+	# what CI uses.
 	zizmor --persona=regular .github/
 
 ##@ Gates
 #
 # Prerequisites in cost order. `lint` needs no container and no ROM, and
-# `check-rom-hash` builds the ROM that `test-refemu-reference`, `test-render`
-# and `smoke` all require. Make stops at the first one that fails.
+# `check-rom-hash` builds the ROM that `test` and `smoke` both require. Make stops at the first one that fails.
 #
 # `check-rom-hash` names both goals in one `make -C rom` rather than depending
 # on `build-rom` and recursing twice. rom/Makefile's binary depends on the

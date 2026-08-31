@@ -10,13 +10,12 @@ policy; this file covers how things run.
 |---|---|
 | Docker | ClickHouse and the rv32 toolchain both run in containers |
 | `make` | Every task. `make help` lists them |
-| `uv` | Python environments for the repository's lint pin and for `executor`, both with committed lockfiles |
 | `cargo` | The Rust workspace. `rust-toolchain.toml` pins the version |
 | `shellcheck` | `make shellcheck` |
 | `clang-format` | `make clang-format`, over `rom/src/` |
 | `actionlint`, `zizmor` | Workflow linting, both in `make lint` |
 
-Python is 3.11 or newer. Rust comes from `rust-toolchain.toml`, so the first
+Rust comes from `rust-toolchain.toml`, so the first
 `cargo` call in a fresh checkout installs the pinned version and `make lint`
 speaks the same `rustfmt` and `clippy` as CI. The rv32 toolchain is pinned to
 xPack `riscv-none-elf-gcc` 15.2.0-1 and built from `rom/toolchain/Dockerfile`;
@@ -39,8 +38,8 @@ What `make help` does not say:
 
 - **`make up` is a prerequisite of most test and bench targets**, so you rarely
   run it yourself. It waits for the container to report healthy.
-- **`test-sqlcpu`, `test-executor`, `test-render`, `diff` and most benches need
-  a live ClickHouse.** `test-refemu`, `lint` and `build-rom` do not.
+- **`test`, `diff` and the bench need a live ClickHouse.** `lint`,
+  `build-rom` and a bare `cargo test --workspace` do not.
 - **Targets are not parallel-safe.** Most share one container, and the
   compiled-expression cache is server-global, so two timing runs at once
   measure each other. Do not pass `-j`.
@@ -48,15 +47,14 @@ What `make help` does not say:
   blocks forever on an INSERT when stdin is an open pipe rather than at EOF,
   which makes a run from a pipeline or an editor task runner hang with no
   output and no query running server-side. A script invoked directly needs
-  `< /dev/null`. `clickdoom`-based targets (`diff`, `test-render`,
+  `< /dev/null`. `clickdoom`-based targets (`diff`, `test`,
   `preflight-milestone`, `run-milestone`, `bench-canonical-throughput`) speak
   ClickHouse's HTTP interface directly and need no such workaround.
 
 ### Databases
 
 Tests use throwaway databases and never the shared `clickdoom` one.
-`test-render` creates `driver_render_live_test_<pid>` and the benches use
-their own. `run-milestone` is the exception and writes to `clickdoom` itself.
+Each live suite creates its own, named for the suite and the process id. `run-milestone` is the exception and writes to `clickdoom` itself.
 
 ## The ClickHouse pin
 
@@ -73,15 +71,18 @@ project's whole output is an expression evaluated a few billion times.
 
 | Target | What it covers |
 |---|---|
-| `test-refemu` | riscv-tests and the trace emitter, against the reference interpreter |
-| `test-sqlcpu` | riscv-tests inside ClickHouse, decode vectors, execute and checkpoint checks |
-| `test-executor` | Fold, commit and MMIO semantics, against the real schema |
-| `test-render` | Frame readout, the ANSI and PPM render queries, and reset-row seeding |
+| `test` | Every suite: the interpreter, riscv-tests inside ClickHouse, the fold, commit and MMIO, frame readout and the committed traces |
 | `smoke` | The differential run at 100,000 instructions |
-| `gates` | `lint`, the ROM hash check, every suite above, and `smoke` |
+| `gates` | `lint`, the ROM hash check, `test` and `smoke` |
 
-`make test` runs the suites above and not `smoke`. It needs a built ROM either
-way, because `test-refemu-reference` and `test-render` declare `require-rom`.
+`make test` is two cargo invocations. The first runs the workspace with the
+`clickhouse-tests` feature, so the suites needing a server are compiled in and
+a missing server is a failure rather than a skipped line. The second runs the
+reference-trace and demo3 comparisons in release, which is what makes a
+billion-instruction run finish.
+
+A bare `cargo test --workspace` needs no container and no ROM, and visibly
+excludes the live suites rather than reporting them as ignored.
 
 ### What the smoke run does not cover
 

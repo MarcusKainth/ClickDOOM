@@ -56,26 +56,7 @@ updates:
     cooldown:
       default-days: 14
 
-  - package-ecosystem: "uv"
-    directories:
-      - "/"
-      - "/executor"
-    schedule:
-      interval: "weekly"
-      day: "thursday"
-    open-pull-requests-limit: 3
-    labels: ["dependencies", "area: ci"]
-    commit-message:
-      prefix: "ci"
-    cooldown:
-      default-days: 7
-      semver-major-days: 14
-    groups:
-      python-compatible:
-        update-types: ["minor", "patch"]
 
-  # The Rust workspace. Cargo.lock is committed, so a bump here is a deliberate
-  # lockfile change. Friday is the one weekday the stagger above leaves free.
   - package-ecosystem: "cargo"
     directories:
       - "/"

@@ -29,7 +29,7 @@ this directory computes a pixel.
 `tests/render_golden.rs` proves the generated SQL text is byte-identical to a
 known-correct reference; it needs no ClickHouse.
 
-    make test-render
+    make test
 
 runs `tests/render_live.rs`, which executes every render query for real
 against a live ClickHouse. None of its checks are eyeballed:

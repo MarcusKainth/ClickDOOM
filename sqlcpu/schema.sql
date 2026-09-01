@@ -63,7 +63,7 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 --                  of its own.
 --   has_frame/frame_no  FRAME_COMMIT (SPEC §3), if any, this batch.
 --   wl_addr/wl_val/wl_icount  the write-log: word_addr (RAM_BASE-relative,
---                  per executor's fold.py convention -- the flush into
+--                  per `executor/src/fold.rs`'s convention -- the flush into
 --                  clickdoom.ram, which is ABSOLUTE word_addr, must add
 --                  RAM_BASE_WORD back on; see #81), the stored value, and
 --                  the store's OWN icount as that delta's `ram.version` --
@@ -129,9 +129,9 @@ CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
     -- wl_* above, one (addr, val, icount) triple per region, needed to
     -- re-derive `framebuffer`/`palette` (below) the same way wl_*
     -- re-derives `ram`. word_addr is region-relative on both sides of the
-    -- flush (fold.py's fb_wa/pal_wa already match framebuffer/palette's
-    -- own word_addr convention) -- no RAM_BASE-style rebasing step, unlike
-    -- ram's flush.
+    -- flush (`executor/src/fold.rs`'s fb_wa/pal_wa already match
+    -- framebuffer/palette's own word_addr convention) -- no RAM_BASE-style
+    -- rebasing step, unlike ram's flush.
     fb_wl_addr   Array(UInt32),
     fb_wl_val    Array(UInt32),
     fb_wl_icount Array(UInt64),
@@ -354,26 +354,20 @@ ORDER BY seq;
 --   m_hi  1 if the result is the HIGH 32 bits of the 64-bit product,
 --        meaningful only for id IN (11, 12, 13) -- mulh/mulhsu/mulhu; 0
 --        (low 32 bits) for id = 10 (mul) and for every non-multiply id.
---        m_sg1/m_sg2/m_hi (issue #54) exist so the execute expression's
---        mul/mulh/mulhsu/mulhu arms -- currently four separate arms, each
---        paying its own 64-bit cast+multiply on EVERY step regardless of
---        which id is live, since neither multiIf nor if short-circuits
---        inside arrayFold (ADR-0002) -- can collapse to one shared 64-bit
---        multiply selected by these three decode-time flags instead of
---        four independently-evaluated subexpressions.
+--        m_sg1/m_sg2/m_hi describe the whole multiply: cast regs[rs1]
+--        signed when m_sg1 is 1 and regs[rs2] signed when m_sg2 is 1,
+--        multiply in 64 bits, then take the high half when m_hi is 1 and
+--        the low half when it is 0. That reproduces mul, mulh, mulhsu and
+--        mulhu.
 --   d_sg  1 if this div/rem is SIGNED, meaningful only for id IN (14, 16)
 --        -- div/rem; 0 (unsigned) for id IN (15, 17) -- divu/remu -- and
---        for every non-div/rem id. Same collapse motivation as m_sg1/m_sg2/
---        m_hi above: div/divu/rem/remu (four arms) become one shared
---        Int64 division selected by this flag (issue #54). Doing that
---        division in Int64 rather than Int32/UInt32 is also what avoids
---        the crash in issue #99: ClickHouse's intDiv()/modulo() raise
---        ILLEGAL_DIVISION on `INT_MIN / -1` in 32-bit arithmetic, but
---        `-2147483648` widened to Int64 and divided by `-1` doesn't
---        overflow Int64 at all, and truncating the Int64 result back to
---        UInt32 gives exactly RISC-V's spec'd INT_MIN result for div (and
---        `modulo` correspondingly gives 0 for rem) with no separate
---        overflow branch needed.
+--        for every non-div/rem id. A consumer that selects the division by
+--        this flag has to widen to Int64 first: ClickHouse's intDiv() and
+--        modulo() raise ILLEGAL_DIVISION on `INT_MIN / -1` in 32-bit
+--        arithmetic, while `-2147483648` widened to Int64 and divided by
+--        `-1` doesn't overflow Int64 at all. Truncating that Int64 result
+--        back to UInt32 gives RISC-V's INT_MIN result for div, and
+--        `modulo` gives 0 for rem, with no separate overflow branch.
 --   cmp_sel  which comparison primitive this branch needs: 0 = eq (beq/
 --        bne), 1 = lt_signed (blt/bge), 2 = lt_unsigned (bltu/bgeu);
 --        meaningful only for id IN (20..25) -- the six branches; 0
@@ -381,40 +375,22 @@ ORDER BY seq;
 --   neg  1 if this branch's taken-condition is the NEGATION of cmp_sel's
 --        primitive (bne/bge/bgeu), 0 if it IS the primitive directly
 --        (beq/blt/bltu); meaningful only for id IN (20..25), 0 elsewhere.
---        cmp_sel/neg (issue #128/E4) exist so the execute expression's six
---        independently-coded branch comparisons -- and would_jump's own
---        six-arm re-derivation of the SAME six comparisons, computed a
---        SECOND time for the eager-misaligned-jump check (fold.py has no
---        expression-level let-binding, so nothing was sharing this before)
---        -- collapse to one shared 3-arm cmp_sel select plus a negate,
---        applied via bitXor(cmp, neg) rather than `if(neg, NOT cmp, cmp)`:
---        the latter references cmp's whole subtree twice per site under
---        this file's no-let-binding constraint, silently paying back the
---        very duplication this design removes. Measured 1.212x on the
---        isolated comparison-collapse alone, JIT-warm (#128's PR has the
---        harness and repro); real fold.py's win should be larger, since
---        would_jump's result is consumed via jump_misaligned at 19+
---        downstream reference sites (HALT_CODE itself is referenced 5
---        times directly, and step_retires -- one of those 5 -- is itself
---        referenced 14 more times across step_tuple's per-field guards,
---        each re-expanding HALT_CODE's text again; measured by
---        executor-2 instrumenting build_step() directly, not counted a
---        second time from source), each of which a decode-time column
---        pays for once, not once per reference.
---   tgt_mis  1 if `tgt` (the SAME column above, never re-derived or
---        word-shifted -- word-shifting silently drops bit 1, exactly the
---        bug this project already fixed once for `tgt` itself, see that
---        column's comment) is misaligned (bitAnd(tgt, 3) != 0); computed
---        for every id since tgt is 0 (aligned) for every id that doesn't
---        use it, so this is harmlessly 0 there too. jal (id 26) gates its
---        eager MISALIGNED halt on tgt_mis alone -- jal always transfers.
+--        cmp_sel/neg describe the whole branch: evaluate cmp_sel's
+--        primitive on regs[rs1] and regs[rs2], then bitXor the result with
+--        neg. That gives the taken-condition for beq, bne, blt, bge, bltu
+--        and bgeu.
+--   tgt_mis  1 if `tgt` (the SAME column above, taken as stored, never
+--        re-derived and never word-shifted -- word-shifting silently drops
+--        bit 1) is misaligned (bitAnd(tgt, 3) != 0); computed for every id
+--        since tgt is 0 (aligned) for every id that doesn't use it, so this
+--        is harmlessly 0 there too. A consumer may gate jal's (id 26)
+--        MISALIGNED halt on tgt_mis alone, because jal always transfers.
 --        Branches (id 20..25) MUST gate on `taken AND tgt_mis`, never
---        tgt_mis alone -- SPEC §1: an untaken branch never faults even if
---        its target would have been bad, and tgt_mis says nothing about
---        whether THIS branch is taken, only whether ITS target is aligned
---        if it were. jalr (id 27) does not use this column at all -- its
---        target is register-relative, genuinely unknown until execution,
---        and keeps its existing runtime alignment check unchanged.
+--        tgt_mis alone: an untaken branch never faults even if its target
+--        would have been bad, and tgt_mis says nothing about whether THIS
+--        branch is taken, only whether ITS target is aligned if it were.
+--        tgt_mis is meaningless for jalr (id 27), whose target is
+--        register-relative and unknown until execution.
 --   raw  the undecoded instruction word, kept only so an id = 31
 --        (ILLEGAL_INSN) halt record can report the actual bad instruction
 --        (SPEC §1) without re-reading `ram` at halt time. Added at

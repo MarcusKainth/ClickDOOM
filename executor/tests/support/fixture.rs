@@ -117,6 +117,12 @@ impl Fixture {
         Fixture { conn, database, db }
     }
 
+    /// A second client against this fixture's database, carrying
+    /// `settings` on every statement it issues.
+    pub fn db_with_settings(&self, settings: &[(&str, &str)]) -> Db {
+        self.conn.open_with(&self.database, settings)
+    }
+
     /// Drops the private database.
     pub async fn finish(self) {
         let admin = self.conn.open("default");

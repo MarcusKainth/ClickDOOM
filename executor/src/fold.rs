@@ -104,6 +104,10 @@ pub fn build_step(
         text_start_widx <= text_end_widx && text_end_widx <= ram_words,
         "text_start_widx={text_start_widx}/text_end_widx={text_end_widx} must be RAM_BASE-relative word indices with text_start_widx <= text_end_widx <= ram_words={ram_words}"
     );
+    assert!(
+        ipms != 0,
+        "ipms is 0, which makes the TICKS_MS read divide by zero"
+    );
 
     let fb_pal_wa_outside_text =
         fb_pal_wa_provably_outside_text(ram_base, ram_words, text_end_widx);
@@ -158,7 +162,7 @@ pub fn build_step(
 
     let ticks_ms = format!("toUInt32(intDiv(acc.5, {ipms}))");
     let keyq_has = "(acc.6.2 < toUInt32(length(KEYQT)))".to_string();
-    let keyq_val = format!("if({keyq_has}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1].1), toUInt32(0))");
+    let keyq_val = format!("if({keyq_has}, toUInt32(KEYQT[toUInt32(acc.6.2) + 1]), toUInt32(0))");
     let mmio_read = format!(
         "multiIf({}, {ticks_ms}, {}, {keyq_val}, toUInt32(0))",
         mmio_is(clickdoom_spec::mmio::TICKS_MS),
@@ -168,7 +172,7 @@ pub fn build_step(
     let sh = format!("(8 * bitAnd({addr}, 3))");
 
     let lw = format!(
-        "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1].1)"
+        "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1])"
     );
 
     let extracted = format!("bitAnd(bitShiftRight({lw}, {sh}), {dmkv})");
@@ -191,6 +195,16 @@ pub fn build_step(
     let sa64 = format!("toInt64({sa})");
     let sb64 = format!("toInt64({sb})");
 
+    // Divisors the divide and remainder arms can evaluate for any input.
+    // ClickHouse decides per session whether an `if` arm holding a division
+    // runs when its guard is false, and `rs2 = x0` makes the second operand
+    // 0 on ordinary instructions. Substituting 1 for a zero divisor changes
+    // no result: the enclosing `if` returns RISC-V's div-by-zero and
+    // rem-by-zero values from its own arm. The signed divisor stays Int64,
+    // so `DIV(INT_MIN, -1)` gives INT_MIN rather than overflowing Int32.
+    let nz_b = format!("if({b}=0, toUInt32(1), {b})");
+    let nz_sb64 = format!("if({sb}=0, toInt64(1), {sb64})");
+
     let result = format!(
         "multiIf({id}=0, toUInt32({a} + {b}),\
          {id}=1, toUInt32({a} - {b}),\
@@ -206,10 +220,10 @@ pub fn build_step(
          {id}=11, toUInt32(bitShiftRight(toInt64({sa}) * toInt64({sb}), 32)),\
          {id}=12, toUInt32(bitShiftRight(toInt64({sa}) * toInt64({b}), 32)),\
          {id}=13, toUInt32(bitShiftRight(toUInt64({a}) * toUInt64({b}), 32)),\
-         {id}=14, if({sb}=0, 4294967295, toUInt32(intDiv({sa64}, {sb64}))),\
-         {id}=15, if({b}=0, 4294967295, toUInt32(intDiv({a}, {b}))),\
-         {id}=16, if({sb}=0, {a}, toUInt32(modulo({sa64}, {sb64}))),\
-         {id}=17, if({b}=0, {a}, toUInt32(modulo({a}, {b}))),\
+         {id}=14, if({sb}=0, 4294967295, toUInt32(intDiv({sa64}, {nz_sb64}))),\
+         {id}=15, if({b}=0, 4294967295, toUInt32(intDiv({a}, {nz_b}))),\
+         {id}=16, if({sb}=0, {a}, toUInt32(modulo({sa64}, {nz_sb64}))),\
+         {id}=17, if({b}=0, {a}, toUInt32(modulo({a}, {nz_b}))),\
          {id}={OP_LOAD}, {loadv},\
          {link_value})"
     );
@@ -341,25 +355,47 @@ pub fn build_step(
     format!("arrayMap({hc} -> {step_tuple_inner}, [{halt_code}])[1]")
 }
 
-/// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`: one combined
-/// `groupArray(tuple(...))` per table, not one `groupArray` per column, so
-/// `optimize_read_in_order` cannot stream one column straight from its
-/// physically sorted storage and silently misalign it against `word_addr`
-/// while sibling columns, captured the same way in the same query, stay
-/// correct.
+/// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`.
+///
+/// `DEC` captures its columns as one `groupArray(tuple(...))`. Separate
+/// `groupArray`s over one subquery let `optimize_read_in_order` stream a
+/// column straight from its physically sorted storage and silently
+/// misalign it against `word_addr` while its sibling columns stay correct.
+/// A single tuple aggregate carries every column, so they stay aligned.
+///
+/// `RAMT` and `KEYQT` capture one column each, so they have no sibling
+/// column to misalign against and use a bare `groupArray`.
+/// `driver/src/checkpoint.rs` captures `ram` the same way.
 pub fn decode_with(db: &str) -> String {
     format!(
         "\n  \
-         (SELECT groupArray(tuple(value))\n     \
+         (SELECT groupArray(value)\n     \
          FROM (SELECT value, word_addr FROM {db}.ram FINAL ORDER BY word_addr)) AS RAMT,\n  \
          (SELECT groupArray(tuple(id, rd, rs1, rs2, imm, tgt, mk, sg, raw))\n     \
          FROM (SELECT id, rd, rs1, rs2, imm, tgt, mk, sg, raw, word_addr\n           \
          FROM {db}.decoded ORDER BY word_addr)) AS DEC,\n  \
-         (SELECT groupArray(tuple(key_event))\n     \
+         (SELECT groupArray(key_event)\n     \
          FROM (SELECT key_event, event_seq FROM {db}.input_queue\n           \
          ORDER BY event_seq)) AS KEYQT"
     )
 }
+
+/// The `SETTINGS` clause both fold queries carry. A query's own clause
+/// wins over the session and over the server profile, so nothing outside
+/// the query decides how the fold evaluates or how large a query text the
+/// server accepts.
+///
+/// `short_circuit_function_evaluation = 'disable'` makes ClickHouse
+/// evaluate every argument of an `if` or a `multiIf` on every row, so an
+/// arm runs even on the rows its guard rejects. The step holds under that
+/// rule because the only functions in it that fault on data are `intDiv`
+/// and `modulo`, and every divisor reaching them is non-zero for any
+/// input. An arm added later that can fault on data needs the same
+/// treatment.
+const FOLD_SETTINGS: &str = "SETTINGS max_threads = 1,\n         \
+                             max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
+                             max_query_size = 2000000,\n         \
+                             short_circuit_function_evaluation = 'disable'";
 
 /// RAM's write-log seed, empty at the start of every real batch.
 pub const WL0_EMPTY: &str = "tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64())";
@@ -471,9 +507,7 @@ pub fn select_only(
          r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,\n       \
          r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
-         SETTINGS max_threads = 1,\n         \
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
-         max_query_size = 2000000",
+         {FOLD_SETTINGS}",
         decode_with(db)
     )
 }
@@ -558,9 +592,7 @@ pub fn batch(
          r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount,\n       \
          r.6.1 AS console_bytes\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
-         SETTINGS max_threads = 1,\n         \
-         max_ast_elements = 500000, max_expanded_ast_elements = 500000,\n         \
-         max_query_size = 2000000",
+         {FOLD_SETTINGS}",
         decode_with(db)
     )
 }

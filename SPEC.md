@@ -351,8 +351,20 @@ shape. All tables carry `spec_version String`.
 - `decoded` — the pre-decoded text segment (ADR-0002), built by a SQL query over
   `ram` at ROM load and covering `[text_start, text_end)` only:
   `(word_addr UInt32, id UInt8, rd UInt8, rs1 UInt8, rs2 UInt8, imm UInt32,
-  tgt UInt32, mk UInt32, sg UInt8, raw UInt32)` — names and types match
-  `sqlcpu/schema.sql` literally, as every other table in this section does.
+  tgt UInt32, mk UInt32, sg UInt8, m_sg1 UInt8, m_sg2 UInt8, m_hi UInt8,
+  d_sg UInt8, cmp_sel UInt8, neg UInt8, tgt_mis UInt8, raw UInt32)` — names and
+  types match `sqlcpu/schema.sql` literally, as every other table in this
+  section does.
+
+  The seven flags after `sg` are decode-time collapses. Each is a pure function
+  of the instruction word and its address, so an execute expression may select
+  a shared primitive with them instead of carrying one arm per opcode:
+  `m_sg1`/`m_sg2`/`m_hi` for the four multiplies, `d_sg` for the four
+  divide and remainder forms, `cmp_sel`/`neg` for the six branches, and
+  `tgt_mis` for the eager misaligned-target halt on `jal` and on a taken
+  branch. `tgt_mis` is meaningless for `jalr`, whose target is
+  register-relative and whose alignment is only knowable at execution.
+
   `id` is the collapsed opcode space, including dedicated arms for the fatal-halt
   decode cases (§1): `ecall`, `ebreak`, CSR, and unimplemented/illegal each
   get their own `id`, disjoint from the executable arms. `imm` is already

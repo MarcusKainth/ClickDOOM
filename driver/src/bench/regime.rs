@@ -25,6 +25,11 @@ pub struct Regime {
     pub compile_function: u64,
     /// `ProfileEvents['CompileExpressionsMicroseconds']`.
     pub compile_micros: u64,
+    /// `query_duration_ms`, the server's own time on the statement. Client
+    /// wall clock also carries the result set's serialisation, transfer and
+    /// deserialisation, and the two arms return result sets of very
+    /// different sizes.
+    pub server_ms: u64,
 }
 
 impl Regime {
@@ -33,6 +38,7 @@ impl Regime {
     pub fn add(&mut self, other: Regime) {
         self.compile_function += other.compile_function;
         self.compile_micros += other.compile_micros;
+        self.server_ms += other.server_ms;
     }
 }
 
@@ -47,7 +53,8 @@ pub fn query_id(run: u32, window: &str, mode: &str, batch: u32, statement: usize
     format!("clickdoom_bench_{run}_{window}_{mode}_{batch}_{statement}")
 }
 
-/// Reads the compilation events of every named statement.
+/// Reads the compilation events and the server-side duration of every named
+/// statement.
 ///
 /// Flushes `query_log` first: a finished statement is not in the table until
 /// its buffer is written out, and a missing row would otherwise read as
@@ -62,23 +69,25 @@ pub async fn read(db: &Db, query_ids: &[String]) -> Result<HashMap<String, Regim
         .map(|id| format!("'{id}'"))
         .collect::<Vec<_>>()
         .join(",");
-    let rows: Vec<(String, u64, u64)> = db
+    let rows: Vec<(String, u64, u64, u64)> = db
         .fetch_all(&format!(
             "SELECT query_id,\n       \
              toUInt64(ProfileEvents['CompileFunction']),\n       \
-             toUInt64(ProfileEvents['CompileExpressionsMicroseconds'])\n\
+             toUInt64(ProfileEvents['CompileExpressionsMicroseconds']),\n       \
+             toUInt64(query_duration_ms)\n\
              FROM system.query_log\n\
              WHERE type = 'QueryFinish' AND query_id IN ({list})"
         ))
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, compile_function, compile_micros)| {
+        .map(|(id, compile_function, compile_micros, server_ms)| {
             (
                 id,
                 Regime {
                     compile_function,
                     compile_micros,
+                    server_ms,
                 },
             )
         })
@@ -119,12 +128,15 @@ mod tests {
         total.add(Regime {
             compile_function: 2,
             compile_micros: 100,
+            server_ms: 900,
         });
         total.add(Regime {
             compile_function: 1,
             compile_micros: 50,
+            server_ms: 30,
         });
         assert_eq!(total.compile_function, 3);
         assert_eq!(total.compile_micros, 150);
+        assert_eq!(total.server_ms, 930);
     }
 }

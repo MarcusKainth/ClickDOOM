@@ -6,7 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::canonical::Report as CanonicalReport;
+use super::canonical::{ArmResult, BatchRecord, FirstFrame, Report as CanonicalReport};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {
@@ -26,6 +26,10 @@ pub enum ReportError {
     NoSuchRun(std::path::PathBuf, usize, usize),
 }
 
+/// One window's two arms. `*_retired` and `*_seconds` cover the timed
+/// batches only; `*_batches` carries every batch the arm ran, warm-up
+/// included, with the compilation regime and write-log length that say
+/// whether its seconds are comparable to another run's.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct WindowRecord {
     pub label: String,
@@ -35,9 +39,27 @@ pub struct WindowRecord {
     pub fold_seconds: f64,
     pub e2e_retired: u64,
     pub e2e_seconds: f64,
+    #[serde(default)]
+    pub fold_batches: Vec<BatchRecord>,
+    #[serde(default)]
+    pub e2e_batches: Vec<BatchRecord>,
 }
 
 impl WindowRecord {
+    fn of(label: &str, k: u32, hwm: u32, fold: &ArmResult, e2e: &ArmResult) -> Self {
+        WindowRecord {
+            label: label.to_owned(),
+            k,
+            hwm,
+            fold_retired: fold.retired,
+            fold_seconds: fold.seconds,
+            e2e_retired: e2e.retired,
+            e2e_seconds: e2e.seconds,
+            fold_batches: fold.batches.clone(),
+            e2e_batches: e2e.batches.clone(),
+        }
+    }
+
     pub fn fold_instr_per_sec(&self) -> f64 {
         self.fold_retired as f64 / self.fold_seconds
     }
@@ -54,7 +76,20 @@ pub struct CanonicalRecord {
     pub rom_sha256: String,
     pub k: u32,
     pub hwm: u32,
+    /// Batches each arm ran before it timed anything.
+    #[serde(default)]
+    pub warmup: u32,
+    /// Timed batches per arm.
     pub batches: u32,
+    /// The image every arm's container started from.
+    #[serde(default)]
+    pub image: String,
+    #[serde(default)]
+    pub clickhouse_version: String,
+    /// What the ROM costs to produce a frame. Moves when the ROM changes,
+    /// and stays put when only the SQL does.
+    #[serde(default)]
+    pub first_frame: Option<FirstFrame>,
     pub note: Option<String>,
     pub windows: Vec<WindowRecord>,
 }
@@ -67,20 +102,16 @@ impl From<&CanonicalReport> for CanonicalRecord {
             rom_sha256: report.rom_sha256.clone(),
             k: report.k,
             hwm: report.hwm,
+            warmup: report.warmup,
             batches: report.batches,
+            image: report.image.clone(),
+            clickhouse_version: report.clickhouse_version.clone(),
+            first_frame: Some(report.first_frame),
             note: None,
             windows: report
                 .windows
                 .iter()
-                .map(|w| WindowRecord {
-                    label: w.label.clone(),
-                    k: w.k,
-                    hwm: w.hwm,
-                    fold_retired: w.fold.retired,
-                    fold_seconds: w.fold.seconds,
-                    e2e_retired: w.e2e.retired,
-                    e2e_seconds: w.e2e.seconds,
-                })
+                .map(|w| WindowRecord::of(&w.label, w.k, w.hwm, &w.fold, &w.e2e))
                 .collect(),
         }
     }
@@ -179,47 +210,90 @@ fn pick<T>(mut records: Vec<T>, path: &Path, which: Selector) -> Result<T, Repor
     }
 }
 
-fn window_table(windows: &[WindowRecord]) -> String {
+/// Instructions per second, and what that rate makes of the ROM's own
+/// instructions to first frame. A ROM change that retires fewer
+/// instructions for the same frame moves the second column and leaves the
+/// first alone, so a correct optimisation cannot read as a regression.
+fn window_table(windows: &[WindowRecord], first_frame: Option<&FirstFrame>) -> String {
     let mut out = String::from(
-        "| window | mode | k | hwm | retired | instr/s |\n|---|---|---|---|---|---|\n",
+        "| window | mode | k | hwm | retired | instr/s | s to first frame |\n\
+         |---|---|---|---|---|---|---|\n",
     );
     for w in windows {
-        out.push_str(&format!(
-            "| {} | fold-alone | {} | {} | {} | {:.1} |\n",
-            w.label,
-            w.k,
-            w.hwm,
-            w.fold_retired,
-            w.fold_instr_per_sec()
-        ));
-        out.push_str(&format!(
-            "| {} | e2e | {} | {} | {} | {:.1} |\n",
-            w.label,
-            w.k,
-            w.hwm,
-            w.e2e_retired,
-            w.e2e_instr_per_sec()
-        ));
+        for (mode, retired, rate) in [
+            ("fold-alone", w.fold_retired, w.fold_instr_per_sec()),
+            ("e2e", w.e2e_retired, w.e2e_instr_per_sec()),
+        ] {
+            let to_frame = match first_frame {
+                Some(f) => format!("{:.1}", f.instructions as f64 / rate),
+                None => "-".to_string(),
+            };
+            out.push_str(&format!(
+                "| {} | {mode} | {} | {} | {retired} | {rate:.1} | {to_frame} |\n",
+                w.label, w.k, w.hwm
+            ));
+        }
+    }
+    out
+}
+
+/// Every batch, warm-up included, with what says whether its seconds are
+/// comparable to another batch's.
+fn batch_table(windows: &[WindowRecord]) -> String {
+    let mut out = String::from(
+        "| window | mode | batch | timed | s | retired | wl len | stop | CompileFunction | CompileExpressionsMicroseconds |\n\
+         |---|---|---|---|---|---|---|---|---|---|\n",
+    );
+    for w in windows {
+        for (mode, batches) in [("fold-alone", &w.fold_batches), ("e2e", &w.e2e_batches)] {
+            for b in batches {
+                out.push_str(&format!(
+                    "| {} | {mode} | {} | {} | {:.2} | {} | {} | {} | {} | {} |\n",
+                    w.label,
+                    b.index,
+                    if b.timed { "yes" } else { "warm-up" },
+                    b.seconds,
+                    b.retired,
+                    b.write_log_len,
+                    b.stop.label(),
+                    b.regime.compile_function,
+                    b.regime.compile_micros
+                ));
+            }
+        }
     }
     out
 }
 
 pub fn render_canonical(record: &CanonicalRecord) -> String {
     let mut out = format!(
-        "`bench canonical`, {}, K={}, HWM={}, {} batch(es), ROM {}, {}\n\n",
+        "`bench canonical`, {}, K={}, HWM={}, {} warm-up + {} timed batch(es) per arm, ROM {}, {}\n\n",
         record.timestamp,
         record.k,
         record.hwm,
+        record.warmup,
         record.batches,
         &record.rom_sha256[..12.min(record.rom_sha256.len())],
         &record.git_sha[..12.min(record.git_sha.len())]
     );
+    out.push_str(&format!(
+        "Server: {} ({}), one fresh container per arm\n\n",
+        record.clickhouse_version, record.image
+    ));
+    if let Some(f) = &record.first_frame {
+        out.push_str(&format!(
+            "ROM: {} instructions to first frame (frame_no {})\n\n",
+            f.instructions, f.frame_no
+        ));
+    }
     if let Some(note) = &record.note {
         out.push_str(&format!("Machine: {note}\n\n"));
     } else {
         out.push_str("Machine: TODO -- how quiet was it?\n\n");
     }
-    out.push_str(&window_table(&record.windows));
+    out.push_str(&window_table(&record.windows, record.first_frame.as_ref()));
+    out.push('\n');
+    out.push_str(&batch_table(&record.windows));
     out
 }
 
@@ -244,7 +318,7 @@ pub fn render_compare(record: &CompareRecord) -> String {
             "### {} ({}, {})\n\n",
             arm.name, arm.spec, arm.version
         ));
-        out.push_str(&window_table(&arm.windows));
+        out.push_str(&window_table(&arm.windows, None));
         out.push('\n');
     }
 

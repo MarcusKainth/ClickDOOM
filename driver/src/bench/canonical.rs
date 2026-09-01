@@ -1,22 +1,39 @@
 //! The canonical real-ROM throughput benchmark: two windows (a fresh boot,
 //! and a store-heavy gameplay stretch reached via a cached `refemu`
 //! snapshot rather than tens of hours of live execution), each measured
-//! fold-alone and end to end, over a fixed number of chained batches.
+//! fold-alone and end to end.
 //!
 //! Reports two windows separately rather than blending them into one
 //! average: a correctness check that costs more on memory-heavy code than
 //! on the instruction stream generally would otherwise wash out in a
 //! whole-run number.
+//!
+//! Each of the four arms runs against a container of its own. ClickHouse
+//! counts executions of an expression DAG in a process-static map, and
+//! `fold::select_only` and `fold::batch` emit the same step lambda, so two
+//! arms sharing a server share one counter and one compiled function: the
+//! first to run pays for the compilation and the second collects it. No
+//! `SYSTEM` statement resets that counter, so a fresh server process is the
+//! only thing that does.
+//!
+//! Each arm runs `warmup` batches before it times anything, and every batch
+//! carries the compilation it did (`CompileFunction`,
+//! `CompileExpressionsMicroseconds`), its write-log length, its retired
+//! count and why it stopped. A run is refused unless the warm-up compiled
+//! something and no timed batch compiled anything.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant; // purity-ok: timing the benchmark harness itself, never a value the emulated machine computes with
 
 use clickdoom_executor::commit;
-use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
+use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_EXIT, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
+use refemu::cli::report::RunReport;
 use refemu::snapshot::{Kind, Snapshot};
+use serde::{Deserialize, Serialize};
 
+use super::regime::{self, Regime};
 use crate::bootstrap::BatchCommitRow;
 use crate::client::{ConnArgs, Db, Error};
 use crate::fold_result::FoldResult;
@@ -25,18 +42,81 @@ use crate::render::{FRAMEBUFFER_WORDS, PALETTE_WORDS};
 use crate::rom::{RAM_WORDS_DEFAULT, WordRow};
 use crate::sql::split_statements;
 
+/// The database each arm provisions on its own server.
+const ARM_DATABASE: &str = "canonical_throughput";
+
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalError {
     #[error(
-        "{window} {mode} batch {batch}: retired {retired}, not K={k}, and did not halt. A truncated batch measures different work than a full one. If this is the write-log high-water mark ({hwm}) binding on this window's real store density, that is itself a real finding: report it, don't paper over it by lowering K or raising HWM without saying so."
+        "{window} {mode} timed batch {batch}: the write log reached the high-water mark ({hwm}) after {retired} of K={k} instructions. A truncated batch measures different work than a full one. That the mark binds on this window's real store density is itself a finding: report it, don't paper over it by lowering K or raising HWM without saying so."
     )]
-    Truncated {
+    HighWaterMarkBound {
         window: String,
         mode: &'static str,
         batch: u32,
         retired: u64,
         k: u32,
         hwm: u32,
+    },
+    #[error(
+        "{window} {mode} batch {batch}: retired {retired}, not K={k}. It did not halt, it committed no frame, and its write log holds {write_log_len} of HWM={hwm}. Nothing else ends a batch early, so either the batch execution contract moved or this is reading the wrong columns."
+    )]
+    UnexplainedShortBatch {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        retired: u64,
+        k: u32,
+        hwm: u32,
+        write_log_len: u32,
+    },
+    #[error(
+        "{window} {mode}: none of the {warmup} warm-up batches compiled anything, so nothing proves the timed batches ran compiled. Expect CompileFunction > 0 on a warm-up batch of a freshly started server. Either the server has compilation off, or this arm's server was not fresh."
+    )]
+    WarmUpCompiledNothing {
+        window: String,
+        mode: &'static str,
+        warmup: u32,
+    },
+    #[error(
+        "{window} {mode} timed batch {batch}: CompileFunction={compile_function}, {compile_micros} us spent compiling. A batch that pays for compilation measures different work than the ones around it. Raise --warmup above {warmup}."
+    )]
+    CompiledWhileTimed {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        compile_function: u64,
+        compile_micros: u64,
+        warmup: u32,
+    },
+    #[error(
+        "{window} {mode} batch {batch}: system.query_log has no QueryFinish row for {query_id}, so this batch's compilation regime is unknown. A number without its regime is not comparable to another number."
+    )]
+    NoQueryLogRow {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        query_id: String,
+    },
+    #[error(
+        "{window} {mode} batch {batch}: the machine halted ({reason}) after {retired} instructions. A window that halts partway has no throughput to report."
+    )]
+    Halted {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        retired: u64,
+        reason: String,
+    },
+    #[error(
+        "{window}: the two arms diverged. After the same batches fold-alone is at pc {fold_pc:#010x} icount {fold_icount}, end to end at pc {e2e_pc:#010x} icount {e2e_icount}. Both execute the same instruction stream from the same start, so a difference means one arm read state the other wrote."
+    )]
+    ArmsDiverged {
+        window: String,
+        fold_pc: u32,
+        fold_icount: u64,
+        e2e_pc: u32,
+        e2e_icount: u64,
     },
     #[error("{0}: sha256 ({1}) != rom/PINNED_HASH ({2})")]
     RomHash(PathBuf, String, String),
@@ -54,6 +134,14 @@ pub enum CanonicalError {
     Spawn(String, std::io::Error),
     #[error("{0} exited with {1}")]
     RefemuFailed(String, std::process::ExitStatus),
+    #[error("reading {0}'s run report: {1}")]
+    RefemuReport(String, serde_json::Error),
+    #[error(
+        "{0} announced no frame within {1} instructions. --first-frame-max-instructions bounds how far it looks; raise it, or the ROM no longer reaches a frame."
+    )]
+    NoFrameInBudget(String, u64),
+    #[error("starting a container from {0}: {1}")]
+    DockerStart(String, Box<super::docker::DockerError>),
     #[error("snapshot is a {0:?} capture, not a whole machine")]
     NotAMachineSnapshot(refemu::snapshot::Kind),
     #[error("snapshot ram is {0} bytes, not a multiple of 4")]
@@ -79,50 +167,92 @@ pub enum CanonicalError {
     Bootstrap(#[from] crate::bootstrap::SeedError),
 }
 
-/// The two windows this benchmark always measures, in order.
-pub struct Windows {
-    /// Fresh reset state: `[0, boot_end_icount)`.
-    pub boot_end_icount: u64,
-    /// Where the cached snapshot starts the gameplay window.
-    pub gameplay_target_icount: u64,
-    /// Where the gameplay window ends, for the report label only: this
-    /// names the slice of a real `demo3` playback the snapshot represents
-    /// (frames 200 to 299 of the memory-function profile), not a bound this
-    /// benchmark itself measures up to.
-    pub gameplay_window_end_icount: u64,
+/// Which half of the measurement an arm runs.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// `fold::select_only`, the `arrayFold` step expression alone.
+    Fold,
+    /// `fold::batch` plus every `commit` flush, the cost a real run pays.
+    E2e,
 }
 
-impl Default for Windows {
-    fn default() -> Self {
-        Windows {
-            boot_end_icount: 15_393_136,
-            gameplay_target_icount: 233_932_753,
-            gameplay_window_end_icount: 392_488_489,
+impl Mode {
+    /// Both arms, in the order a run measures them.
+    pub const ALL: [Mode; 2] = [Mode::Fold, Mode::E2e];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Mode::Fold => "fold",
+            Mode::E2e => "e2e",
         }
     }
 }
 
-pub struct Args<'a> {
-    pub bin: &'a Path,
-    pub manifest_path: &'a Path,
-    pub k: u32,
-    pub hwm: u32,
-    pub batches: u32,
-    pub windows: Windows,
-    pub snapshot_dir: PathBuf,
-    pub refemu_bin: PathBuf,
+/// Why a batch stopped. The batch execution contract ends a batch on a
+/// halt, on the write-log high-water mark, or on a FRAME_COMMIT store, and
+/// otherwise when K instructions have retired.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stop {
+    /// It retired K instructions.
+    FullK,
+    /// The machine halted.
+    Halt,
+    /// A FRAME_COMMIT store ended it.
+    FrameCommit,
+    /// The write log reached the high-water mark.
+    HighWaterMark,
 }
 
-/// One window, one mode (fold-alone or end to end), summed over every
-/// chained batch.
-pub struct ModeResult {
+impl Stop {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Stop::FullK => "full_k",
+            Stop::Halt => "halt",
+            Stop::FrameCommit => "frame_commit",
+            Stop::HighWaterMark => "high_water_mark",
+        }
+    }
+}
+
+/// One batch, warm-up or timed, with everything a reader needs to say
+/// whether its seconds are comparable to another batch's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchRecord {
+    /// 1-based, counting the warm-up batches.
+    pub index: u32,
+    /// Whether this batch's seconds and retired count are in the arm total.
+    pub timed: bool,
+    pub seconds: f64,
+    pub retired: u64,
+    /// `length(wl_addr)` at the end of the batch.
+    pub write_log_len: u32,
+    pub stop: Stop,
+    pub regime: Regime,
+}
+
+/// One window, one mode, summed over the timed batches.
+pub struct ArmResult {
     pub retired: u64,
     pub seconds: f64,
+    /// Every batch the arm ran, warm-up first.
+    pub batches: Vec<BatchRecord>,
+    /// Where the chain ended. Both arms of a window execute the same
+    /// instruction stream, so both land here.
+    pub final_pc: u32,
+    pub final_icount: u64,
 }
 
-impl ModeResult {
+impl ArmResult {
     pub fn instr_per_sec(&self) -> f64 {
         self.retired as f64 / self.seconds
+    }
+
+    /// What this arm's rate makes of the ROM's own instructions to first
+    /// frame. A change inside the ROM that retires fewer instructions for
+    /// the same frame moves this and leaves `instr_per_sec` alone.
+    pub fn seconds_to_first_frame(&self, first_frame: &FirstFrame) -> f64 {
+        first_frame.instructions as f64 / self.instr_per_sec()
     }
 }
 
@@ -130,20 +260,64 @@ pub struct WindowResult {
     pub label: String,
     pub k: u32,
     pub hwm: u32,
-    pub fold: ModeResult,
-    pub e2e: ModeResult,
-    /// The last e2e batch's `halt_reason` (empty if it didn't halt).
-    pub e2e_halt_reason: String,
+    pub fold: ArmResult,
+    pub e2e: ArmResult,
+}
+
+/// What the ROM costs to produce a frame, measured by `refemu` against the
+/// same pinned binary the SQL CPU runs.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct FirstFrame {
+    /// Retired instructions from reset to the first FRAME_COMMIT.
+    pub instructions: u64,
+    /// The number the program wrote, which is the program's to choose.
+    pub frame_no: u32,
 }
 
 pub struct Report {
     pub rom_sha256: String,
+    pub clickhouse_version: String,
+    pub image: String,
     pub decoded_rows: u64,
     pub k: u32,
     pub hwm: u32,
+    pub warmup: u32,
     pub batches: u32,
     pub git_sha: String,
+    pub first_frame: FirstFrame,
     pub windows: Vec<WindowResult>,
+}
+
+/// Where the gameplay window starts.
+pub struct Windows {
+    /// The icount the cached snapshot captures.
+    pub gameplay_target_icount: u64,
+}
+
+impl Default for Windows {
+    fn default() -> Self {
+        Windows {
+            gameplay_target_icount: 233_932_753,
+        }
+    }
+}
+
+pub struct Args<'a> {
+    pub bin: &'a Path,
+    pub manifest_path: &'a Path,
+    /// The image each arm's own container starts from.
+    pub image: &'a str,
+    pub k: u32,
+    pub hwm: u32,
+    /// Batches each arm runs before it times anything.
+    pub warmup: u32,
+    /// Timed batches per arm.
+    pub batches: u32,
+    /// How far `refemu` looks for the first frame.
+    pub first_frame_max_instructions: u64,
+    pub windows: Windows,
+    pub snapshot_dir: PathBuf,
+    pub refemu_bin: PathBuf,
 }
 
 fn wrap_regs(regs: &[u32]) -> Vec<String> {
@@ -201,16 +375,56 @@ struct Shape<'a> {
     database: &'a str,
 }
 
+/// What one batch did, before its compilation regime is read back.
+struct BatchOutcome {
+    seconds: f64,
+    retired: u64,
+    pc: u32,
+    halted: u8,
+    halt_reason: String,
+    write_log_len: u32,
+    frame_committed: u8,
+    /// Every statement inside the timed region, in the order it ran.
+    query_ids: Vec<String>,
+}
+
+/// Where a batch's `query_id`s come from, so `system.query_log` can be read
+/// back for exactly the statements this batch timed.
+struct Tag<'a> {
+    run: u32,
+    window: &'a str,
+    mode: &'static str,
+    batch: u32,
+}
+
+impl Tag<'_> {
+    fn statement(&self, n: usize) -> String {
+        regime::query_id(self.run, self.window, self.mode, self.batch, n)
+    }
+}
+
+/// Where a chained arm has got to. `icount` and `keyq` are threaded as well
+/// as `pc`/`regs`: emulated time is a function of the retired count, so a
+/// batch restarted at icount 0 executes a different instruction stream.
+struct Chain {
+    pc: u32,
+    regs: Vec<String>,
+    icount: u64,
+    keyq: u32,
+}
+
 async fn run_fold_batch(
     db: &Db,
     shape: &Shape<'_>,
-    pc: u32,
-    regs: &[String],
-) -> Result<(FoldResult, f64), Error> {
+    tag: &Tag<'_>,
+    chain: &Chain,
+) -> Result<(BatchOutcome, FoldResult), Error> {
     let args = SelectOnlyArgs {
-        pc0: Some(pc),
-        regs0: Some(regs),
+        pc0: Some(chain.pc),
+        regs0: Some(&chain.regs),
         db: shape.database,
+        icount0: chain.icount,
+        keyq0: chain.keyq,
         ..Default::default()
     };
     let sql = fold::select_only(
@@ -222,19 +436,93 @@ async fn run_fold_batch(
         shape.hwm,
         &args,
     );
+    let query_id = tag.statement(0);
     let t0 = Instant::now(); // purity-ok: timing this batch for the report, not used in any query
-    let result: FoldResult = db.fetch_one(&sql).await?;
-    Ok((result, t0.elapsed().as_secs_f64()))
+    let result: FoldResult = db.fetch_one_with_query_id(&query_id, &sql).await?;
+    let seconds = t0.elapsed().as_secs_f64();
+    let outcome = BatchOutcome {
+        seconds,
+        retired: result.retired as u64,
+        pc: result.pc,
+        halted: result.halted,
+        halt_reason: halt_reason_name(result.halt_reason),
+        write_log_len: result.wl_addr.len() as u32,
+        frame_committed: result.frame_committed,
+        query_ids: vec![query_id],
+    };
+    Ok((outcome, result))
 }
 
-struct E2eResult {
-    seconds: f64,
-    retired: u64,
-    halted: u8,
-    halt_reason: String,
+/// The name `fold::batch` would put in `halt_reason`, for a fold-alone
+/// result that carries the raw code instead. Both arms then report a halt
+/// the same way.
+fn halt_reason_name(code: u8) -> String {
+    HALT_REASON_NAMES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, name)| (*name).to_string())
+        .unwrap_or_default()
 }
 
-async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<E2eResult, Error> {
+/// Merges a fold-alone batch's write logs into `ram`/`framebuffer`/
+/// `palette`, using `commit`'s own flush statements. `fold::select_only`
+/// writes nothing, so the row it returns goes into `batch_commit` first and
+/// the flushes read it from there. Unnesting each log and rebasing
+/// `wl_addr` onto `ram.word_addr` happen inside those statements.
+///
+/// It runs untimed, after the timed statement, because the next chained
+/// batch has to read what this one wrote. A fold that reads stale RAM
+/// executes a different instruction stream.
+///
+/// `icount` is the batch's ending count, the value `fold::batch` takes from
+/// the fold's own accumulator.
+async fn commit_fold_batch(
+    db: &Db,
+    database: &str,
+    result: FoldResult,
+    icount: u64,
+) -> Result<(), Error> {
+    let prev_batch_id: u64 = db
+        .fetch_one(&format!(
+            "SELECT max(batch_id) FROM {database}.batch_commit"
+        ))
+        .await?;
+    let row = BatchCommitRow {
+        batch_id: prev_batch_id + 1,
+        icount,
+        pc: result.pc,
+        regs: result.regs,
+        halted: result.halted,
+        halt_reason: halt_reason_name(result.halt_reason),
+        exit_code: if result.halt_reason == HALT_EXIT {
+            result.halt_extra
+        } else {
+            0
+        },
+        keyq_pos: u64::from(result.keyq_pos),
+        has_frame: result.frame_committed,
+        frame_no: result.frame_no,
+        wl_addr: result.wl_addr,
+        wl_val: result.wl_val,
+        wl_icount: result.wl_icount,
+        fb_wl_addr: result.fb_wl_addr,
+        fb_wl_val: result.fb_wl_val,
+        fb_wl_icount: result.fb_wl_icount,
+        pal_wl_addr: result.pal_wl_addr,
+        pal_wl_val: result.pal_wl_val,
+        pal_wl_icount: result.pal_wl_icount,
+        console_bytes: result.console_bytes,
+    };
+    db.insert_all("batch_commit", std::iter::once(row)).await?;
+    db.run(&commit::ram_flush_sql(database)).await?;
+    // fbpal_flush_sql returns two statements (framebuffer, then palette).
+    for statement in split_statements(&commit::fbpal_flush_sql(database)) {
+        db.run(statement).await?;
+    }
+    Ok(())
+}
+
+async fn run_e2e_batch(db: &Db, shape: &Shape<'_>, tag: &Tag<'_>) -> Result<BatchOutcome, Error> {
     let database = shape.database;
     let cpu_state_rows: u64 = db
         .fetch_one(&format!("SELECT count() FROM {database}.cpu_state"))
@@ -263,114 +551,249 @@ async fn run_e2e_batch(db: &Db, shape: &Shape<'_>) -> Result<E2eResult, Error> {
         shape.hwm,
         &batch_args,
     );
+    let statements = [
+        batch_sql,
+        commit::ram_flush_sql(database),
+        commit::console_out_flush_sql(database),
+        commit::cpu_state_flush_sql(database),
+        commit::retention_sql(database, BATCH_COMMIT_RETENTION_N),
+    ];
+    let query_ids: Vec<String> = (0..statements.len()).map(|n| tag.statement(n)).collect();
     let t0 = Instant::now(); // purity-ok: timing this batch for the report, not used in any query
-    db.run(&batch_sql).await?;
-    db.run(&commit::ram_flush_sql(database)).await?;
-    db.run(&commit::console_out_flush_sql(database)).await?;
-    db.run(&commit::cpu_state_flush_sql(database)).await?;
-    db.run(&commit::retention_sql(database, BATCH_COMMIT_RETENTION_N))
-        .await?;
+    for (sql, query_id) in statements.iter().zip(&query_ids) {
+        db.run_with_query_id(query_id, sql).await?;
+    }
     let seconds = t0.elapsed().as_secs_f64();
-    let (icount, halted, halt_reason): (u64, u8, String) = db
+    let (icount, pc, halted, halt_reason): (u64, u32, u8, String) = db
         .fetch_one(&format!(
-            "SELECT icount, halted, halt_reason FROM {database}.cpu_state ORDER BY batch_id DESC LIMIT 1"
+            "SELECT icount, pc, halted, halt_reason FROM {database}.cpu_state ORDER BY batch_id DESC LIMIT 1"
         ))
         .await?;
-    Ok(E2eResult {
+    let (has_frame, write_log_len): (u8, u32) = db
+        .fetch_one(&format!(
+            "SELECT has_frame, toUInt32(length(wl_addr)) FROM {database}.batch_commit ORDER BY batch_id DESC LIMIT 1"
+        ))
+        .await?;
+    Ok(BatchOutcome {
         seconds,
         retired: icount - prev_icount,
+        pc,
         halted,
         halt_reason,
+        write_log_len,
+        frame_committed: has_frame,
+        query_ids,
     })
 }
 
-async fn run_window(
-    db: &Db,
-    label: &str,
-    shape: &Shape<'_>,
+/// Names why a batch stopped. `None` means nothing in the batch execution
+/// contract accounts for it.
+fn classify(outcome: &BatchOutcome, k: u32, hwm: u32) -> Option<Stop> {
+    if outcome.halted != 0 {
+        return Some(Stop::Halt);
+    }
+    if outcome.retired == u64::from(k) {
+        return Some(Stop::FullK);
+    }
+    if outcome.frame_committed != 0 {
+        return Some(Stop::FrameCommit);
+    }
+    if outcome.write_log_len >= hwm {
+        return Some(Stop::HighWaterMark);
+    }
+    None
+}
+
+struct ArmArgs<'a> {
+    window: &'a str,
+    mode: Mode,
+    warmup: u32,
     batches: u32,
-    pc0: u32,
-    regs0: &[String],
-) -> Result<WindowResult, CanonicalError> {
-    let k = shape.k;
-    let hwm = shape.hwm;
-    eprintln!("# === window: {label} (database={}) ===", shape.database);
-    eprintln!("# fold-alone: {batches} batches of K={k}, chained");
-    let mut pc = pc0;
-    let mut regs = regs0.to_vec();
-    let mut fold = ModeResult {
+    run: u32,
+    start: Chain,
+}
+
+/// Runs one arm: `warmup` batches, then `batches` timed ones, chained
+/// through the same state the untimed ones left.
+async fn run_arm(
+    db: &Db,
+    shape: &Shape<'_>,
+    args: &ArmArgs<'_>,
+) -> Result<ArmResult, CanonicalError> {
+    let mode = args.mode.label();
+    let window = args.window;
+    eprintln!(
+        "# {window} {mode}: {} warm-up + {} timed batches of K={}, chained",
+        args.warmup, args.batches, shape.k
+    );
+    let mut chain = Chain {
+        pc: args.start.pc,
+        regs: args.start.regs.clone(),
+        icount: args.start.icount,
+        keyq: args.start.keyq,
+    };
+    let mut result = ArmResult {
         retired: 0,
         seconds: 0.0,
+        batches: Vec::new(),
+        final_pc: chain.pc,
+        final_icount: chain.icount,
     };
-    for batch_no in 1..=batches {
-        let (result, seconds) = run_fold_batch(db, shape, pc, &regs).await?;
-        if result.halted == 0 && result.retired != k {
-            return Err(CanonicalError::Truncated {
-                window: label.to_string(),
-                mode: "fold-alone",
-                batch: batch_no,
-                retired: result.retired as u64,
-                k,
-                hwm,
+    let mut query_ids: Vec<(u32, Vec<String>)> = Vec::new();
+
+    for index in 1..=(args.warmup + args.batches) {
+        let timed = index > args.warmup;
+        let tag = Tag {
+            run: args.run,
+            window,
+            mode,
+            batch: index,
+        };
+        let outcome = match args.mode {
+            Mode::Fold => {
+                let (outcome, fold_result) = run_fold_batch(db, shape, &tag, &chain).await?;
+                chain.pc = fold_result.pc;
+                chain.regs = wrap_regs(&fold_result.regs);
+                chain.icount += outcome.retired;
+                chain.keyq = fold_result.keyq_pos;
+                commit_fold_batch(db, shape.database, fold_result, chain.icount).await?;
+                outcome
+            }
+            Mode::E2e => run_e2e_batch(db, shape, &tag).await?,
+        };
+        let stop = classify(&outcome, shape.k, shape.hwm).ok_or_else(|| {
+            CanonicalError::UnexplainedShortBatch {
+                window: window.to_string(),
+                mode,
+                batch: index,
+                retired: outcome.retired,
+                k: shape.k,
+                hwm: shape.hwm,
+                write_log_len: outcome.write_log_len,
+            }
+        })?;
+        if stop == Stop::Halt {
+            return Err(CanonicalError::Halted {
+                window: window.to_string(),
+                mode,
+                batch: index,
+                retired: outcome.retired,
+                reason: outcome.halt_reason,
+            });
+        }
+        // A warm-up batch only has to advance the chain, so the mark
+        // binding on it is reported and allowed. A timed one measures
+        // different work than a full batch, so it is refused.
+        if timed && stop == Stop::HighWaterMark {
+            return Err(CanonicalError::HighWaterMarkBound {
+                window: window.to_string(),
+                mode,
+                batch: index,
+                retired: outcome.retired,
+                k: shape.k,
+                hwm: shape.hwm,
             });
         }
         eprintln!(
-            "#   fold batch {batch_no}: {seconds:.2}s retired={} halted={} halt_reason={}",
-            result.retired, result.halted, result.halt_reason
+            "#   {} batch {index}: {:.2}s retired={} wl={} stop={}",
+            if timed { "timed " } else { "warm-up" },
+            outcome.seconds,
+            outcome.retired,
+            outcome.write_log_len,
+            stop.label()
         );
-        fold.retired += result.retired as u64;
-        fold.seconds += seconds;
-        pc = result.pc;
-        regs = wrap_regs(&result.regs);
+        if timed {
+            result.retired += outcome.retired;
+            result.seconds += outcome.seconds;
+        }
+        result.final_pc = outcome.pc;
+        result.final_icount += outcome.retired;
+        query_ids.push((index, outcome.query_ids));
+        result.batches.push(BatchRecord {
+            index,
+            timed,
+            seconds: outcome.seconds,
+            retired: outcome.retired,
+            write_log_len: outcome.write_log_len,
+            stop,
+            regime: Regime::default(),
+        });
     }
-    eprintln!(
-        "# fold-alone total: retired={} seconds={:.2} instr/sec={:.1}",
-        fold.retired,
-        fold.seconds,
-        fold.instr_per_sec()
-    );
 
-    eprintln!("# e2e: {batches} batches of K={k}, chained through commit flushes");
-    let mut e2e = ModeResult {
-        retired: 0,
-        seconds: 0.0,
-    };
-    let mut e2e_halt_reason = String::new();
-    for batch_no in 1..=batches {
-        let result = run_e2e_batch(db, shape).await?;
-        if result.halted == 0 && result.retired != k as u64 {
-            return Err(CanonicalError::Truncated {
-                window: label.to_string(),
-                mode: "e2e",
-                batch: batch_no,
-                retired: result.retired,
-                k,
-                hwm,
+    attach_regime(db, window, mode, &query_ids, &mut result.batches).await?;
+    check_regime(window, mode, args.warmup, &result.batches)?;
+    eprintln!(
+        "# {window} {mode} total: retired={} seconds={:.2} instr/sec={:.1}",
+        result.retired,
+        result.seconds,
+        result.instr_per_sec()
+    );
+    Ok(result)
+}
+
+/// Fills in each batch's compilation events from `system.query_log`. A
+/// batch whose statements left no row is an error: an absent row would
+/// otherwise read as "compiled nothing", which is the thing the check is
+/// looking for.
+async fn attach_regime(
+    db: &Db,
+    window: &str,
+    mode: &'static str,
+    query_ids: &[(u32, Vec<String>)],
+    batches: &mut [BatchRecord],
+) -> Result<(), CanonicalError> {
+    let flat: Vec<String> = query_ids
+        .iter()
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .collect();
+    let by_id = regime::read(db, &flat).await?;
+    for ((batch, ids), record) in query_ids.iter().zip(batches.iter_mut()) {
+        for id in ids {
+            let found = by_id.get(id).ok_or_else(|| CanonicalError::NoQueryLogRow {
+                window: window.to_string(),
+                mode,
+                batch: *batch,
+                query_id: id.clone(),
+            })?;
+            record.regime.add(*found);
+        }
+    }
+    Ok(())
+}
+
+/// Holds the arm's numbers to one compilation regime: the warm-up crossed
+/// the compile threshold, and no timed batch crossed it. The second half
+/// alone would pass on a server that never compiles at all, so both are
+/// checked.
+fn check_regime(
+    window: &str,
+    mode: &'static str,
+    warmup: u32,
+    batches: &[BatchRecord],
+) -> Result<(), CanonicalError> {
+    let warmed = batches
+        .iter()
+        .any(|b| !b.timed && b.regime.compile_function > 0);
+    if !warmed {
+        return Err(CanonicalError::WarmUpCompiledNothing {
+            window: window.to_string(),
+            mode,
+            warmup,
+        });
+    }
+    for batch in batches.iter().filter(|b| b.timed) {
+        if batch.regime.compile_function > 0 {
+            return Err(CanonicalError::CompiledWhileTimed {
+                window: window.to_string(),
+                mode,
+                batch: batch.index,
+                compile_function: batch.regime.compile_function,
+                compile_micros: batch.regime.compile_micros,
+                warmup,
             });
         }
-        eprintln!(
-            "#   e2e batch {batch_no}: {:.2}s retired={} halted={} halt_reason={}",
-            result.seconds, result.retired, result.halted, result.halt_reason
-        );
-        e2e.retired += result.retired;
-        e2e.seconds += result.seconds;
-        e2e_halt_reason = result.halt_reason;
     }
-    eprintln!(
-        "# e2e total: retired={} seconds={:.2} instr/sec={:.1}",
-        e2e.retired,
-        e2e.seconds,
-        e2e.instr_per_sec()
-    );
-
-    Ok(WindowResult {
-        label: label.to_string(),
-        k,
-        hwm,
-        fold,
-        e2e,
-        e2e_halt_reason,
-    })
+    Ok(())
 }
 
 async fn seed_word_table(
@@ -489,6 +912,47 @@ async fn seed_snapshot(db: &Db, snapshot: &Snapshot) -> Result<(), CanonicalErro
     Ok(())
 }
 
+/// Runs `refemu run --stop-at frame:0 --halt-report -` to measure what the
+/// ROM costs to produce a frame. `refemu` writes the report as JSON on
+/// stdout and its own human summary on stderr.
+fn measure_first_frame(
+    refemu_bin: &Path,
+    bin: &Path,
+    manifest_path: &Path,
+    max_instructions: u64,
+) -> Result<FirstFrame, CanonicalError> {
+    let output = std::process::Command::new(refemu_bin)
+        .arg("run")
+        .arg(bin)
+        .arg("--manifest")
+        .arg(manifest_path)
+        .arg("--pinned-hash")
+        .arg("rom/PINNED_HASH")
+        .arg("--stop-at")
+        .arg("frame:0")
+        .arg("--max-instructions")
+        .arg(max_instructions.to_string())
+        .arg("--halt-report")
+        .arg("-")
+        .output()
+        .map_err(|e| CanonicalError::Spawn(refemu_bin.display().to_string(), e))?;
+    if !output.status.success() {
+        return Err(CanonicalError::RefemuFailed(
+            refemu_bin.display().to_string(),
+            output.status,
+        ));
+    }
+    let report: RunReport = serde_json::from_slice(&output.stdout)
+        .map_err(|e| CanonicalError::RefemuReport(refemu_bin.display().to_string(), e))?;
+    let commit = report.first_frame_commit.ok_or_else(|| {
+        CanonicalError::NoFrameInBudget(refemu_bin.display().to_string(), max_instructions)
+    })?;
+    Ok(FirstFrame {
+        instructions: commit.retired_icount,
+        frame_no: commit.frame_no,
+    })
+}
+
 /// Runs `refemu run --stop-at icount:N --dump-state` to reach
 /// `target_icount` in minutes instead of the tens of hours live execution
 /// through the SQL CPU would cost, caching the result: the format version is
@@ -539,36 +1003,25 @@ fn generate_or_reuse_snapshot(
     Ok(path)
 }
 
-/// Runs the whole benchmark: both windows, fold-alone and end to end,
-/// `args.batches` chained batches each. The two per-run databases are
-/// always dropped on the way out, success or failure, so an aborted run
-/// never leaks one.
-pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Report, CanonicalError> {
-    let boot_db = format!("canonical_throughput_boot_{}", std::process::id());
-    let gameplay_db = format!("canonical_throughput_gameplay_{}", std::process::id());
-
-    let result = run_inner(conn, args, &boot_db, &gameplay_db).await;
-
-    let admin = db_at(conn, "default");
-    let boot_dropped = admin
-        .run(&format!("DROP DATABASE IF EXISTS {boot_db}"))
-        .await;
-    let gameplay_dropped = admin
-        .run(&format!("DROP DATABASE IF EXISTS {gameplay_db}"))
-        .await;
-
-    let report = result?;
-    boot_dropped?;
-    gameplay_dropped?;
-    Ok(report)
+/// Where a window's start state comes from.
+enum Seed<'a> {
+    /// The reset vector.
+    Reset,
+    /// A captured machine.
+    Snapshot(&'a Snapshot),
 }
 
-async fn run_inner(
-    conn: &ConnArgs,
-    args: &Args<'_>,
-    boot_db: &str,
-    gameplay_db: &str,
-) -> Result<Report, CanonicalError> {
+/// One window: its label, its start state, and where it starts executing.
+struct Window<'a> {
+    label: String,
+    seed: Seed<'a>,
+    start: Chain,
+}
+
+/// Runs the whole benchmark: both windows, fold-alone and end to end, each
+/// arm on a container of its own. A container is removed when its handle
+/// drops, so an arm that fails leaves nothing behind.
+pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
     let blob = std::fs::read(args.bin).map_err(|source| CanonicalError::Read {
         path: args.bin.to_owned(),
         source,
@@ -606,21 +1059,16 @@ async fn run_inner(
     .trim()
     .to_string();
 
-    eprintln!("# --- setting up boot window (fresh reset state) ---");
-    create_and_load_database(
-        &db_at(conn, "default"),
-        conn,
-        boot_db,
+    let first_frame = measure_first_frame(
+        &args.refemu_bin,
         args.bin,
         args.manifest_path,
-        text_start_word,
-        text_end_word,
-    )
-    .await?;
-    {
-        let boot_conn_db = db_at(conn, boot_db);
-        crate::bootstrap::seed(&boot_conn_db, &crate::bootstrap::RESET_REGS).await?;
-    }
+        args.first_frame_max_instructions,
+    )?;
+    eprintln!(
+        "# ROM: first frame (frame_no {}) at icount {}",
+        first_frame.frame_no, first_frame.instructions
+    );
 
     eprintln!(
         "# --- generating/reusing gameplay-window snapshot (icount={}) ---",
@@ -635,124 +1083,299 @@ async fn run_inner(
         &args.snapshot_dir,
     )?;
     let snapshot = Snapshot::read(&snapshot_path, &["ram", "framebuffer", "palette"])?;
+    let snapshot_frame = snapshot
+        .header
+        .last_frame_commit
+        .as_ref()
+        .map(|f| format!("after frame index {} (frame_no {})", f.index, f.frame_no))
+        .unwrap_or_else(|| "before any frame".to_string());
 
-    eprintln!("# --- setting up gameplay window (seeded from snapshot) ---");
+    let windows = [
+        Window {
+            label: format!("boot: from icount 0, to frame {}", first_frame.frame_no),
+            seed: Seed::Reset,
+            start: Chain {
+                pc: RAM_BASE,
+                regs: wrap_regs(&[0u32; 31]),
+                icount: 0,
+                keyq: 0,
+            },
+        },
+        Window {
+            label: format!(
+                "store-heavy gameplay: from icount {}, {snapshot_frame}",
+                snapshot.header.icount
+            ),
+            seed: Seed::Snapshot(&snapshot),
+            start: Chain {
+                pc: snapshot.header.pc.expect("machine snapshot carries pc"),
+                regs: wrap_regs(
+                    &snapshot
+                        .header
+                        .regs
+                        .as_ref()
+                        .expect("machine snapshot carries regs")[1..32],
+                ),
+                icount: snapshot.header.icount,
+                keyq: 0,
+            },
+        },
+    ];
+
+    let run_id = std::process::id();
+    let mut clickhouse_version = String::new();
+    let mut decoded_rows = 0u64;
+    let mut results = Vec::new();
+    for window in &windows {
+        let mut arms = Vec::new();
+        for mode in Mode::ALL {
+            eprintln!(
+                "# === {} {} : starting a container from {} ===",
+                window.label,
+                mode.label(),
+                args.image
+            );
+            let container = super::docker::start(args.image)
+                .await
+                .map_err(|e| CanonicalError::DockerStart(args.image.to_string(), Box::new(e)))?;
+            let conn = ConnArgs {
+                host: "127.0.0.1".to_string(),
+                port: container.http_port,
+                user: "default".to_string(),
+                database: "default".to_string(),
+                password: Some("clickdoom".to_string()),
+            };
+            let arm = provision_and_run(
+                &conn,
+                args,
+                window,
+                mode,
+                run_id,
+                text_start_word,
+                text_end_word,
+                Shape {
+                    k: args.k,
+                    hwm: args.hwm,
+                    text_start_widx,
+                    text_end_widx,
+                    decn,
+                    ram_words,
+                    database: ARM_DATABASE,
+                },
+                &mut clickhouse_version,
+                &mut decoded_rows,
+            )
+            .await;
+            drop(container);
+            arms.push(arm?);
+        }
+        let mut arms = arms.into_iter();
+        let fold = arms.next().expect("one arm per mode");
+        let e2e = arms.next().expect("one arm per mode");
+        if fold.final_pc != e2e.final_pc || fold.final_icount != e2e.final_icount {
+            return Err(CanonicalError::ArmsDiverged {
+                window: window.label.clone(),
+                fold_pc: fold.final_pc,
+                fold_icount: fold.final_icount,
+                e2e_pc: e2e.final_pc,
+                e2e_icount: e2e.final_icount,
+            });
+        }
+        eprintln!(
+            "# {}: both arms end at pc {:#010x} icount {}",
+            window.label, fold.final_pc, fold.final_icount
+        );
+        results.push(WindowResult {
+            label: window.label.clone(),
+            k: args.k,
+            hwm: args.hwm,
+            fold,
+            e2e,
+        });
+    }
+
+    Ok(Report {
+        rom_sha256,
+        clickhouse_version,
+        image: args.image.to_string(),
+        decoded_rows,
+        k: args.k,
+        hwm: args.hwm,
+        warmup: args.warmup,
+        batches: args.batches,
+        git_sha,
+        first_frame,
+        windows: results,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn provision_and_run(
+    conn: &ConnArgs,
+    args: &Args<'_>,
+    window: &Window<'_>,
+    mode: Mode,
+    run_id: u32,
+    text_start_word: u32,
+    text_end_word: u32,
+    shape: Shape<'_>,
+    clickhouse_version: &mut String,
+    decoded_rows: &mut u64,
+) -> Result<ArmResult, CanonicalError> {
+    let admin = db_at(conn, "default");
+    *clickhouse_version = admin.fetch_one("SELECT version()").await?;
     create_and_load_database(
-        &db_at(conn, "default"),
+        &admin,
         conn,
-        gameplay_db,
+        ARM_DATABASE,
         args.bin,
         args.manifest_path,
         text_start_word,
         text_end_word,
     )
     .await?;
-    {
-        let gameplay_conn_db = db_at(conn, gameplay_db);
-        gameplay_conn_db.run("TRUNCATE TABLE ram").await?;
-        seed_snapshot(&gameplay_conn_db, &snapshot).await?;
+    let db = db_at(conn, ARM_DATABASE);
+    match window.seed {
+        Seed::Reset => {
+            crate::bootstrap::seed(&db, &crate::bootstrap::RESET_REGS).await?;
+        }
+        Seed::Snapshot(snapshot) => {
+            db.run("TRUNCATE TABLE ram").await?;
+            seed_snapshot(&db, snapshot).await?;
+        }
     }
-
-    let windows = run_both_windows(
-        conn,
-        args,
-        boot_db,
-        gameplay_db,
-        &snapshot,
-        text_start_widx,
-        text_end_widx,
-        decn,
-        ram_words,
-    )
-    .await?;
-
-    let decoded_rows: u64 = db_at(conn, boot_db)
+    *decoded_rows = db
         .fetch_one("SELECT count(DISTINCT word_addr) FROM decoded")
-        .await
-        .unwrap_or(0);
-
-    Ok(Report {
-        rom_sha256,
-        decoded_rows,
-        k: args.k,
-        hwm: args.hwm,
-        batches: args.batches,
-        git_sha,
-        windows,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_both_windows(
-    conn: &ConnArgs,
-    args: &Args<'_>,
-    boot_db: &str,
-    gameplay_db: &str,
-    snapshot: &Snapshot,
-    text_start_widx: u32,
-    text_end_widx: u32,
-    decn: u32,
-    ram_words: u32,
-) -> Result<Vec<WindowResult>, CanonicalError> {
-    let boot_conn_db = db_at(conn, boot_db);
-    let boot_regs0 = wrap_regs(&[0u32; 31]);
-    let boot_label = format!("boot: [0, {})", args.windows.boot_end_icount);
-    let boot_shape = Shape {
-        k: args.k,
-        hwm: args.hwm,
-        text_start_widx,
-        text_end_widx,
-        decn,
-        ram_words,
-        database: boot_db,
-    };
-    let boot = run_window(
-        &boot_conn_db,
-        &boot_label,
-        &boot_shape,
-        args.batches,
-        RAM_BASE,
-        &boot_regs0,
+        .await?;
+    run_arm(
+        &db,
+        &shape,
+        &ArmArgs {
+            window: &window.label,
+            mode,
+            warmup: args.warmup,
+            batches: args.batches,
+            run: run_id,
+            start: Chain {
+                pc: window.start.pc,
+                regs: window.start.regs.clone(),
+                icount: window.start.icount,
+                keyq: window.start.keyq,
+            },
+        },
     )
-    .await?;
-
-    let gameplay_conn_db = db_at(conn, gameplay_db);
-    let snapshot_pc = snapshot.header.pc.expect("machine snapshot carries pc");
-    let snapshot_regs = snapshot
-        .header
-        .regs
-        .as_ref()
-        .expect("machine snapshot carries regs")[1..32]
-        .to_vec();
-    let gameplay_regs0 = wrap_regs(&snapshot_regs);
-    let gameplay_label = format!(
-        "store-heavy gameplay: [{}, {})",
-        args.windows.gameplay_target_icount, args.windows.gameplay_window_end_icount
-    );
-    let gameplay_shape = Shape {
-        k: args.k,
-        hwm: args.hwm,
-        text_start_widx,
-        text_end_widx,
-        decn,
-        ram_words,
-        database: gameplay_db,
-    };
-    let gameplay = run_window(
-        &gameplay_conn_db,
-        &gameplay_label,
-        &gameplay_shape,
-        args.batches,
-        snapshot_pc,
-        &gameplay_regs0,
-    )
-    .await?;
-
-    Ok(vec![boot, gameplay])
+    .await
 }
 
 pub(crate) fn db_at(conn: &ConnArgs, database: &str) -> Db {
     let mut c = conn.clone();
     c.database = database.to_string();
     c.connect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outcome(retired: u64, halted: u8, frame: u8, wl: u32) -> BatchOutcome {
+        BatchOutcome {
+            seconds: 1.0,
+            retired,
+            pc: RAM_BASE,
+            halted,
+            halt_reason: String::new(),
+            write_log_len: wl,
+            frame_committed: frame,
+            query_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_full_batch_is_full_k() {
+        assert_eq!(
+            classify(&outcome(60_000, 0, 0, 100), 60_000, 20_000),
+            Some(Stop::FullK)
+        );
+    }
+
+    #[test]
+    fn a_halt_outranks_the_retired_count() {
+        assert_eq!(
+            classify(&outcome(113, 1, 0, 3), 60_000, 20_000),
+            Some(Stop::Halt)
+        );
+    }
+
+    #[test]
+    fn a_short_batch_that_committed_a_frame_is_a_frame_commit() {
+        // The case #241 reports: 10,942 retired, halted=0, and far too few
+        // stores for the high-water mark to be the cause.
+        assert_eq!(
+            classify(&outcome(10_942, 0, 1, 42), 60_000, 20_000),
+            Some(Stop::FrameCommit)
+        );
+    }
+
+    #[test]
+    fn a_short_batch_at_the_high_water_mark_is_named() {
+        assert_eq!(
+            classify(&outcome(31_500, 0, 0, 20_000), 60_000, 20_000),
+            Some(Stop::HighWaterMark)
+        );
+    }
+
+    #[test]
+    fn a_short_batch_with_no_cause_is_not_classified() {
+        assert_eq!(classify(&outcome(31_500, 0, 0, 7), 60_000, 20_000), None);
+    }
+
+    fn record(index: u32, timed: bool, compile_function: u64) -> BatchRecord {
+        BatchRecord {
+            index,
+            timed,
+            seconds: 1.0,
+            retired: 60_000,
+            write_log_len: 100,
+            stop: Stop::FullK,
+            regime: Regime {
+                compile_function,
+                compile_micros: compile_function * 1_000,
+            },
+        }
+    }
+
+    #[test]
+    fn a_warm_up_that_compiled_and_timed_batches_that_did_not_pass() {
+        let batches = [
+            record(1, false, 0),
+            record(2, false, 0),
+            record(3, false, 0),
+            record(4, false, 3),
+            record(5, true, 0),
+            record(6, true, 0),
+        ];
+        assert!(check_regime("boot", "fold", 4, &batches).is_ok());
+    }
+
+    #[test]
+    fn a_warm_up_that_compiled_nothing_is_refused() {
+        // What a second arm on a shared server sees: the first arm already
+        // compiled the step lambda, so this arm's warm-up finds it cached.
+        let batches = [record(1, false, 0), record(2, true, 0)];
+        let err = check_regime("boot", "e2e", 1, &batches).expect_err("must refuse");
+        assert!(
+            matches!(err, CanonicalError::WarmUpCompiledNothing { .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn compiling_inside_a_timed_batch_is_refused() {
+        let batches = [record(1, false, 3), record(2, true, 1)];
+        let err = check_regime("boot", "fold", 1, &batches).expect_err("must refuse");
+        assert!(
+            matches!(err, CanonicalError::CompiledWhileTimed { batch: 2, .. }),
+            "{err}"
+        );
+    }
 }

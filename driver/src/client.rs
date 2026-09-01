@@ -72,12 +72,40 @@ impl Db {
         Ok(())
     }
 
+    /// Runs a statement that returns no rows under `query_id`, so
+    /// `system.query_log` can be read back for this one statement.
+    /// ClickHouse's HTTP handler reserves `query_id` as a URL parameter and
+    /// takes it as the query's identity rather than passing it on as a
+    /// setting.
+    pub async fn run_with_query_id(&self, query_id: &str, sql: &str) -> Result<(), Error> {
+        self.client
+            .query(sql)
+            .with_setting("query_id", query_id)
+            .execute()
+            .await?;
+        Ok(())
+    }
+
     /// Runs a statement and fetches a single row.
     pub async fn fetch_one<T>(&self, sql: &str) -> Result<T, Error>
     where
         T: clickhouse::RowOwned + clickhouse::RowRead,
     {
         Ok(self.client.query(sql).fetch_one::<T>().await?)
+    }
+
+    /// Runs a statement and fetches a single row under `query_id`. Same
+    /// identity rule as [`Db::run_with_query_id`].
+    pub async fn fetch_one_with_query_id<T>(&self, query_id: &str, sql: &str) -> Result<T, Error>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead,
+    {
+        Ok(self
+            .client
+            .query(sql)
+            .with_setting("query_id", query_id)
+            .fetch_one::<T>()
+            .await?)
     }
 
     /// Runs a statement and fetches every row.

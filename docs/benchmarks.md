@@ -29,6 +29,7 @@ measures and how it reaches the gameplay window without a multi-hour run.
 | [`batch-attribution`](experiments/batch-attribution.md) | Where does one end-to-end batch's time go, and would a larger K amortise the setup? | A batch is 99.86% fold. Raising K is rejected. |
 | [`write-log-growth`](experiments/write-log-growth.md) | Does per-instruction cost grow within a batch? | Yes, linearly in write-log length, at 3.41 ns per element per step, of which 79% is accumulator copy. Removing the scan is worth about 2% of a batch. |
 | [`write-log-high-water-mark`](experiments/write-log-high-water-mark.md) | Where does the write-log flush stop being cheap? | The default of 20,000, at the bottom of the measured curve. Boot runs six instructions below it. |
+| [`short-circuit-and-gameplay`](experiments/short-circuit-and-gameplay.md) | What does turning short-circuit evaluation off do, and what is a gameplay batch worth? | Pinning `disable` with every divisor guarded is worth 14.62% end to end and holds in gameplay. Boot is 5,334 instr/sec, gameplay 4,899. |
 | [`batch-overhead-split`](experiments/batch-overhead-split.md) | Does end-to-end overhead come from state reload or the write-log flush? | No result recorded. |
 | [`halt-semantics-cost`](experiments/halt-semantics-cost.md) | What do the fold's halt semantics cost? | No result recorded. |
 
@@ -37,6 +38,7 @@ measures and how it reaches the gameplay window without a multi-hour run.
 | Record | Question it settles | What came out |
 |---|---|---|
 | [`compiled-node-cost`](experiments/compiled-node-cost.md) | What does one expression node cost in a fold step? | 4.4 ns compiled, 0.29 us interpreted. The recorded per-node price was the literals the nodes carry. |
+| [`captured-literal-cost`](experiments/captured-literal-cost.md) | What does one distinct captured literal cost in a fold step? | 0.306 us at UInt8 against 0.0118 us for an action node. Real, and it does not reach the target. |
 | [`expression-jit`](experiments/expression-jit.md) | What does ClickHouse's expression JIT compile in the fold step, and what does that buy? | Small islands compile, worth 5.8% to 8.1%. Making more of the fold compilable is rejected. |
 | [`subexpression-dedup`](experiments/subexpression-dedup.md) | Does `arrayFold` deduplicate repeated subexpressions, and at what node cost? | Dedup is structural rather than textual, and partial. Binding wins at the depth the fold emits. |
 | [`block-dispatch`](experiments/block-dispatch.md) | What does an unselected branch cost inside `arrayFold`? | An unselected arm costs what a selected one costs. Static block translation rejected. |

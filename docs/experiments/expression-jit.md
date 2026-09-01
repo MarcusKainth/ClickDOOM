@@ -209,6 +209,17 @@ per island, at or below the cost of a four-function-node island. So the step
 expression compiles into 58 very small islands, half a megabyte of machine
 code and 205 ms of LLVM work.
 
+Those numbers belong to the 324,444-byte lambda body in the table. The
+production generator compiles 65 islands for the step on a cold container,
+66 counting the batch-level projection, at 284,705 us of LLVM and 548,864
+bytes, read from ProfileEvents and matched one for one against the island
+DAGs `ExpressionJIT` logs at trace level. Of the 65, 41 execute per step at
+`short_circuit_function_evaluation = 'enable'`, absorbing 123 of the step's
+318 actions at 3.0 nodes each, counted in
+[`compiled-node-cost.md`](compiled-node-cost.md). Both readings say the same
+thing about shape. The islands are small and most of the step is
+interpreted.
+
 What that buys is not measurable. Paired runs at K = 100 for fixed cost only
 and K = 100,100, interleaved so machine load is common-mode, n = 3, times in
 milliseconds.
@@ -228,6 +239,15 @@ The paired difference is 838 ms on about 59,000 ms, so 1.4%, with a 95%
 confidence interval of -4,324 to +5,999 ms. That is a speedup of 1.014x with
 a 95% interval of roughly 0.93x to 1.11x. Any real effect on the real step
 expression larger than about 10% is excluded by this data.
+
+An effect smaller than that is not excluded, and there is one. On 26.7.5.10 an
+identical batch repeated in one fresh container steps by 5.83%, 7.80% and 8.05%
+at three write-log lengths, on the repeat where `CompileFunction` fires, and
+holds the faster time for every repeat after it. Those figures sit inside this
+measurement's own interval, so the two do not disagree. This one had no power
+to see them, and its lambda body is 324,444 bytes against the 57,006 that
+[`write-log-growth.md`](write-log-growth.md) counts, so it is not the same
+expression.
 
 Fixed per-batch cost at K = 100 against this 2 MiB fixture is 25.3 s,
 independent of the compiler and much larger than anything measured here.
@@ -258,6 +278,11 @@ Making more of the fold compilable is rejected as a route to throughput. The
 step expression already compiles as much as ClickHouse can compile of an
 expression of this shape, and the compiled fraction is not where the time
 is.
+
+Compilation itself is worth 5.83% to 8.05%, not the 1.014x the pair above
+reports. Getting it needs no change to the fold. It needs a server that has run
+the batch `min_count_to_compile_expression` times, 3 by default, so a fresh
+server pays the uncompiled price for three batches and then stops.
 
 Almost everything scalar compiles. All integer casts fuse, and `multiIf`
 fuses at 28 arms. The

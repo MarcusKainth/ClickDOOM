@@ -193,6 +193,14 @@ linear step work 22,176 ms (83.1%), write-log growth 2,747 ms (10.3%). The
 optimum is K ≈ 47,900, at 53,133 ms against 53,359 ms at K = 60,000, a
 difference of 0.4%.
 
+Setup is the one term here that moves with the ClickHouse version. On
+26.7.5.10 the same `K = 0` probe against the real production batch reads
+624 ms, 4.8% of a 13,088 ms steady-state batch, so it shrank about 2.6x
+where the batch shrank the 1.77x [`native-vs-docker.md`](native-vs-docker.md)
+measures. Of that 624 ms, 117 ms is the RAM capture, and 91 ms of the 117 is
+its `groupArray(tuple(value))` wrapper, so a capture spelled without the
+tuple puts setup at 531 ms.
+
 ### K is capped by the high-water mark
 
 Measured directly. Boot window, K = 80,000, one batch:
@@ -227,9 +235,21 @@ The fold itself over 20 chained batches at K = 60,000: batches 3 to 19 mean
 27,072 ms, no trend. `ram` accumulated 20 new parts and background merges
 kept up with 9 MergeParts events across the run.
 
-Compilation on the 4th batch is worth about 16% here, 29,661 ms down to
-25,051 ms, and it stays warm afterwards. A three-batch benchmark measures
-the wrong regime for a multi-day run.
+The drop at the 4th batch is about 16% here, 29,661 ms down to 25,051 ms,
+and it stays down afterwards. Compilation is not all of it. The same drop
+reproduces on 26.7.5.10 as 17.0% between batches 1 to 3 and batches 5 to 14
+of the boot series in [`compiled-node-cost.md`](compiled-node-cost.md), and
+it splits in two. Compilation is worth 5.8% to 8.1%, measured paired inside
+one container at three work points with the work verified byte-identical.
+The other term is the write log falling away from the 20,000 high-water mark
+as boot leaves its memset loop, about 11%, which
+[`write-log-growth.md`](write-log-growth.md)'s slope predicts at 2,046 ms
+against 2,012 ms measured. Reading the whole drop as compilation overstates
+compilation by about 2.7x.
+
+The first batches of a boot run are the only ones that are both uncompiled
+and holding the write log at the mark, so a three-batch benchmark measures
+the wrong regime for a multi-day run and measures two terms at once.
 
 ## Verdict
 
@@ -237,10 +257,11 @@ A batch is 99.86% fold. The entire commit path plus the fold's fixed setup
 is about 1%, so there is no lever in the commit path.
 
 Raising K is rejected. The fixed setup is real at about 1,650 ms, 6.6% of a
-K = 60,000 batch, but it is the analyzer walking generated SQL rather than
-the RAM capture, larger K does not amortise it usefully because write-log
-growth is superlinear, and in the boot window larger K is not available at
-all. The optimum is 0.4% from the K in use.
+K = 60,000 batch on this version and 4.8% of one on 26.7.5.10, but it is the
+analyzer walking generated SQL rather than the RAM capture, larger K does not
+amortise it usefully because write-log growth is superlinear, and in the boot
+window larger K is not available at all. The optimum is 0.4% from the K in
+use.
 
 A retention change is worth taking if it is free and mechanically right. Do
 not expect a throughput number from one: retention is 0.13% of a

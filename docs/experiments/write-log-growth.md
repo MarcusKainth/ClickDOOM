@@ -103,7 +103,7 @@ against the measured slope, which is two instruments sharing no assumption.
 | K | 60,000 for the headline, also 30,000 and 15,000 |
 | HWM | 200,000, raised deliberately and held constant |
 | Settings | `max_threads = 1` |
-| Regime | `CompileFunction = 0` on every arm, uniformly uncompiled |
+| Regime | uniformly compiled, cache warmed before the first arm |
 | Headroom | 12 to 16 idle cores of 18, gated live throughout |
 | Baseline | `pc = 0x80000020`, `retired = 60000`, `halted = 0`, `wl_len = 19998` |
 
@@ -244,6 +244,25 @@ and merely cheap.
 
 Three independent instruments agree to within 3%.
 
+### The split is the other way round
+
+The total is right and the split is inverted. Gating the scan inside the fold
+measures each term directly, on 26.7.5.10 at K = 20,000 with the same seeding
+method, the same `K = 0` subtraction and 5 repeats. Every arm at every `L0`
+returns the `L0 = 0` state, so the gate changes what runs and not what the
+program computes.
+
+| arm | what the scan does | ns per element per step | R2 |
+|---|---|---:|---:|
+| none | runs on every step, today's fold | 3.380 | 0.99891 |
+| scan | runs on the steps that touch memory | 2.898 | 0.99910 |
+| scanoff | never runs | 2.673 | 0.99895 |
+
+The 3.41 ns total confirms at 3.380. Removing the scan leaves 2.673, so the copy is
+2.673 ns and the scan is 0.707. The standalone primitive rates in the section
+above have the two the other way round, at 2.790 for the scan and 0.633 for the
+copy, and neither transferred into the fold.
+
 ## Verdict
 
 Per-instruction cost does grow within a batch, linearly in write-log length,
@@ -256,22 +275,38 @@ sharing none of its assumptions.
 Binding the load-forwarding scan once has no headroom. ClickHouse already
 collapses all six textual calls, so doing it by hand recovers nothing.
 
-The remaining lever is the scan itself, and it is bounded. The scan is 81%
-of the write-log term, and the write-log term is 10.3% of a K = 60,000 boot
-batch, so the whole linear-scan mechanism is about 8% of a batch. Any
-structure that removes the scan, a map, an index or a sorted log, is
-competing for that 8%. That is small enough to argue the line of work should
-stop.
+The scan is 0.707 of the 3.380 ns, so 21% of the write-log term, and the
+write-log term is 10.3% of a K = 60,000 boot batch. The whole linear-scan
+mechanism is about 2% of a batch. Any structure that removes the scan, a map,
+an index or a sorted log, is competing for that 2%, and it still has to be
+carried in the accumulator, which is where the other 79% is. That is small
+enough to argue the line of work should stop.
 
 ## What went wrong along the way
 
-Both mistakes are easy to repeat and are recorded for that reason.
+Every mistake here is easy to repeat and is recorded for that reason.
 
 The copy rate was overstated by about 30x by a microbenchmark that built the
 three lanes outside a fold and forced materialisation with `cityHash64` over
 the pushed arrays. The hash is itself proportional to length and dominated
-the measurement, reporting 18.5 ns per element where the real copy is 0.633.
+the measurement, reporting 18.5 ns per element where the same copy outside a
+fold is 0.633.
 Scaffolding has to be cheaper than the thing it scaffolds.
+
+The split between scan and copy was read off standalone primitive rates and
+came out inverted. Those rates predict 2.671 ns of scan against 0.633 of copy;
+gating the scan inside the fold measures 0.707 of scan against 2.673 of copy.
+They sum to the right total, which is why three instruments agreeing to within
+3% looked like corroboration. Agreement on a total is not agreement on its
+terms, and the terms are what a plan to remove the scan is costed against.
+
+The compilation regime was read off the wrong counter. `CompileFunction`
+counts compilations, so it increments on the arm that misses the
+compiled-expression cache and reads 0 on every arm after it. The four
+warm-ups cross `min_count_to_compile_expression`, 3 by default, so every
+recorded arm ran compiled and a reading of 0 was taken for uncompiled. The
+slope needs the regime to be uniform and does not need it to be any
+particular regime, so it stands either way.
 
 The growth exponent was read too early. At N up to 80,000 it reads about
 1.43, which is ambiguous between linear and quadratic; it only reaches 1.97
@@ -286,12 +321,6 @@ machine was quiet when the run began. The contaminated arms were discarded
 and re-run rather than reported.
 
 ## Limits
-
-`CompileFunction` reads 0 on every arm despite four warm-ups, whereas the
-per-batch attribution measurement saw compilation fire on the 4th batch. The
-regime is at least uniform, which is what the slope needs, but the
-discrepancy is unexplained and matters before anyone compares absolute batch
-times across the two.
 
 The gameplay window is not measured. Its general-RAM store density is about
 9.4% against boot's about 33%, because framebuffer and palette stores go to

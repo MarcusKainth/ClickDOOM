@@ -43,6 +43,15 @@ ROM. The instrument refuses to report throughput computed on a truncated
 batch, since a batch that stops early measures different work than a full
 one.
 
+Three chained batches from reset are the slowest of a boot run. They are the
+only ones that are both uncompiled, since `min_count_to_compile_expression`
+defaults to 3, and holding a write log at the 20,000 high-water mark. A
+14-batch chained series on the same server and settings measures batches 1 to 3
+at 3,807.5 instructions per second end to end and batches 5 to 14 at 4,584.5,
+recorded in [`compiled-node-cost.md`](compiled-node-cost.md). Every real-ROM
+number below is a comparison between arms inside that first regime rather than
+this fold's throughput.
+
 ## Results
 
 ### Native against Docker on the same release

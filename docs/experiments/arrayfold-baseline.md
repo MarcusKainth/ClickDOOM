@@ -88,10 +88,10 @@ remaining amortisation. The acceptance threshold in force at the time was
 10,000 instructions per second sustained end to end, and K = 50,000 clears
 it.
 
-### Node count is the lever
+### Cost per step against node count
 
-Cost per fold step tracks the number of expression nodes in the lambda, not
-the volume of data touched. N chained `bitXor` nodes at K = 20,000:
+Cost per fold step tracks the size of the expression in the lambda, not the
+volume of data touched. N chained `bitXor` nodes at K = 20,000:
 
 | nodes | seconds | us per node per step |
 |---:|---:|---:|
@@ -99,6 +99,14 @@ the volume of data touched. N chained `bitXor` nodes at K = 20,000:
 | 20 | 0.270 | 0.68 |
 | 100 | 1.260 | 0.63 |
 | 400 | 7.881 | 0.99 |
+
+The last column divides by node count, and that is the wrong denominator.
+[`compiled-node-cost.md`](compiled-node-cost.md) reruns this shape on
+26.7.5.10 with node count and distinct-literal count moved independently: a
+node is 4.4 ns compiled and 0.29 us interpreted, and each distinct literal in
+the chain costs 0.16 to 0.28 us per step. Figures in this column's range come
+out of a chain whose literals move with its nodes, and they price the node and
+its literal together.
 
 `arrayFold` evaluates its lambda as a full expression pass over a one-row
 block per element, so ClickHouse pays its per-function-call overhead on
@@ -117,10 +125,31 @@ every node. Five consequences follow, each measured rather than assumed.
   costs about what a 1-row block costs.
 - `short_circuit_function_evaluation` does not rescue it. `enable`,
   `force_enable` and `disable` measured 6.385 s, 6.451 s and 6.4 s on the
-  realistic fold.
+  realistic fold. Those three are within about 1% of each other on this
+  fixture and 24% apart on the production fold, measured below.
 - The let-binding idiom `arrayMap(v -> ..., [expr])[1]` costs about 4.5 us
   per binding, so recomputing a cheap subexpression twice beats binding it
   once.
+
+### The short-circuit setting on the production fold
+
+The three settings separate on the production step expression. Measured on
+2026-08-31 on 26.7.5.10 against the real ROM, boot window, K = 60,000,
+HWM = 20,000, `max_threads = 1`, the production fold runs a batch in
+15,328 ms at `enable`, 16,776 ms at `force_enable` and 13,544 ms at
+`disable`. `force_enable` changes which islands the JIT builds, and
+`CompiledFunctionExecute` over the batch falls from 2,460,000 to 1,439,977.
+
+Paired inside one container over 6 pairs, `disable` against `enable` is
+-11.7%, 95% interval [-12.05%, -11.39%], with byte-identical output over the
+paired batch and over 720,000 chained instructions. That figure carries the
+non-zero divisor guard the fold needs in order to run at `disable`, which
+costs +1.56% on its own, so the setting by itself is worth -13.07%.
+
+Both fold queries pin `short_circuit_function_evaluation = 'disable'` in
+their own `SETTINGS` clause (`executor/src/fold.rs`).
+`docs/adr/0002-predecoded-instruction-table.md` carries what an expression
+has to satisfy to run under that pin.
 
 ### Where the remaining time goes
 
@@ -136,18 +165,18 @@ baseline.
 | write-log probe on loads | 3.453 | 5% |
 | everything else | | about 52% |
 
-There is no hotspot. Cost is diffuse, which is what the node-count model
-predicts. The M-extension arms are the largest single group, and because
-nothing short-circuits they cost that 18% on every instruction rather than
-only on multiplies.
+There is no hotspot. Cost is diffuse. The M-extension arms are the largest
+single group, and because nothing short-circuits they cost that 18% on every
+instruction rather than only on multiplies.
 
 ## Verdict
 
-`arrayFold` carries a CPU step, and the design proceeds on that basis. Two
-properties decide the cost. Pre-decoding the instruction stream is worth
-7.4x and is not optional. Node count in the step expression sets the
-per-step price and data volume does not, so the way to go faster is to emit
-fewer expression nodes.
+`arrayFold` carries a CPU step, and the design proceeds on that basis.
+Pre-decoding the instruction stream is worth 7.4x and is not optional.
+
+The step expression sets the per-step price and the volume of data it touches
+does not. Which property of the expression sets it is settled in
+[`compiled-node-cost.md`](compiled-node-cost.md), and it is not node count.
 
 ## Limits
 

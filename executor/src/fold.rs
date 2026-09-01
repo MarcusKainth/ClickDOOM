@@ -13,31 +13,178 @@ use crate::config::{
     OP_ILLEGAL, OP_LOAD, OP_STORE,
 };
 
+/// Which formulation of the step [`build_step_variant`] emits. Every arm
+/// computes the same accumulator from the same inputs. They differ in how
+/// much expression text the planner prints into each action node's
+/// `result_name`, and in how many distinct constants the lambda captures.
+/// [`Variant::Baseline`] is the one production runs.
+///
+/// Every arm reaches the server through the same `SETTINGS` clause as the
+/// baseline, so the totality rule stated on `FOLD_SETTINGS` covers all of
+/// them and not only [`Variant::Baseline`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Variant {
+    /// The formulation [`build_step`] emits.
+    #[default]
+    Baseline,
+    /// `halt_code` written out at every site that reads it, with no
+    /// `arrayMap` binding around the step tuple. Structural dedup keeps the
+    /// node count close to the baseline's while the printed text grows.
+    InlineHaltCode,
+    /// The `arrayMap` binding kept with a one-character lambda parameter.
+    /// The DAG is the baseline's node for node.
+    ShortBindingParam,
+    /// One further `arrayMap` binding for the decode row, nested outside
+    /// the `halt_code` binding. That is the step's most repeated
+    /// subexpression, and one binding is one further lambda scope for the
+    /// captured decode and RAM arrays to pass through.
+    BindDecodeRow,
+    /// [`Variant::BindDecodeRow`]'s binding plus one for each of the other
+    /// repeated subexpressions the step reads: both register operands, the
+    /// store value, the byte address, the word address and the loaded RAM
+    /// word.
+    BindRepeated,
+    /// The same result reached from fewer distinct captured constants.
+    /// [`FEWER_CONSTANTS_ASSUMES_MK`] states the one input-domain
+    /// assumption this arm carries that the baseline does not.
+    FewerConstants,
+    /// [`ADDED_CONSTANTS`] extra distinct captured constants, in `multiIf`
+    /// arms that the halt-code domain makes unreachable.
+    MoreConstants,
+}
+
+/// [`Variant::FewerConstants`] derives the load/store alignment mask from
+/// `mk`'s bit pattern instead of comparing against each width, which holds
+/// for the values `sqlcpu/decode.sql` writes into the column and for no
+/// others.
+pub const FEWER_CONSTANTS_ASSUMES_MK: [u32; 4] = [0, 255, 65_535, 4_294_967_295];
+
+/// How many extra distinct constants [`Variant::MoreConstants`] captures,
+/// and the first halt-code value its unreachable arms compare against. The
+/// halt codes `config` defines stop at [`HALT_EXIT`], so no arm fires.
+pub const ADDED_CONSTANTS: u8 = 60;
+const ADDED_CONSTANTS_FIRST: u8 = 33;
+
+/// What [`build_step_inner`] returns: the step itself, or the same
+/// expressions with every lambda binding replaced by a free column
+/// reference. No `EXPLAIN` form descends into a lambda, so the flat form
+/// is the only way to read one ActionsDAG holding every action node the
+/// step needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Emit {
+    Nested,
+    Flat,
+    /// The step with its `n` outermost bindings left free and the rest
+    /// still nested. `EXPLAIN` over this prints scope `n`'s own DAG, which
+    /// is what one `ExpressionActions` run executes per fold step.
+    Peel(usize),
+}
+
+/// Collects the `arrayMap` bindings a variant introduces, outermost first.
+/// [`Binder::bind`] returns the name to read the expression by, which is
+/// the expression itself when `on` is false, so a caller's text is
+/// byte-identical to the baseline's for a variant that binds nothing.
+struct Binder {
+    bindings: Vec<(&'static str, String)>,
+}
+
+impl Binder {
+    fn bind(&mut self, on: bool, name: &'static str, expr: String) -> String {
+        if !on {
+            return expr;
+        }
+        self.bindings.push((name, expr));
+        name.to_string()
+    }
+
+    /// `body` wrapped in one `arrayMap` per binding, so a binding pushed
+    /// later sits inside one pushed earlier and may read it. `peel` leaves
+    /// that many outermost bindings unwrapped, so their names stay free
+    /// column references.
+    fn wrap_peeled(self, body: String, peel: usize) -> String {
+        let kept = self.bindings.len().saturating_sub(peel);
+        self.bindings
+            .into_iter()
+            .skip(peel)
+            .take(kept)
+            .rev()
+            .fold(body, |inner, (name, expr)| {
+                format!("arrayMap({name} -> {inner}, [{expr}])[1]")
+            })
+    }
+
+    fn wrap(self, body: String) -> String {
+        self.wrap_peeled(body, 0)
+    }
+
+    /// `body` and every bound expression as one comma-separated list, for
+    /// [`Emit::Flat`].
+    fn flatten(self, body: String) -> String {
+        let mut parts = vec![body];
+        parts.extend(self.bindings.into_iter().map(|(_, expr)| expr));
+        parts.join(", ")
+    }
+}
+
+/// The column names [`build_step_flat`] leaves free, in the types
+/// `step_variants`'s probe table has to declare them with.
+pub const FLAT_COLUMNS: &[(&str, &str)] = &[
+    ("hc", "UInt8"),
+    ("h", "UInt8"),
+    (
+        "d",
+        "Tuple(UInt8, UInt8, UInt8, UInt8, UInt32, UInt32, UInt32, UInt8, UInt32)",
+    ),
+    ("va", "UInt32"),
+    ("vb", "UInt32"),
+    ("vr2", "UInt32"),
+    ("ad", "UInt32"),
+    ("wx", "UInt32"),
+    ("mw", "UInt32"),
+];
+
 /// `(ADDR, bad_addr_cond, misaligned_cond, WA_safe)`. `wa_safe` is masked
 /// into `[0, ram_words)` unconditionally, so `arrayElement` on RAM/write-log
 /// arrays never throws regardless of whether the access is actually in
 /// range; `bad_addr_cond` is the real (unmasked) bounds check used for halt
 /// detection, computed independently.
 struct AddrAndAlign {
-    addr: String,
     bad_addr_cond: String,
     misaligned_cond: String,
     wa_safe: String,
 }
 
-fn addr_and_align(a: &str, imm: &str, dmkv: &str, ram_base: u32, ram_words: u32) -> AddrAndAlign {
-    let addr = format!("toUInt32({a} + {imm})");
-    let addr64 = format!("toUInt64({addr})");
-    let ram_end = ram_base + ram_words * 4;
-    let bad_addr_cond = format!("({addr64} < {ram_base} OR {addr64} >= {ram_end})");
-    let align_mask = format!("multiIf({dmkv}=4294967295, 3, {dmkv}=65535, 1, 0)");
+/// `addr` is the byte address the caller has already built, so a variant
+/// that binds it to a lambda parameter passes the parameter here.
+fn addr_and_align(
+    addr: &str,
+    dmkv: &str,
+    ram_base: u32,
+    ram_words: u32,
+    variant: Variant,
+) -> AddrAndAlign {
+    let ram_off = format!("bitShiftRight(toUInt32(toUInt64({addr}) - {ram_base}), 2)");
+    let wa_safe = format!("least({ram_off}, {})", ram_words - 1);
+    let bad_addr_cond = if variant == Variant::FewerConstants {
+        // `addr` is outside `[ram_base, ram_base + 4 * ram_words)` exactly
+        // when the wrapped word offset exceeds the last word index: an
+        // address below `ram_base` wraps to at least `2**32 - ram_base`,
+        // which the caller's assert keeps above `ram_words - 1`.
+        format!("({ram_off} > {})", ram_words - 1)
+    } else {
+        let addr64 = format!("toUInt64({addr})");
+        let ram_end = ram_base + ram_words * 4;
+        format!("({addr64} < {ram_base} OR {addr64} >= {ram_end})")
+    };
+    let align_mask = if variant == Variant::FewerConstants {
+        // Bit 15 is set for the 16- and 32-bit masks, bit 31 only for the
+        // 32-bit one, so this reads 0, 1 and 3 off `mk` directly.
+        format!("bitOr(bitAnd(bitShiftRight({dmkv}, 15), 1), bitAnd(bitShiftRight({dmkv}, 30), 2))")
+    } else {
+        format!("multiIf({dmkv}=4294967295, 3, {dmkv}=65535, 1, 0)")
+    };
     let misaligned_cond = format!("(bitAnd({addr}, {align_mask}) != 0)");
-    let wa_safe = format!(
-        "least(bitShiftRight(toUInt32(toUInt64({addr}) - {ram_base}), 2), {})",
-        ram_words - 1
-    );
     AddrAndAlign {
-        addr,
         bad_addr_cond,
         misaligned_cond,
         wa_safe,
@@ -100,6 +247,115 @@ pub fn build_step(
     hwm: u32,
     ipms: u32,
 ) -> String {
+    build_step_variant(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        Variant::Baseline,
+    )
+}
+
+/// [`build_step`] in the formulation `variant` names. Every arm computes
+/// the same accumulator; [`Variant`] says what each one moves.
+#[allow(clippy::too_many_arguments)]
+pub fn build_step_variant(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Nested,
+    )
+}
+
+/// [`build_step_variant`]'s expressions as a SELECT list, with every lambda
+/// binding replaced by a reference to the [`FLAT_COLUMNS`] column of the
+/// same name. `EXPLAIN actions = 1` over this prints one ActionsDAG holding
+/// every action node the step needs, across the lambda scopes the nested
+/// form splits them over.
+#[allow(clippy::too_many_arguments)]
+pub fn build_step_flat(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Flat,
+    )
+}
+
+/// [`build_step_variant`] with its `peel` outermost bindings left as free
+/// [`FLAT_COLUMNS`] references. `EXPLAIN actions = 1` over this prints the
+/// DAG of the scope that binding `peel` opens, which is one of the
+/// `ExpressionActions` a fold step runs. Summing over `peel` from 0 up to
+/// the arm's binding count gives the step's whole per-scope cost.
+#[allow(clippy::too_many_arguments)]
+pub fn build_step_peeled(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+    peel: usize,
+) -> String {
+    build_step_inner(
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        ram_base,
+        hwm,
+        ipms,
+        variant,
+        Emit::Peel(peel),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_step_inner(
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    ram_base: u32,
+    hwm: u32,
+    ipms: u32,
+    variant: Variant,
+    emit: Emit,
+) -> String {
     assert!(
         text_start_widx <= text_end_widx && text_end_widx <= ram_words,
         "text_start_widx={text_start_widx}/text_end_widx={text_end_widx} must be RAM_BASE-relative word indices with text_start_widx <= text_end_widx <= ram_words={ram_words}"
@@ -108,9 +364,27 @@ pub fn build_step(
         ipms != 0,
         "ipms is 0, which makes the TICKS_MS read divide by zero"
     );
+    if variant == Variant::FewerConstants {
+        assert!(
+            text_end_widx >= 1,
+            "FewerConstants rewrites the text-window bound as wa <= text_end_widx - 1"
+        );
+        assert!(
+            (ram_base as u64) + (ram_words as u64) * 4 <= 1u64 << 32,
+            "FewerConstants reads the RAM bounds check off a wrapped word offset, which needs RAM to end at or below 2**32"
+        );
+    }
 
     let fb_pal_wa_outside_text =
         fb_pal_wa_provably_outside_text(ram_base, ram_words, text_end_widx);
+
+    // BindDecodeRow takes the first binding only; BindRepeated takes all
+    // of them.
+    let bind_all = variant == Variant::BindRepeated;
+    let bind_dec = bind_all || variant == Variant::BindDecodeRow;
+    let mut binder = Binder {
+        bindings: Vec::new(),
+    };
 
     let pc = "acc.1";
     let stopped = "acc.4.1";
@@ -120,32 +394,56 @@ pub fn build_step(
         decn - 1
     );
 
-    let id = format!("DEC[{idx}].1");
-    let rd = format!("DEC[{idx}].2");
-    let imm = format!("DEC[{idx}].5");
-    let tgt = format!("DEC[{idx}].6");
-    let dmkv = format!("DEC[{idx}].7");
-    let dsgv = format!("DEC[{idx}].8");
-    let raw = format!("DEC[{idx}].9");
+    let dec = binder.bind(bind_dec, "d", format!("DEC[{idx}]"));
 
-    let r1 = format!("DEC[{idx}].3");
-    let r2 = format!("DEC[{idx}].4");
-    let a = format!("if({r1} = 0, toUInt32(0), acc.2[{r1}])");
-    let b = format!("toUInt32(if({r2} = 0, toUInt32(0), acc.2[{r2}]) + {imm})");
-    let rs2v = format!("if({r2} = 0, toUInt32(0), acc.2[{r2}])");
+    let id = format!("{dec}.1");
+    let rd = format!("{dec}.2");
+    let imm = format!("{dec}.5");
+    let tgt = format!("{dec}.6");
+    let dmkv = format!("{dec}.7");
+    let dsgv = format!("{dec}.8");
+    let raw = format!("{dec}.9");
+
+    let r1 = format!("{dec}.3");
+    let r2 = format!("{dec}.4");
+    let one8 = if variant == Variant::FewerConstants {
+        "1"
+    } else {
+        "toUInt8(1)"
+    };
+    let a = binder.bind(
+        bind_all,
+        "va",
+        format!("if({r1} = 0, toUInt32(0), acc.2[{r1}])"),
+    );
+    let b = binder.bind(
+        bind_all,
+        "vb",
+        format!("toUInt32(if({r2} = 0, toUInt32(0), acc.2[{r2}]) + {imm})"),
+    );
+    let rs2v = binder.bind(
+        bind_all,
+        "vr2",
+        format!("if({r2} = 0, toUInt32(0), acc.2[{r2}])"),
+    );
     let sa = format!("toInt32({a})");
     let sb = format!("toInt32({b})");
 
-    let addr_align = addr_and_align(&a, &imm, &dmkv, ram_base, ram_words);
-    let addr = addr_align.addr;
-    let wa = addr_align.wa_safe;
+    let addr = binder.bind(bind_all, "ad", format!("toUInt32({a} + {imm})"));
+    let addr_align = addr_and_align(&addr, &dmkv, ram_base, ram_words, variant);
+    let wa = binder.bind(bind_all, "wx", addr_align.wa_safe);
     let misaligned_cond = addr_align.misaligned_cond;
 
     assert_eq!(MMIO_SIZE, 4096, "window mask below assumes a 4 KiB window");
-    let is_mmio = format!(
-        "(bitAnd({addr}, {}) = {MMIO_BASE})",
-        0xFFFF_FFFFu32 ^ (MMIO_SIZE - 1)
-    );
+    let mmio_off = format!("toUInt32(toUInt64({addr}) - {MMIO_BASE})");
+    let is_mmio = if variant == Variant::FewerConstants {
+        format!("({mmio_off} < {MMIO_SIZE})")
+    } else {
+        format!(
+            "(bitAnd({addr}, {}) = {MMIO_BASE})",
+            0xFFFF_FFFFu32 ^ (MMIO_SIZE - 1)
+        )
+    };
 
     let is_fb = format!("(toUInt32(toUInt64({addr}) - {FRAMEBUFFER_BASE}) < {FRAMEBUFFER_SIZE})");
     let is_pal = format!("(toUInt32(toUInt64({addr}) - {PALETTE_BASE}) < {PALETTE_SIZE})");
@@ -155,7 +453,17 @@ pub fn build_step(
         addr_align.bad_addr_cond
     );
 
-    let mmio_is = |reg: u32| format!("({addr} = {})", MMIO_BASE + reg);
+    // Every call site sits under a condition that already implies the
+    // address is inside the MMIO window, so comparing the window offset
+    // against the register offset decides the same thing as comparing the
+    // full address against the register address.
+    let mmio_is = |reg: u32| {
+        if variant == Variant::FewerConstants {
+            format!("({mmio_off} = {reg})")
+        } else {
+            format!("({addr} = {})", MMIO_BASE + reg)
+        }
+    };
 
     let is_mmio_load = format!("({is_mmio} AND {id} = {OP_LOAD} AND {dmkv}=4294967295)");
     let is_mmio_store = format!("({is_mmio} AND {id} = {OP_STORE} AND {dmkv}=4294967295)");
@@ -171,8 +479,12 @@ pub fn build_step(
 
     let sh = format!("(8 * bitAnd({addr}, 3))");
 
-    let lw = format!(
-        "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1])"
+    let lw = binder.bind(
+        bind_all,
+        "mw",
+        format!(
+            "if(arrayLastIndex(z -> z = {wa}, acc.3.1) > 0, acc.3.2[arrayLastIndex(z -> z = {wa}, acc.3.1)], RAMT[{wa} + 1])"
+        ),
     );
 
     let extracted = format!("bitAnd(bitShiftRight({lw}, {sh}), {dmkv})");
@@ -186,7 +498,12 @@ pub fn build_step(
     );
 
     let link_value = format!("toUInt32({pc} + 4)");
-    let jalr_target = format!("bitAnd(toUInt32({a} + {imm}), 4294967294)");
+    // Shifting the low bit out and back clears it without naming the mask.
+    let jalr_target = if variant == Variant::FewerConstants {
+        format!("toUInt32(bitShiftLeft(bitShiftRight({addr}, 1), 1))")
+    } else {
+        format!("bitAnd({addr}, 4294967294)")
+    };
 
     let loadv = format!(
         "multiIf({is_mmio} AND {dmkv}=4294967295, {mmio_read}, {is_mmio}, toUInt32(0), {loadv})"
@@ -249,6 +566,13 @@ pub fn build_step(
     let is_csr = format!("{id}={OP_CSR}");
     let is_illegal = format!("{id}={OP_ILLEGAL}");
 
+    // `Bool`'s own literals cost two more captured constants than the
+    // `UInt8` ones every comparison arm above already needs.
+    let (jump_yes, jump_no) = if variant == Variant::FewerConstants {
+        ("1", "0")
+    } else {
+        ("true", "false")
+    };
     let would_jump = format!(
         "multiIf({id}=20, {a} = {b},\
          {id}=21, {a} != {b},\
@@ -256,9 +580,9 @@ pub fn build_step(
          {id}=23, {sa} >= {sb},\
          {id}=24, {a} < {b},\
          {id}=25, {a} >= {b},\
-         {id}=26, true,\
-         {id}=27, true,\
-         false)"
+         {id}=26, {jump_yes},\
+         {id}=27, {jump_yes},\
+         {jump_no})"
     );
     let jump_target_if_taken = format!("if({id}=27, {jalr_target}, {tgt})");
     let is_jump_op = format!("({id} >= 20 AND {id} <= 27)");
@@ -271,6 +595,14 @@ pub fn build_step(
         format!(" AND NOT {is_fb_or_pal_store}")
     };
 
+    // `wa <= text_end_widx - 1` decides the same thing as `wa <
+    // text_end_widx` and shares its constant with the decode-table clamp
+    // whenever the text window ends where the decode table does.
+    let text_upper = if variant == Variant::FewerConstants {
+        format!("{wa} <= {}", text_end_widx - 1)
+    } else {
+        format!("{wa} < {text_end_widx}")
+    };
     let halt_code = format!(
         "multiIf({is_illegal}, {HALT_ILLEGAL_INSN},\
          {is_ecall}, {HALT_ECALL},\
@@ -280,20 +612,36 @@ pub fn build_step(
          {is_mem} AND {bad_addr_cond}, {HALT_BAD_ADDR},\
          {is_mem} AND NOT {bad_addr_cond} AND {misaligned_cond}, {HALT_MISALIGNED},\
          {is_fb_or_pal_store} AND {dmkv} != 4294967295, {HALT_BAD_ADDR},\
-         {is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond} AND NOT {is_mmio}{self_modify_extra_guard} AND {wa} >= {text_start_widx} AND {wa} < {text_end_widx}, {HALT_SELF_MODIFY},\
+         {is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond} AND NOT {is_mmio}{self_modify_extra_guard} AND {wa} >= {text_start_widx} AND {text_upper}, {HALT_SELF_MODIFY},\
          {is_mmio_store} AND NOT {misaligned_cond} AND {}, {HALT_EXIT},\
          {HALT_NONE})",
         mmio_is(clickdoom_spec::mmio::EXIT)
     );
 
     let active = format!("(NOT {stopped})");
-    let hc = "hc";
+    let hc_param = if variant == Variant::ShortBindingParam {
+        "h"
+    } else {
+        "hc"
+    };
+    let hc: &str = match variant {
+        Variant::InlineHaltCode => &halt_code,
+        _ => hc_param,
+    };
     let step_halts_now = format!("({active} AND ({hc}) != 0)");
     let step_retires = format!("({active} AND ({hc}) = 0)");
 
     let halt_extra_calc = format!(
         "if(({hc}) = {HALT_ILLEGAL_INSN}, {raw}, if(({hc}) = {HALT_EXIT}, {rs2v}, if({jump_misaligned}, {jump_target_if_taken}, if(({hc}) IN ({HALT_BAD_ADDR}, {HALT_MISALIGNED}, {HALT_SELF_MODIFY}), {addr}, toUInt32(0)))))"
     );
+    let halt_extra_calc = if variant == Variant::MoreConstants {
+        let dead: String = (0..ADDED_CONSTANTS)
+            .map(|n| format!("({hc}) = {}, toUInt32(0), ", ADDED_CONSTANTS_FIRST + n))
+            .collect();
+        format!("multiIf({dead}{halt_extra_calc})")
+    } else {
+        halt_extra_calc
+    };
 
     let is_retiring_store =
         format!("({step_retires} AND {is_store} AND NOT {is_mmio} AND NOT {is_fb_or_pal_store})");
@@ -309,7 +657,7 @@ pub fn build_step(
         "if({is_retiring_store}, tuple(arrayPushBack(acc.3.1, {wa}), arrayPushBack(acc.3.2, {sval}), arrayPushBack(acc.3.3, acc.5 + 1)), acc.3)"
     );
     let new_control = format!(
-        "multiIf({step_halts_now}, tuple(toUInt8(1), toUInt8(1), toUInt8({hc}), {pc}, {halt_extra_calc}), {hits_hwm} OR {frame_committed_now}, tuple(toUInt8(1), acc.4.2, acc.4.3, acc.4.4, acc.4.5), acc.4)"
+        "multiIf({step_halts_now}, tuple({one8}, {one8}, toUInt8({hc}), {pc}, {halt_extra_calc}), {hits_hwm} OR {frame_committed_now}, tuple({one8}, acc.4.2, acc.4.3, acc.4.4, acc.4.5), acc.4)"
     );
 
     let retiring_fb_store = format!("({step_retires} AND {id}={OP_STORE} AND {is_fb})");
@@ -338,7 +686,7 @@ pub fn build_step(
         mmio_is(clickdoom_spec::mmio::KEYQ)
     );
 
-    let new_frame = format!("if({frame_committed_now}, tuple({rs2v}, toUInt8(1)), acc.6.3)");
+    let new_frame = format!("if({frame_committed_now}, tuple({rs2v}, {one8}), acc.6.3)");
 
     let new_mmio = format!("tuple({new_console}, {new_keyq_pos}, {new_frame})");
 
@@ -352,7 +700,16 @@ pub fn build_step(
          {new_mmio},\
          {new_fbpal_wl})"
     );
-    format!("arrayMap({hc} -> {step_tuple_inner}, [{halt_code}])[1]")
+    // The `halt_code` binding is the innermost one, so the probes reach its
+    // scope the same way they reach a variant's own bindings.
+    if variant != Variant::InlineHaltCode {
+        binder.bindings.push((hc_param, halt_code));
+    }
+    match emit {
+        Emit::Flat => binder.flatten(step_tuple_inner),
+        Emit::Nested => binder.wrap(step_tuple_inner),
+        Emit::Peel(n) => binder.wrap_peeled(step_tuple_inner, n),
+    }
 }
 
 /// The `WITH` clause materializing `RAMT`/`DEC`/`KEYQT`.
@@ -475,7 +832,31 @@ pub fn select_only(
     hwm: u32,
     args: &SelectOnlyArgs,
 ) -> String {
-    let step = build_step(
+    select_only_variant(
+        k,
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        hwm,
+        args,
+        Variant::Baseline,
+    )
+}
+
+/// [`select_only`] over the step formulation `variant` names.
+#[allow(clippy::too_many_arguments)]
+pub fn select_only_variant(
+    k: u32,
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    hwm: u32,
+    args: &SelectOnlyArgs,
+    variant: Variant,
+) -> String {
+    let step = build_step_variant(
         text_start_widx,
         text_end_widx,
         decn,
@@ -483,6 +864,7 @@ pub fn select_only(
         RAM_BASE,
         hwm,
         args.ipms,
+        variant,
     );
     let regs0_sql = match args.regs0 {
         Some(regs) => format!("[{}]", regs.join(",")),
@@ -554,8 +936,32 @@ pub fn batch(
     hwm: u32,
     args: &BatchArgs,
 ) -> String {
+    batch_variant(
+        k,
+        text_start_widx,
+        text_end_widx,
+        decn,
+        ram_words,
+        hwm,
+        args,
+        Variant::Baseline,
+    )
+}
+
+/// [`batch`] over the step formulation `variant` names.
+#[allow(clippy::too_many_arguments)]
+pub fn batch_variant(
+    k: u32,
+    text_start_widx: u32,
+    text_end_widx: u32,
+    decn: u32,
+    ram_words: u32,
+    hwm: u32,
+    args: &BatchArgs,
+    variant: Variant,
+) -> String {
     let db = args.db;
-    let step = build_step(
+    let step = build_step_variant(
         text_start_widx,
         text_end_widx,
         decn,
@@ -563,6 +969,7 @@ pub fn batch(
         RAM_BASE,
         hwm,
         args.ipms,
+        variant,
     );
     let init = init_acc(
         "assumeNotNull(PREV.2)",

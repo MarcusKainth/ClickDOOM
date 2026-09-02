@@ -41,6 +41,12 @@ own independent run.
 
 ## Build log
 
+**[The engine without the CPU](docs/blog/2026-09-02-the-engine-without-the-cpu.md)**
+· 2 September 2026, evening — why the emulator's ceiling sent the project to
+DOOM's own architecture in SQL, every frame of `demo3` drawn by ClickHouse at
+35 frames per second with 2,168 of 2,172 byte-identical to the engine's, and
+where the simulation stands.
+
 **[Turning an optimisation off made it faster](docs/blog/2026-09-02-turning-an-optimisation-off.md)**
 · 2 September 2026 — switching off ClickHouse's short-circuit evaluation is
 worth 17%, our own benchmark had been understating us by 18%, and six figures

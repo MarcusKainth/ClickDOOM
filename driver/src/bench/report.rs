@@ -61,10 +61,10 @@ impl WindowRecord {
     }
 
     pub fn fold_instr_per_sec(&self) -> f64 {
-        self.fold_retired as f64 / self.fold_seconds
+        crate::stats::instr_per_sec(self.fold_retired, self.fold_seconds)
     }
     pub fn e2e_instr_per_sec(&self) -> f64 {
-        self.e2e_retired as f64 / self.e2e_seconds
+        crate::stats::instr_per_sec(self.e2e_retired, self.e2e_seconds)
     }
 }
 

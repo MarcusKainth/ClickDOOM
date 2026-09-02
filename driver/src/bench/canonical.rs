@@ -256,7 +256,7 @@ pub struct ArmResult {
 
 impl ArmResult {
     pub fn instr_per_sec(&self) -> f64 {
-        self.retired as f64 / self.seconds
+        crate::stats::instr_per_sec(self.retired, self.seconds)
     }
 
     /// What this arm's rate makes of the ROM's own instructions to first

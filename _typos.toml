@@ -20,6 +20,7 @@ compilability = "compilability"   # whether ClickHouse's JIT can compile an expr
 Parm = "Parm"                     # M_CheckParm, a DOOM engine function
 VERTEXES = "VERTEXES"             # the WAD lump name, spelled that way in the file
 alph = "alph"                     # alphSwitchList, a DOOM engine table
+aprox = "aprox"                   # P_AproxDistance, a DOOM engine function
 
 [default]
 extend-ignore-re = [

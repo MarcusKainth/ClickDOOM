@@ -152,7 +152,7 @@ fn column_of(name: &str) -> Option<&'static str> {
 
 /// The engine tables more than one stage reads, as constant arrays indexed
 /// by id plus one.
-fn constants(db: &str) -> Vec<(String, String)> {
+pub fn constants(db: &str) -> Vec<(String, String)> {
     let mut constants = vec![
         ("rnd".to_owned(), table_column(db, "rndtable", "value")),
         (

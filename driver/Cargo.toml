@@ -12,6 +12,7 @@ bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
 clickdoom-executor.workspace = true
+clickdoom-native.workspace = true
 clickdoom-spec.workspace = true
 clickhouse.workspace = true
 http.workspace = true

@@ -1,7 +1,10 @@
 //! The `native` namespace.
 //!
 //! Every subcommand here shares one connection and
-//! [`ConnArgs`](crate::client::ConnArgs).
+//! [`ConnArgs`](crate::client::ConnArgs). A subcommand with more to it than
+//! its argument list lives in its own module beside this one.
+
+pub mod load;
 
 use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement in the driver, never a value a statement reads
 
@@ -35,8 +38,9 @@ pub struct NativeCmd {
 
 #[derive(Subcommand)]
 pub enum Command {
-    // Described by `SessionCheckCmd`'s own `about` and `long_about`. A doc
+    // Each variant is described by its own `about` and `long_about`. A doc
     // comment here would replace both with its first line.
+    Load(load::LoadCmd),
     SessionCheck(SessionCheckCmd),
 }
 
@@ -77,6 +81,7 @@ pub struct SessionCheckCmd {
 
 pub(super) async fn run(cmd: &NativeCmd) -> Result<Exit, Failure> {
     match &cmd.command {
+        Command::Load(cmd) => load::run(cmd).await,
         Command::SessionCheck(cmd) => session_check(cmd).await,
     }
 }

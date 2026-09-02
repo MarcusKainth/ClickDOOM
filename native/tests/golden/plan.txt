@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.demo_header
 CREATE TABLE IF NOT EXISTS clickdoom_native.demo_cmds
 CREATE TABLE IF NOT EXISTS clickdoom_native.native_state
 CREATE TABLE IF NOT EXISTS clickdoom_native.native_frames
+CREATE TABLE IF NOT EXISTS clickdoom_native.melt_schedule
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_viewangletox (id UInt32, x_raw Int32, x Int32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_xtoviewangle (id UInt32, angle UInt32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_yslope (id UInt32, value Int32)

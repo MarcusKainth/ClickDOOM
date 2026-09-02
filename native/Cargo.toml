@@ -4,7 +4,7 @@ description = "Native mode: DOOM's tic simulation and renderer as ClickHouse SQL
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "GPL-3.0-or-later"
 repository.workspace = true
 
 [dependencies]

@@ -6,7 +6,7 @@ simulation and renderer rewritten as SQL, checked against the first, tic by
 tic and pixel by pixel.
 
 [![ci](https://github.com/MarcusKainth/ClickDOOM/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MarcusKainth/ClickDOOM/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-Apache--2.0%20%2F%20GPL--2.0-blue)](LICENSING.md)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20%2F%20GPL--3.0%20%2F%20GPL--2.0-blue)](LICENSING.md)
 
 ClickDOOM has two modes.
 
@@ -181,7 +181,10 @@ says what that changes about a contribution, and what it does not.
 
 Copyright 2026 Marcus Kainth.
 
-The emulator is Apache-2.0. `rom/` builds the DOOM binary and is
-GPL-2.0-or-later. The embedded shareware `doom1.wad` is under id Software's
-own distribution terms and no commercial WADs go in this repo.
+The emulator and the driver are Apache-2.0. `native/` reproduces the engine's
+simulation and renderer as SQL and copies its tables, so it is
+GPL-3.0-or-later, and a built `clickdoom` binary, which links it, is
+distributed under the GPL-3.0's terms as a whole. `rom/` builds the DOOM binary
+and is GPL-2.0-or-later. The embedded shareware `doom1.wad` is under id
+Software's own distribution terms and no commercial WADs go in this repo.
 [LICENSING.md](LICENSING.md) has the boundary in full.

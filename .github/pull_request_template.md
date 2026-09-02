@@ -6,7 +6,7 @@ complete description.
 Title is `scope: imperative summary`, at most 72 characters.
 
 Contributions are accepted under the terms of the directory they land in:
-Apache-2.0 outside rom/, GPL-2.0-or-later inside it. There is no CLA to sign.
+GPL-2.0-or-later inside rom/, GPL-3.0-or-later inside native/, Apache-2.0 everywhere else. There is no CLA to sign.
 -->
 
 ## What this changes, and why

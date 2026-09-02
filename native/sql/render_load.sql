@@ -145,6 +145,10 @@ SELECT throwIf(
     (SELECT max(depth) FROM {{DB}}.lv_ssec_path) > 63,
     'a subsector sits deeper than the pre-order key can hold');
 
+-- A pool is one array per part, in byte order. `groupArray` does not promise
+-- the order it collects rows in and `GROUP BY` collects them in parallel, so
+-- each byte carries the offset it belongs at and the array is sorted by it.
+--
 -- A pool is one string, in byte order. `groupArray` does not promise the
 -- order it collects rows in, so every byte carries the offset it belongs at
 -- and is sorted by that before the bytes are joined.
@@ -157,9 +161,7 @@ SELECT throwIf(
 -- The texture window pool: every column's 128 bytes, end to end in slot
 -- order.
 INSERT INTO {{DB}}.rt_tex_pool (id, data)
-SELECT
-    0 AS id,
-    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
     SELECT
@@ -180,9 +182,7 @@ SELECT throwIf(
 -- A marker lump carries no pixels and its 4,096 bytes are zero, which keeps
 -- a flat's pixels at `id * 4096`.
 INSERT INTO {{DB}}.rt_flat_pool (id, data)
-SELECT
-    0 AS id,
-    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
     SELECT
@@ -201,9 +201,7 @@ SELECT throwIf(
     'the flat pool holds fewer flats than the WAD does');
 
 INSERT INTO {{DB}}.rt_colormap_pool (id, data)
-SELECT
-    0 AS id,
-    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
     SELECT
@@ -230,3 +228,135 @@ CROSS JOIN
     SELECT mapFromArrays(groupArray(id), groupArray(value)) AS m
     FROM {{DB}}.gammatable WHERE level = 0
 ) AS g;
+
+-- ---------------------------------------------------------------------------
+-- Sprites
+-- ---------------------------------------------------------------------------
+
+-- Where each sprite lump's bytes start in the pool, and the fields
+-- `R_ProjectSprite` reads off it.
+INSERT INTO {{DB}}.rt_sprite_lump (id, base, width, width_fixed, leftoffset, topoffset)
+SELECT
+    sl.id,
+    toUInt32(sum(length(l.bytes)) OVER (ORDER BY sl.id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)) AS base,
+    sl.width,
+    sl.width_fixed,
+    sl.leftoffset,
+    sl.topoffset
+FROM {{DB}}.sprite_lumps AS sl
+INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump;
+
+-- The pool itself: every lump's bytes, in sprite number order.
+INSERT INTO {{DB}}.rt_sprite_pool (id, data)
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+FROM
+(
+    SELECT
+        sb.base + k AS at,
+        reinterpretAsUInt8(substring(l.bytes, k + 1, 1)) AS b
+    FROM {{DB}}.rt_sprite_lump AS sb
+    INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.id = sb.id
+    INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump
+    ARRAY JOIN range(toUInt32(length(l.bytes))) AS k
+);
+
+-- Every lump has to be in it, or a sprite reads the lump after the one it
+-- asked for.
+SELECT throwIf(
+    (SELECT length(data) FROM {{DB}}.rt_sprite_pool) !=
+        (SELECT sum(length(l.bytes)) FROM {{DB}}.sprite_lumps AS sl
+         INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump),
+    'the sprite pool is not every sprite lump end to end');
+
+-- `spriteframe_t`, one row per rotation. A frame that serves every rotation
+-- with one picture repeats it eight times, which is what `sprframe->lump[0]`
+-- reads when `rotate` is zero.
+-- Every slot carries a row, so the frame transform indexes rather than
+-- searches. A slot no frame reaches carries lump -1.
+INSERT INTO {{DB}}.rt_sprite_frame (slot, rotate, lump, flip)
+SELECT slot, toUInt8(0) AS rotate, toInt32(-1) AS lump, toUInt8(0) AS flip
+FROM numbers(32768)
+ARRAY JOIN [toUInt32(number)] AS slot
+WHERE slot NOT IN
+(
+    SELECT (sprite * 32 + frame) * 8 + r
+    FROM {{DB}}.sprite_frames ARRAY JOIN range(8) AS r
+)
+UNION ALL
+SELECT
+    (sprite * 32 + frame) * 8 + r AS slot,
+    rotate,
+    lump[r + 1] AS lump,
+    flip[r + 1] AS flip
+FROM {{DB}}.sprite_frames
+ARRAY JOIN range(8) AS r;
+
+-- A frame past 32, or a sprite past the table, would land on another
+-- frame's slot.
+SELECT throwIf(
+    (SELECT max(frame) FROM {{DB}}.sprite_frames) >= 32,
+    'a sprite has more frames than the frame slot can hold');
+
+-- Every sprite post, in column order, and where each column's run of them
+-- starts. `patch_posts` is what the engine's own column walk reads, so a
+-- draw that runs past a post reads the bytes the engine reads. Both
+-- statements number the posts by the same window function over the same
+-- order, so the two agree whatever the server splits the read into.
+INSERT INTO {{DB}}.rt_sprite_post (id, topdelta, length, ofs)
+SELECT
+    toUInt32(row_number() OVER (ORDER BY lump, col, idx) - 1) AS id,
+    topdelta,
+    length,
+    base + ofs AS ofs
+FROM
+(
+    SELECT sl.id AS lump, pp.col, pp.idx, pp.topdelta, pp.length, pp.ofs, sb.base
+    FROM {{DB}}.patch_posts AS pp
+    INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.lump = pp.lump
+    INNER JOIN {{DB}}.rt_sprite_lump AS sb ON sb.id = sl.id
+);
+
+-- Every slot carries a row here too. A column with no posts carries none.
+INSERT INTO {{DB}}.rt_sprite_colposts (slot, first, num)
+SELECT slot, toUInt32(0) AS first, toUInt16(0) AS num
+FROM numbers(131072)
+ARRAY JOIN [toUInt32(number)] AS slot
+WHERE slot NOT IN
+(
+    SELECT sl.id * 256 + pp.col
+    FROM {{DB}}.patch_posts AS pp
+    INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.lump = pp.lump
+)
+UNION ALL
+SELECT
+    lump * 256 + col AS slot,
+    toUInt32(min(id)) AS first,
+    toUInt16(count()) AS num
+FROM
+(
+    SELECT
+        row_number() OVER (ORDER BY lump, col, idx) - 1 AS id,
+        lump,
+        col
+    FROM
+    (
+        SELECT sl.id AS lump, pp.col, pp.idx
+        FROM {{DB}}.patch_posts AS pp
+        INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.lump = pp.lump
+    )
+)
+GROUP BY slot, lump, col;
+
+-- A sprite wider than 256 columns would land on the next lump's slots.
+SELECT throwIf(
+    (SELECT max(width) FROM {{DB}}.sprite_lumps) > 256,
+    'a sprite is wider than the column slot can hold');
+
+-- A two-sided line with a middle texture draws that texture over the gap,
+-- post by post. The renderer takes such a line's silhouette into account but
+-- does not draw its pixels, so a map that has one fails here rather than
+-- rendering a frame with a hole in it.
+SELECT throwIf(
+    (SELECT count() FROM {{DB}}.tex_posts) > 0,
+    'a line draws a masked middle texture, which the renderer does not draw');

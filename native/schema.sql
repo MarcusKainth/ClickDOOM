@@ -923,3 +923,59 @@ CREATE TABLE IF NOT EXISTS {{DB}}.ref_frames
     palette  String
 )
 ENGINE = MergeTree ORDER BY frame;
+
+-- ---------------------------------------------------------------------------
+-- The sprite side of the renderer, built by `native/sql/render_load.sql`.
+-- ---------------------------------------------------------------------------
+
+-- Every sprite lump's bytes, end to end in sprite number order. A draw
+-- reads the lump itself rather than a repacked pool, so a column that reads
+-- past a post's length reads what the engine reads.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
+
+-- Where each sprite lump starts in that pool, with the three scaled fields
+-- `R_ProjectSprite` reads.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_lump
+(
+    id           UInt32,   -- sprite_lumps.id
+    base         UInt32,
+    width        UInt16,
+    width_fixed  Int32,
+    leftoffset   Int32,
+    topoffset    Int32
+)
+ENGINE = MergeTree ORDER BY id;
+
+-- `spriteframe_t` flattened to one row per rotation, so a frame's picture is
+-- one lookup. `slot` is `(sprite * 32 + frame) * 8 + rotation`, and `lump` is
+-- -1 for a rotation no picture serves.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_frame
+(
+    slot    UInt32,
+    rotate  UInt8,
+    lump    Int32,
+    flip    UInt8
+)
+ENGINE = MergeTree ORDER BY slot;
+
+-- Where each sprite column's posts sit in `rt_sprite_post`. `slot` is
+-- `sprite lump * 256 + column`.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_colposts
+(
+    slot   UInt32,
+    first  UInt32,
+    num    UInt16
+)
+ENGINE = MergeTree ORDER BY slot;
+
+-- Every sprite post, in column order. `ofs` is where its pixels sit in
+-- `rt_sprite_pool`.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_post
+(
+    id        UInt32,
+    topdelta  UInt8,
+    length    UInt8,
+    ofs       UInt32
+)
+ENGINE = MergeTree ORDER BY id;

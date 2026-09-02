@@ -147,3 +147,15 @@ final rendered frame despite arriving there in 18.90% fewer instructions.
 30 years of dead code, one `#if 0`/`#endif` and a one-character typo away
 from real, verified end to end rather than assumed correct because it
 compiled.
+
+## `demo3/probe.<rom sha256 prefix>.tsv` / `.json`
+
+Not a checkpoint trace. One row of DOOM's game state per frame commit, in the
+shape the native-mode SQL simulation writes, so the two can be compared tic by
+tic. [`refemu/probe/README.md`](../probe/README.md) says what the columns hold.
+
+`make gen-probe-trace` writes it. The `.tsv` is not committed, for the same
+reason the `demo3` checkpoint trace is not: it is large, it changes with every
+ROM, and it is regenerable. The `.json` beside it records the ROM's sha256, the
+layout table's sha256, the file's own sha256 and size, the row and frame
+counts, and the first gameplay frame.

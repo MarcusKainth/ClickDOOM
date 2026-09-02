@@ -8,6 +8,7 @@
 
 pub mod observe;
 pub mod point;
+pub mod probe;
 pub mod report;
 
 use std::path::{Path, PathBuf};
@@ -106,6 +107,8 @@ pub enum Command {
     Disasm(DisasmCmd),
     /// Print a checkpoint hash over bytes you supply
     Hash(HashCmd),
+    /// Run an image and dump the engine's game state at every frame commit
+    Probe(probe::ProbeCmd),
 }
 
 #[derive(Args, Clone)]
@@ -414,26 +417,26 @@ pub enum HashKind {
 }
 
 /// Anything that stops the command before the machine runs.
-struct Failure {
+pub(crate) struct Failure {
     exit: Exit,
-    message: String,
+    pub(crate) message: String,
 }
 
-fn failed(message: impl Into<String>) -> Failure {
+pub(crate) fn failed(message: impl Into<String>) -> Failure {
     Failure {
         exit: Exit::Failed,
         message: message.into(),
     }
 }
 
-fn usage(message: impl Into<String>) -> Failure {
+pub(crate) fn usage(message: impl Into<String>) -> Failure {
     Failure {
         exit: Exit::Usage,
         message: message.into(),
     }
 }
 
-fn gate(message: impl Into<String>) -> Failure {
+pub(crate) fn gate(message: impl Into<String>) -> Failure {
     Failure {
         exit: Exit::Gate,
         message: message.into(),
@@ -1377,6 +1380,7 @@ pub fn main() -> ExitCode {
             cmd_disasm(cmd, &machine)
         }
         Command::Hash(cmd) => cmd_hash(cmd),
+        Command::Probe(cmd) => probe::run(cli.quiet, cmd),
     };
     match result {
         Ok(exit) => exit.into(),

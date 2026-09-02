@@ -420,11 +420,12 @@ nodes capture, at 0.35 to 0.42 µs each per step on the production
 fold. The independent-of-retirement half stands: 88% of the step's
 nodes compute before anything tests whether the step retires. `#86`
 (a state-reload fix) and `#88` (MMIO, §3) have moved the number
-again since. Current measured real-ROM throughput is **5,334
-instructions/sec** end to end on the boot window and **4,899** on
-the store-heavy gameplay window, both at K = 60,000 and HWM = 20,000
-on ClickHouse 26.7.5.10, chained batches past the compile threshold,
-one fresh container per arm. A figure taken over the first three
+again since. Current measured real-ROM throughput is **5,340
++/- 50 instructions/sec** end to end on the boot window and **5,060
++/- 50** on the store-heavy gameplay window, both at K = 60,000 and
+HWM = 20,000 on ClickHouse 26.7.5.10, chained batches past the compile
+threshold, one fresh container per arm, five repeats with the machine
+allowed to settle between them. A figure taken over the first three
 batches of a series reads 18.3% lower, because those are both the
 uncompiled batches and, in boot, the write-log-saturated ones. Quote
 the window, K, the high-water mark, the batch range and the server
@@ -510,10 +511,10 @@ Resolved by the Phase 0 benchmark (evidence:
       implemented) does not clear that threshold. ADR-0004 measured 1,159
       instructions/sec end-to-end at K=50,000 (issue #23) and retired the
       ≥10,000 figure as a merge gate for correctness work; current
-      real-ROM throughput is **5,334 instructions/sec** end to end on the
-      boot window and **4,899** on gameplay, at K = 60,000 and HWM = 20,000
-      on 26.7.5.10, after `#86`/`#88`, the 26.3 to 26.7 pin bump and the
-      short-circuit pin.
+      real-ROM throughput is **5,340 +/- 50 instructions/sec** end to end on
+      the boot window and **5,060 +/- 50** on gameplay, at K = 60,000 and
+      HWM = 20,000 on 26.7.5.10, after `#86`/`#88`, the 26.3 to 26.7 pin bump
+      and the short-circuit pin. Both windows clear #104's target.
       Issue #104 sets the number that actually matters now — ≥5,000
       instr/sec for a week-long `demo3` run, stretch ≥11,000 to restore
       the ~3-day run Phase 0's number implied — and issue #96 is the fuller

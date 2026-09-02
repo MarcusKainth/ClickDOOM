@@ -223,7 +223,16 @@ pub struct BatchRecord {
     pub index: u32,
     /// Whether this batch's seconds and retired count are in the arm total.
     pub timed: bool,
+    /// The server's own time on this batch's statements, summed from
+    /// `system.query_log`. Client wall clock would also carry the result
+    /// set's serialisation and the driver's deserialisation, and the
+    /// fold-alone arm returns the write log and the framebuffer lanes to
+    /// the client while the end-to-end arm writes them server-side.
     pub seconds: f64,
+    /// What the driver waited, client side. Larger than `seconds` by the
+    /// result set's transfer and the driver's own deserialisation, so it is
+    /// the rate a real run achieves rather than the rate the fold sustains.
+    pub wall_seconds: f64,
     pub retired: u64,
     /// `length(wl_addr)` at the end of the batch.
     pub write_log_len: u32,
@@ -235,6 +244,8 @@ pub struct BatchRecord {
 pub struct ArmResult {
     pub retired: u64,
     pub seconds: f64,
+    /// Client-side total, for the rate a driver loop achieves.
+    pub wall_seconds: f64,
     /// Every batch the arm ran, warm-up first.
     pub batches: Vec<BatchRecord>,
     /// Where the chain ended. Both arms of a window execute the same
@@ -635,6 +646,7 @@ async fn run_arm(
     let mut result = ArmResult {
         retired: 0,
         seconds: 0.0,
+        wall_seconds: 0.0,
         batches: Vec::new(),
         final_pc: chain.pc,
         final_icount: chain.icount,
@@ -704,7 +716,6 @@ async fn run_arm(
         );
         if timed {
             result.retired += outcome.retired;
-            result.seconds += outcome.seconds;
         }
         result.final_pc = outcome.pc;
         result.final_icount += outcome.retired;
@@ -713,6 +724,7 @@ async fn run_arm(
             index,
             timed,
             seconds: outcome.seconds,
+            wall_seconds: outcome.seconds,
             retired: outcome.retired,
             write_log_len: outcome.write_log_len,
             stop,
@@ -722,6 +734,12 @@ async fn run_arm(
 
     attach_regime(db, window, mode, &query_ids, &mut result.batches).await?;
     check_regime(window, mode, args.warmup, &result.batches)?;
+    // Summed here rather than in the loop above: a batch's server-side time
+    // is only known once `system.query_log` has been read back.
+    for batch in result.batches.iter().filter(|b| b.timed) {
+        result.seconds += batch.seconds;
+        result.wall_seconds += batch.wall_seconds;
+    }
     eprintln!(
         "# {window} {mode} total: retired={} seconds={:.2} instr/sec={:.1}",
         result.retired,
@@ -731,10 +749,10 @@ async fn run_arm(
     Ok(result)
 }
 
-/// Fills in each batch's compilation events from `system.query_log`. A
-/// batch whose statements left no row is an error: an absent row would
-/// otherwise read as "compiled nothing", which is the thing the check is
-/// looking for.
+/// Fills in each batch's compilation events and its duration from
+/// `system.query_log`. A batch whose statements left no row is an error: an
+/// absent row would otherwise read as "compiled nothing", which is the thing
+/// the check is looking for, and would leave the batch timed at zero.
 async fn attach_regime(
     db: &Db,
     window: &str,
@@ -757,6 +775,8 @@ async fn attach_regime(
             })?;
             record.regime.add(*found);
         }
+        record.wall_seconds = record.seconds;
+        record.seconds = record.regime.server_ms as f64 / 1000.0;
     }
     Ok(())
 }
@@ -1333,6 +1353,7 @@ mod tests {
         BatchRecord {
             index,
             timed,
+            wall_seconds: 1.0,
             seconds: 1.0,
             retired: 60_000,
             write_log_len: 100,
@@ -1340,6 +1361,7 @@ mod tests {
             regime: Regime {
                 compile_function,
                 compile_micros: compile_function * 1_000,
+                server_ms: 1_000,
             },
         }
     }

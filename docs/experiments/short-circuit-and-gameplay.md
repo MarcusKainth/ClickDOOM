@@ -46,7 +46,7 @@ rather than by executing tens of hours.
 | HWM | 20,000 |
 | Settings | `max_threads = 1`, otherwise as generated |
 | Machine | Apple Silicon, 18 cores |
-| Load | 0.81 to 9.28 of 18 cores, medians 1.79 to 1.91 |
+| Load | 0.81 to 9.28 of 18 cores, medians 1.79 to 1.91; the merged-main confirmation ran at 1.53 to 3.36 |
 
 **The machine was not quiet.** The owner's Grafana, Loki, Mimir, Tempo,
 Postgres, Redis, SeaweedFS and Alloy containers, a long-lived
@@ -134,8 +134,9 @@ repeat.
 | pinned, end to end | 4,899 | 204.1 |
 | pinned, full-K batches only | 5,088 | 196.6 |
 
-**Quote the 4,899.** The 5,088 drops the once-per-frame truncated batch and
-overstates gameplay by 3.8%.
+The 5,088 drops the once-per-frame truncated batch and overstates gameplay by
+3.8%. These three come from a hand-driven harness; the figure to quote is the
+5,060 measured on merged main below.
 
 The pin is worth +17.0% ±0.09 here against +17.27% ±1.14 in boot, so it
 survives the window where the framebuffer lanes fire.
@@ -199,12 +200,38 @@ guarded so it is non-zero for all inputs. It is worth +14.62% ±1.87 end to end
 as the stack lands, it holds in gameplay, and it removes a dependency on a
 server default rather than pinning around it.
 
-Boot steady state is 5,334 instructions per second and gameplay is 4,899.
-`SPEC.md`'s 5,000 target is met in boot and missed in gameplay by 1.3%.
+Boot steady state is 5,340 +/- 50 instructions per second and gameplay is
+5,060 +/- 50, measured on merged main below. `SPEC.md`'s 5,000 target is met
+in both windows, and gameplay clears it by 1.2%, which is close enough that it
+should be re-checked rather than assumed after any change.
 
 The framebuffer and palette lanes are not a lever and a high-water mark on
 them is a regression. The truncated batch is eight times larger and has no
 known fix.
+
+### Confirmed on merged main
+
+Every figure above was taken on branches, arm by arm, before the change stack
+merged. This is the same tree a reader can check out, measured by
+`clickdoom bench canonical`, five repeats, K = 60,000, HWM = 20,000, four
+warm-up then ten timed batches per arm, one fresh container per arm, waiting
+for the one-minute load average to fall below 2.0 before each repeat.
+
+| window | mode | instr/sec | us/instruction | sd |
+|---|---|---:|---:|---:|
+| boot | fold alone | 5,305 +/- 46 | 188.51 | 0.69% |
+| boot | end to end | 5,340 +/- 50 | 187.28 | 0.75% |
+| gameplay | fold alone | 5,054 +/- 79 | 197.90 | 1.26% |
+| gameplay | end to end | 5,060 +/- 50 | 197.62 | 0.79% |
+
+Boot confirms the composed 5,334 to within 0.1%. Gameplay does not confirm the
+4,899: it is 3.3% higher. The two were taken by different harnesses, so the
+gap is not attributable, and 5,060 is the figure the tree reproduces.
+
+Fold alone and end to end now agree to 0.13% in gameplay and 0.65% in boot,
+with overlapping intervals. The end-to-end arm does strictly more work, so the
+fold-alone arm carries a small residual cost that the commit path does not
+outweigh at this K.
 
 ## What went wrong along the way
 
@@ -218,6 +245,17 @@ measured, on the reasoning that the select-only query returns three write-log
 lanes to the client. That is a real difference and it is 0.45%, against a 5%
 to 6% effect. The cause was arm order, and it had been visible in every
 recorded run for months as a physically impossible sign.
+
+The same mistake was made a second time on the merged-main run, in the same
+direction. A three-repeat run without a cooldown produced a gameplay inversion
+of 353 instructions per second, and it was attributed to the fold-alone arm
+serialising the framebuffer lanes to the client. Reading `query_duration_ms`
+beside the client interval over 280 batches put the two clocks within 0.05% of
+each other, so serialisation is not measurable at this size. The inversion
+decayed monotonically across those three repeats, -353, -258, -30, and vanished
+once the machine was allowed to settle between repeats. It was the box, not
+the instrument. A benchmark without a cooldown produces a first repeat that
+reads like a finding.
 
 ## Limits
 

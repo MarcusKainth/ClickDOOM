@@ -12,7 +12,8 @@
 //! the screen wipe's schedule, and [`schedule`] reads back which frames a
 //! run renders and what each one draws from.
 //!
-//! A paced run adds [`pace`], the 35 Hz tic clock.
+//! A paced run adds [`pace`], the 35 Hz tic clock, and [`window`], which
+//! puts the frame SQL produced on the screen.
 
 pub mod melt;
 pub mod pace;
@@ -24,6 +25,7 @@ pub mod session;
 pub mod settings;
 pub mod stream;
 pub mod url;
+pub mod window;
 
 pub use session::{Frame, Recovery, Session, SessionError};
 pub use stream::{Resident, ResidentError};

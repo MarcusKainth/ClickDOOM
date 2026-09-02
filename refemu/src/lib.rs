@@ -19,7 +19,7 @@ pub mod trace;
 pub use boot::{BootReport, Outcome, boot, format_report};
 pub use decode::{Instruction, Op, decode};
 pub use exec::{Cpu, DidNotHalt, Halt};
-pub use image::{Image, ImageError, Segment, Symbol, read_image};
+pub use image::{Image, ImageError, Segment, Symbol, SymbolKind, read_image};
 pub use memory::{LoadError, MemFault, Memory};
 pub use mmio::{Devices, FrameCommit, KeyEvent, MmioExit, Registers};
 pub use predecode::DecodeCache;

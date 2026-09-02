@@ -13,6 +13,8 @@ use clickdoom_spec::native_state::sector_thinker_kind as sector_kind;
 
 use crate::sql::{Statement, bsp};
 
+use super::table_column;
+
 use super::unimplemented;
 
 /// `m_fixed.h`
@@ -110,9 +112,9 @@ fn state_row(db: &str) -> String {
 // The engine's tables, as constant arrays indexed by id plus one
 // ---------------------------------------------------------------------------
 
-fn constants(db: &str) -> Vec<(&'static str, String)> {
+fn constants(db: &str) -> Vec<(String, String)> {
     let column = |table: &str, column: &str| table_column(db, table, column);
-    vec![
+    let named: Vec<(&str, String)> = vec![
         ("rnd", column("rndtable", "value")),
         ("state_tics", column("states", "tics")),
         ("state_sprite", column("states", "sprite")),
@@ -149,17 +151,11 @@ fn constants(db: &str) -> Vec<(&'static str, String)> {
             "up_state",
             format!("(SELECT upstate FROM {db}.weaponinfo WHERE id = {WP_PISTOL})"),
         ),
-    ]
-}
-
-/// One table column as an array indexed by `id` plus one. The sort is
-/// explicit because an aggregate reads its input in whatever order the
-/// pipeline hands it over.
-fn table_column(db: &str, table: &str, column: &str) -> String {
-    format!(
-        "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((id, {column})))) \
-         FROM {db}.{table})"
-    )
+    ];
+    named
+        .into_iter()
+        .map(|(name, expr)| (name.to_owned(), expr))
+        .collect()
 }
 
 /// `P_SpawnMapThing`'s skill mask: bit 0 on the two easiest skills, bit 2

@@ -16,8 +16,11 @@ use clickdoom_native::sql::Statement;
 
 /// A failed statement, carrying the server's message and enough of the SQL
 /// to identify it.
+///
+/// The message is in the text rather than only in the source, because a
+/// test that panics with the error prints what `Display` gives it.
 #[derive(Debug, thiserror::Error)]
-#[error("statement failed: {head}")]
+#[error("statement failed: {head}\n{source}")]
 pub struct Error {
     pub head: String,
     #[source]

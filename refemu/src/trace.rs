@@ -105,6 +105,42 @@ pub trait Observer {
 /// An observer that records nothing.
 impl Observer for () {}
 
+/// An observer held by reference, so a caller can keep its own handle on one
+/// it has passed to a combinator and read what it recorded afterwards.
+impl<O: Observer + ?Sized> Observer for &mut O {
+    fn before_step(&mut self, cpu: &mut Cpu) -> Step {
+        (**self).before_step(cpu)
+    }
+
+    fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, insn: Instruction) -> Step {
+        (**self).after_step(cpu, retired_pc, insn)
+    }
+
+    fn checkpoint(&mut self, checkpoint: Checkpoint) {
+        (**self).checkpoint(checkpoint);
+    }
+}
+
+/// An observer a caller may not have. `None` records nothing and costs a
+/// null check per step, which is what lets one run take an optional second
+/// observer without a second copy of the loop.
+impl<O: Observer> Observer for Option<O> {
+    fn before_step(&mut self, cpu: &mut Cpu) -> Step {
+        self.as_mut().map_or(Step::Continue, |o| o.before_step(cpu))
+    }
+
+    fn after_step(&mut self, cpu: &mut Cpu, retired_pc: u32, insn: Instruction) -> Step {
+        self.as_mut()
+            .map_or(Step::Continue, |o| o.after_step(cpu, retired_pc, insn))
+    }
+
+    fn checkpoint(&mut self, checkpoint: Checkpoint) {
+        if let Some(o) = self.as_mut() {
+            o.checkpoint(checkpoint);
+        }
+    }
+}
+
 /// Two observers, both watching.
 pub struct Both<A, B>(pub A, pub B);
 
@@ -297,6 +333,37 @@ mod tests {
         let stop = run(&mut cpu, SMALL, 100, &mut watcher);
         assert_eq!(stop, Stop::Observer);
         assert_eq!(cpu.icount(), 5);
+    }
+
+    #[test]
+    fn an_absent_observer_records_nothing_and_a_present_one_still_records() {
+        let mut cpu = cpu_running(10, true);
+        run(&mut cpu, SMALL, 100, &mut None::<Watcher>);
+        assert_eq!(
+            cpu.icount(),
+            10,
+            "None runs the machine and records nothing"
+        );
+
+        let mut cpu = cpu_running(10, true);
+        let mut watcher = Some(Watcher::default());
+        run(&mut cpu, SMALL, 100, &mut watcher);
+        assert_eq!(watcher.unwrap().counts, (1..=10).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn an_observer_passed_by_reference_is_still_readable_afterwards() {
+        let mut cpu = cpu_running(10, true);
+        let mut watcher = Watcher::default();
+        let mut collector = Collector::default();
+        run(
+            &mut cpu,
+            SMALL,
+            100,
+            &mut Both(&mut watcher, &mut collector),
+        );
+        assert_eq!(watcher.counts.len(), 10);
+        assert_eq!(collector.lines.len(), 1);
     }
 
     #[test]

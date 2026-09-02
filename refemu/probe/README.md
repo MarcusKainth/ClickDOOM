@@ -31,6 +31,22 @@ checkpoint trace. Like that trace the `.tsv` is not committed, and its
 companion `.json` is. `make gen-probe-fixture` writes the committed fixture
 under `fixtures/`.
 
+## The random-call log
+
+`--rng-out PATH`, or `--rng-name STEM` beside `--out-dir`, writes a second file
+logging every call to the engine's `P_Random` with the function that made it:
+
+    gametic  call_index  caller  caller_offset  icount
+
+`call_index` counts calls from zero within each tic, so grouping by `gametic`
+gives the sequence of calls that tic made. `caller` is the function containing
+the return address in `ra`, and `caller_offset` is how far into it the call
+sits, which separates two call sites in one function.
+
+A state divergence says which column moved. This says which action function
+asked for the number that moved it. `make gen-probe-trace` writes it beside the
+state rows.
+
 ## The row
 
     frame_index  gametic  fb_hash  <every field of clickdoom_spec::native_state>

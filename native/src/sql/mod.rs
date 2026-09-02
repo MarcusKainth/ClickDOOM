@@ -1,0 +1,93 @@
+//! The statements native mode runs, as text and bytes.
+//!
+//! Nothing here executes. A caller gets a list of [`Statement`]s and issues
+//! them; that is the whole of the driver's part in loading a level.
+
+pub mod rowbinary;
+pub mod statement;
+
+pub use statement::{Statement, split_statements};
+
+use crate::tables;
+
+/// The DDL, with `{{DB}}` still in it.
+const SCHEMA: &str = include_str!("../../schema.sql");
+
+/// The database name placeholder every generated statement carries.
+const DB_PLACEHOLDER: &str = "{{DB}}";
+
+/// The schema as one statement per `CREATE`, against `db`.
+pub fn schema_statements(db: &str) -> Vec<Statement> {
+    split_statements(&SCHEMA.replace(DB_PLACEHOLDER, db))
+        .into_iter()
+        .map(Statement::sql)
+        .collect()
+}
+
+/// The insert that loads a WAD's lumps, and its rows as RowBinary.
+///
+/// The rows travel as the request body, so the statement stays short
+/// whatever the WAD's size. Column order is the statement's, not the
+/// table's.
+pub fn wad_insert(db: &str, wad: &crate::wad::Wad<'_>) -> Statement {
+    let mut body = Vec::new();
+    for lump in wad.lumps() {
+        rowbinary::u32(&mut body, lump.index);
+        rowbinary::string(&mut body, lump.name.as_bytes());
+        rowbinary::string(&mut body, lump.map_marker.as_bytes());
+        rowbinary::string(&mut body, lump.bytes);
+    }
+    Statement::data(
+        format!("INSERT INTO {db}.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary"),
+        body,
+    )
+}
+
+/// One insert per constant table, streaming the committed TSV.
+pub fn table_insert_statements(db: &str) -> Vec<Statement> {
+    tables::insert_statements(db)
+        .into_iter()
+        .map(|insert| Statement::data(insert.sql, insert.body.as_bytes().to_vec()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_schema_names_the_database_everywhere() {
+        let statements = schema_statements("nat");
+        assert!(statements.len() > 40);
+        assert!(
+            statements
+                .iter()
+                .all(|s| !s.sql.contains(DB_PLACEHOLDER) && s.body.is_empty())
+        );
+        assert_eq!(statements[0].sql, "CREATE DATABASE IF NOT EXISTS nat");
+        assert!(
+            statements[1]
+                .sql
+                .starts_with("CREATE TABLE IF NOT EXISTS nat.wad_lumps")
+        );
+    }
+
+    #[test]
+    fn every_table_the_schema_declares_is_named_after_the_database() {
+        // A `CREATE TABLE` that forgot its `{{DB}}` would land in whatever
+        // database the connection defaults to, which is the shared one.
+        for statement in schema_statements("nat") {
+            if let Some(rest) = statement.sql.strip_prefix("CREATE TABLE IF NOT EXISTS ") {
+                assert!(rest.starts_with("nat."), "{rest}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_table_inserts_carry_the_committed_text() {
+        let inserts = table_insert_statements("nat");
+        assert_eq!(inserts.len(), tables::TABLES.len());
+        assert_eq!(inserts[0].sql, "INSERT INTO nat.states FORMAT TSVWithNames");
+        assert_eq!(inserts[0].body, tables::TABLES[0].tsv.as_bytes());
+    }
+}

@@ -482,8 +482,12 @@ dependencies = [
 name = "clickdoom-native"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clickdoom-spec",
+ "clickhouse",
+ "serde",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

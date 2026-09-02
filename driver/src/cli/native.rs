@@ -5,6 +5,7 @@
 //! its argument list lives in its own module beside this one.
 
 pub mod demo;
+pub mod diff;
 pub mod load;
 pub mod play;
 pub mod render;
@@ -44,6 +45,7 @@ pub enum Command {
     // Each variant is described by its own `about` and `long_about`. A doc
     // comment here would replace both with its first line.
     Demo(demo::DemoCmd),
+    Diff(diff::DiffCmd),
     Load(load::LoadCmd),
     Play(play::PlayCmd),
     Render(render::RenderCmd),
@@ -88,6 +90,7 @@ pub struct SessionCheckCmd {
 pub(super) async fn run(cmd: &NativeCmd) -> Result<Exit, Failure> {
     match &cmd.command {
         Command::Demo(cmd) => demo::run(cmd).await,
+        Command::Diff(cmd) => diff::run(cmd).await,
         Command::Load(cmd) => load::run(cmd).await,
         Command::Play(cmd) => play::run(cmd).await,
         Command::Render(cmd) => render::run(cmd).await,

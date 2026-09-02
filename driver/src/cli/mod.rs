@@ -221,6 +221,8 @@ mod tests {
             "--hash-out",
             "h.tsv",
         ],
+        &["diff", "100", "--probe", "p.tsv"],
+        &["diff", "100", "--probe", "p.tsv", "--summary"],
         &["load"],
         &["load", "--wad", "w.wad", "--map", "E1M1", "--demo", "DEMO1"],
         &["load", "--probe", "p.tsv"],

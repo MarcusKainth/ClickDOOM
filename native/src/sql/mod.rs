@@ -29,6 +29,20 @@ const RENDER_LOAD: &str = include_str!("../../sql/render_load.sql");
 /// The database name placeholder every generated statement carries.
 const DB_PLACEHOLDER: &str = "{{DB}}";
 
+/// Every table the schema declares, in the order it declares them.
+///
+/// A caller that has to empty or drop the schema's tables one at a time
+/// needs the list, and the schema is the only place it exists.
+pub fn schema_tables() -> Vec<&'static str> {
+    let prefix = format!("CREATE TABLE IF NOT EXISTS {DB_PLACEHOLDER}.");
+    split_statements(SCHEMA)
+        .into_iter()
+        .filter_map(|sql| sql.strip_prefix(prefix.as_str()))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(|name| name.trim_end_matches('('))
+        .collect()
+}
+
 /// The schema as one statement per `CREATE`, against `db`.
 pub fn schema_statements(db: &str) -> Vec<Statement> {
     split_statements(&SCHEMA.replace(DB_PLACEHOLDER, db))
@@ -135,6 +149,25 @@ mod tests {
             statements[1]
                 .sql
                 .starts_with("CREATE TABLE IF NOT EXISTS nat.wad_lumps")
+        );
+    }
+
+    #[test]
+    fn the_table_list_names_every_create_the_schema_carries() {
+        let tables = schema_tables();
+        let creates = schema_statements("nat")
+            .iter()
+            .filter(|s| s.sql.starts_with("CREATE TABLE"))
+            .count();
+        assert_eq!(tables.len(), creates, "a CREATE TABLE has no name here");
+        assert!(tables.contains(&"wad_lumps"));
+        assert!(tables.contains(&"native_state"));
+        assert!(tables.contains(&"native_frames"));
+        assert!(tables.contains(&"melt_schedule"));
+        // A name that kept its opening bracket would not truncate.
+        assert!(
+            tables.iter().all(|t| !t.contains('(') && !t.contains('.')),
+            "{tables:?}"
         );
     }
 

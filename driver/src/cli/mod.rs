@@ -209,7 +209,13 @@ mod tests {
 
     /// One parseable argument list per `native` subcommand, same roster
     /// rule as `EMULATION_LINES`.
-    const NATIVE_LINES: &[&[&str]] = &[&["session-check"], &["session-check", "--rows", "10"]];
+    const NATIVE_LINES: &[&[&str]] = &[
+        &["load"],
+        &["load", "--wad", "w.wad", "--map", "E1M1", "--demo", "DEMO1"],
+        &["load", "--probe", "p.tsv"],
+        &["session-check"],
+        &["session-check", "--rows", "10"],
+    ];
 
     #[test]
     fn every_native_subcommand_parses_under_the_namespace() {
@@ -224,7 +230,7 @@ mod tests {
     #[test]
     fn native_needs_a_subcommand() {
         assert!(Cli::try_parse_from(["clickdoom", "native"]).is_err());
-        assert!(Cli::try_parse_from(["clickdoom", "native", "load"]).is_err());
+        assert!(Cli::try_parse_from(["clickdoom", "native", "nope"]).is_err());
     }
 
     #[test]
@@ -255,7 +261,9 @@ mod tests {
         let Command::Native(cmd) = &cli.command else {
             panic!("parsed something other than native");
         };
-        let native::Command::SessionCheck(check) = &cmd.command;
+        let native::Command::SessionCheck(check) = &cmd.command else {
+            panic!("parsed something other than session-check");
+        };
         assert_eq!(check.conn.host, "elsewhere");
         assert_eq!(check.conn.database, "probe");
         assert_eq!(check.max_p50_ms, 2.5);

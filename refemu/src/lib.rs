@@ -13,6 +13,7 @@ pub mod image;
 pub mod memory;
 pub mod mmio;
 pub mod predecode;
+pub mod probe;
 pub mod snapshot;
 pub mod trace;
 

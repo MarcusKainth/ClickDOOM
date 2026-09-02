@@ -13,6 +13,7 @@ clickdoom-spec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+xxhash-rust.workspace = true
 
 [features]
 # The comparisons that need the pinned ROM built. Behind a feature rather

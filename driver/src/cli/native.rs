@@ -5,6 +5,7 @@
 //! its argument list lives in its own module beside this one.
 
 pub mod load;
+pub mod render;
 
 use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement in the driver, never a value a statement reads
 
@@ -41,6 +42,7 @@ pub enum Command {
     // Each variant is described by its own `about` and `long_about`. A doc
     // comment here would replace both with its first line.
     Load(load::LoadCmd),
+    Render(render::RenderCmd),
     SessionCheck(SessionCheckCmd),
 }
 
@@ -82,6 +84,7 @@ pub struct SessionCheckCmd {
 pub(super) async fn run(cmd: &NativeCmd) -> Result<Exit, Failure> {
     match &cmd.command {
         Command::Load(cmd) => load::run(cmd).await,
+        Command::Render(cmd) => render::run(cmd).await,
         Command::SessionCheck(cmd) => session_check(cmd).await,
     }
 }

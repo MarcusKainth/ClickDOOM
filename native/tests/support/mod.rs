@@ -21,6 +21,11 @@ pub fn doom1() -> Vec<u8> {
 #[cfg(feature = "clickhouse-tests")]
 pub mod patch;
 
-/// The map every live test loads, and the demo that drives it.
+#[cfg(feature = "clickhouse-tests")]
+pub mod probe;
+
+/// The map every live test loads, the demo that drives it, and the sky the
+/// episode carries.
 pub const MAP: &str = "E1M7";
 pub const DEMO: &str = "DEMO3";
+pub const SKY: &str = "SKY1";

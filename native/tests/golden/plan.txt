@@ -51,6 +51,19 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.demo_header
 CREATE TABLE IF NOT EXISTS clickdoom_native.demo_cmds
 CREATE TABLE IF NOT EXISTS clickdoom_native.native_state
 CREATE TABLE IF NOT EXISTS clickdoom_native.native_frames
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_viewangletox (id UInt32, x_raw Int32, x Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_xtoviewangle (id UInt32, angle UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_yslope (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_distscale (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_scalelight (light UInt8, scale UInt8, level UInt8)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_zlight (light UInt8, z UInt8, level UInt8)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sky
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_seg_subsector (seg UInt32, subsector UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_tex_pool (part UInt8, data Array(UInt8))
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_flat_pool (part UInt8, data Array(UInt8))
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_colormap_pool (id UInt8, data Array(UInt8))
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_palette (id UInt8, data String, rgb String)
+CREATE TABLE IF NOT EXISTS clickdoom_native.ref_frames
 INSERT INTO clickdoom_native.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary  [4194554 bytes]
 INSERT INTO clickdoom_native.states FORMAT TSVWithNames  [21857 bytes]
 INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]

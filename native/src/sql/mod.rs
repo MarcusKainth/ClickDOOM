@@ -17,6 +17,9 @@ const SCHEMA: &str = include_str!("../../schema.sql");
 /// The level decode, with its three placeholders still in it.
 const LEVEL_LOAD: &str = include_str!("../../sql/level_load.sql");
 
+/// The renderer's own tables, with its two placeholders still in it.
+const RENDER_LOAD: &str = include_str!("../../sql/render_load.sql");
+
 /// The database name placeholder every generated statement carries.
 const DB_PLACEHOLDER: &str = "{{DB}}";
 
@@ -40,6 +43,21 @@ pub fn level_statements(db: &str, map: &str, demo: &str) -> Vec<Statement> {
         .replace(DB_PLACEHOLDER, db)
         .replace("{{MAP}}", map)
         .replace("{{DEMO}}", demo);
+    split_statements(&text)
+        .into_iter()
+        .map(Statement::sql)
+        .collect()
+}
+
+/// The renderer's own tables, one statement at a time, for the episode whose
+/// sky texture is `sky`.
+///
+/// Every statement reads a constant table or a decoded level table, so the
+/// database has to carry a loaded level already.
+pub fn render_statements(db: &str, sky: &str) -> Vec<Statement> {
+    let text = RENDER_LOAD
+        .replace(DB_PLACEHOLDER, db)
+        .replace("{{SKY}}", sky);
     split_statements(&text)
         .into_iter()
         .map(Statement::sql)

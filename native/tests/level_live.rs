@@ -387,7 +387,8 @@ async fn the_assets_are_numbered_the_way_the_engine_numbers_them(fixture: &Fixtu
 /// The same WAD, decoded twice into two databases, has to produce the same
 /// rows. Several statements group and sort, and `groupArray` does not
 /// promise an order, so nothing but a second run says the explicit sorts
-/// cover every one of them.
+/// cover every one of them. The renderer's own tables are in here for the
+/// same reason: each pixel pool is one `groupArray` over a sorted read.
 #[tokio::test]
 async fn two_loads_of_the_same_wad_agree_row_for_row() {
     let bytes = support::doom1();
@@ -401,6 +402,7 @@ async fn two_loads_of_the_same_wad_agree_row_for_row() {
             support::MAP,
             support::DEMO,
         ));
+        plan.extend(sql::render_statements(&fixture.database, support::SKY));
         if let Err(error) = fixture.execute(&plan).await {
             fixture.finish().await;
             panic!("{error}");
@@ -408,7 +410,7 @@ async fn two_loads_of_the_same_wad_agree_row_for_row() {
         digests.push(digest(&fixture).await);
         fixture.finish().await;
     }
-    assert_eq!(digests[0].len(), 50, "the schema's table count changed");
+    assert_eq!(digests[0].len(), 62, "the schema's table count changed");
     for (a, b) in digests[0].iter().zip(&digests[1]) {
         assert_eq!(a, b, "{} differs between two loads", a.table);
     }
@@ -429,7 +431,7 @@ async fn digest(fixture: &Fixture) -> Vec<Digest> {
     let tables: Vec<String> = fixture
         .rows(&format!(
             "SELECT name FROM system.tables WHERE database = '{db}' \
-             AND name NOT IN ('native_state', 'native_frames') ORDER BY name"
+             AND name NOT IN ('native_state', 'native_frames', 'ref_frames') ORDER BY name"
         ))
         .await;
     let parts: Vec<String> = tables

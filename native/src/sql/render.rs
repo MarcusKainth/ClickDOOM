@@ -178,6 +178,8 @@ fn statement(db: &str, source: &str) -> String {
     message(&mut s);
     status_bar(&mut s);
     compose(&mut s);
+    melt(&mut s);
+    outputs(&mut s);
     format!(
         "INSERT INTO {db}.native_frames\nSELECT\n{}\nFROM {}",
         output_columns(),
@@ -194,6 +196,10 @@ fn statement(db: &str, source: &str) -> String {
 /// resident statement pays for these when it is analysed and never again.
 fn constants(s: &mut Stage) {
     let db = s.db.clone();
+
+    // Whether this frame is one of the melt's, which every stage that reads
+    // the frame before it asks.
+    s.bind("melt_on", "melt_step > 0");
 
     s.table("k_finesine", "finesine", "value", "id");
     s.table("k_finetangent", "finetangent", "value", "id");
@@ -2356,10 +2362,22 @@ fn status_bar(s: &mut Stage) {
     s.state("st_weaponowned", "p_weaponowned");
     s.state("st_cards", "p_cards");
     s.state("st_face", "st_faceindex");
+    // `ST_Start` leaves every icon reading as not yet drawn, which is what
+    // the widget cache holds until the first frame has gone out.
+    s.bind(
+        "fresh_cache",
+        "CAST((toInt32(0), toInt32(0), toInt32(0), toInt32(0), CAST([], 'Array(Int32)'), \
+         CAST([], 'Array(Int32)'), CAST([-1, -1, -1, -1, -1, -1], 'Array(Int32)'), \
+         CAST([-1, -1, -1], 'Array(Int32)'), toInt32(-1), toInt32(0)), \
+         'Tuple(ready Int32, frags Int32, health Int32, armor Int32, ammo Array(Int32), \
+         maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32, \
+         armsbg Int32)')",
+    );
     s.bind(
         "prev_cache",
         format!(
-            "joinGet('{}.native_frames', 'st_cache', toUInt32(frame - 1))",
+            "if(melt_on, fresh_cache, \
+             joinGet('{}.native_frames', 'st_cache', toUInt32(frame - 1)))",
             s.db
         ),
     );
@@ -2493,10 +2511,26 @@ fn status_bar(s: &mut Stage) {
              sb_icon, sb_icon_was, arrayEnumerate(sb_icon)), sb_icon_moved, sb_icon_off)"
         ),
     );
+    // `st_firsttime` is set when a level starts, so the status bar the melt
+    // shows is a full one: the bar itself, and the percent signs that a later
+    // frame leaves where they are.
+    s.bind(
+        "sb_refresh",
+        format!(
+            "if(melt_on, [(toUInt32(k_ui_slot[77]), toInt32(0), toInt32({STATUS_BAR_Y}), \
+             toUInt64({STATUS_TIME} - 1)), \
+             (toUInt32(k_ui_slot[21]), toInt32(90), toInt32(171), \
+             toUInt64({STATUS_TIME} + 2)), \
+             (toUInt32(k_ui_slot[21]), toInt32(221), toInt32(171), \
+             toUInt64({STATUS_TIME} + 3))], \
+             CAST([], 'Array(Tuple(UInt32, Int32, Int32, UInt64))'))"
+        ),
+    );
     s.bind(
         "sb_px",
         format!(
             "arrayConcat(\
+             arrayFlatten(arrayMap(b -> {blit}, sb_refresh)), \
              arrayFlatten(arrayMap(r -> {restore}, sb_clear)), \
              arrayFlatten(arrayMap(b -> {blit}, sb_digits)), \
              arrayFlatten(arrayMap(r -> {restore}, sb_icon_clear)), \
@@ -2694,6 +2728,85 @@ fn fuzz(s: &mut Stage) {
 }
 
 // ---------------------------------------------------------------------------
+// wipe_initMelt and wipe_doMelt
+// ---------------------------------------------------------------------------
+
+/// The screen melt between the title screen and the level.
+///
+/// `wipe_StartScreen` takes what the screen held before the level, which for
+/// a demo run straight off the command line is a black one, and
+/// `wipe_EndScreen` takes the level's first frame. `wipe_initMelt` then gives
+/// each pair of columns a starting offset out of 320 draws on the game's own
+/// random table, and each pass of `wipe_doMelt` slides them down.
+///
+/// A column's offset depends on nothing but itself and how many passes have
+/// run, so a frame in the middle of the melt is a function of its own step
+/// number and needs nothing carried from the frame before. With the start
+/// screen black, a column shows the level's first frame down to its offset
+/// and black below it.
+fn melt(s: &mut Stage) {
+    s.table("k_rndtable", "rndtable", "value", "id");
+    s.state("st_rndindex", "rndindex");
+
+    // Where the random table stood before the melt drew from it. The 320
+    // draws are the only ones between the tic's own and the frame, and 320
+    // steps of an eight-bit index is 64.
+    s.bind("melt_seed", "toUInt16((st_rndindex + 256 - 64) % 256)");
+    s.bind(
+        "melt_draw",
+        "arrayMap(j -> toInt32(k_rndtable[(melt_seed + j) % 256 + 1]), range(1, 321))",
+    );
+    // `y[0]` is the first draw, and each column after it steps one either way
+    // from the one before, held at zero above and at -15 below.
+    s.bind(
+        "melt_y0",
+        "arrayFold((acc, r) -> arrayPushBack(acc, toInt32(\
+         multiIf(acc[length(acc)] + r > 0, toInt32(0), \
+                 acc[length(acc)] + r = -16, toInt32(-15), \
+                 toInt32(acc[length(acc)] + r)))), \
+         arrayMap(v -> v % 3 - 1, arraySlice(melt_draw, 2, 319)), \
+         [toInt32(-(melt_draw[1] % 16))])",
+    );
+    // One pass: a column below zero climbs by one, and one at or above it
+    // slides by one more row each pass up to eight, stopping at the bottom.
+    let step = "toInt32(multiIf(y < 0, y + 1, \
+                y >= 200, y, \
+                y + least(if(y < 16, y + 1, toInt32(8)), 200 - y)))";
+    s.bind(
+        "melt_y",
+        format!(
+            "arrayMap(y0 -> arrayFold((y, k) -> {step}, range(toUInt32(melt_step)), y0), \
+             arraySlice(melt_y0, 1, 160))"
+        ),
+    );
+    // The same offset for both screen columns of a pair, and once more for
+    // every row, so the mask is one pass over the frame with nothing captured.
+    s.bind(
+        "melt_row_y",
+        format!(
+            "arrayFlatten(arrayMap(r -> arrayFlatten(arrayMap(y -> [y, y], melt_y)), \
+             range({SCREEN_HEIGHT})))"
+        ),
+    );
+    s.bind(
+        "melt_row",
+        format!(
+            "arrayFlatten(arrayMap(r -> arrayMap(x -> toInt32(r), range({VIEW_WIDTH})), \
+             range({SCREEN_HEIGHT})))"
+        ),
+    );
+    s.bind(
+        "melt_bytes",
+        "arrayMap((b, y, r) -> if(r < y, b, toUInt8(0)), fb_end_bytes, melt_row_y, melt_row)",
+    );
+    s.bind("fb_bytes", "if(melt_on, melt_bytes, fb_end_bytes)");
+    s.bind(
+        "fb",
+        "if(melt_on, arrayStringConcat(arrayMap(c -> char(c), melt_bytes), ''), fb_end)",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The framebuffer
 // ---------------------------------------------------------------------------
 
@@ -2703,18 +2816,22 @@ fn fuzz(s: &mut Stage) {
 /// offset the drawn pixels fall into runs of consecutive offsets, so the
 /// framebuffer is the previous frame's bytes with those runs cut in.
 fn compose(s: &mut Stage) {
+    // The melt draws the level's first frame over the screen the wipe
+    // started from, which is black, and not over the frame before it.
     s.bind(
         "prev_fb",
         format!(
-            "coalesce(joinGetOrNull('{}.native_frames', 'fb', toUInt32(frame - 1)), \
-             repeat('\\0', {FB_BYTES}))",
+            "if(melt_on, repeat('\\0', {FB_BYTES}), \
+             coalesce(joinGetOrNull('{}.native_frames', 'fb', toUInt32(frame - 1)), \
+             repeat('\\0', {FB_BYTES})))",
             s.db
         ),
     );
     s.bind(
         "prev_fb_bytes",
         format!(
-            "joinGet('{}.native_frames', 'fb_bytes', toUInt32(frame - 1))",
+            "if(melt_on, CAST([], 'Array(UInt8)'), \
+             joinGet('{}.native_frames', 'fb_bytes', toUInt32(frame - 1)))",
             s.db
         ),
     );
@@ -2772,7 +2889,7 @@ fn compose(s: &mut Stage) {
          arrayPushFront(arrayMap(e -> e + 1, arrayPopBack(run_end)), toUInt32(0)))",
     );
     s.bind(
-        "fb",
+        "fb_end",
         format!(
             "concat(arrayStringConcat(arrayMap((gf, rs, re, h) -> concat(\
              substring(prev_fb, gf + 1, rs - gf), substring(px_bytes, h, re - rs + 1)), \
@@ -2793,7 +2910,7 @@ fn compose(s: &mut Stage) {
     );
     s.bind("px_colours", "arrayMap(t -> t.2, px_sorted)");
     s.bind(
-        "fb_bytes",
+        "fb_end_bytes",
         format!(
             "arrayConcat(arrayFlatten(arrayMap((gf, rs, re, h) -> arrayConcat(\
              arraySlice(prev_bytes, gf + 1, rs - gf), arraySlice(px_colours, h, re - rs + 1)), \
@@ -2802,6 +2919,10 @@ fn compose(s: &mut Stage) {
              {FB_BYTES}))"
         ),
     );
+}
+
+/// What the frame row carries besides its pixels.
+fn outputs(s: &mut Stage) {
     // `ST_doPaletteStuff`. Damage and berserk shift the screen red, a pickup
     // shifts it gold, and a radiation suit shifts it green. The numbering is
     // `PLAYPAL`'s own: 1 to 8 red, 9 to 12 gold, 13 green.
@@ -2826,11 +2947,10 @@ fn compose(s: &mut Stage) {
         "arrayStringConcat(arrayMap(c -> substring(k_rgb[palette_index + 1], c * 4 + 1, 4), \
          fb_bytes), '')",
     );
-    // The guard is read here so the frame cannot skip it.
-    // The two guards are read here so the frame cannot skip them.
+    // Every guard is read here, so a frame cannot come out without them.
     s.bind(
         "fb_hash",
-        "xxHash64(concat(fb, palette)) + hu_guard + sb_guard",
+        "xxHash64(concat(fb, palette)) + hu_guard + sb_guard + fz_guard + fz_box_guard",
     );
     // What each widget drew, for the frame after this one to compare against.
     s.bind(

@@ -5,5 +5,7 @@
 //! what the text has to do.
 
 pub mod csource;
+pub mod load;
+pub mod sql;
 pub mod tables;
 pub mod wad;

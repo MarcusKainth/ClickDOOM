@@ -1,0 +1,65 @@
+CREATE DATABASE IF NOT EXISTS clickdoom_native
+CREATE TABLE IF NOT EXISTS clickdoom_native.wad_lumps
+CREATE TABLE IF NOT EXISTS clickdoom_native.states
+CREATE TABLE IF NOT EXISTS clickdoom_native.action_functions
+CREATE TABLE IF NOT EXISTS clickdoom_native.mobjinfo
+CREATE TABLE IF NOT EXISTS clickdoom_native.sprnames
+CREATE TABLE IF NOT EXISTS clickdoom_native.weaponinfo
+CREATE TABLE IF NOT EXISTS clickdoom_native.animdefs
+CREATE TABLE IF NOT EXISTS clickdoom_native.switchlist
+CREATE TABLE IF NOT EXISTS clickdoom_native.checkcoord
+CREATE TABLE IF NOT EXISTS clickdoom_native.finetangent (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.finesine (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.tantoangle (id UInt32, value UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rndtable (id UInt32, value UInt8)
+CREATE TABLE IF NOT EXISTS clickdoom_native.fuzzoffset (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.gammatable (level UInt8, id UInt32, value UInt8)
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_vertexes
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_lines
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_sides
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_sectors_static
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_segs
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_subsectors
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_nodes
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_things
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_blockmap_header
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_blockmap
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_reject
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_ssec_path
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_sector_subsectors
+CREATE TABLE IF NOT EXISTS clickdoom_native.lv_node_range
+CREATE TABLE IF NOT EXISTS clickdoom_native.pnames
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_textures
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_patches
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_columns
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_composite
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_col_base
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_window
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_posts
+CREATE TABLE IF NOT EXISTS clickdoom_native.sprite_frames
+CREATE TABLE IF NOT EXISTS clickdoom_native.sprite_lumps
+CREATE TABLE IF NOT EXISTS clickdoom_native.sprite_pool
+CREATE TABLE IF NOT EXISTS clickdoom_native.sprite_posts
+CREATE TABLE IF NOT EXISTS clickdoom_native.flats
+CREATE TABLE IF NOT EXISTS clickdoom_native.colormap
+CREATE TABLE IF NOT EXISTS clickdoom_native.playpal
+CREATE TABLE IF NOT EXISTS clickdoom_native.ui_patches
+CREATE TABLE IF NOT EXISTS clickdoom_native.demo_header
+CREATE TABLE IF NOT EXISTS clickdoom_native.demo_cmds
+CREATE TABLE IF NOT EXISTS clickdoom_native.native_state
+CREATE TABLE IF NOT EXISTS clickdoom_native.native_frames
+INSERT INTO clickdoom_native.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary  [4194554 bytes]
+INSERT INTO clickdoom_native.states FORMAT TSVWithNames  [21857 bytes]
+INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]
+INSERT INTO clickdoom_native.mobjinfo FORMAT TSVWithNames  [10484 bytes]
+INSERT INTO clickdoom_native.sprnames FORMAT TSVWithNames  [1140 bytes]
+INSERT INTO clickdoom_native.weaponinfo FORMAT TSVWithNames  [222 bytes]
+INSERT INTO clickdoom_native.animdefs FORMAT TSVWithNames  [547 bytes]
+INSERT INTO clickdoom_native.switchlist FORMAT TSVWithNames  [884 bytes]
+INSERT INTO clickdoom_native.checkcoord FORMAT TSVWithNames  [137 bytes]
+INSERT INTO clickdoom_native.finetangent FORMAT TSVWithNames  [47267 bytes]
+INSERT INTO clickdoom_native.finesine FORMAT TSVWithNames  [114765 bytes]
+INSERT INTO clickdoom_native.tantoangle FORMAT TSVWithNames  [29294 bytes]
+INSERT INTO clickdoom_native.rndtable FORMAT TSVWithNames  [1837 bytes]
+INSERT INTO clickdoom_native.fuzzoffset FORMAT TSVWithNames  [370 bytes]
+INSERT INTO clickdoom_native.gammatable FORMAT TSVWithNames  [11895 bytes]

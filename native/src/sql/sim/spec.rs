@@ -57,6 +57,72 @@ pub fn update_specials(state: &super::State, db: &str) -> Vec<(String, String)> 
         ),
         ("now_side_textureoffset".to_owned(), scroll(state)),
     ]);
+    bindings.extend(buttons(state));
+    bindings
+}
+
+/// `p_spec.h`: where on the side a switch's picture sits, in the order
+/// `bwhere_e` declares them.
+mod where_ {
+    pub const TOP: i64 = 0;
+    pub const MIDDLE: i64 = 1;
+    pub const BOTTOM: i64 = 2;
+}
+
+/// `P_UpdateSpecials`' button timers: a switch that was pressed puts its
+/// old picture back when the timer runs out, and its slot is freed.
+fn buttons(state: &super::State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let held = |column: &str| format!("{}[b]", s(column));
+    let running = format!("{} != 0", held("btn_timer"));
+    // The tic the timer reaches zero is the tic the picture goes back.
+    let fires = format!("({running} AND {} - 1 = 0)", held("btn_timer"));
+    let mut bindings = vec![
+        (
+            "btn_expired".to_owned(),
+            format!(
+                "arrayFilter(b -> {fires}, arrayEnumerate({}))",
+                s("btn_timer")
+            ),
+        ),
+        (
+            "now_btn_timer".to_owned(),
+            format!(
+                "arrayMap(b -> toInt32(if({running}, {} - 1, 0)), arrayEnumerate({t}))",
+                held("btn_timer"),
+                t = s("btn_timer"),
+            ),
+        ),
+    ];
+    // A slot the timer emptied carries nothing.
+    for column in ["btn_line", "btn_where", "btn_texture"] {
+        bindings.push((
+            format!("now_{column}"),
+            format!(
+                "arrayMap(b -> toInt32(if({fires}, 0, {})), arrayEnumerate({c}))",
+                held(column),
+                c = s(column),
+            ),
+        ));
+    }
+    for (column, at) in [
+        ("side_toptexture", where_::TOP),
+        ("side_midtexture", where_::MIDDLE),
+        ("side_bottomtexture", where_::BOTTOM),
+    ] {
+        bindings.push((
+            format!("now_{column}"),
+            format!(
+                "arrayFold((acc, b) -> arrayMap((v, i) -> toInt16(if({} = {at} \
+                 AND i = 1 + line_side0[1 + {}], {}, v)), acc, arrayEnumerate(acc)), \
+                 btn_expired, {c})",
+                held("btn_where"),
+                held("btn_line"),
+                held("btn_texture"),
+                c = s(column),
+            ),
+        ));
+    }
     bindings
 }
 

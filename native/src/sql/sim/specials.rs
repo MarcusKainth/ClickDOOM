@@ -13,6 +13,14 @@ use super::plane::{self, Plane, Things};
 use super::plats::{self, Plat};
 use crate::sql::bind;
 
+/// `p_floor.c`: the `floor_e` values whose arrival changes the sector's
+/// floor picture and its special, which this does not write.
+///
+/// `lowerAndChange` and `donutRaise`, counting from zero down the
+/// declaration. The other two names with `Change` in them do their change
+/// when the thinker is made, not when it arrives.
+const CHANGES_TEXTURE: &str = "6, 11";
+
 /// Every column the thinker list carries, in the order a new thinker
 /// appends to them.
 const THINKER_COLUMNS: [&str; 23] = [
@@ -209,12 +217,14 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         format!(
             "arrayMap(j -> toUInt8({active} = 1 AND (\
              ({k} = {DOOR} AND {dir} != 0) OR \
+             ({k} = {FLOOR} AND {dir} != 0) OR \
              ({k} = {PLAT} AND {st} IN ({UP}, {DOWN})))), arrayEnumerate({kinds}))",
             active = at("s_active"),
             k = at("s_kind"),
             dir = at("s_direction"),
             st = at("s_status"),
             DOOR = kind::DOOR,
+            FLOOR = kind::FLOOR,
             PLAT = kind::PLAT,
             UP = plats::status::UP,
             DOWN = plats::status::DOWN,
@@ -263,11 +273,12 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         format!(
             "arrayMap(j -> toInt64(multiIf(\
              {k} = {PLAT}, if(plane_status[j] = {UP}, plane_high[j], plane_low[j]), \
-             plane_direction[j] = -1, toInt64({}[1 + {sector}]), \
+             {k} = {DOOR} AND plane_direction[j] = -1, toInt64({}[1 + {sector}]), \
              toInt64({}))), arrayEnumerate({kinds}))",
             s("sec_floorheight"),
             at("s_dest"),
             k = at("s_kind"),
+            DOOR = kind::DOOR,
             PLAT = kind::PLAT,
             UP = plats::status::UP,
             kinds = s("s_kind"),
@@ -458,12 +469,17 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     value(
         "plane_done",
         format!(
-            "arrayMap(j -> toUInt8(if(plane_is_plat[j] = 1, \
+            "arrayMap(j -> toUInt8(multiIf(plane_is_plat[j] = 1, \
              plane_ticks[j] = 1 AND plane_plat[j].{} = 1, \
-             plane_runs[j] = 1 AND plane_door[j].{} = 1)), arrayEnumerate({}))",
+             {k} = {FLOOR}, plane_runs[j] = 1 AND plane_moved[j].{} = {PASTDEST}, \
+             plane_runs[j] = 1 AND plane_door[j].{} = 1)), arrayEnumerate({kinds}))",
             plats::ran::DONE,
+            plane::moved::RESULT,
             doors::ran::DONE,
-            s("s_kind")
+            k = at("s_kind"),
+            FLOOR = kind::FLOOR,
+            PASTDEST = plane::result::PASTDEST,
+            kinds = s("s_kind")
         ),
     );
 
@@ -517,12 +533,17 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     );
     let unresolved = format!(
         "toUInt8({} = 1 OR plane_shared = 1 OR plane_clip.{} = 1 \
+         OR arrayExists(j -> plane_done[j] = 1 AND {k2} = {FLOOR2} \
+         AND plane_type[j] IN ({CHANGERS}), arrayEnumerate({k})) \
          OR arrayExists(j -> plane_runs[j] = 1 AND (plane_moved[j].{} = 1 OR plane_door[j].{} = 1), \
          arrayEnumerate({k})))",
         s("unresolved"),
         plane::clipped::UNRESOLVED,
         plane::moved::REVERTED,
         doors::ran::UNRESOLVED,
+        k2 = at("s_kind"),
+        FLOOR2 = kind::FLOOR,
+        CHANGERS = CHANGES_TEXTURE,
         k = s("s_kind"),
     );
     let body = format!(

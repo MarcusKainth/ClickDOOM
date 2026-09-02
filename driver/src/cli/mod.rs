@@ -224,6 +224,8 @@ mod tests {
         &["load"],
         &["load", "--wad", "w.wad", "--map", "E1M1", "--demo", "DEMO1"],
         &["load", "--probe", "p.tsv"],
+        &["play"],
+        &["play", "--scale", "1", "--max-tics", "35"],
         &["render", "--frame", "40"],
         &["render", "--frame", "40", "--from", "probe", "--fb-hash"],
         &[

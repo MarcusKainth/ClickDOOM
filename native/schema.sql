@@ -836,3 +836,90 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_frames
 )
 ENGINE = Join(ANY, LEFT, frame)
 SETTINGS join_any_take_last_row = 1;
+
+-- ---------------------------------------------------------------------------
+-- The renderer's own tables, built by `native/sql/render_load.sql` from the
+-- engine's constant tables and the level. They hold what
+-- `R_ExecuteSetViewSize`, `R_InitTextureMapping` and `R_InitLightTables`
+-- compute once for a 320x168 view with `screenblocks = 10`.
+-- ---------------------------------------------------------------------------
+
+-- `viewangletox`: the screen column a fine angle maps to. `x_raw` still
+-- carries the two out-of-view markers, -1 and 321, which is what the
+-- `xtoviewangle` scan reads; `x` has them pulled onto the edges of the view.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_viewangletox (id UInt32, x_raw Int32, x Int32)
+ENGINE = MergeTree ORDER BY id;
+
+-- `xtoviewangle`: the smallest view angle that maps to column `id`, one row
+-- per column plus the fencepost at 320.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_xtoviewangle (id UInt32, angle UInt32)
+ENGINE = MergeTree ORDER BY id;
+
+-- `yslope`, one row per view row, and `distscale`, one per column.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_yslope (id UInt32, value Int32)
+ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_distscale (id UInt32, value Int32)
+ENGINE = MergeTree ORDER BY id;
+
+-- `scalelight` and `zlight` as the colormap they select, 0 to 31, rather
+-- than as the pointer the engine holds.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_scalelight (light UInt8, scale UInt8, level UInt8)
+ENGINE = MergeTree ORDER BY (light, scale);
+
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_zlight (light UInt8, z UInt8, level UInt8)
+ENGINE = MergeTree ORDER BY (light, z);
+
+-- The one row the sky needs: which flat number means sky, which texture the
+-- episode's sky is, and `skytexturemid`.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_sky
+(
+    id          UInt8,
+    flatnum     Int32,
+    texture     Int32,
+    texturemid  Int32
+)
+ENGINE = MergeTree ORDER BY id;
+
+-- Which subsector each seg belongs to. `R_Subsector` reads the front sector
+-- off the subsector, not off the seg.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_seg_subsector (seg UInt32, subsector UInt32)
+ENGINE = MergeTree ORDER BY seg;
+
+-- The pixel pools, one row each. A per-pixel lookup lands in one of these,
+-- and each is a `WITH` constant in the frame transform, so a pool is read
+-- once per statement rather than once per frame.
+
+-- Every texture column's 128-byte window, end to end in slot order. A
+-- column's bytes start at `(tex_col_base[texture] + col) * 128`.
+--
+-- A pool is a String and not an Array. Both work, but a query holds an array
+-- constant as one field per element, and carrying a few hundred thousand of
+-- those through the frame statement costs gigabytes; a String is one field
+-- whatever its length.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_tex_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
+
+-- Every flat's 4,096 bytes, end to end in flat number order.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_flat_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
+
+-- COLORMAP end to end: light level `l` maps colour `c` to `data[l * 256 + c]`.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_colormap_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
+
+-- One row per PLAYPAL palette, with the gamma table already applied, which
+-- is what the ROM writes to the palette register. `rgb` is the same palette
+-- as 256 four-byte words, in the order a frame's pixels index it.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_palette (id UInt8, data String, rgb String)
+ENGINE = MergeTree ORDER BY id;
+
+-- The reference emulator's own frame, loaded beside ours so the two can be
+-- compared in SQL. `native::sql::parity` builds the queries that read it.
+CREATE TABLE IF NOT EXISTS {{DB}}.ref_frames
+(
+    frame    UInt32,
+    fb       String,
+    palette  String
+)
+ENGINE = MergeTree ORDER BY frame;

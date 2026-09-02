@@ -1,8 +1,13 @@
 //! Encoding rows in ClickHouse's RowBinary format.
 //!
-//! Only the two types the WAD insert uses. RowBinary carries no column
-//! names and no types, so the statement's own column list is what says
-//! which value is which.
+//! Only the types the WAD insert and the render pipeline's input row use.
+//! RowBinary carries no column names and no types, so the statement's own
+//! column list is what says which value is which.
+
+/// A `UInt8`.
+pub fn u8(out: &mut Vec<u8>, value: u8) {
+    out.push(value);
+}
 
 /// A `UInt32`, little-endian.
 pub fn u32(out: &mut Vec<u8>, value: u32) {
@@ -56,6 +61,13 @@ mod tests {
         varint(&mut out, 300);
         varint(&mut out, 64_000);
         assert_eq!(out, [0x7f, 0x80, 0x01, 0xac, 0x02, 0x80, 0xf4, 0x03]);
+    }
+
+    #[test]
+    fn a_byte_is_itself() {
+        let mut out = Vec::new();
+        u8(&mut out, 40);
+        assert_eq!(out, [40]);
     }
 
     #[test]

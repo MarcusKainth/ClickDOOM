@@ -50,9 +50,11 @@ same connection flags, `--host`, `--port`, `--user`, `--database` and
 `--password`, and the password falls back to `$CLICKHOUSE_PASSWORD` so it
 never has to appear in `ps`.
 
-`clickdoom native` names the mode that runs DOOM's own simulation and
-renderer as SQL. It has no subcommands, so invoking it reports a usage error
-and exits 2. `clickdoom native --help` describes the namespace.
+`clickdoom native` runs DOOM's own simulation and renderer as SQL: `load`,
+`render`, `demo`, `play`, `diff` and `session-check`, under the same
+connection flags. Each subcommand's `--help` states its exit codes; 3 is a
+gate that failed, a frame or a tic that differs from the reference emulator's.
+The root `README.md` walks both modes from a fresh checkout.
 
 ## Frame readout
 

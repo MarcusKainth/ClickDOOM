@@ -15,19 +15,17 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use std::path::{Path, PathBuf};
 use std::time::Duration; // purity-ok: a timeout in the harness, never a value a statement reads
 
-use clickdoom_driver::client::{ConnArgs, Db};
-use clickdoom_driver::native::{Session, melt, plan};
+use clickdoom_driver::client::Db;
+use clickdoom_driver::native::Session;
+use clickdoom_native::sql;
 use clickdoom_native::sql::sim::tick;
-use clickdoom_native::sql::{self};
-use clickdoom_native::{load, wad::Wad};
 use clickdoom_spec::native_state::key;
 
-const MAP: &str = "E1M7";
-const DEMO: &str = "DEMO3";
-const SKY: &str = "SKY1";
+mod support;
+
+use support::{conn_args, drop_database, loaded};
 
 /// `G_BuildTiccmd`'s `forwardmove`, walking and running.
 const WALK: i8 = 0x19;
@@ -36,50 +34,6 @@ const RUN: i8 = 0x32;
 /// The first tic of a session pays for the statement's analysis, which is
 /// seconds. `TIC_TIMEOUT` is the budget for the tics after it.
 const FIRST_ROW_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
-fn conn_args(database: &str) -> ConnArgs {
-    ConnArgs {
-        host: std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
-        port: std::env::var("CLICKHOUSE_HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(8123),
-        user: "default".to_owned(),
-        database: database.to_owned(),
-        password: None,
-    }
-}
-
-/// A private database with the level loaded and its first state row in it.
-async fn loaded(case: &str) -> (String, Db) {
-    let database = format!("clickdoom_native_play_{}_{case}", std::process::id());
-    let admin = conn_args("default").connect();
-    admin
-        .run(&format!("DROP DATABASE IF EXISTS {database}"))
-        .await
-        .expect("the database is dropped");
-
-    let bytes = std::fs::read(repo_root().join("rom/wad/doom1.wad")).expect("the WAD is committed");
-    let wad = Wad::parse(&bytes).expect("the WAD parses");
-    let phases = vec![
-        plan::Phase::new("base", load::plan(&database, &wad)),
-        plan::Phase::new("level", sql::level_statements(&database, MAP, DEMO)),
-        plan::Phase::new("render", sql::render_statements(&database, SKY)),
-        plan::Phase::new("sim", sql::sim::load_statements(&database)),
-        plan::Phase::new(
-            "melt",
-            melt::load_statements(&database, DEMO).expect("a committed schedule"),
-        ),
-    ];
-    plan::run(&admin, &phases)
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
-    (database, admin)
-}
 
 /// The tic command the simulation built for `tic`, and where the player
 /// stands after it.
@@ -157,8 +111,5 @@ async fn a_key_the_driver_streams_reaches_the_tic_command() {
         "the player kept moving after the keys were released"
     );
 
-    admin
-        .run(&format!("DROP DATABASE IF EXISTS {database}"))
-        .await
-        .expect("the database is dropped");
+    drop_database(&admin, &database).await;
 }

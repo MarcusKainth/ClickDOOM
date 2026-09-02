@@ -90,12 +90,18 @@ pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
     }
 }
 
-/// The paced loop: sample, run the tic, draw the frame it produced.
+/// The paced loop: sample, then run the next tic and draw this one's frame
+/// at the same time.
 ///
-/// No lookahead. The demo loop can run the simulation ahead of what is on
-/// the screen because the input is already recorded; here the input for tic
-/// t is whatever the keyboard says at tic t, so the tic cannot be run any
-/// earlier.
+/// The two are independent within a tic. The frame for tic t reads the state
+/// row for t, and the tic after t advances from that same row, so neither
+/// needs the other's result and the tic costs whichever of them is slower
+/// rather than both.
+///
+/// No lookahead past that. The demo loop can run the simulation ahead of
+/// what is on the screen because the input is already recorded; here the
+/// command for tic t + 1 is whatever the keyboard says while frame t is
+/// being drawn, which is as early as it can be known.
 async fn play(
     cmd: &PlayCmd,
     session: &Session,
@@ -121,13 +127,28 @@ async fn play(
     let last = cmd.max_tics.map(|tics| first.saturating_add(tics) - 1);
     let mut tic = first;
     while window.is_open() && last.is_none_or(|last| tic <= last) {
+        // Sampled once per tic, so a key held across a tic boundary lands
+        // in one tic rather than in the two either side of it.
+        let (keys, mouse_dx, mouse_dy) = sample(window);
+        let next = tic + 1;
+
+        // Both statements read the state row for `tic`, which is already
+        // committed: the frame draws it and the next tic advances from it.
+        // Neither waits on the other, so they are fed together and waited
+        // for together.
+        session
+            .feed_sim(next, tick::source::KEYS, keys, mouse_dx, mouse_dy)
+            .map_err(|err| failed(format!("feeding tic {next}: {err}")))?;
         session
             .feed_render(tic, tic, 0)
             .map_err(|err| failed(format!("feeding frame {tic}: {err}")))?;
-        let waited = session
-            .wait_frame(tic, FRAME_TIMEOUT)
-            .await
-            .map_err(|err| failed(err.to_string()))?;
+        let (ran, waited) = tokio::join!(
+            session.wait_sim(next, TIC_TIMEOUT),
+            session.wait_frame(tic, FRAME_TIMEOUT)
+        );
+        let ran = ran.map_err(|err| failed(err.to_string()))?;
+        let waited = waited.map_err(|err| failed(err.to_string()))?;
+
         let before = clock.elapsed();
         window
             .draw(&waited.frame.rgb32)
@@ -136,18 +157,6 @@ async fn play(
         counters.frames += 1;
         counters.render += waited.waited;
         counters.poll += waited.read;
-
-        // Sampled once, here, so a key held across a tic boundary lands in
-        // one tic rather than in the two either side of it.
-        let (keys, mouse_dx, mouse_dy) = sample(window);
-        let next = tic + 1;
-        session
-            .feed_sim(next, tick::source::KEYS, keys, mouse_dx, mouse_dy)
-            .map_err(|err| failed(format!("feeding tic {next}: {err}")))?;
-        let ran = session
-            .wait_sim(next, TIC_TIMEOUT)
-            .await
-            .map_err(|err| failed(err.to_string()))?;
         counters.sim = counters.sim.map(|total| total + ran);
         counters.tics += 1;
 

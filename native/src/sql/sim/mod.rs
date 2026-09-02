@@ -13,6 +13,7 @@ pub mod map;
 pub mod maputl;
 pub mod mobj;
 pub mod plane;
+pub mod plats;
 pub mod player;
 pub mod setup;
 pub mod spec;

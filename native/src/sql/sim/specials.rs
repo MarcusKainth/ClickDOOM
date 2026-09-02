@@ -10,6 +10,7 @@ use super::State;
 use super::doors::{self, Door, Opening};
 use super::map::World;
 use super::plane::{self, Plane, Things};
+use super::plats::{self, Plat};
 use crate::sql::bind;
 
 /// Every column the thinker list carries, in the order a new thinker
@@ -201,15 +202,23 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             s("s_kind")
         ),
     );
+    // A door moves while its direction says so; a plat moves while its
+    // status is one of the two that run.
     value(
         "plane_runs",
         format!(
-            "arrayMap(j -> toUInt8({} = {} AND {} = 1 AND {} != 0), arrayEnumerate({}))",
-            at("s_kind"),
-            kind::DOOR,
-            at("s_active"),
-            at("s_direction"),
-            s("s_kind"),
+            "arrayMap(j -> toUInt8({active} = 1 AND (\
+             ({k} = {DOOR} AND {dir} != 0) OR \
+             ({k} = {PLAT} AND {st} IN ({UP}, {DOWN})))), arrayEnumerate({kinds}))",
+            active = at("s_active"),
+            k = at("s_kind"),
+            dir = at("s_direction"),
+            st = at("s_status"),
+            DOOR = kind::DOOR,
+            PLAT = kind::PLAT,
+            UP = plats::status::UP,
+            DOWN = plats::status::DOWN,
+            kinds = s("s_kind"),
         ),
     );
     // A door going down closes on the floor it stands over, and one going
@@ -217,10 +226,13 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     let door_plane = door_plane(sector, "plane_height[j]");
     for (name, column) in [
         ("plane_speed", "s_speed"),
-        ("plane_direction", "s_direction"),
         ("plane_count", "s_count"),
         ("plane_type", "s_type"),
         ("plane_wait", "s_wait"),
+        ("plane_status", "s_status"),
+        ("plane_crush", "s_crush"),
+        ("plane_low", "s_dest"),
+        ("plane_high", "s_dest2"),
     ] {
         value(
             name,
@@ -231,21 +243,58 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             ),
         );
     }
+    // A plat runs up to its high and down to its low. A door going down
+    // closes on the floor it stands over, and one going up stops at the
+    // height it was given.
+    value(
+        "plane_direction",
+        format!(
+            "arrayMap(j -> toInt64(if({k} = {PLAT}, \
+             if(plane_status[j] = {UP}, 1, -1), toInt64({dir}))), arrayEnumerate({kinds}))",
+            k = at("s_kind"),
+            PLAT = kind::PLAT,
+            UP = plats::status::UP,
+            dir = at("s_direction"),
+            kinds = s("s_kind"),
+        ),
+    );
     value(
         "plane_dest",
         format!(
-            "arrayMap(j -> toInt64(if(plane_direction[j] = -1, toInt64({}[1 + {sector}]), \
-             toInt64({}))), arrayEnumerate({}))",
+            "arrayMap(j -> toInt64(multiIf(\
+             {k} = {PLAT}, if(plane_status[j] = {UP}, plane_high[j], plane_low[j]), \
+             plane_direction[j] = -1, toInt64({}[1 + {sector}]), \
+             toInt64({}))), arrayEnumerate({kinds}))",
             s("sec_floorheight"),
             at("s_dest"),
-            s("s_kind"),
+            k = at("s_kind"),
+            PLAT = kind::PLAT,
+            UP = plats::status::UP,
+            kinds = s("s_kind"),
+        ),
+    );
+    // A door and a ceiling drive the ceiling; a plat and a floor drive the
+    // floor. `T_MovePlane` numbers them that way round.
+    value(
+        "plane_which",
+        format!(
+            "arrayMap(j -> toInt64(if({} IN ({}, {}), {}, {})), arrayEnumerate({k}))",
+            at("s_kind"),
+            kind::DOOR,
+            kind::CEILING,
+            plane::CEILING,
+            plane::FLOOR,
+            k = s("s_kind"),
         ),
     );
     value(
         "plane_height",
         format!(
-            "arrayMap(j -> toInt64({}[1 + {sector}]), arrayEnumerate({}))",
+            "arrayMap(j -> toInt64(if(plane_which[j] = {}, {}[1 + {sector}], {}[1 + {sector}])), \
+             arrayEnumerate({}))",
+            plane::CEILING,
             s("sec_ceilingheight"),
+            s("sec_floorheight"),
             s("s_kind")
         ),
     );
@@ -275,14 +324,20 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             s("s_kind")
         ),
     );
+    let trying = |which: i64, from: &str| {
+        format!(
+            "arrayFold((acc, j) -> arrayMap((v, i) -> toInt32(if(i = 1 + plane_sector[j] \
+             AND plane_which[j] = {which}, plane_target[j], v)), acc, arrayEnumerate(acc)), \
+             plane_running, {from})"
+        )
+    };
     value(
         "plane_trying",
-        format!(
-            "arrayFold((acc, j) -> arrayMap((v, i) -> \
-             toInt32(if(i = 1 + plane_sector[j], plane_target[j], v)), acc, arrayEnumerate(acc)), \
-             plane_running, {})",
-            s("sec_ceilingheight"),
-        ),
+        trying(plane::CEILING, &s("sec_ceilingheight")),
+    );
+    value(
+        "plane_trying_floor",
+        trying(plane::FLOOR, &s("sec_floorheight")),
     );
     let world = World {
         m_x: &s("m_x"),
@@ -291,7 +346,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         m_flags: &s("m_flags"),
         m_linkseq: &s("m_linkseq"),
         alive: "plane_alive",
-        floorheight: &s("sec_floorheight"),
+        floorheight: "plane_trying_floor",
         ceilingheight: "plane_trying",
         line_special: &s("line_special"),
     };
@@ -335,10 +390,18 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     );
     let door = Door {
         kind: "plane_type[j]",
-        direction: "plane_direction[j]",
+        direction: "plane_door_direction[j]",
         count: "plane_count[j]",
         wait: "plane_wait[j]",
     };
+    value(
+        "plane_door_direction",
+        format!(
+            "arrayMap(j -> toInt64({}), arrayEnumerate({}))",
+            at("s_direction"),
+            s("s_kind")
+        ),
+    );
     value(
         "plane_door",
         format!(
@@ -353,10 +416,52 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         "plane_shared",
         "toUInt8(length(plane_moving) != length(arrayDistinct(plane_moving)))".to_owned(),
     );
+    let plat = Plat {
+        kind: "plane_type[j]",
+        status: "plane_status[j]",
+        count: "plane_count[j]",
+        wait: "plane_wait[j]",
+        crush: "plane_crush[j]",
+        low: "plane_low[j]",
+        floorheight: "plane_moved[j].2",
+    };
+    value(
+        "plane_plat",
+        format!(
+            "arrayMap(j -> {}, arrayEnumerate({}))",
+            plats::plat_raise(&plat, "plane_moved[j]"),
+            s("s_kind")
+        ),
+    );
+    value(
+        "plane_is_plat",
+        format!(
+            "arrayMap(j -> toUInt8({} = {}), arrayEnumerate({}))",
+            at("s_kind"),
+            kind::PLAT,
+            s("s_kind")
+        ),
+    );
+    // A plat that is only waiting still runs its count down, so it acts on
+    // tics the plane pass does not move anything for it.
+    value(
+        "plane_ticks",
+        format!(
+            "arrayMap(j -> toUInt8({} = 1 AND ({} = {} OR plane_runs[j] = 1)), \
+             arrayEnumerate({k}))",
+            at("s_active"),
+            at("s_kind"),
+            kind::PLAT,
+            k = s("s_kind"),
+        ),
+    );
     value(
         "plane_done",
         format!(
-            "arrayMap(j -> toUInt8(plane_runs[j] = 1 AND plane_door[j].{} = 1), arrayEnumerate({}))",
+            "arrayMap(j -> toUInt8(if(plane_is_plat[j] = 1, \
+             plane_ticks[j] = 1 AND plane_plat[j].{} = 1, \
+             plane_runs[j] = 1 AND plane_door[j].{} = 1)), arrayEnumerate({}))",
+            plats::ran::DONE,
             doors::ran::DONE,
             s("s_kind")
         ),
@@ -366,12 +471,12 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     // chain that computes it holds the clip and one statement holds one of
     // those.
     let each = |body: String| format!("arrayMap(j -> {body}, arrayEnumerate({}))", s("s_kind"));
-    let scatter = |from: String| {
+    let scatter = |which: i64, from: &str| {
         format!(
-            "arrayFold((acc, j) -> arrayMap((v, i) -> \
-             toInt32(if(i = 1 + plane_sector[j], {from}, v)), acc, arrayEnumerate(acc)), \
-             plane_running, {})",
-            s("sec_ceilingheight"),
+            "arrayFold((acc, j) -> arrayMap((v, i) -> toInt32(if(i = 1 + plane_sector[j] \
+             AND plane_which[j] = {which}, plane_moved[j].{}, v)), acc, arrayEnumerate(acc)), \
+             plane_running, {from})",
+            plane::moved::HEIGHT,
         )
     };
     let ran = |member: usize, column: &str| {
@@ -381,10 +486,25 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         ))
     };
     let keep = each("toUInt8(if(plane_done[j] = 1, 0, 1))".to_owned());
-    let ceiling = scatter(format!("plane_moved[j].{}", plane::moved::HEIGHT));
+    let ceiling = scatter(plane::CEILING, &s("sec_ceilingheight"));
+    let floor = scatter(plane::FLOOR, &s("sec_floorheight"));
     let direction = ran(doors::ran::DIRECTION, "s_direction");
-    let count = ran(doors::ran::COUNT, "s_count");
     let kind_now = ran(doors::ran::KIND, "s_type");
+    // The count belongs to whichever thinker ran, and the status is the
+    // plat's alone.
+    let count = each(format!(
+        "toInt32(multiIf(plane_is_plat[j] = 1 AND plane_ticks[j] = 1, plane_plat[j].{}, \
+         plane_is_plat[j] = 1, {c}, \
+         plane_runs[j] = 1, plane_door[j].{}, {c}))",
+        plats::ran::COUNT,
+        doors::ran::COUNT,
+        c = at("s_count"),
+    ));
+    let status = each(format!(
+        "toInt32(if(plane_is_plat[j] = 1 AND plane_ticks[j] = 1, plane_plat[j].{}, {}))",
+        plats::ran::STATUS,
+        at("s_status"),
+    ));
     let z = format!("plane_clip.{}", plane::clipped::Z);
     let floorz = format!("plane_clip.{}", plane::clipped::FLOORZ);
     let ceilingz = format!("plane_clip.{}", plane::clipped::CEILINGZ);
@@ -407,7 +527,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     );
     let body = format!(
         "({keep}, {ceiling}, {direction}, {count}, {kind_now}, {z}, {floorz}, {ceilingz}, \
-         {specialdata}, {unresolved})"
+         {specialdata}, {unresolved}, {floor}, {status})"
     );
     // The values go through one chain rather than becoming bindings of
     // their own. A binding read more than once inside a SELECT is expanded
@@ -422,6 +542,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             "arrayMap((a, c) -> toUInt32(if(a = 1, c, 0)), kept, arrayCumSum(kept))".to_owned(),
         ),
         ("now_sec_ceilingheight".to_owned(), held(2)),
+        ("now_sec_floorheight".to_owned(), held(11)),
         ("now_m_z".to_owned(), held(6)),
         ("now_m_floorz".to_owned(), held(7)),
         ("now_m_ceilingz".to_owned(), held(8)),
@@ -435,6 +556,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             "s_direction" => held(3),
             "s_count" => held(4),
             "s_type" => held(5),
+            "s_status" => held(12),
             _ => s(column),
         };
         bindings.push((
@@ -460,7 +582,7 @@ fn door_plane<'a>(sector: &'a str, height: &'a str) -> Plane<'a> {
         speed: "toInt64(plane_speed[j])",
         dest: "plane_dest[j]",
         crush: "0",
-        which: "1",
+        which: "plane_which[j]",
         direction: "plane_direction[j]",
         height,
     }

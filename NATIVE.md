@@ -37,7 +37,10 @@ the same fields. Every `fixed_t` is `Int32`, angles are `UInt32`, enums are
 their C values. Mobjs and sector thinkers are parallel array columns indexed by
 slot in thinker-list order. A thinker's identity is the value of a global
 counter taken when it was added; pointers between thinkers hold that identity,
-0 for none.
+0 for none. The probe cannot read identities out of RAM and writes 0 for them,
+so parity compares by slot and ignores the identity columns. A message the
+player or the heads-up display holds is stored as the xxh64 of its text, which
+is what the probe can compute from a C string.
 
 ## 4. The tic
 
@@ -51,8 +54,11 @@ heads-up display and menu tickers.
 
 ## 5. The frame
 
-One input row `(frame, tic, melt_step)` produces the frame for `frame` from the
-state row for `tic` and the previous frame. The frame is 320×200 8bpp bytes,
+One input row `(frame, tic, melt passes)` produces the frame for `frame` from
+the state row for `tic` and the previous frame. The melt's pass count per frame
+is what the engine's clock gave it, read off the reference run and loaded as
+data with its provenance; SQL turns the per-frame passes into the melt's
+running step. The frame is 320×200 8bpp bytes,
 row-major, plus the palette index chosen by the status bar, an RGB rendering of
 the two, and the frame hash `xxHash64(framebuffer || palette)` defined by
 `spec::fb_hash`. The framebuffer persists between frames, as it does in the
@@ -73,9 +79,15 @@ plus 64. The server reads that many bytes before it parses, so the first row
 after the statement is padding, `tic = 0`, at least 128 bytes, and is filtered
 out. A statement error surfaces on the response only after the body closes,
 so the driver reads the response concurrently and treats an early response as
-failure. The driver sends the row for tic t+1 only after the row for tic t is
-readable. A statement that ends is reopened, and the session resumes from the
-highest committed tic.
+failure. A statement that has already failed keeps accepting rows and commits
+none, so the driver detects death by rows that stop landing. The driver sends
+the row for tic t+1 only after the row for tic t is readable. A statement that
+ends is reopened, and the session resumes from the highest committed tic.
+
+Rows reach the statement one block each. Rows written into a statement from a
+`VALUES` list share one block whatever `max_insert_block_size` says, so every
+row of that block reads the state from before the block; tests that drive a
+statement without the driver use `numbers()` or one insert per row.
 
 ## 7. Parity
 

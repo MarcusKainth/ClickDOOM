@@ -8,6 +8,7 @@ pub mod fixed;
 pub mod parity;
 pub mod probe;
 pub mod rowbinary;
+pub mod sim;
 pub mod statement;
 
 pub use statement::{Statement, split_statements};

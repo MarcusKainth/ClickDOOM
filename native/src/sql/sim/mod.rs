@@ -4,6 +4,7 @@
 //! into expressions over the state row. Nothing executes: a caller gets
 //! statements and issues them.
 
+pub mod hud;
 pub mod setup;
 pub mod spec;
 

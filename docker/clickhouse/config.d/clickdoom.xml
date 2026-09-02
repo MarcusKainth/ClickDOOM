@@ -1,0 +1,9 @@
+<!-- Server settings for ClickDOOM. Mounted by docker-compose.yml, which is also
+     how CI starts the server, so every environment runs the same configuration.
+
+     Native mode keeps two INSERT statements open for a whole session and
+     streams one row per tic into each. An idle statement must survive a pause
+     longer than the defaults allow. -->
+<clickhouse>
+    <keep_alive_timeout>3600</keep_alive_timeout>
+</clickhouse>

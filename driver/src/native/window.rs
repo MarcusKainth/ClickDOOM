@@ -124,8 +124,13 @@ mod backend {
     pub struct Window {
         window: minifb::Window,
         buffer: Vec<u32>,
-        /// Where the pointer was when the last tic sampled it.
+        /// Where the pointer was when the last tic sampled it, once there
+        /// has been a tic to sample it from. A window that has not been
+        /// drawn to has not pumped its events, and the position it reports
+        /// is not one the pointer was ever at.
         pointer: Option<(f32, f32)>,
+        /// Whether the window has drawn a frame, and so pumped its events.
+        drawn: bool,
         /// Whether the pause key was down when the last tic sampled it.
         /// The engine takes a pause as one press, not as a key being held.
         paused_held: bool,
@@ -150,6 +155,7 @@ mod backend {
                 window,
                 buffer: Vec::with_capacity(WIDTH * HEIGHT),
                 pointer: None,
+                drawn: false,
                 paused_held: false,
             })
         }
@@ -159,7 +165,9 @@ mod backend {
             words(rgb32, &mut self.buffer)?;
             self.window
                 .update_with_buffer(&self.buffer, WIDTH, HEIGHT)
-                .map_err(|e| Error::Draw(e.to_string()))
+                .map_err(|e| Error::Draw(e.to_string()))?;
+            self.drawn = true;
+            Ok(())
         }
 
         /// Whether the window is still there. A run stops when it is not.
@@ -202,9 +210,17 @@ mod backend {
 
         /// How far the pointer moved since the last sample.
         ///
+        /// Nothing is reported until a frame has been drawn. A window that
+        /// has not been drawn to has not pumped its events, and taking that
+        /// position as an origin turns the first real reading into a jump
+        /// the pointer never made.
+        ///
         /// The pointer is not captured, so it stops at the edge of the
         /// window and the movement stops with it.
         pub fn mouse(&mut self) -> (i16, i16) {
+            if !self.drawn {
+                return (0, 0);
+            }
             let Some(at) = self.window.get_mouse_pos(minifb::MouseMode::Pass) else {
                 return (0, 0);
             };

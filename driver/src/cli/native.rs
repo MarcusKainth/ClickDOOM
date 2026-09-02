@@ -6,6 +6,7 @@
 
 pub mod demo;
 pub mod load;
+pub mod play;
 pub mod render;
 
 use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement in the driver, never a value a statement reads
@@ -44,6 +45,7 @@ pub enum Command {
     // comment here would replace both with its first line.
     Demo(demo::DemoCmd),
     Load(load::LoadCmd),
+    Play(play::PlayCmd),
     Render(render::RenderCmd),
     SessionCheck(SessionCheckCmd),
 }
@@ -87,6 +89,7 @@ pub(super) async fn run(cmd: &NativeCmd) -> Result<Exit, Failure> {
     match &cmd.command {
         Command::Demo(cmd) => demo::run(cmd).await,
         Command::Load(cmd) => load::run(cmd).await,
+        Command::Play(cmd) => play::run(cmd).await,
         Command::Render(cmd) => render::run(cmd).await,
         Command::SessionCheck(cmd) => session_check(cmd).await,
     }

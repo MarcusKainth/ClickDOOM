@@ -72,7 +72,7 @@ async fn a_renderer_only_session_draws_the_frames_the_engine_drew() {
         &conn,
         &database,
         None,
-        &sql::render::frame_transform(&database),
+        Some(&sql::render::frame_transform(&database)),
     )
     .await
     .expect("opening the renderer alone");

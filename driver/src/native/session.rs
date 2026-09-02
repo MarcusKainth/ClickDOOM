@@ -6,10 +6,12 @@
 //! for it, feed the frame that reads it. The statement text belongs to
 //! whoever generates the SQL; this drives whatever it is given.
 //!
-//! A session may open the renderer alone. `native_state` then holds rows
-//! something else wrote, the reference emulator's probe among them, and
-//! [`Session::wait_sim`] reads them the same way. [`Session::feed_sim`] is
-//! what a renderer-only session has no answer for.
+//! A session opens the components it needs. With no simulation,
+//! `native_state` holds rows something else wrote, the reference emulator's
+//! probe among them, and [`Session::wait_sim`] reads them the same way.
+//! With no renderer, a run drives tics and looks at the state rows rather
+//! than at frames. Feeding a component a session did not open is an error
+//! rather than a row that goes nowhere.
 //!
 //! A statement the server has abandoned goes on taking rows without
 //! committing them, so a session finds out from [`Session::wait_sim`]
@@ -92,6 +94,11 @@ pub enum SessionError {
     )]
     NoSim { database: String, tic: u32 },
     #[error(
+        "this session opened no renderer, so it has no statement to feed \
+         frame {frame} to"
+    )]
+    NoRender { frame: u32 },
+    #[error(
         "frame {frame} was not written within {waited:?}. The renderer \
          statement has stopped; recover the session and feed the frame again"
     )]
@@ -150,7 +157,7 @@ struct FrameRow {
 pub struct Session {
     database: String,
     sim_statement: Option<String>,
-    render_statement: String,
+    render_statement: Option<String>,
     sim: Option<Resident>,
     render: Option<Resident>,
     sim_query_id: String,
@@ -162,14 +169,16 @@ impl Session {
     /// Opens the statements against `database`.
     ///
     /// `sim_statement` is `None` for a session that renders from state rows
-    /// already in the database. The statements are kept, because recovery
-    /// reopens them unchanged. Each runs under its own `query_id`, so it can
-    /// be found in `system.query_log` and killed by name.
+    /// already in the database, and `render_statement` is `None` for one
+    /// that runs tics and looks at what they wrote. The statements are
+    /// kept, because recovery reopens them unchanged. Each runs under its
+    /// own `query_id`, so it can be found in `system.query_log` and killed
+    /// by name.
     pub async fn open(
         conn: &ConnArgs,
         database: &str,
         sim_statement: Option<&str>,
-        render_statement: &str,
+        render_statement: Option<&str>,
     ) -> Result<Session, SessionError> {
         let mut at = conn.clone();
         at.database = database.to_owned();
@@ -183,15 +192,20 @@ impl Session {
             ),
             None => None,
         };
-        let render = open_one(&at, render_statement, RENDER_INPUT_SCHEMA, &render_query_id)
-            .await
-            .map_err(|source| SessionError::Render { source })?;
+        let render = match render_statement {
+            Some(statement) => Some(
+                open_one(&at, statement, RENDER_INPUT_SCHEMA, &render_query_id)
+                    .await
+                    .map_err(|source| SessionError::Render { source })?,
+            ),
+            None => None,
+        };
         Ok(Session {
             database: database.to_owned(),
             sim_statement: sim_statement.map(str::to_owned),
-            render_statement: render_statement.to_owned(),
+            render_statement: render_statement.map(str::to_owned),
             sim,
-            render: Some(render),
+            render,
             sim_query_id,
             render_query_id,
             db: at.connect_uncompressed(),
@@ -201,6 +215,11 @@ impl Session {
     /// Whether this session drives a simulation of its own.
     pub fn has_sim(&self) -> bool {
         self.sim_statement.is_some()
+    }
+
+    /// Whether this session drives a renderer of its own.
+    pub fn has_render(&self) -> bool {
+        self.render_statement.is_some()
     }
 
     /// The `query_id` the simulation statement runs under. A fresh one is
@@ -270,6 +289,9 @@ impl Session {
     /// Sends the input row for one frame. `melt_step` drives the screen
     /// wipe.
     pub fn feed_render(&self, frame: u32, tic: u32, melt_step: u8) -> Result<(), SessionError> {
+        if !self.has_render() {
+            return Err(SessionError::NoRender { frame });
+        }
         let mut row = rowbinary::Row::with_capacity(12);
         row.u32(frame).u32(tic).u8(melt_step).bytes(b"");
         self.statement(Role::Render)?
@@ -359,16 +381,14 @@ impl Session {
             ),
             None => None,
         };
-        self.render = Some(
-            open_one(
-                &at,
-                &self.render_statement,
-                RENDER_INPUT_SCHEMA,
-                &self.render_query_id,
-            )
-            .await
-            .map_err(|source| SessionError::Render { source })?,
-        );
+        self.render = match &self.render_statement {
+            Some(statement) => Some(
+                open_one(&at, statement, RENDER_INPUT_SCHEMA, &self.render_query_id)
+                    .await
+                    .map_err(|source| SessionError::Render { source })?,
+            ),
+            None => None,
+        };
 
         Ok(Recovery {
             resume_tic: self.resume_point().await?,

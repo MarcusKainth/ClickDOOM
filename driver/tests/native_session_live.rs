@@ -195,7 +195,7 @@ async fn a_session_runs_tics_and_their_frames_in_order() {
         &conn,
         &database,
         Some(&sim_statement(&database)),
-        &render_statement(&database),
+        Some(&render_statement(&database)),
     )
     .await
     .expect("opening the session");
@@ -283,7 +283,7 @@ async fn a_killed_statement_is_found_and_recovered() {
         &conn,
         &database,
         Some(&sim_statement(&database)),
-        &render_statement(&database),
+        Some(&render_statement(&database)),
     )
     .await
     .expect("opening the session");

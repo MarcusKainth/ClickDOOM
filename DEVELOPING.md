@@ -144,6 +144,24 @@ minutes.
 The `demo3` trace is not committed. It is large, changes with every ROM, and is
 regenerable.
 
+## The struct layout table
+
+`refemu/probe/layout.tsv` records where the DOOM engine puts each field of each
+struct under RV32 ILP32: one `struct field offset size` row per field, plus
+each struct's own size under the field name `sizeof`. An array field's size is
+its whole extent, so a reader divides to get the element count and needs no
+second table of the engine's dimension macros.
+
+The numbers come from the compiler rather than from reading a header.
+`rom/toolchain/layout.c` includes the engine headers and emits one `@@` line
+per `offsetof`, and `make gen-layout` compiles it with `-S` in the pinned
+toolchain container under the ROM's own flags, then writes those lines out. It
+is never linked, so it cannot reach the ROM and cannot move `rom/PINNED_HASH`.
+
+`make check-rom-hash` runs `make -C rom check-layout` beside the hash check, so
+a ROM change that moves a field fails the gate instead of leaving a reader of
+`layout.tsv` pointed at the wrong bytes.
+
 ## Labels
 
 `.github/labels.yml` is the taxonomy and `scripts/sync-labels.sh` applies it.

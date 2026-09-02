@@ -107,7 +107,8 @@ rather than as a public issue. `SECURITY.md` says what is in scope, and the
 emulator boundary is narrower than people expect.
 
 Contributions are accepted under the terms of the directory they land in:
-Apache-2.0 outside `rom/`, GPL-2.0-or-later inside it. Inbound is the same as
+GPL-2.0-or-later inside `rom/`, GPL-3.0-or-later inside `native/`, Apache-2.0
+everywhere else. Inbound is the same as
 outbound. There is no CLA and nothing to sign. `LICENSING.md` has the boundary.
 
 `CODE_OF_CONDUCT.md` applies. Arguing forcefully that one of this project's

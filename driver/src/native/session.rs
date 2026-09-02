@@ -29,7 +29,7 @@ use tokio::time::Instant; // purity-ok: pacing and timeouts in the driver loop, 
 
 use super::rowbinary;
 use super::settings::resident_settings;
-use super::stream::{Resident, ResidentError};
+use super::stream::{CLOSE_TIMEOUT, Resident, ResidentError};
 use crate::checkpoint::hex64;
 use crate::client::{self, ConnArgs, Db};
 
@@ -363,7 +363,8 @@ impl Session {
     /// Both go, not just the one that looks dead: a failed statement takes
     /// rows without committing them, so which one stopped is not something
     /// a caller can read off. The errors each reported are in the
-    /// [`Recovery`], along with the tic to resume from.
+    /// [`Recovery`], along with the tic to resume from. Each is given
+    /// [`CLOSE_TIMEOUT`] to answer.
     pub async fn recover(&mut self, conn: &ConnArgs) -> Result<Recovery, SessionError> {
         let mut at = conn.clone();
         at.database = self.database.clone();
@@ -397,7 +398,8 @@ impl Session {
         })
     }
 
-    /// Ends both statements and reports what each said.
+    /// Ends both statements and reports what each said, giving each
+    /// [`CLOSE_TIMEOUT`] to answer.
     pub async fn close(mut self) -> Result<(), SessionError> {
         let sim = end(self.sim.take()).await;
         let render = end(self.render.take()).await;
@@ -464,7 +466,7 @@ async fn open_one(
 /// Ends a statement and keeps its error, if it had one.
 async fn end(statement: Option<Resident>) -> Option<ResidentError> {
     match statement {
-        Some(statement) => statement.close().await.err(),
+        Some(statement) => statement.close(CLOSE_TIMEOUT).await.err(),
         None => None,
     }
 }

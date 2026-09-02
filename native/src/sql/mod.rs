@@ -3,6 +3,7 @@
 //! Nothing here executes. A caller gets a list of [`Statement`]s and issues
 //! them; that is the whole of the driver's part in loading a level.
 
+pub mod fixed;
 pub mod rowbinary;
 pub mod statement;
 

@@ -7,7 +7,7 @@
 use std::env;
 
 use clap::Args;
-use clickhouse::Client;
+use clickhouse::{Client, Compression};
 
 /// Where the database is and how to reach it, shared by every subcommand.
 ///
@@ -34,7 +34,9 @@ pub struct ConnArgs {
 }
 
 impl ConnArgs {
-    fn resolved_password(&self) -> String {
+    /// The password to authenticate with: the flag, else
+    /// `$CLICKHOUSE_PASSWORD`, else empty.
+    pub fn resolved_password(&self) -> String {
         self.password
             .clone()
             .or_else(|| env::var("CLICKHOUSE_PASSWORD").ok())
@@ -44,13 +46,29 @@ impl ConnArgs {
     /// Opens a client. Opening does not itself connect; the first statement
     /// does.
     pub fn connect(&self) -> Db {
-        let url = format!("http://{}:{}", self.host, self.port);
-        let client = Client::default()
-            .with_url(url)
+        Db {
+            client: self.client(),
+        }
+    }
+
+    /// [`connect`](ConnArgs::connect) with compression off in both
+    /// directions, for statements whose payload is a few bytes and whose
+    /// cost is the round trip.
+    pub fn connect_uncompressed(&self) -> Db {
+        Db {
+            client: self
+                .client()
+                .with_compression(Compression::None)
+                .with_setting("enable_http_compression", "0"),
+        }
+    }
+
+    fn client(&self) -> Client {
+        Client::default()
+            .with_url(format!("http://{}:{}", self.host, self.port))
             .with_user(&self.user)
             .with_password(self.resolved_password())
-            .with_database(&self.database);
-        Db { client }
+            .with_database(&self.database)
     }
 }
 

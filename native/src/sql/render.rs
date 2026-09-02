@@ -2237,9 +2237,9 @@ fn message(s: &mut Stage) {
     s.state("st_hu_on", "hu_message_on");
     s.state("st_hu_message", "hu_message");
 
-    // The column holds the hash as digits, because the reference emulator's
+    // The column holds the hash itself, because the reference emulator's
     // probe has a pointer to hash and nowhere to put the bytes.
-    s.bind("hu_hash", "toUInt64OrZero(st_hu_message)");
+    s.bind("hu_hash", "st_hu_message");
     s.bind(
         "hu_text",
         "if(st_hu_on = 0, '', \

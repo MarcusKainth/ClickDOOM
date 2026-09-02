@@ -10,13 +10,13 @@ use std::path::Path;
 
 use crate::csource::error::CError;
 use crate::csource::init::{Array, Ctx, Node, check_struct, find_array};
-use crate::csource::lex::{Tok, lex};
+use crate::csource::lex::{Tok, Token, lex};
 use crate::csource::symbols::Symbols;
 
 /// The headers and sources every table is read from. Symbols are taken
 /// from all of them at once, so a table may name a constant any of them
 /// defines.
-pub const SOURCES: [&str; 18] = [
+pub const SOURCES: [&str; 19] = [
     "doomtype.h",
     "m_fixed.h",
     "i_video.h",
@@ -35,6 +35,7 @@ pub const SOURCES: [&str; 18] = [
     "r_bsp.c",
     "p_spec.c",
     "p_switch.c",
+    "d_englsh.h",
 ];
 
 /// One generated table.
@@ -97,6 +98,7 @@ pub fn generate(dir: &Path) -> Result<Vec<Table>, CError> {
         tables.push(reader.values(name, source, array)?);
     }
     tables.push(reader.gammatable()?);
+    tables.push(reader.messages()?);
     Ok(tables)
 }
 
@@ -118,6 +120,12 @@ pub fn write_all(dir: &Path, out: &Path) -> Result<Vec<String>, CError> {
         written.push(name);
     }
     Ok(written)
+}
+
+/// A C string literal's body as TSV spells it. C and TSV escape a newline, a
+/// tab and a backslash the same way, so only the escaped quote differs.
+fn as_tsv_cell(text: &str) -> String {
+    text.replace("\\\"", "\"")
 }
 
 fn read(dir: &Path, name: &str) -> Result<String, CError> {
@@ -458,6 +466,41 @@ impl<'a> Reader<'a> {
             name,
             source: file,
             columns: vec!["id", "value"],
+            rows,
+        })
+    }
+
+    /// Every string `d_englsh.h` defines, as `(name, text)` rows.
+    ///
+    /// The game state carries the message a player is shown as the xxHash64
+    /// of its bytes, because a hash is one column and a pointer is not. The
+    /// renderer has to draw the letters, so it hashes each of these and takes
+    /// the one that matches.
+    fn messages(&self) -> Result<Table, CError> {
+        let mut rows = Vec::new();
+        for tok in self.toks("d_englsh.h") {
+            let Token::Directive(body) = &tok.token else {
+                continue;
+            };
+            let Some(rest) = body.strip_prefix("define ") else {
+                continue;
+            };
+            let Some((name, value)) = rest.trim().split_once(char::is_whitespace) else {
+                continue;
+            };
+            let value = value.trim();
+            let Some(text) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+                continue;
+            };
+            if text.contains('"') {
+                continue;
+            }
+            rows.push(vec![name.to_owned(), as_tsv_cell(text)]);
+        }
+        Ok(Table {
+            name: "messages",
+            source: "d_englsh.h",
+            columns: vec!["name", "text"],
             rows,
         })
     }

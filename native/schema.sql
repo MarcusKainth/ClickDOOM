@@ -164,6 +164,12 @@ ENGINE = MergeTree ORDER BY id;
 CREATE TABLE IF NOT EXISTS {{DB}}.gammatable (level UInt8, id UInt32, value UInt8)
 ENGINE = MergeTree ORDER BY (level, id);
 
+-- Every string `d_englsh.h` defines. The state row carries the message a
+-- player is shown as the xxHash64 of its bytes, and the renderer takes the
+-- row whose text hashes to that.
+CREATE TABLE IF NOT EXISTS {{DB}}.messages (name String, text String)
+ENGINE = MergeTree ORDER BY name;
+
 -- ---------------------------------------------------------------------------
 -- Level geometry, decoded from the map lumps by `native/sql/level_load.sql`.
 -- Static: what `P_SetupLevel` builds once. What a tic changes lives in
@@ -831,7 +837,8 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_frames
         maxammo   Array(Int32),
         arms      Array(Int32),
         keyboxes  Array(Int32),
-        faceindex Int32
+        faceindex Int32,
+        armsbg    Int32
     )
 )
 ENGINE = Join(ANY, LEFT, frame)
@@ -978,4 +985,55 @@ CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_post
     length    UInt8,
     ofs       UInt32
 )
+ENGINE = MergeTree ORDER BY id;
+
+-- Every message under the hash the state row names it by, which is what the
+-- frame transform looks a message up with.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_message (hash UInt64, name String, text String)
+ENGINE = MergeTree ORDER BY hash;
+
+-- ---------------------------------------------------------------------------
+-- The status bar and heads-up graphics, built by `native/sql/render_load.sql`.
+-- ---------------------------------------------------------------------------
+
+-- Every status bar, font and menu patch's bytes, end to end in the order
+-- `rt_ui_patch` numbers them.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
+
+-- One row per patch, numbered densely by name, with where its bytes start.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_patch
+(
+    id          UInt32,
+    name        String,
+    base        UInt32,
+    width       UInt16,
+    height      UInt16,
+    leftoffset  Int16,
+    topoffset   Int16
+)
+ENGINE = MergeTree ORDER BY id;
+
+-- Which patch each thing the engine draws is. `slot` is the numbering
+-- `native/sql/render_load.sql` lays out and the frame transform indexes.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_slot (slot UInt32, name String, patch UInt32)
+ENGINE = MergeTree ORDER BY slot;
+
+-- Where each patch column's posts sit in `rt_ui_post`. `slot` is
+-- `patch * 512 + column`.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_colposts (slot UInt32, first UInt32, num UInt16)
+ENGINE = MergeTree ORDER BY slot;
+
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_post
+(
+    id        UInt32,
+    topdelta  UInt8,
+    length    UInt8,
+    ofs       UInt32
+)
+ENGINE = MergeTree ORDER BY id;
+
+-- `st_backing_screen`: the status bar with nothing on it, 320 by 32, which
+-- every widget copies back over its own area before it draws.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_backing (id UInt8, data String)
 ENGINE = MergeTree ORDER BY id;

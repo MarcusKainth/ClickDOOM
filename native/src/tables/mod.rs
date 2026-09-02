@@ -50,7 +50,7 @@ macro_rules! embedded {
 }
 
 /// Every table, in the order `generate` produces them.
-pub const TABLES: [Embedded; 14] = embedded![
+pub const TABLES: [Embedded; 15] = embedded![
     "states",
     "action_functions",
     "mobjinfo",
@@ -65,6 +65,7 @@ pub const TABLES: [Embedded; 14] = embedded![
     "rndtable",
     "fuzzoffset",
     "gammatable",
+    "messages",
 ];
 
 /// One table's rows, split on tabs.
@@ -177,12 +178,15 @@ mod tests {
         for embedded in &TABLES {
             let rows = table(embedded.name).unwrap();
             assert!(!rows.rows.is_empty(), "{} is empty", embedded.name);
+            // Every table but two is keyed by a dense index. `gammatable`
+            // is keyed by the level first, and `messages` by the name the
+            // engine defines the string under.
             assert_eq!(
                 rows.columns[0],
-                if embedded.name == "gammatable" {
-                    "level"
-                } else {
-                    "id"
+                match embedded.name {
+                    "gammatable" => "level",
+                    "messages" => "name",
+                    _ => "id",
                 }
             );
         }

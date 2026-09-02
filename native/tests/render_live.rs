@@ -27,15 +27,6 @@ struct Case {
     frame: u32,
     tic: u32,
     previous: u32,
-    /// What the reference draws over the view that this does not: the words of
-    /// the heads-up message across the top. Every other pixel of the view
-    /// matches, so this number moves the moment a wall, a flat, the sky or a
-    /// thing does.
-    overdrawn: u64,
-    /// How much of the status bar the frame before no longer carries. The
-    /// engine redraws it every frame, and a widget that changed differs until
-    /// the status bar is drawn here too.
-    status_bar: u64,
 }
 
 const CASES: [Case; 2] = [
@@ -43,15 +34,11 @@ const CASES: [Case; 2] = [
         frame: 40,
         tic: 3,
         previous: 39,
-        overdrawn: 591,
-        status_bar: 0,
     },
     Case {
         frame: 1000,
         tic: 963,
         previous: 999,
-        overdrawn: 993,
-        status_bar: 140,
     },
 ];
 
@@ -120,8 +107,8 @@ async fn a_rendered_frame_draws_what_the_engine_drew() {
 
     for case in &CASES {
         render(&fixture, case).await;
-        the_view_matches_everywhere_nothing_was_drawn_over(&fixture, case).await;
-        the_status_bar_is_the_frame_before_it(&fixture, case).await;
+        every_pixel_is_the_one_the_engine_drew(&fixture, case).await;
+        the_frame_hashes_to_what_the_probe_recorded(&fixture, case).await;
         the_frame_carries_its_own_bytes_and_colours(&fixture, case).await;
     }
 
@@ -130,6 +117,11 @@ async fn a_rendered_frame_draws_what_the_engine_drew() {
 
 /// Renders one frame over the one before it. The frame before comes from the
 /// reference rather than from this renderer, so each case stands alone.
+///
+/// The widget cache it carries is what the engine's own would hold at a frame
+/// this far into a level: the arms background is down, and every icon reads as
+/// not yet drawn, which makes each of them draw itself again over the picture
+/// it already put there.
 async fn render(fixture: &Fixture, case: &Case) {
     let db = &fixture.database;
     let previous = case.previous;
@@ -139,9 +131,13 @@ async fn render(fixture: &Fixture, case: &Case) {
              SELECT {previous}, 0, fb, \
              arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, 64001)), \
              palette, 0, '', xxHash64(concat(fb, palette)), 0, \
-             CAST((0, 0, 0, 0, [], [], [], [], 0), \
+             CAST((toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+             CAST([], 'Array(Int32)'), CAST([], 'Array(Int32)'), \
+             CAST([-1, -1, -1, -1, -1, -1], 'Array(Int32)'), \
+             CAST([-1, -1, -1], 'Array(Int32)'), toInt32(-1), toInt32(1)), \
              'Tuple(ready Int32, frags Int32, health Int32, armor Int32, ammo Array(Int32), \
-             maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32)') \
+             maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32, \
+             armsbg Int32)') \
              FROM {db}.ref_frames WHERE frame = {previous}"
         )),
         Statement::sql(render::frame_transform_over(
@@ -155,26 +151,34 @@ async fn render(fixture: &Fixture, case: &Case) {
     fixture.execute(&plan).await.expect("the frame renders");
 }
 
-/// Everything in the view is a wall, a flat, the sky or a thing, and every one
-/// of them matches. What is left over is what the engine draws afterwards and
-/// this does not.
-async fn the_view_matches_everywhere_nothing_was_drawn_over(fixture: &Fixture, case: &Case) {
-    let view = difference(fixture, case, Region::View).await;
+/// The whole 320 by 200 frame, byte for byte.
+async fn every_pixel_is_the_one_the_engine_drew(fixture: &Fixture, case: &Case) {
+    let screen = difference(fixture, case, Region::Screen).await;
     assert_eq!(
-        view.differing, case.overdrawn,
-        "frame {} differs in {} view pixels, first at ({}, {}): {} against {}",
-        case.frame, view.differing, view.x, view.y, view.ours, view.theirs
+        screen.differing, 0,
+        "frame {} differs in {} pixels, first at ({}, {}): {} against {}",
+        case.frame, screen.differing, screen.x, screen.y, screen.ours, screen.theirs
     );
 }
 
-/// The renderer draws nothing below the view, so those rows come through from
-/// the frame before unchanged.
-async fn the_status_bar_is_the_frame_before_it(fixture: &Fixture, case: &Case) {
-    let bar = difference(fixture, case, Region::StatusBar).await;
+/// `spec::fb_hash` over the framebuffer and the palette, which is what the
+/// probe wrote beside the state row this frame was drawn from.
+async fn the_frame_hashes_to_what_the_probe_recorded(fixture: &Fixture, case: &Case) {
+    let db = &fixture.database;
+    let frame = case.frame;
+    let ours: u64 = fixture
+        .scalar(&format!(
+            "SELECT fb_hash FROM {db}.native_frames WHERE frame = {frame}"
+        ))
+        .await;
+    let want = FRAMES
+        .iter()
+        .find(|(f, _, _, _)| *f == frame)
+        .map(|(_, _, _, h)| *h)
+        .expect("the frame is in the fixture");
     assert_eq!(
-        bar.differing, case.status_bar,
-        "frame {}'s status bar differs in {} pixels, first at ({}, {}): {} against {}",
-        case.frame, bar.differing, bar.x, bar.y, bar.ours, bar.theirs
+        ours, want,
+        "frame {frame} hashes to {ours:016x}, not {want:016x}"
     );
 }
 

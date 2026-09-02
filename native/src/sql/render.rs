@@ -33,6 +33,16 @@ const CENTER_Y_FRAC_4: i32 = (CENTER_Y << 16) >> 4;
 /// `MAXDRAWSEGS`. A fragment past this one is clipped away but not drawn.
 const MAX_DRAWSEGS: usize = 256;
 
+/// When the heads-up message is drawn: after the view and everything in it.
+const MESSAGE_TIME: u32 = 1_048_500;
+
+/// When the status bar is drawn. It never shares a pixel with the view, so
+/// where it sits relative to the rest only has to be the same every frame.
+const STATUS_TIME: u32 = 1_040_000;
+
+/// The first row of the status bar.
+const STATUS_BAR_Y: i32 = VIEW_HEIGHT;
+
 /// The pixels of the framebuffer, and of the view inside it.
 const FB_BYTES: i32 = VIEW_WIDTH * SCREEN_HEIGHT;
 
@@ -55,12 +65,18 @@ impl Stage {
     }
 
     /// A whole column of a table as one array constant, in `order`.
+    ///
+    /// The order is carried into the array and sorted there. `groupArray`
+    /// does not promise the order it collects rows in, and a subquery's own
+    /// `ORDER BY` does not bind it, so a table read in parallel comes out
+    /// shuffled.
     fn table(&mut self, name: &str, table: &str, column: &str, order: &str) {
         let db = &self.db;
         self.bind(
             name,
             format!(
-                "(SELECT groupArray({column}) FROM (SELECT {column} FROM {db}.{table} ORDER BY {order}))"
+                "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, \
+                 groupArray(({order}, {column})))) FROM {db}.{table})"
             ),
         );
     }
@@ -158,6 +174,8 @@ fn statement(db: &str, source: &str) -> String {
     sky_pixels(&mut s);
     sprite_pixels(&mut s);
     psprites(&mut s);
+    message(&mut s);
+    status_bar(&mut s);
     compose(&mut s);
     format!(
         "INSERT INTO {db}.native_frames\nSELECT\n{}\nFROM {}",
@@ -285,6 +303,31 @@ fn constants(s: &mut Stage) {
     s.table("k_spl_top", "rt_sprite_lump", "topoffset", "id");
     s.table("k_state_sprite", "states", "sprite", "id");
     s.table("k_state_frame", "states", "frame", "id");
+
+    // The status bar and heads-up graphics, in the same shape as the sprite
+    // pictures: a patch index, a post list per column, and one byte pool.
+    s.table("k_ui_slot", "rt_ui_slot", "patch", "slot");
+    s.table("k_ui_base", "rt_ui_patch", "base", "id");
+    s.table("k_ui_width", "rt_ui_patch", "width", "id");
+    s.table("k_ui_left", "rt_ui_patch", "leftoffset", "id");
+    s.table("k_ui_top", "rt_ui_patch", "topoffset", "id");
+    s.table("k_ui_height", "rt_ui_patch", "height", "id");
+    s.table("k_weapon_ammo", "weaponinfo", "ammo", "id");
+    s.bind(
+        "k_ui_backing",
+        format!("assumeNotNull((SELECT data FROM {db}.rt_ui_backing))"),
+    );
+    s.table("k_uipost_first", "rt_ui_colposts", "first", "slot");
+    s.table("k_uipost_num", "rt_ui_colposts", "num", "slot");
+    s.table("k_uipost_top", "rt_ui_post", "topdelta", "id");
+    s.table("k_uipost_len", "rt_ui_post", "length", "id");
+    s.table("k_uipost_ofs", "rt_ui_post", "ofs", "id");
+    s.table("k_msg_hash", "rt_message", "hash", "hash");
+    s.table("k_msg_text", "rt_message", "text", "hash");
+    s.bind(
+        "k_uipool",
+        format!("assumeNotNull((SELECT data FROM {db}.rt_ui_pool))"),
+    );
     s.bind(
         "k_sprpool",
         format!("assumeNotNull((SELECT data FROM {db}.rt_sprite_pool))"),
@@ -2161,6 +2204,308 @@ fn masked_column(c: &str, time: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// HU_Drawer
+// ---------------------------------------------------------------------------
+
+/// The message across the top of the view.
+///
+/// The state row names the line the message widget is showing by the hash of
+/// its bytes, so the text comes out of the table of everything `d_englsh.h`
+/// defines. `HUlib_drawTextLine` upper-cases each letter, draws the font
+/// patch for it and steps by that patch's width; a space, or a character the
+/// font has no patch for, steps four and draws nothing.
+fn message(s: &mut Stage) {
+    s.state("st_hu_on", "hu_message_on");
+    s.state("st_hu_message", "hu_message");
+
+    // The column holds the hash as digits, because the reference emulator's
+    // probe has a pointer to hash and nowhere to put the bytes.
+    s.bind("hu_hash", "toUInt64OrZero(st_hu_message)");
+    s.bind(
+        "hu_text",
+        "if(st_hu_on = 0, '', \
+         arrayFirst(t -> 1, arrayPushBack(arrayMap(t -> t.2, \
+         arrayFilter(t -> t.1 = hu_hash, arrayZip(k_msg_hash, k_msg_text))), '')))",
+    );
+    // A message the table does not carry would draw as nothing where the
+    // engine drew words.
+    s.bind(
+        "hu_guard",
+        "throwIf(st_hu_on = 1 AND hu_hash != 0 AND empty(hu_text), \
+         'the state names a message the table does not carry')",
+    );
+    // One entry per character: the font patch it draws, and how far along the
+    // line it starts. The step depends on every character before it, so the
+    // line is walked once.
+    s.bind(
+        "hu_chars",
+        "arrayMap(c -> upperUTF8(c), \
+         arrayMap(i -> substring(hu_text, i, 1), range(1, length(hu_text) + 1)))",
+    );
+    s.bind(
+        "hu_code",
+        "arrayMap(c -> toInt32(reinterpretAsUInt8(c)), hu_chars)",
+    );
+    s.bind(
+        "hu_step",
+        "arrayMap(c -> if(c != 32 AND c >= 33 AND c <= 95, \
+         toInt32(k_ui_width[k_ui_slot[77 + c - 33 + 1] + 1]), toInt32(4)), hu_code)",
+    );
+    s.bind(
+        "hu_x",
+        "arrayPushFront(arrayPopBack(arrayMap(x -> toInt32(x), arrayCumSum(hu_step))), toInt32(0))",
+    );
+    // The line stops at the first character that would not fit.
+    s.bind(
+        "hu_fit",
+        format!(
+            "arrayMap((c, x, w) -> toUInt8(if(c != 32 AND c >= 33 AND c <= 95, \
+             x + w <= {VIEW_WIDTH}, x + w < {VIEW_WIDTH})), hu_code, hu_x, hu_step)"
+        ),
+    );
+    s.bind(
+        "hu_drawn",
+        "arrayFilter((t, k) -> k <= arrayFirstIndex(f -> f = 0, arrayPushBack(hu_fit, toUInt8(0))) - 1 \
+         AND t.1 != 32 AND t.1 >= 33 AND t.1 <= 95, \
+         arrayZip(hu_code, hu_x), arrayEnumerate(hu_code))",
+    );
+    // `V_DrawPatch` takes the patch's own offsets off the corner it is asked
+    // to draw at.
+    s.bind(
+        "hu_patch",
+        format!(
+            "arrayMap(t -> (toUInt32(k_ui_slot[77 + t.1 - 33 + 1]), t.2, toInt32(0), \
+             toUInt64({})), hu_drawn)",
+            MESSAGE_TIME
+        ),
+    );
+    s.bind(
+        "hu_px",
+        format!("arrayFlatten(arrayMap(b -> {}, hu_patch))", ui_blit("b")),
+    );
+}
+
+/// One `V_DrawPatch`: every post of every column of the patch, straight into
+/// the frame with no colormap. `b` names a row of `(patch, x, y, time)`, with
+/// `x` and `y` the corner the engine asks for, which the patch's own offsets
+/// come off before anything is drawn.
+fn ui_blit(b: &str) -> String {
+    let slot = format!("toUInt32({b}.1) * 512 + toUInt32(col)");
+    let texel = pool(
+        "k_uipool",
+        &format!(
+            "k_uipost_ofs[p + 1] \
+             + toUInt32(y - {b}.3 + toInt32(k_ui_top[{b}.1 + 1]) - toInt32(k_uipost_top[p + 1]))"
+        ),
+    );
+    let left = format!("({b}.2 - toInt32(k_ui_left[{b}.1 + 1]))");
+    let top = format!("({b}.3 - toInt32(k_ui_top[{b}.1 + 1]) + toInt32(k_uipost_top[p + 1]))");
+    let rows = format!(
+        "arrayMap(y -> (toUInt64(y * {VIEW_WIDTH} + {left} + col) * 1048576 + {b}.4, {texel}), \
+         range({top}, {top} + toInt32(k_uipost_len[p + 1])))"
+    );
+    let posts = format!(
+        "arrayFlatten(arrayMap(p -> {rows}, \
+         range(k_uipost_first[{slot} + 1], \
+         k_uipost_first[{slot} + 1] + k_uipost_num[{slot} + 1])))"
+    );
+    format!(
+        "arrayFlatten(arrayMap(col -> {posts}, \
+         range(toUInt32(k_ui_width[{b}.1 + 1]))))"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// ST_Drawer
+// ---------------------------------------------------------------------------
+
+/// The status bar.
+///
+/// `ST_drawWidgets` runs every frame with `refresh` false, because nothing a
+/// demo does makes the engine ask for a full one. A number therefore copies
+/// the bare status bar back over its own area and draws its digits again,
+/// every frame. A percent sign is only drawn on a full refresh, so it stays
+/// where the frame before left it. An icon is only drawn when its value
+/// changed, which is what `st_cache` carries from frame to frame.
+///
+/// The layout is `ST_createWidgets`'s, written out because the engine only
+/// ever builds these widgets at these places.
+fn status_bar(s: &mut Stage) {
+    s.state("st_health", "p_health");
+    s.state("st_armorpoints", "p_armorpoints");
+    s.state("st_ammo", "p_ammo");
+    s.state("st_maxammo", "p_maxammo");
+    s.state("st_readyweapon", "p_readyweapon");
+    s.state("st_weaponowned", "p_weaponowned");
+    s.state("st_cards", "p_cards");
+    s.state("st_face", "st_faceindex");
+    s.bind(
+        "prev_cache",
+        format!(
+            "joinGet('{}.native_frames', 'st_cache', toUInt32(frame - 1))",
+            s.db
+        ),
+    );
+
+    // `w_ready` reads the ammo the ready weapon takes. A weapon that takes
+    // none reads 1994, which clears the area and draws nothing.
+    s.bind(
+        "sb_ready",
+        "if(k_weapon_ammo[st_readyweapon + 1] >= 4, toInt32(1994), \
+         st_ammo[k_weapon_ammo[st_readyweapon + 1] + 1])",
+    );
+    // `(x, y, digits, first patch slot, value)`, in `ST_drawWidgets`'s order:
+    // the ready ammo, then each kind of ammo beside the most of it the player
+    // can carry, then health and armour.
+    s.bind(
+        "sb_num",
+        "arrayConcat(\
+         [(toInt32(44), toInt32(171), toInt32(3), toUInt32(0), sb_ready)], \
+         arrayFlatten(arrayMap(i -> [\
+           (toInt32(288), toInt32([173, 179, 191, 185][i + 1]), toInt32(3), toUInt32(10), \
+            st_ammo[i + 1]), \
+           (toInt32(314), toInt32([173, 179, 191, 185][i + 1]), toInt32(3), toUInt32(10), \
+            st_maxammo[i + 1])], range(4))), \
+         [(toInt32(90), toInt32(171), toInt32(3), toUInt32(0), st_health), \
+          (toInt32(221), toInt32(171), toInt32(3), toUInt32(0), st_armorpoints)])",
+    );
+    // A negative number draws a minus sign, which no widget on this status
+    // bar can reach: the frags counter is the only one that goes below zero
+    // and it is off outside deathmatch.
+    s.bind(
+        "sb_guard",
+        "throwIf(arrayExists(w -> w.5 < 0, sb_num), \
+         'a status bar number is negative, which draws a minus sign')",
+    );
+    // The area each number clears: as many digits wide as the widget holds,
+    // one digit tall, ending at the widget's own x.
+    s.bind(
+        "sb_clear",
+        format!(
+            "arrayMap((w, k) -> (w.1 - w.3 * toInt32(k_ui_width[k_ui_slot[w.4 + 1] + 1]), w.2, \
+             w.3 * toInt32(k_ui_width[k_ui_slot[w.4 + 1] + 1]), \
+             toInt32(k_ui_height[k_ui_slot[w.4 + 1] + 1]), \
+             toUInt64({STATUS_TIME}) + toUInt64(k) * 2), sb_num, arrayEnumerate(sb_num))"
+        ),
+    );
+    // The digits, from the right. Zero draws one digit; anything else draws
+    // as many as it has, up to what the widget holds.
+    s.bind(
+        "sb_digits",
+        format!(
+            "arrayFlatten(arrayMap((w, k) -> if(w.5 = 1994, \
+             CAST([], 'Array(Tuple(UInt32, Int32, Int32, UInt64))'), \
+             arrayMap(d -> (\
+               toUInt32(k_ui_slot[w.4 + intDiv(w.5, toInt32(pow(10, d))) % 10 + 1]), \
+               w.1 - (d + 1) * toInt32(k_ui_width[k_ui_slot[w.4 + 1] + 1]), w.2, \
+               toUInt64({STATUS_TIME}) + toUInt64(k) * 2 + 1), \
+             if(w.5 = 0, [toInt32(0)], \
+                arrayFilter(d -> intDiv(w.5, toInt32(pow(10, d))) > 0, \
+                            arrayMap(e -> toInt32(e), range(toUInt32(w.3))))))), \
+             sb_num, arrayEnumerate(sb_num)))"
+        ),
+    );
+
+    // The icons. Each carries what it drew last frame, so one whose value did
+    // not move is left where it is. `(patch slot base, now, before, x, y,
+    // kind)`, where kind 0 is a weapon number, 1 the arms background and 2 a
+    // plain icon.
+    s.bind(
+        "sb_keybox",
+        "arrayMap(i -> toInt32(multiIf(st_cards[i + 4] = 1, i + 3, st_cards[i + 1] = 1, i, -1)), \
+         range(3))",
+    );
+    s.bind(
+        "sb_icon",
+        "arrayConcat(\
+         [(toUInt32(27), toInt32(1), prev_cache.10, toInt32(104), toInt32(168), toUInt8(1), \
+           toUInt32(0))], \
+         arrayMap(i -> (toUInt32(0), toInt32(st_weaponowned[i + 2]), prev_cache.7[i + 1], \
+           toInt32(111 + (i % 3) * 12), toInt32(172 + intDiv(i, 3) * 10), toUInt8(0), \
+           toUInt32(i)), range(6)), \
+         [(toUInt32(34), st_face, prev_cache.9, toInt32(143), toInt32(168), toUInt8(2), \
+           toUInt32(0))], \
+         arrayMap(i -> (toUInt32(21), sb_keybox[i + 1], prev_cache.8[i + 1], \
+           toInt32(239), toInt32(171 + i * 10), toUInt8(2), toUInt32(i)), range(3)))",
+    );
+    // A weapon number is grey when the weapon is not owned and the short
+    // yellow digit when it is, which is the one icon two patch sets serve.
+    // The arms background is a yes or no rather than a picture number.
+    let which = |value: &str| {
+        format!(
+            "arrayMap(ic -> multiIf(\
+             ic.6 = 0, if({value} = 0, toUInt32(28) + ic.7, toUInt32(12) + ic.7), \
+             ic.6 = 1, ic.1, \
+             ic.1 + toUInt32(greatest({value}, 0))), sb_icon)"
+        )
+    };
+    s.bind("sb_icon_now", which("ic.2"));
+    s.bind("sb_icon_was", which("ic.3"));
+    // The arms background is a yes or no rather than a picture number: when
+    // it turns off, its own area goes back instead.
+    s.bind(
+        "sb_icon_moved",
+        "arrayMap(ic -> toUInt8(ic.2 != ic.3 AND (ic.6 = 1 OR ic.2 != -1)), sb_icon)",
+    );
+    // A picture that turns off puts its own area back; one that turns on
+    // draws over whatever was there.
+    s.bind(
+        "sb_icon_off",
+        "arrayMap(ic -> toUInt8(if(ic.6 = 1, ic.2 = 0, ic.3 != -1)), sb_icon)",
+    );
+    s.bind(
+        "sb_icon_draw",
+        format!(
+            "arrayFilter((t, m, ic) -> m = 1 AND (ic.6 != 1 OR ic.2 != 0), \
+             arrayMap((ic, p, k) -> (toUInt32(k_ui_slot[p + 1]), ic.4, ic.5, \
+             toUInt64({STATUS_TIME}) + 1000 + toUInt64(k) * 2 + 1), \
+             sb_icon, sb_icon_now, arrayEnumerate(sb_icon)), sb_icon_moved, sb_icon)"
+        ),
+    );
+    // What the old picture covered, put back before the new one goes down.
+    s.bind(
+        "sb_icon_clear",
+        format!(
+            "arrayFilter((t, m, off) -> m = 1 AND off = 1, \
+             arrayMap((ic, p, k) -> (\
+             ic.4 - toInt32(k_ui_left[k_ui_slot[p + 1] + 1]), \
+             ic.5 - toInt32(k_ui_top[k_ui_slot[p + 1] + 1]), \
+             toInt32(k_ui_width[k_ui_slot[p + 1] + 1]), \
+             toInt32(k_ui_height[k_ui_slot[p + 1] + 1]), \
+             toUInt64({STATUS_TIME}) + 1000 + toUInt64(k) * 2), \
+             sb_icon, sb_icon_was, arrayEnumerate(sb_icon)), sb_icon_moved, sb_icon_off)"
+        ),
+    );
+    s.bind(
+        "sb_px",
+        format!(
+            "arrayConcat(\
+             arrayFlatten(arrayMap(r -> {restore}, sb_clear)), \
+             arrayFlatten(arrayMap(b -> {blit}, sb_digits)), \
+             arrayFlatten(arrayMap(r -> {restore}, sb_icon_clear)), \
+             arrayFlatten(arrayMap(b -> {blit}, sb_icon_draw)))",
+            restore = ui_restore("r"),
+            blit = ui_blit("b"),
+        ),
+    );
+}
+
+/// `V_CopyRect` out of the bare status bar: the rectangle `r` names, put back
+/// where it came from.
+fn ui_restore(r: &str) -> String {
+    let backing = pool(
+        "k_ui_backing",
+        &format!("({r}.2 + dy - {STATUS_BAR_Y}) * {VIEW_WIDTH} + {r}.1 + dx"),
+    );
+    format!(
+        "arrayFlatten(arrayMap(dy -> arrayMap(dx -> (\
+         toUInt64(({r}.2 + dy) * {VIEW_WIDTH} + {r}.1 + dx) * 1048576 + {r}.5, \
+         {backing}), \
+         range(toUInt32({r}.3))), range(toUInt32({r}.4))))"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // The framebuffer
 // ---------------------------------------------------------------------------
 
@@ -2199,7 +2544,7 @@ fn compose(s: &mut Stage) {
     );
     s.bind(
         "px_all",
-        "arrayConcat(wall_px, flat_px, sky_px, sp_px, ps_px, shadow_guard)",
+        "arrayConcat(wall_px, flat_px, sky_px, sp_px, ps_px, hu_px, sb_px, shadow_guard)",
     );
     s.bind("px_ordered", "arraySort(t -> t.1, px_all)");
     s.bind(
@@ -2276,14 +2621,36 @@ fn compose(s: &mut Stage) {
              {FB_BYTES}))"
         ),
     );
-    s.bind("palette_index", "toUInt8(0)");
+    // `ST_doPaletteStuff`. Damage and berserk shift the screen red, a pickup
+    // shifts it gold, and a radiation suit shifts it green. The numbering is
+    // `PLAYPAL`'s own: 1 to 8 red, 9 to 12 gold, 13 green.
+    s.state("st_damagecount", "p_damagecount");
+    s.state("st_bonuscount", "p_bonuscount");
+    s.bind(
+        "pal_count",
+        "greatest(st_damagecount, if(st_powers[2] != 0, 12 - bitShiftRight(st_powers[2], 6), \
+         toInt32(0)))",
+    );
+    s.bind(
+        "palette_index",
+        "toUInt8(multiIf(\
+         pal_count != 0, least(bitShiftRight(pal_count + 7, 3), 7) + 1, \
+         st_bonuscount != 0, least(bitShiftRight(st_bonuscount + 7, 3), 3) + 9, \
+         st_powers[4] > 128 OR bitAnd(st_powers[4], 8) != 0, 13, \
+         0))",
+    );
     s.bind("palette", "k_palettes[palette_index + 1]");
     s.bind(
         "rgb32",
         "arrayStringConcat(arrayMap(c -> substring(k_rgb[palette_index + 1], c * 4 + 1, 4), \
          fb_bytes), '')",
     );
-    s.bind("fb_hash", "xxHash64(concat(fb, palette))");
+    // The guard is read here so the frame cannot skip it.
+    // The two guards are read here so the frame cannot skip them.
+    s.bind(
+        "fb_hash",
+        "xxHash64(concat(fb, palette)) + hu_guard + sb_guard",
+    );
     s.bind(
         "fuzzpos",
         format!(
@@ -2292,11 +2659,15 @@ fn compose(s: &mut Stage) {
             s.db
         ),
     );
+    // What each widget drew, for the frame after this one to compare against.
     s.bind(
         "st_cache",
-        "CAST((0, 0, 0, 0, [], [], [], [], 0), \
+        "CAST((sb_ready, toInt32(0), st_health, st_armorpoints, st_ammo, st_maxammo, \
+         arrayMap(i -> toInt32(st_weaponowned[i + 2]), range(6)), sb_keybox, st_face, \
+         toInt32(1)), \
          'Tuple(ready Int32, frags Int32, health Int32, armor Int32, ammo Array(Int32), \
-         maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32)')",
+         maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32, \
+         armsbg Int32)')",
     );
 }
 

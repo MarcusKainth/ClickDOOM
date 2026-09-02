@@ -360,3 +360,186 @@ SELECT throwIf(
 SELECT throwIf(
     (SELECT count() FROM {{DB}}.tex_posts) > 0,
     'a line draws a masked middle texture, which the renderer does not draw');
+
+-- ---------------------------------------------------------------------------
+-- The heads-up message
+-- ---------------------------------------------------------------------------
+
+-- Each message under the hash the state row names it by.
+INSERT INTO {{DB}}.rt_message (hash, name, text)
+SELECT xxHash64(text) AS hash, name, text FROM {{DB}}.messages;
+
+-- Two messages under one hash would draw the wrong one.
+SELECT throwIf(
+    (SELECT count() FROM {{DB}}.rt_message) !=
+    (SELECT uniqExact(hash) FROM {{DB}}.rt_message),
+    'two messages hash to the same value');
+
+-- ---------------------------------------------------------------------------
+-- The status bar and heads-up graphics
+-- ---------------------------------------------------------------------------
+
+-- Every patch, numbered by name, with where its bytes start in the pool.
+INSERT INTO {{DB}}.rt_ui_patch (id, name, base, width, height, leftoffset, topoffset)
+SELECT
+    toUInt32(row_number() OVER (ORDER BY name) - 1) AS id,
+    name,
+    toUInt32(sum(length(data)) OVER (ORDER BY name
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)) AS base,
+    width,
+    height,
+    leftoffset,
+    topoffset
+FROM {{DB}}.ui_patches;
+
+-- The pool: every patch's bytes, in the order `rt_ui_patch` numbers them.
+INSERT INTO {{DB}}.rt_ui_pool (id, data)
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+FROM
+(
+    SELECT
+        up.base + k AS at,
+        reinterpretAsUInt8(substring(u.data, k + 1, 1)) AS b
+    FROM {{DB}}.rt_ui_patch AS up
+    INNER JOIN {{DB}}.ui_patches AS u ON u.name = up.name
+    ARRAY JOIN range(toUInt32(length(u.data))) AS k
+);
+
+SELECT throwIf(
+    (SELECT length(data) FROM {{DB}}.rt_ui_pool) !=
+        (SELECT sum(length(data)) FROM {{DB}}.ui_patches),
+    'the heads-up pool is not every patch end to end');
+
+-- The posts of every patch column, and where each column's run starts.
+INSERT INTO {{DB}}.rt_ui_post (id, topdelta, length, ofs)
+SELECT
+    toUInt32(row_number() OVER (ORDER BY patch, col, idx) - 1) AS id,
+    topdelta,
+    length,
+    base + ofs AS ofs
+FROM
+(
+    SELECT up.id AS patch, pp.col, pp.idx, pp.topdelta, pp.length, pp.ofs, up.base
+    FROM {{DB}}.patch_posts AS pp
+    INNER JOIN {{DB}}.ui_patches AS u ON u.id = pp.lump
+    INNER JOIN {{DB}}.rt_ui_patch AS up ON up.name = u.name
+);
+
+INSERT INTO {{DB}}.rt_ui_colposts (slot, first, num)
+SELECT slot, toUInt32(0) AS first, toUInt16(0) AS num
+FROM numbers(131072)
+ARRAY JOIN [toUInt32(number)] AS slot
+WHERE slot NOT IN
+(
+    SELECT up.id * 512 + pp.col
+    FROM {{DB}}.patch_posts AS pp
+    INNER JOIN {{DB}}.ui_patches AS u ON u.id = pp.lump
+    INNER JOIN {{DB}}.rt_ui_patch AS up ON up.name = u.name
+)
+UNION ALL
+SELECT
+    patch * 512 + col AS slot,
+    toUInt32(min(id)) AS first,
+    toUInt16(count()) AS num
+FROM
+(
+    SELECT row_number() OVER (ORDER BY patch, col, idx) - 1 AS id, patch, col
+    FROM
+    (
+        SELECT up.id AS patch, pp.col, pp.idx
+        FROM {{DB}}.patch_posts AS pp
+        INNER JOIN {{DB}}.ui_patches AS u ON u.id = pp.lump
+        INNER JOIN {{DB}}.rt_ui_patch AS up ON up.name = u.name
+    )
+)
+GROUP BY slot, patch, col;
+
+SELECT throwIf(
+    (SELECT max(id) FROM {{DB}}.rt_ui_patch) >= 256
+        OR (SELECT max(width) FROM {{DB}}.ui_patches) > 512,
+    'a heads-up patch is past what the column slot can hold');
+
+-- What each thing the engine draws is, in one numbering the frame transform
+-- indexes. `ST_loadUnloadGraphics` and `HU_Init` name the same lumps.
+--
+--     0 to 9      STTNUM0..9,  the tall digits
+--    10 to 19     STYSNUM0..9, the short digits
+--    20           STTPRCNT,    the tall percent sign
+--    21 to 26     STKEYS0..5,  the key cards
+--    27           STARMS,      the arms background
+--    28 to 33     STGNUM2..7,  the grey weapon numbers
+--    34 to 75     the face, in `ST_loadUnloadGraphics`'s own order
+--    76           STBAR,       the status bar itself
+--    77 to 139    STCFN033..095, the heads-up font
+--   140           STTMINUS,    the minus sign
+INSERT INTO {{DB}}.rt_ui_slot (slot, name, patch)
+SELECT s.slot, s.name, p.id AS patch
+FROM
+(
+    SELECT toUInt32(i) AS slot, concat('STTNUM', toString(i)) AS name
+    FROM numbers(10) ARRAY JOIN [toUInt32(number)] AS i
+    UNION ALL
+    SELECT toUInt32(10 + i), concat('STYSNUM', toString(i))
+    FROM numbers(10) ARRAY JOIN [toUInt32(number)] AS i
+    UNION ALL
+    SELECT toUInt32(20), 'STTPRCNT'
+    UNION ALL
+    SELECT toUInt32(21 + i), concat('STKEYS', toString(i))
+    FROM numbers(6) ARRAY JOIN [toUInt32(number)] AS i
+    UNION ALL
+    SELECT toUInt32(27), 'STARMS'
+    UNION ALL
+    SELECT toUInt32(28 + i), concat('STGNUM', toString(i + 2))
+    FROM numbers(6) ARRAY JOIN [toUInt32(number)] AS i
+    UNION ALL
+    SELECT
+        toUInt32(34 + k),
+        multiIf(
+            k % 8 < 3, concat('STFST', toString(intDiv(k, 8)), toString(k % 8)),
+            k % 8 = 3, concat('STFTR', toString(intDiv(k, 8)), '0'),
+            k % 8 = 4, concat('STFTL', toString(intDiv(k, 8)), '0'),
+            k % 8 = 5, concat('STFOUCH', toString(intDiv(k, 8))),
+            k % 8 = 6, concat('STFEVL', toString(intDiv(k, 8))),
+            concat('STFKILL', toString(intDiv(k, 8))))
+    FROM numbers(40) ARRAY JOIN [toUInt32(number)] AS k
+    UNION ALL
+    SELECT toUInt32(74), 'STFGOD0'
+    UNION ALL
+    SELECT toUInt32(75), 'STFDEAD0'
+    UNION ALL
+    SELECT toUInt32(76), 'STBAR'
+    UNION ALL
+    SELECT toUInt32(77 + i), concat('STCFN', leftPad(toString(i + 33), 3, '0'))
+    FROM numbers(63) ARRAY JOIN [toUInt32(number)] AS i
+    UNION ALL
+    SELECT toUInt32(140), 'STTMINUS'
+) AS s
+INNER JOIN {{DB}}.rt_ui_patch AS p ON p.name = s.name;
+
+-- A slot that found no patch would draw nothing where the engine drew
+-- something.
+SELECT throwIf(
+    (SELECT count() FROM {{DB}}.rt_ui_slot) != 141,
+    'a status bar or font patch is missing from the WAD');
+
+-- The status bar with nothing on it. `ST_refreshBackground` draws `STBAR` at
+-- the top left of its own buffer, and every widget copies its own area back
+-- out of that buffer before it draws.
+INSERT INTO {{DB}}.rt_ui_backing (id, data)
+SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+FROM
+(
+    SELECT
+        (toUInt32(pp.topdelta) + k) * 320 + pp.col AS at,
+        reinterpretAsUInt8(substring(u.data, pp.ofs + k + 1, 1)) AS b
+    FROM {{DB}}.patch_posts AS pp
+    INNER JOIN {{DB}}.ui_patches AS u ON u.id = pp.lump
+    ARRAY JOIN range(toUInt32(pp.length)) AS k
+    WHERE u.name = 'STBAR'
+);
+
+-- `STBAR` covers all 320 by 32 of it. A pixel it leaves out would read
+-- whatever the engine's own buffer held there.
+SELECT throwIf(
+    (SELECT length(data) FROM {{DB}}.rt_ui_backing) != 10240,
+    'STBAR does not cover the whole status bar');

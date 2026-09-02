@@ -111,10 +111,12 @@ const MAXSTEP: i64 = 24 << 16;
 /// in whole units, which is how `P_UseLines` scales the direction.
 const USERANGE: i64 = 64;
 
-/// How many steps past the move itself the loop is given for the slide:
-/// a move up to the wall and a move along it for each try, and the two
-/// stair steps after them.
-const SLIDE_BUDGET: i64 = 2 * SLIDE_TRIES + 2;
+/// How many steps past the move itself the loop is given for the slide.
+///
+/// `P_SlideMove` counts a try before it scans, so the last of them stair
+/// steps without scanning. Each of the tries before it is a move up to the
+/// wall and a move along it, and the stair step is two more.
+const SLIDE_BUDGET: i64 = 2 * (SLIDE_TRIES - 1) + 2;
 
 /// How many steps the loop is given.
 ///
@@ -125,7 +127,7 @@ pub fn steps(momx: &str, momy: &str, uses: &str) -> String {
     format!(
         "toUInt32(if({uses} = 1, 1, 0) + multiIf({momx} = 0 AND {momy} = 0, 0, \
          {clamped_x} > {half} OR {clamped_y} > {half}, {}, {}))",
-        2 + SLIDE_BUDGET,
+        2 + 2 * SLIDE_BUDGET,
         1 + SLIDE_BUDGET,
         half = MAXMOVE / 2,
         clamped_x = clamp(momx),
@@ -355,6 +357,18 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
             pickups.skill,
         ),
     );
+    // `P_XYMovement`'s own loop runs again while a split move has a half
+    // left, whether the slide took the last one over or not.
+    value(
+        "st_resume",
+        format!(
+            "toInt64(if({} != 0 OR {} != 0, {}, {}))",
+            held(moving::XMOVE),
+            held(moving::YMOVE),
+            phase::STEP,
+            phase::DONE
+        ),
+    );
     // Where the loop goes next.
     value(
         "st_next",
@@ -368,14 +382,14 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
              {step}, {SLIDE}, \
              {slide} AND sl_bestfrac > {FRACUNIT}, {STAIR_Y}, \
              {slide} AND st_asks = 1 AND st_ok = 0, {STAIR_Y}, \
-             {slide} AND sl_left <= 0, {DONE}, \
+             {slide} AND sl_left <= 0, {left}, \
              {slide}, {ALONG}, \
-             {along} AND st_ok = 1, {DONE}, \
+             {along} AND st_ok = 1, {left}, \
              {along} AND {hits} + 1 >= {SLIDE_TRIES}, {STAIR_Y}, \
              {along}, {SLIDE}, \
-             {stair_y} AND st_ok = 1, {DONE}, \
+             {stair_y} AND st_ok = 1, {left}, \
              {stair_y}, {STAIR_X}, \
-             {DONE}))",
+             {left}))",
             DONE = phase::DONE,
             STEP = phase::STEP,
             SLIDE = phase::SLIDE,
@@ -390,6 +404,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
             r#use = at(phase::USE),
             momx = held(moving::MOMX),
             momy = held(moving::MOMY),
+            left = "st_resume",
             hits = held(moving::HITCOUNT),
         ),
     );
@@ -398,9 +413,11 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
     };
     let answered = |field: usize| format!("arrayFirst(a -> 1, st_answers).{field}");
     // The accumulator's members, in the order `moving` names them.
+    // `P_XYMovement` halves before it tries the move, so a split move that
+    // the slide takes over still has its second half to spend.
     let halved = |field: usize| {
         format!(
-            "toInt64(multiIf(NOT {step}, {held}, st_ok = 0, 0, \
+            "toInt64(multiIf(NOT {step}, {held}, \
              st_split = 1, bitShiftRight({held}, 1), 0))",
             step = at(phase::STEP),
             held = held(field)
@@ -421,9 +438,11 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         keep(moving::FLOORZ, answered(answer::FLOORZ)),
         keep(moving::CEILINGZ, answered(answer::CEILINGZ)),
         keep(moving::SUBSECTOR, answered(answer::SUBSECTOR)),
+        // Each blocked move gets its own three tries at the wall.
         format!(
-            "toInt64({} + if({along} AND st_ok = 0, 1, 0))",
+            "toInt64(if({step}, 0, {} + if({along} AND st_ok = 0, 1, 0)))",
             held(moving::HITCOUNT),
+            step = at(phase::STEP),
             along = at(phase::ALONG)
         ),
         "st_pk".to_owned(),
@@ -808,7 +827,79 @@ mod tests {
         assert!(text.contains("mx = 0 AND my = 0, 0"));
         assert!(text.contains("> 983040 OR"));
         assert!(text.contains("if(u = 1, 1, 0) +"), "{text}");
-        assert!(text.ends_with(", 10, 9))"), "{text}");
+        assert!(text.ends_with(", 14, 7))"), "{text}");
+    }
+
+    /// A mover fast enough to split gets room for the slide twice over,
+    /// because either half of the move can be the one that is blocked.
+    #[test]
+    fn a_fast_mover_gets_a_step_for_each_half_and_a_slide_for_each() {
+        let text = steps(&MAXMOVE.to_string(), "0", "0");
+        assert!(text.contains(&format!("> {} OR", MAXMOVE / 2)), "{text}");
+        assert!(text.ends_with(&format!(
+            ", {}, {}))",
+            2 + 2 * SLIDE_BUDGET,
+            1 + SLIDE_BUDGET
+        )));
+    }
+
+    /// `P_XYMovement` halves the move before it tries it, so a blocked half
+    /// leaves the other one to spend and the loop comes back for it.
+    ///
+    /// The demo the live tests run never reaches the speed that splits a
+    /// move, so what the two arms below pin is the loop, not the geometry.
+    #[test]
+    fn a_blocked_half_of_a_split_move_is_still_spent() {
+        let sql = xy_movement(&mover(), &world(), &pickups());
+        let head = format!(
+            "toInt64(multiIf(NOT (move_at.{} = {}), move_at.{}, ",
+            moving::PHASE,
+            phase::STEP,
+            moving::XMOVE
+        );
+        let halve = format!("bitShiftRight(move_at.{}, 1)", moving::XMOVE);
+        let at = sql.find(&head).expect("the loop halves the x move");
+        let upto = sql[at..].find(&halve).expect("the loop halves the x move");
+        let between = &sql[at + head.len()..at + upto];
+        assert!(
+            !between.contains(", 0,"),
+            "a try the blockmap turned down must not throw the rest away: {between}"
+        );
+        // Every way out of the slide asks whether a half is left, so the
+        // phase the loop falls through to is a bound test and not `DONE`.
+        let head = format!(
+            "toInt64(multiIf((move_at.{} = {}), {}, ",
+            moving::PHASE,
+            phase::DONE,
+            phase::DONE
+        );
+        let at = sql.find(&head).expect("the loop decides its next phase");
+        let mut depth = 0i32;
+        let mut end = 0;
+        for (index, letter) in sql[at..].char_indices() {
+            match letter {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = index;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let arms = &sql[at + head.len()..at + end];
+        let fallthrough = arms
+            .rsplit(", ")
+            .next()
+            .expect("multiIf has a last arm")
+            .trim_end_matches(')');
+        assert_ne!(
+            fallthrough,
+            phase::DONE.to_string(),
+            "a slide that ends must come back for a half the move kept"
+        );
     }
 
     /// `P_UseLines` reads the blockmap the same way `P_SlideMove` does, so

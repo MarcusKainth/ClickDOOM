@@ -7,6 +7,7 @@
 pub mod game;
 pub mod hud;
 pub mod inter;
+pub mod lights;
 pub mod map;
 pub mod maputl;
 pub mod mobj;

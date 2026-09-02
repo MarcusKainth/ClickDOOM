@@ -19,8 +19,25 @@ resumable batch loop and the differential run against the reference emulator.
 Everything beside it names no instruction and no register. `src/client.rs` is
 the connection, `src/sql.rs` splits a multi-statement string for the HTTP
 interface, `src/checkpoint.rs` and `src/render.rs` build hash and readout SQL
-text, `src/frames.rs` writes a frame file, and `src/bench/` is the throughput
-harness.
+text, `src/frames.rs` writes a frame file, `src/stats.rs` is the progress
+line, and `src/bench/` is the throughput harness.
+
+## Progress reporting
+
+A run prints a `key=value` line to stderr at most once a second, alongside its
+per-batch line:
+
+    # stats elapsed=24.1s instr=100000 instr_per_sec=4423.3 instr_per_sec_mean=4146.4 batches=5 frames=0
+    # stats final elapsed=24.1s instr=100000 instr_per_sec_mean=4146.4 batches=5 frames=0
+
+`instr_per_sec` covers the window since the previous line and
+`instr_per_sec_mean` the run so far, so a slowdown shows in the first field
+before it moves the second. The counts start where the run resumed, so they
+describe this process rather than every process that has run this database.
+
+These are progress numbers off a shared machine, not a throughput
+measurement. `docs/benchmarks.md` says where a number that can be compared to
+another number comes from.
 
 ## The command line
 

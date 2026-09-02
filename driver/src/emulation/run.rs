@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration; // purity-ok: the progress line's reporting interval, off every computation path
 
 use clickdoom_executor::commit;
 use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
@@ -28,6 +29,11 @@ use crate::emulation::preflight;
 use crate::emulation::rom::RAM_WORDS_DEFAULT;
 use crate::frames;
 use crate::render;
+use crate::stats::{Counters, Monotonic, StatsLine};
+
+/// How often the progress line is printed. A batch at the default K takes
+/// longer than this, so in practice one line follows each batch.
+const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -152,7 +158,16 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     let mut halted_reason = String::new();
     let mut reached_target = false;
     let mut frames_observed = 0u32;
+    let mut batches_run = 0u64;
     let ram_hash_interval = RAM_HASH_INTERVAL;
+    // Counted from the resume point, so the reported rates are this
+    // process's and not the whole run's history.
+    let mut stats = StatsLine::start(Monotonic::new(), STATS_INTERVAL);
+    let progress = |icount: u64, batches: u64, frames: u32| Counters {
+        instructions: icount - resume_icount,
+        batches,
+        frames: u64::from(frames),
+    };
 
     while !interrupted.load(Ordering::SeqCst) {
         if icount >= args.target_icount {
@@ -209,9 +224,13 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             .await?;
         batch_id = new_batch_id;
         icount = new_icount;
+        batches_run += 1;
         eprintln!(
             "# batch_id={batch_id} icount={icount} pc={pc:#010x} halted={halted} halt_reason={halt_reason} has_frame={has_frame} frame_no={frame_no}"
         );
+        if let Some(line) = stats.tick(progress(icount, batches_run, frames_observed)) {
+            eprintln!("{line}");
+        }
 
         if icount.is_multiple_of(ram_hash_interval) && icount > 0 {
             let actual: String = db.fetch_one(&checkpoint_sql(&conn.database)).await?;
@@ -251,6 +270,12 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             }
         }
     }
+
+    // Before the stop is classified, so a fatal halt reports its totals too.
+    eprintln!(
+        "{}",
+        stats.finish(progress(icount, batches_run, frames_observed))
+    );
 
     let stop = if interrupted.load(Ordering::SeqCst) {
         eprintln!(

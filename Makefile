@@ -113,7 +113,7 @@ test: up require-rom build-refemu ## Every suite, live ones included
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence
-	$(CLICKDOOM) diff $(N) --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+	$(CLICKDOOM) emulation diff $(N) --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
 		--hwm "$(CLICKDOOM_RUN_HWM)" --refemu-bin $(REFEMU) $(clickdoom_conn)
 
 smoke: ## The differential run CI uses, at 100,000 instructions
@@ -131,7 +131,7 @@ clickhouse_image = $(shell sed -n 's|^ *image: \(clickhouse/clickhouse-server.*\
 # No `up`: each arm starts and removes a container of its own, so this target
 # does not touch the shared one.
 bench-canonical-throughput: require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
-	$(CLICKDOOM) bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+	$(CLICKDOOM) emulation bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
 		--image "$(clickhouse_image)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
 		--refemu-bin $(REFEMU)
@@ -139,12 +139,12 @@ bench-canonical-throughput: require-rom build-refemu build-clickdoom ## Real-ROM
 ##@ Milestone
 
 preflight-milestone: up require-rom build-clickdoom ## Fail-closed gates before a multi-hour run. Refuses to start rather than advising
-	$(CLICKDOOM) preflight --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
+	$(CLICKDOOM) emulation preflight --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
 		$(clickdoom_conn)
 
 run-milestone: up require-rom build-clickdoom ## The resumable batch loop. Runs its own preflight and refuses to start if it fails
-	$(CLICKDOOM) run --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
+	$(CLICKDOOM) emulation run --bin "$(ROM_BIN)" --manifest "$(ROM_MANIFEST)" \
 		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
 		--trace "$(reference_trace)" \
 		--target-icount "$(CLICKDOOM_TARGET_ICOUNT)" \

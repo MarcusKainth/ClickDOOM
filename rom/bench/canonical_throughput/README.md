@@ -128,7 +128,7 @@ from what produced it.
 
 or directly:
 
-    clickdoom bench canonical \
+    clickdoom emulation bench canonical \
         --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
         --image clickhouse/clickhouse-server:26.7.5.10 \
         --refemu-bin target/release/refemu

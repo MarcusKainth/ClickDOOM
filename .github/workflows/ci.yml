@@ -138,7 +138,7 @@ jobs:
     # leaves uncaught a corrupt RAM word which keeps every register
     # bit-identical. Only nightly's deep-diff exercises memory.
     #
-    # N=100,000 because clickdoom diff clamps every sqlcpu batch to
+    # N=100,000 because clickdoom emulation diff clamps every sqlcpu batch to
     # <= CHECKPOINT_INTERVAL so it cannot skip a checkpoint row. Measured at
     # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
     # would take about 13.9 minutes on every pull request. timeout-minutes is a
@@ -169,6 +169,6 @@ jobs:
       - name: Smoke diff (100,000 instructions, full checkpoint trace)
         run: |
           chmod +x target/release/refemu
-          ./target/release/clickdoom diff 100000 --host localhost --port 8123 \
+          ./target/release/clickdoom emulation diff 100000 --host localhost --port 8123 \
               --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
               --refemu-bin target/release/refemu

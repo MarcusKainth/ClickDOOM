@@ -1,9 +1,9 @@
 -- sqlcpu/decode.sql — build clickdoom.decoded from clickdoom.ram (SPEC §1,
 -- ADR-0002, issue #18). PURITY.md's purity-critical statement: this decode
 -- happens entirely inside ClickHouse. The driver's only involvement is
--- loading ROM bytes into `ram` beforehand (`clickdoom load-rom`, housekeeping
--- that computes nothing) and invoking this file; nothing here nor there
--- decodes a RISC-V instruction outside SQL.
+-- loading ROM bytes into `ram` beforehand (`clickdoom emulation load-rom`,
+-- housekeeping that computes nothing) and invoking this file; nothing here
+-- nor there decodes a RISC-V instruction outside SQL.
 --
 -- Scope: the text region only, [text_start_word, text_end_word) in the same
 -- word_addr domain as `ram` (byte address >> 2) — the bounds ROM's

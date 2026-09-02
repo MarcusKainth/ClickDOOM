@@ -210,6 +210,17 @@ mod tests {
     /// One parseable argument list per `native` subcommand, same roster
     /// rule as `EMULATION_LINES`.
     const NATIVE_LINES: &[&[&str]] = &[
+        &["demo"],
+        &["demo", "demo3", "--no-window", "--stop-at-frame", "40"],
+        &[
+            "demo",
+            "--scale",
+            "4",
+            "--frame-dir",
+            "f",
+            "--hash-out",
+            "h.tsv",
+        ],
         &["load"],
         &["load", "--wad", "w.wad", "--map", "E1M1", "--demo", "DEMO1"],
         &["load", "--probe", "p.tsv"],

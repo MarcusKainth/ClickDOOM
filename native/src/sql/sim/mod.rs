@@ -4,6 +4,7 @@
 //! into expressions over the state row. Nothing executes: a caller gets
 //! statements and issues them.
 
+pub mod doors;
 pub mod game;
 pub mod hud;
 pub mod inter;
@@ -11,9 +12,11 @@ pub mod lights;
 pub mod map;
 pub mod maputl;
 pub mod mobj;
+pub mod plane;
 pub mod player;
 pub mod setup;
 pub mod spec;
+pub mod specials;
 pub mod tick;
 
 use clickdoom_spec::native_state;
@@ -182,6 +185,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         ),
     ];
     constants.extend(maputl::constants(db));
+    constants.extend(plane::constants(db));
     constants.extend(inter::constants(db));
     constants.extend(player::constants(db));
     constants

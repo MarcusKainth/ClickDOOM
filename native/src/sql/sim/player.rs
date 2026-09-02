@@ -536,14 +536,8 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
              OR state_tics[1 + mv_state] = 0))"
                 .to_owned(),
         ),
-        // A move the loop ran out of steps for, a state with an action
-        // behind it, or a use press that reached a special line, is a tic
-        // this cannot produce in full.
-        (
-            "now_unresolved".to_owned(),
-            "toUInt8(mv_unfinished = 1 OR pl_action_needed = 1 OR mv_useline >= 0)".to_owned(),
-        ),
     ]);
+    bindings.extend(super::specials::use_special_line(state));
     bindings
 }
 

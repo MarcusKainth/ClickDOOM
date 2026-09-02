@@ -41,17 +41,26 @@ fn fixture_tsv() -> String {
 const OPEN: [&str; 5] = ["m_frame", "m_tics", "m_state", "m_lastlook", "psp_sy"];
 
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
-/// the way, the tics after it are the slide along that wall, and 73 is
-/// the first tic the simulation cannot carry through.
-const WALK_TICS: u32 = 73;
+/// the way, the tics after it are the slide along that wall, and the door
+/// the press at 73 opens has reached the top and left the list by 120.
+const WALK_TICS: u32 = 120;
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
 
-/// The tic a use press reaches a line with a special on it. `P_UseLines`
-/// finds the line, and no line special is activated, so the tic is left
-/// unresolved.
-const FIRST_USE_SPECIAL: u32 = 73;
+/// `gametic, thinkers, sec_ceilingheight[63], sec_specialdata[63],
+/// line_special[951]` around the door demo3 opens, read out of the
+/// reference emulator's trace. The press at 73 makes the thinker and
+/// spends the line's special, the ceiling rises a step a tic, and the
+/// thinker comes off the list on the tic it reaches the top.
+const DOOR: [(u32, usize, i32, u32, i16); 6] = [
+    (72, 16, 0, 0, 31),
+    (73, 17, 131072, 17, 0),
+    (80, 17, 1048576, 17, 0),
+    (106, 17, 4456448, 17, 0),
+    (107, 16, 4456448, 0, 0),
+    (120, 16, 4456448, 0, 0),
+];
 
 /// A tic the use key goes down on and the press reaches nothing special.
 /// The engine plays a sound and moves on, and so does the simulation.
@@ -90,6 +99,10 @@ struct Walked {
     momy: i32,
     unresolved: u8,
     buttons: u8,
+    thinkers: u64,
+    ceiling: i32,
+    specialdata: u32,
+    special: i16,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -97,7 +110,9 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
         .rows(&format!(
             "SELECT tic, m_x[p_mo] AS x, m_y[p_mo] AS y, \
              m_momx[p_mo] AS momx, m_momy[p_mo] AS momy, \
-             unresolved, toUInt8(p_cmd_buttons) AS buttons \
+             unresolved, toUInt8(p_cmd_buttons) AS buttons, \
+             toUInt64(length(s_kind)) AS thinkers, sec_ceilingheight[63] AS ceiling, \
+             sec_specialdata[63] AS specialdata, line_special[951] AS special \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -160,24 +175,31 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
-    for row in walk.iter().filter(|row| row.tic < FIRST_USE_SPECIAL) {
+    // The run reaches past the door and every tic of it completes. The
+    // first the simulation cannot finish is gametic 380, a use press that
+    // reaches a switch, which is past the end of this run.
+    for row in &walk {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
             row.tic
         );
     }
-    assert_eq!(
-        at(FIRST_USE_SPECIAL).unresolved,
-        1,
-        "the press that reaches a special line is a tic nothing can finish"
-    );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");
     assert_eq!(
         pressed.unresolved, 0,
         "a press that reaches no special line finishes like any other tic"
     );
+    for (tic, thinkers, ceiling, specialdata, special) in DOOR {
+        let row = at(tic);
+        assert_eq!(
+            (row.thinkers, row.ceiling, row.specialdata, row.special),
+            (thinkers as u64, ceiling, specialdata, special),
+            "the door at gametic {tic}"
+        );
+    }
+
     for (tic, x, y, momx, momy) in WALK {
         let at = at(tic);
         assert_eq!(

@@ -113,6 +113,58 @@ impl Fixture {
     }
 }
 
+/// A statement issued the way the resident pipelines are: the statement text
+/// leads the request body, terminated by a newline, and the rows follow it.
+///
+/// A URL parameter is limited to a few kilobytes and the render statement is
+/// tens of them, so it cannot travel as `query=`. `max_query_size` is the
+/// statement's own length plus one, because the server reads that many bytes
+/// before it parses.
+///
+/// This speaks HTTP by hand rather than through the client, which has no way
+/// to put a statement in the body.
+pub fn run_in_body(database: &str, statement: &str, rows: &[u8]) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    let host = env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned());
+    let port = env::var("CLICKHOUSE_HTTP_PORT").unwrap_or_else(|_| "8123".to_owned());
+    let user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_owned());
+    let password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_default();
+
+    let mut body = statement.as_bytes().to_vec();
+    body.push(b'\n');
+    let query_size = body.len();
+    body.extend_from_slice(rows);
+
+    let query = format!(
+        "database={database}&max_query_size={query_size}&max_block_size=1\
+         &max_insert_block_size=1&min_insert_block_size_rows=1\
+         &min_insert_block_size_bytes=1&input_format_parallel_parsing=0\
+         &max_threads=1&max_insert_threads=1&async_insert=0"
+    );
+    let head = format!(
+        "POST /?{query} HTTP/1.1\r\nHost: {host}\r\nX-ClickHouse-User: {user}\r\n\
+         X-ClickHouse-Key: {password}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+
+    let mut socket =
+        std::net::TcpStream::connect(format!("{host}:{port}")).map_err(|e| e.to_string())?;
+    socket
+        .write_all(head.as_bytes())
+        .map_err(|e| e.to_string())?;
+    socket.write_all(&body).map_err(|e| e.to_string())?;
+    let mut response = Vec::new();
+    socket
+        .read_to_end(&mut response)
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&response);
+    match text.lines().next() {
+        Some(line) if line.contains(" 200 ") => Ok(()),
+        _ => Err(text.into_owned()),
+    }
+}
+
 /// One statement. A body goes as the request body; the HTTP interface
 /// takes one statement per request either way.
 pub async fn run(db: &Client, statement: &Statement) -> Result<(), Error> {

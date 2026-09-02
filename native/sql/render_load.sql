@@ -145,71 +145,72 @@ SELECT throwIf(
     (SELECT max(depth) FROM {{DB}}.lv_ssec_path) > 63,
     'a subsector sits deeper than the pre-order key can hold');
 
--- The texture window pool, in four parts of 4,096 columns. A part is
--- always the full 524,288 bytes, zero filled past the last column, so the
--- frame transform can name all four whatever the WAD holds.
-INSERT INTO {{DB}}.rt_tex_pool (part, data)
-SELECT p AS part, groupArray(b) AS data
+-- A pool is one string, in byte order. `groupArray` does not promise the
+-- order it collects rows in, so every byte carries the offset it belongs at
+-- and is sorted by that before the bytes are joined.
+--
+-- A pool is a string and not an array. Both work, but a query holds an array
+-- constant as one field per element, and carrying a few hundred thousand of
+-- those through the frame statement costs gigabytes; a string is one field
+-- whatever its length.
+
+-- The texture window pool: every column's 128 bytes, end to end in slot
+-- order.
+INSERT INTO {{DB}}.rt_tex_pool (id, data)
+SELECT
+    0 AS id,
+    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
     SELECT
-        intDiv(slot, 4096) AS p,
-        slot,
-        k,
+        slot * 128 + k AS at,
         reinterpretAsUInt8(substring(rightPad(window, 128, '\0'), k + 1, 1)) AS b
-    FROM
-    (
-        SELECT slot, window FROM {{DB}}.tex_window
-        UNION ALL
-        SELECT toUInt32(s) AS slot, '' AS window
-        FROM numbers(16384) AS n
-        ARRAY JOIN [toUInt32(n.number)] AS s
-        WHERE s >= (SELECT count() FROM {{DB}}.tex_window)
-    )
+    FROM {{DB}}.tex_window
     ARRAY JOIN range(128) AS k
-    ORDER BY slot, k
-)
-GROUP BY p;
+);
 
--- Four parts hold 16,384 texture columns. Past that a column would read
--- another column's bytes.
+-- Every column of every texture has to be in it, or a wall reads the bytes
+-- of the column after the one it asked for.
 SELECT throwIf(
-    (SELECT count() FROM {{DB}}.tex_window) > 16384,
-    'the texture pool holds more columns than four parts can carry');
+    (SELECT length(data) FROM {{DB}}.rt_tex_pool) !=
+        (SELECT count() FROM {{DB}}.tex_window) * 128,
+    'the texture pool is not one window per column');
 
--- The flat pool, in four parts of 128 flats. A marker lump carries no
--- pixels and its 4,096 bytes are zero, which keeps a flat's pixels at
--- `id * 4096`.
-INSERT INTO {{DB}}.rt_flat_pool (part, data)
-SELECT p AS part, groupArray(b) AS data
+-- The flat pool: every flat's 4,096 bytes, end to end in flat number order.
+-- A marker lump carries no pixels and its 4,096 bytes are zero, which keeps
+-- a flat's pixels at `id * 4096`.
+INSERT INTO {{DB}}.rt_flat_pool (id, data)
+SELECT
+    0 AS id,
+    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
     SELECT
-        intDiv(f, 128) AS p,
-        f,
-        k,
+        f * 4096 + k AS at,
         reinterpretAsUInt8(substring(rightPad(coalesce(fl.data, ''), 4096, '\0'), k + 1, 1)) AS b
     FROM numbers(512)
     ARRAY JOIN [toUInt32(number)] AS f
     LEFT JOIN {{DB}}.flats AS fl ON fl.id = f
     ARRAY JOIN range(4096) AS k
-    ORDER BY f, k
-)
-GROUP BY p;
+);
 
--- Four parts hold 512 flats.
+-- The pool is numbered by flat, so a flat past the 512 it holds would read
+-- another flat's pixels.
 SELECT throwIf(
     (SELECT max(id) FROM {{DB}}.flats) >= 512,
-    'the flat pool holds more flats than four parts can carry');
+    'the flat pool holds fewer flats than the WAD does');
 
 INSERT INTO {{DB}}.rt_colormap_pool (id, data)
-SELECT 0 AS id, groupArray(b) AS data
+SELECT
+    0 AS id,
+    arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
 FROM
 (
-    SELECT reinterpretAsUInt8(substring(data, k + 1, 1)) AS b
+    SELECT
+        id * 256 + k AS at,
+        reinterpretAsUInt8(substring(data, k + 1, 1)) AS b
     FROM {{DB}}.colormap
     ARRAY JOIN range(256) AS k
-    ORDER BY id, k
 );
 
 -- The palettes the ROM writes: `gammatable[0][PLAYPAL[i]]`, and the same

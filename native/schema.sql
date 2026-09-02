@@ -890,21 +890,22 @@ ENGINE = MergeTree ORDER BY seg;
 -- and each is a `WITH` constant in the frame transform, so a pool is read
 -- once per statement rather than once per frame.
 
--- Every texture column's 128-byte window, end to end in slot order,
--- split into parts of 4,096 columns because one array field cannot hold
--- more than a million elements. A column's bytes start at
--- `(tex_col_base[texture] + col) * 128`, and the part is that offset over
--- 524,288.
-CREATE TABLE IF NOT EXISTS {{DB}}.rt_tex_pool (part UInt8, data Array(UInt8))
-ENGINE = MergeTree ORDER BY part;
+-- Every texture column's 128-byte window, end to end in slot order. A
+-- column's bytes start at `(tex_col_base[texture] + col) * 128`.
+--
+-- A pool is a String and not an Array. Both work, but a query holds an array
+-- constant as one field per element, and carrying a few hundred thousand of
+-- those through the frame statement costs gigabytes; a String is one field
+-- whatever its length.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_tex_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
 
--- Every flat's 4,096 bytes, end to end in flat number order, in parts of
--- 128 flats.
-CREATE TABLE IF NOT EXISTS {{DB}}.rt_flat_pool (part UInt8, data Array(UInt8))
-ENGINE = MergeTree ORDER BY part;
+-- Every flat's 4,096 bytes, end to end in flat number order.
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_flat_pool (id UInt8, data String)
+ENGINE = MergeTree ORDER BY id;
 
 -- COLORMAP end to end: light level `l` maps colour `c` to `data[l * 256 + c]`.
-CREATE TABLE IF NOT EXISTS {{DB}}.rt_colormap_pool (id UInt8, data Array(UInt8))
+CREATE TABLE IF NOT EXISTS {{DB}}.rt_colormap_pool (id UInt8, data String)
 ENGINE = MergeTree ORDER BY id;
 
 -- One row per PLAYPAL palette, with the gamma table already applied, which

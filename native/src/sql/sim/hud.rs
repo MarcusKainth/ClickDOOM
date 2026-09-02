@@ -114,9 +114,15 @@ fn face_widget(state: &State) -> Vec<(String, String)> {
     let attacker = state.get("p_attacker");
     let mo = state.get("p_mo");
     let (mx, my, angle) = (state.get("m_x"), state.get("m_y"), state.get("m_angle"));
+    // The angle is only read on the rung where the player has an
+    // attacker, and a slot of zero is the engine's null. An array index
+    // of zero is an error, so the read is pinned inside the array and the
+    // rung's own test decides whether the answer is used.
+    let at = format!("greatest({attacker}, 1)");
+    let mine = format!("greatest({mo}, 1)");
     let badguy = fixed::point_to_angle(
-        &format!("toInt32({mx}[{attacker}] - {mx}[{mo}])"),
-        &format!("toInt32({my}[{attacker}] - {my}[{mo}])"),
+        &format!("toInt32({mx}[{at}] - {mx}[{mine}])"),
+        &format!("toInt32({my}[{at}] - {my}[{mine}])"),
         "tantoangle",
     );
     let much_pain = format!("{health} - prev_st_oldhealth > {MUCHPAIN}");
@@ -124,14 +130,14 @@ fn face_widget(state: &State) -> Vec<(String, String)> {
         (
             "face_diffang".to_owned(),
             format!(
-                "toUInt32(if({badguy} > {angle}[{mo}], \
-                 {badguy} - {angle}[{mo}], {angle}[{mo}] - {badguy}))"
+                "toUInt32(if({badguy} > {angle}[{mine}], \
+                 {badguy} - {angle}[{mine}], {angle}[{mine}] - {badguy}))"
             ),
         ),
         (
             "face_turned".to_owned(),
             format!(
-                "toUInt8(if({badguy} > {angle}[{mo}], \
+                "toUInt8(if({badguy} > {angle}[{mine}], \
                  face_diffang > {ANG180}, face_diffang <= {ANG180}))"
             ),
         ),

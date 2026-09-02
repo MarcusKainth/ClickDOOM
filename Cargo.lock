@@ -492,6 +492,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "xxhash-rust",
 ]
 
 [[package]]

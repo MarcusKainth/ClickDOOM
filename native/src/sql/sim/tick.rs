@@ -16,7 +16,7 @@
 
 use crate::sql::Statement;
 
-use super::{Tic, game, hud, spec, state_columns};
+use super::{Tic, game, hud, player, spec, state_columns};
 
 /// The columns the session streams, in wire order. `pad` carries the
 /// padding row the transport writes behind the statement text.
@@ -154,6 +154,9 @@ fn bindings(db: &str) -> Tic {
     tic.stage(command);
     let special = game::special_buttons(&tic.state);
     tic.stage(special);
+    let think = player::think(&tic.state);
+    let running = game::running(&tic.state);
+    tic.stage_when(&running, think);
     let specials = spec::update_specials(&tic.state, db);
     let running = game::running(&tic.state);
     tic.stage_when(&running, specials);
@@ -230,10 +233,15 @@ mod tests {
         assert!(sql.contains("joinGet('nat.native_state', 'leveltime', toUInt32(tic - 1))"));
     }
 
+    /// One walk of the blockmap for the things and one for the lines is
+    /// what a single `P_CheckPosition` costs. A second copy of the
+    /// primitive would double both.
     #[test]
-    fn nothing_walks_the_blockmap_yet() {
+    fn the_move_test_is_in_the_statement_once() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("bmap_cols + bx").count(), 0);
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 1);
+        assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
+        assert_eq!(sql.matches("bmap_cols + bx").count(), 2);
     }
 
     #[test]

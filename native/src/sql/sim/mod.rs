@@ -6,6 +6,11 @@
 
 pub mod game;
 pub mod hud;
+pub mod inter;
+pub mod map;
+pub mod maputl;
+pub mod mobj;
+pub mod player;
 pub mod setup;
 pub mod spec;
 pub mod tick;
@@ -175,6 +180,9 @@ fn constants(db: &str) -> Vec<(String, String)> {
             table_column(db, "states", "action"),
         ),
     ];
+    constants.extend(maputl::constants(db));
+    constants.extend(inter::constants(db));
+    constants.extend(player::constants(db));
     constants
 }
 

@@ -410,7 +410,18 @@ async fn two_loads_of_the_same_wad_agree_row_for_row() {
         digests.push(digest(&fixture).await);
         fixture.finish().await;
     }
-    assert_eq!(digests[0].len(), 75, "the schema's table count changed");
+    // Every table the schema declares is in the digest, apart from the ones
+    // it leaves out by name, so a table the load forgot shows up here.
+    let mut want: Vec<&str> = sql::schema_tables()
+        .into_iter()
+        .filter(|t| !NOT_DIGESTED.contains(t))
+        .collect();
+    want.sort_unstable();
+    let got: Vec<&str> = digests[0].iter().map(|d| d.table.as_str()).collect();
+    assert_eq!(
+        got, want,
+        "the digest does not cover every table the schema declares"
+    );
     for (a, b) in digests[0].iter().zip(&digests[1]) {
         assert_eq!(a, b, "{} differs between two loads", a.table);
     }
@@ -426,12 +437,20 @@ struct Digest {
     hash: u64,
 }
 
+/// Tables a load leaves empty or a run fills, which the digest skips.
+const NOT_DIGESTED: [&str; 3] = ["native_state", "native_frames", "ref_frames"];
+
 async fn digest(fixture: &Fixture) -> Vec<Digest> {
     let db = &fixture.database;
     let tables: Vec<String> = fixture
         .rows(&format!(
             "SELECT name FROM system.tables WHERE database = '{db}' \
-             AND name NOT IN ('native_state', 'native_frames', 'ref_frames') ORDER BY name"
+             AND name NOT IN ({}) ORDER BY name",
+            NOT_DIGESTED
+                .iter()
+                .map(|t| format!("'{t}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ))
         .await;
     let parts: Vec<String> = tables

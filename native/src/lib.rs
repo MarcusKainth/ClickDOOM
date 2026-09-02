@@ -4,4 +4,6 @@
 //! none of them execute anything. The driver executes, and `NATIVE.md` states
 //! what the text has to do.
 
+pub mod csource;
+pub mod tables;
 pub mod wad;

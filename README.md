@@ -27,6 +27,11 @@ own independent run.
 
 ## Build log
 
+**[Turning an optimisation off made it faster](docs/blog/2026-09-02-turning-an-optimisation-off.md)**
+· 2 September 2026 — switching off ClickHouse's short-circuit evaluation is
+worth 17%, our own benchmark had been understating us by 18%, and six figures
+is now ruled out with a number rather than a feeling.
+
 **[The sprint that mostly said no](docs/blog/2026-08-26-the-sprint-that-mostly-said-no.md)**
 · 26 August 2026 — how `demo3` went from 44 days to 15, the five
 optimisations that failed, and why the failures were worth more than the

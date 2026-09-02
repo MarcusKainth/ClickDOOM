@@ -23,6 +23,7 @@ use tokio::time::Instant; // purity-ok: pacing and timeouts in the driver loop, 
 use super::rowbinary;
 use super::settings::resident_settings;
 use super::stream::{Resident, ResidentError};
+use crate::checkpoint::hex64;
 use crate::client::{self, ConnArgs, Db};
 
 /// The columns the simulation statement reads, in wire order. `pad` carries
@@ -225,10 +226,13 @@ impl Session {
     pub async fn poll_frame(&self, frame: u32) -> Result<Option<Frame>, SessionError> {
         let table = format!("{}.{FRAMES_TABLE}", self.database);
         let sql = format!(
-            "SELECT joinGetOrNull('{table}', 'fb_hash', toUInt32({frame})) AS fb_hash, \
+            "SELECT {} AS fb_hash, \
                     joinGet('{table}', 'fb', toUInt32({frame})) AS fb, \
                     joinGet('{table}', 'palette', toUInt32({frame})) AS palette, \
-                    joinGet('{table}', 'rgb32', toUInt32({frame})) AS rgb32"
+                    joinGet('{table}', 'rgb32', toUInt32({frame})) AS rgb32",
+            hex64(&format!(
+                "joinGetOrNull('{table}', 'fb_hash', toUInt32({frame}))"
+            ))
         );
         let row = self
             .db

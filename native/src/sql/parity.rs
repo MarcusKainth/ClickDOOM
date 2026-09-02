@@ -12,6 +12,7 @@
 use clickdoom_spec::native_state::{
     ANIM_FIELDS, BUTTON_FIELDS, GAME_FIELDS, HUD_FIELDS, INPUT_FIELDS, LINE_SIDE_FIELDS,
     MOBJ_FIELDS, PLAYER_FIELDS, PSPRITE_FIELDS, SECTOR_FIELDS, SECTOR_THINKER_FIELDS,
+    sector_thinker_kind,
 };
 
 /// Columns a thinker's identity would fill, which nothing in the engine's
@@ -65,18 +66,23 @@ fn comparison(db: &str) -> String {
 }
 
 /// A field's verdict for one tic, as the tuple `comparison` emits.
+///
+/// An array field compares element by element, and an element the field's
+/// mask names is left out on both sides.
 fn verdict((at, field): (usize, &Field)) -> String {
     let ours = field.name;
     let theirs = format!("{THEIRS}{}", field.name);
+    let mask = field.mask.as_deref();
     let (slot, ours, theirs, differs) = if field.array {
+        let differing = differing(ours, &theirs, mask);
         (
             format!(
                 "toUInt32(if(length({ours}) != length({theirs}), 0, \
-                 indexOf(arrayMap((a, b) -> a != b, {ours}, {theirs}), 1)))"
+                 indexOf({differing}, 1)))"
             ),
-            element(ours, &theirs, ours),
-            element(ours, &theirs, &theirs),
-            format!("toUInt8({ours} != {theirs})"),
+            element(ours, &theirs, ours, mask),
+            element(ours, &theirs, &theirs, mask),
+            format!("toUInt8(length({ours}) != length({theirs}) OR has({differing}, 1))"),
         )
     } else {
         (
@@ -92,13 +98,37 @@ fn verdict((at, field): (usize, &Field)) -> String {
     )
 }
 
+/// One flag per element: 1 where the two sides differ and the mask does
+/// not name the element.
+fn differing(ours: &str, theirs: &str, mask: Option<&str>) -> String {
+    match mask {
+        Some(mask) => format!(
+            "arrayMap((a, b, k) -> toUInt8(a != b AND NOT ({mask})), \
+             {ours}, {theirs}, arrayEnumerate({ours}))"
+        ),
+        None => format!("arrayMap((a, b) -> toUInt8(a != b), {ours}, {theirs})"),
+    }
+}
+
 /// The element of `side` the slot names, or both lengths when the two
 /// arrays are not the same length.
-fn element(ours: &str, theirs: &str, side: &str) -> String {
+fn element(ours: &str, theirs: &str, side: &str, mask: Option<&str>) -> String {
     format!(
         "if(length({ours}) != length({theirs}), \
          concat('length ', toString(length({side}))), \
-         toString({side}[indexOf(arrayMap((a, b) -> a != b, {ours}, {theirs}), 1)]))"
+         toString({side}[indexOf({}, 1)]))",
+        differing(ours, theirs, mask)
+    )
+}
+
+/// `T_VerticalDoor` never reads `topcountdown` while the door goes up, and
+/// the engine leaves it as the zone allocator returned it until the door
+/// reaches the top and writes it. So a door's count is compared only when
+/// its direction is not up. `k` is the thinker's slot, one-based.
+fn door_count_mask() -> String {
+    format!(
+        "s_kind[k] = {} AND s_direction[k] = 1",
+        sector_thinker_kind::DOOR
     )
 }
 
@@ -130,6 +160,9 @@ struct Field {
     name: &'static str,
     kind: &'static str,
     array: bool,
+    /// An expression over the slot `k` naming elements left out of the
+    /// comparison.
+    mask: Option<String>,
 }
 
 /// Every contract field but the identities, each with its group and whether
@@ -164,6 +197,10 @@ fn compared() -> Vec<Field> {
                 name,
                 kind,
                 array: declared.starts_with("Array("),
+                mask: match *name {
+                    "s_count" => Some(door_count_mask()),
+                    _ => None,
+                },
             });
         }
     }
@@ -236,6 +273,24 @@ mod state_tests {
         }
         assert!(compared.iter().any(|f| f.name == "leveltime" && !f.array));
         assert!(compared.iter().any(|f| f.name == "m_x" && f.array));
+    }
+
+    /// The mask leaves out a door's count while the door goes up, and
+    /// nothing else.
+    #[test]
+    fn only_a_rising_doors_count_is_left_out() {
+        let masked: Vec<&str> = compared()
+            .iter()
+            .filter(|f| f.mask.is_some())
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(masked, ["s_count"]);
+        let sql = first_divergence("nat");
+        assert_eq!(
+            sql.matches("s_direction[k] = 1").count(),
+            4,
+            "the slot, both elements and the verdict"
+        );
     }
 
     #[test]

@@ -136,24 +136,12 @@ pub fn ppm_render_sql(db: &str, width: u32, height: u32) -> String {
 pub fn ppm_sql_over(fb: &str, palette: &str, width: u32, height: u32) -> String {
     let header = format!("P6\n{width} {height}\n255\n");
     let area = width * height;
-    let pixel_hex = format!(
-        "arrayStringConcat(arrayMap(\
-         i -> concat(\
-         hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].1))),\
-         hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].2))),\
-         hex(reinterpretAsFixedString(toUInt8(pal_rgb[px[i] + 1].3)))\
-         ), range(1, {area} + 1)))"
-    );
+    // Both sources are scalar subqueries, so inside the lambda they are
+    // constants rather than columns copied once per pixel.
     format!(
-        "SELECT concat('{header}', unhex({pixel_hex})) AS ppm\n\
-         FROM\n  \
-             (SELECT arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, {area} + 1)) AS px\n   \
-              FROM ({fb})) AS pixels,\n  \
-             (SELECT arrayMap(i -> tuple(\n      \
-                 reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 1, 1)),\n      \
-                 reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 2, 1)),\n      \
-                 reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 3, 1))\n    \
-             ), range(1, 257)) AS pal_rgb\n   \
-              FROM ({palette})) AS palettes"
+        "WITH ({fb}) AS fb, ({palette}) AS palette\n\
+         SELECT concat('{header}', arrayStringConcat(arrayMap(\n  \
+             i -> substring(palette, 3 * reinterpretAsUInt8(substring(fb, i, 1)) + 1, 3),\n  \
+             range(1, {area} + 1)), '')) AS ppm"
     )
 }

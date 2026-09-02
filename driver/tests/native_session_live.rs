@@ -190,7 +190,7 @@ async fn a_session_runs_tics_and_their_frames_in_order() {
     let session = Session::open(
         &conn,
         &database,
-        &sim_statement(&database),
+        Some(&sim_statement(&database)),
         &render_statement(&database),
     )
     .await
@@ -278,7 +278,7 @@ async fn a_killed_statement_is_found_and_recovered() {
     let mut session = Session::open(
         &conn,
         &database,
-        &sim_statement(&database),
+        Some(&sim_statement(&database)),
         &render_statement(&database),
     )
     .await

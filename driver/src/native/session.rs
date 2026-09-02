@@ -6,6 +6,11 @@
 //! for it, feed the frame that reads it. The statement text belongs to
 //! whoever generates the SQL; this drives whatever it is given.
 //!
+//! A session may open the renderer alone. `native_state` then holds rows
+//! something else wrote, the reference emulator's probe among them, and
+//! [`Session::wait_sim`] reads them the same way. [`Session::feed_sim`] is
+//! what a renderer-only session has no answer for.
+//!
 //! A statement the server has abandoned goes on taking rows without
 //! committing them, so a session finds out from [`Session::wait_sim`]
 //! timing out. [`Session::recover`] is what follows: it ends both
@@ -45,9 +50,9 @@ pub const FRAMES_TABLE: &str = "native_frames";
 /// the slowest tic and not a target.
 pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long [`Session::wait_sim`] pauses between polls. The poll is a
-/// query round trip, which paces the loop on its own; this keeps a slow
-/// tic from turning into a tight query loop.
+/// How long a wait pauses between polls. The poll is a query round trip,
+/// which paces the loop on its own; this keeps a slow tic from turning into
+/// a tight query loop.
 const POLL_SLEEP: Duration = Duration::from_micros(250);
 
 /// Distinguishes the query ids handed out in one process.
@@ -78,6 +83,17 @@ pub enum SessionError {
          has stopped; recover the session and resume from the last committed tic"
     )]
     TicTimeout { tic: u32, waited: Duration },
+    #[error(
+        "this session opened the renderer alone, so it has no simulation to \
+         feed tic {tic} to. Its state rows come from whatever wrote \
+         {database}.{STATE_TABLE}"
+    )]
+    NoSim { database: String, tic: u32 },
+    #[error(
+        "frame {frame} was not written within {waited:?}. The renderer \
+         statement has stopped; recover the session and feed the frame again"
+    )]
+    FrameTimeout { frame: u32, waited: Duration },
 }
 
 /// One frame as `native_frames` holds it.
@@ -120,7 +136,7 @@ struct FrameRow {
 /// output back.
 pub struct Session {
     database: String,
-    sim_statement: String,
+    sim_statement: Option<String>,
     render_statement: String,
     sim: Option<Resident>,
     render: Option<Resident>,
@@ -130,37 +146,48 @@ pub struct Session {
 }
 
 impl Session {
-    /// Opens both statements against `database`.
+    /// Opens the statements against `database`.
     ///
-    /// The statements are kept, because recovery reopens them unchanged.
-    /// Each runs under its own `query_id`, so it can be found in
-    /// `system.query_log` and killed by name.
+    /// `sim_statement` is `None` for a session that renders from state rows
+    /// already in the database. The statements are kept, because recovery
+    /// reopens them unchanged. Each runs under its own `query_id`, so it can
+    /// be found in `system.query_log` and killed by name.
     pub async fn open(
         conn: &ConnArgs,
         database: &str,
-        sim_statement: &str,
+        sim_statement: Option<&str>,
         render_statement: &str,
     ) -> Result<Session, SessionError> {
         let mut at = conn.clone();
         at.database = database.to_owned();
         let sim_query_id = query_id(database, "sim");
         let render_query_id = query_id(database, "render");
-        let sim = open_one(&at, sim_statement, SIM_INPUT_SCHEMA, &sim_query_id)
-            .await
-            .map_err(|source| SessionError::Sim { source })?;
+        let sim = match sim_statement {
+            Some(statement) => Some(
+                open_one(&at, statement, SIM_INPUT_SCHEMA, &sim_query_id)
+                    .await
+                    .map_err(|source| SessionError::Sim { source })?,
+            ),
+            None => None,
+        };
         let render = open_one(&at, render_statement, RENDER_INPUT_SCHEMA, &render_query_id)
             .await
             .map_err(|source| SessionError::Render { source })?;
         Ok(Session {
             database: database.to_owned(),
-            sim_statement: sim_statement.to_owned(),
+            sim_statement: sim_statement.map(str::to_owned),
             render_statement: render_statement.to_owned(),
-            sim: Some(sim),
+            sim,
             render: Some(render),
             sim_query_id,
             render_query_id,
             db: at.connect_uncompressed(),
         })
+    }
+
+    /// Whether this session drives a simulation of its own.
+    pub fn has_sim(&self) -> bool {
+        self.sim_statement.is_some()
     }
 
     /// The `query_id` the simulation statement runs under. A fresh one is
@@ -176,6 +203,8 @@ impl Session {
 
     /// Sends the input row for one tic. `source` 0 takes the tic command
     /// from the demo lump, 1 builds it from `keys` and the mouse deltas.
+    ///
+    /// A session that opened the renderer alone has nothing to send it to.
     pub fn feed_sim(
         &self,
         tic: u32,
@@ -184,6 +213,12 @@ impl Session {
         mouse_dx: i16,
         mouse_dy: i16,
     ) -> Result<(), SessionError> {
+        if !self.has_sim() {
+            return Err(SessionError::NoSim {
+                database: self.database.clone(),
+                tic,
+            });
+        }
         let mut row = rowbinary::Row::with_capacity(16);
         row.u32(tic)
             .u8(source)
@@ -248,13 +283,37 @@ impl Session {
         }))
     }
 
+    /// Waits for the renderer to write `frame`, and returns it with how
+    /// long that took.
+    ///
+    /// The budget is the caller's, because what a frame may take depends on
+    /// what the caller is doing: a paced run has a tic, a one-off render has
+    /// as long as it needs.
+    pub async fn wait_frame(
+        &self,
+        frame: u32,
+        timeout: Duration,
+    ) -> Result<(Frame, Duration), SessionError> {
+        let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
+        loop {
+            if let Some(frame) = self.poll_frame(frame).await? {
+                return Ok((frame, started.elapsed()));
+            }
+            let waited = started.elapsed();
+            if waited >= timeout {
+                return Err(SessionError::FrameTimeout { frame, waited });
+            }
+            tokio::time::sleep(POLL_SLEEP).await;
+        }
+    }
+
     /// The tic a resumed session starts from: one past the highest tic
     /// `native_state` holds, and 1 when it holds none.
     pub async fn resume_point(&self) -> Result<u32, SessionError> {
         Ok(self.committed_tic().await? + 1)
     }
 
-    /// Ends both statements and opens them again.
+    /// Ends the statements and opens them again.
     ///
     /// Both go, not just the one that looks dead: a failed statement takes
     /// rows without committing them, so which one stopped is not something
@@ -269,16 +328,14 @@ impl Session {
 
         self.sim_query_id = query_id(&self.database, "sim");
         self.render_query_id = query_id(&self.database, "render");
-        self.sim = Some(
-            open_one(
-                &at,
-                &self.sim_statement,
-                SIM_INPUT_SCHEMA,
-                &self.sim_query_id,
-            )
-            .await
-            .map_err(|source| SessionError::Sim { source })?,
-        );
+        self.sim = match &self.sim_statement {
+            Some(statement) => Some(
+                open_one(&at, statement, SIM_INPUT_SCHEMA, &self.sim_query_id)
+                    .await
+                    .map_err(|source| SessionError::Sim { source })?,
+            ),
+            None => None,
+        };
         self.render = Some(
             open_one(
                 &at,

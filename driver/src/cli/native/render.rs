@@ -10,8 +10,8 @@ use crate::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
 use clap::{Args, ValueEnum};
 
 /// How long one frame may take before the run calls the renderer dead. A
-/// frame averages 15.7 ms, so this is a wide margin over the slowest and
-/// not a target.
+/// frame is milliseconds once the statement is warm, and the first one is
+/// seconds, so this is wide enough to cover both.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Where a run's state rows come from.

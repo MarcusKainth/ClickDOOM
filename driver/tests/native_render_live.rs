@@ -11,9 +11,10 @@
 //!   * the PPM the driver writes is the palette applied to the framebuffer,
 //!     checked against an independent re-derivation from the two.
 //!
-//! One test, not three. A renderer statement holds its scalar constants for
-//! as long as it is open, and two of them at once is more memory than a
-//! server has; `cargo test` runs the functions of one binary in parallel.
+//! All of it is one test function. A renderer statement holds its scalar
+//! constants for as long as it is open, `cargo test` runs the functions of
+//! one binary in parallel, and two statements open at once ran the server
+//! out of memory.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -21,99 +22,27 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use std::path::{Path, PathBuf};
 use std::time::Duration; // purity-ok: a timeout in the harness, never a value a statement reads
 
-use clickdoom_driver::client::{ConnArgs, Db};
-use clickdoom_driver::native::{Frame, Session, SessionError, melt, plan, probe, schedule};
+use clickdoom_driver::client::Db;
+use clickdoom_driver::native::{Frame, Session, SessionError, probe, schedule};
 use clickdoom_driver::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
 use clickdoom_native::sql;
-use clickdoom_native::{load, wad::Wad};
 
-const MAP: &str = "E1M7";
-const DEMO: &str = "DEMO3";
-const SKY: &str = "SKY1";
+mod support;
 
-/// The first frame the run renders is the one that pays for the statement's
-/// analysis and its scalar constants, which is seconds.
+use support::{committed_fixture, conn_args, drop_database, loaded};
+
+/// The first frame a run renders pays for the statement's analysis and its
+/// scalar constants, which is seconds.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(120);
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
-fn conn_args(database: &str) -> ConnArgs {
-    ConnArgs {
-        host: std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
-        port: std::env::var("CLICKHOUSE_HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(8123),
-        user: "default".to_owned(),
-        database: database.to_owned(),
-        password: None,
-    }
-}
-
-/// The one committed probe file, as `refemu/tests/probe_fixture.rs` holds
-/// the directory to.
-fn committed_fixture() -> PathBuf {
-    let dir = repo_root().join("refemu/probe/fixtures");
-    let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|e| e == "tsv"))
-        .collect();
-    found.sort();
-    match found.len() {
-        1 => found.remove(0),
-        _ => panic!(
-            "{} holds {} probe files, not one",
-            dir.display(),
-            found.len()
-        ),
-    }
-}
-
-/// A private database with the level loaded and the probe rows in it.
-async fn loaded(case: &str) -> (String, Db) {
-    let database = format!("clickdoom_native_render_{}_{case}", std::process::id());
-    let admin = conn_args("default").connect();
-    admin
-        .run(&format!("DROP DATABASE IF EXISTS {database}"))
-        .await
-        .expect("the database is dropped");
-
-    let bytes = std::fs::read(repo_root().join("rom/wad/doom1.wad")).expect("the WAD is committed");
-    let wad = Wad::parse(&bytes).expect("the WAD parses");
-    let phases = vec![
-        plan::Phase::new("base", load::plan(&database, &wad)),
-        plan::Phase::new("level", sql::level_statements(&database, MAP, DEMO)),
-        plan::Phase::new("render", sql::render_statements(&database, SKY)),
-        plan::Phase::new(
-            "melt",
-            melt::load_statements(&database, DEMO).expect("a committed schedule"),
-        ),
-    ];
-    plan::run(&admin, &phases)
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
-    probe::load(&admin, &database, &committed_fixture())
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
-    (database, admin)
-}
-
-async fn drop_database(admin: &Db, database: &str) {
-    admin
-        .run(&format!("DROP DATABASE IF EXISTS {database}"))
-        .await
-        .expect("the database is dropped");
-}
 
 #[tokio::test]
 async fn a_renderer_only_session_draws_the_frames_the_engine_drew() {
     let (database, admin) = loaded("render").await;
+    probe::load(&admin, &database, &committed_fixture())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
     let conn = conn_args(&database);
 
     // The fixture holds the melt's first and last frames and the two after

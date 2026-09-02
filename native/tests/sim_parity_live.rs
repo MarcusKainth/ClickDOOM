@@ -41,9 +41,11 @@ fn fixture_tsv() -> String {
 const OPEN: [&str; 5] = ["m_frame", "m_tics", "m_state", "m_lastlook", "psp_sy"];
 
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
-/// the way, the tics after it are the slide along that wall, and the door
-/// the press at 73 opens has reached the top and left the list by 120.
-const WALK_TICS: u32 = 120;
+/// the way, the tics after it are the slide along that wall, the door the
+/// press at 73 opens has reached the top and left the list by 120, and 205
+/// is the last tic before the engine's own monsters change where the
+/// player ends up.
+const WALK_TICS: u32 = 205;
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
@@ -69,13 +71,15 @@ const USE_INTO_NOTHING: u32 = 42;
 /// `gametic, m_x, m_y, m_momx, m_momy` for the player, read out of the
 /// reference emulator's demo3 trace. Gametic 31 is the last free move, 32
 /// is the blocked one, and the rest are the slide.
-const WALK: [(u32, i32, i32, i32, i32); 6] = [
+const WALK: [(u32, i32, i32, i32, i32); 8] = [
     (2, 6225766, 34419194, -28303, -79195),
     (31, 4639872, 25605989, 78408, -506265),
     (32, 4756160, 25182290, 17337, 0),
     (33, 4847534, 25166570, 19647, 0),
     (34, 4901210, 25166337, 47338, 0),
     (40, 5126423, 25166337, 26222, 0),
+    (150, 12261441, 7984570, -23457, 134828),
+    (205, 10419829, 14857119, -31105, 38150),
 ];
 
 #[derive(Row, Deserialize)]

@@ -175,6 +175,10 @@ pub async fn run(db: &Client, statement: &Statement) -> Result<(), Error> {
         head: head(&statement.sql),
         source,
     };
+    let mut db = db.clone();
+    for (name, value) in &statement.settings {
+        db = db.with_setting(name, value);
+    }
     if statement.body.is_empty() {
         return db.query(&statement.sql).execute().await.map_err(fail);
     }

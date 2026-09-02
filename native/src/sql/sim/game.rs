@@ -216,7 +216,9 @@ pub fn special_buttons(state: &State) -> Vec<(String, String)> {
 }
 
 /// Whether `P_Ticker` runs this tic.
-pub const RUNNING: &str = "now_paused = 0";
+pub fn running(state: &State) -> String {
+    format!("{} = 0", state.get("paused"))
+}
 
 #[cfg(test)]
 mod tests {

@@ -34,34 +34,25 @@ pub fn load_statements(db: &str) -> Vec<Statement> {
 
 /// The newest binding holding each state column as a tic builds up.
 ///
-/// The engine's order is total: a function reads whatever the last function
-/// to write a field left there. A stage reads a column through this, so it
-/// names an earlier stage's result where there is one and the previous
-/// tic's value where there is not.
+/// The engine's order is total: a function reads whatever the last
+/// function to write a field left there, and more than one function may
+/// write the same field in a tic. A stage names what it computes
+/// `now_<column>` and the tic renames it to that stage's own binding, so a
+/// later stage reads the newest value and the row reads the last.
 #[derive(Default)]
 pub struct State {
-    written: Vec<&'static str>,
+    written: Vec<(&'static str, String)>,
 }
 
 impl State {
     /// The binding holding `column` at this point in the tic.
     pub fn get(&self, column: &str) -> String {
-        if self.written.contains(&column) {
-            format!("now_{column}")
-        } else {
-            format!("prev_{column}")
-        }
-    }
-
-    /// Records the state columns a stage's bindings wrote.
-    fn wrote(&mut self, bindings: &[(String, String)]) {
-        for (name, _) in bindings {
-            if let Some(column) = name.strip_prefix("now_")
-                && let Some(column) = state_columns().into_iter().find(|c| *c == column)
-            {
-                self.written.push(column);
-            }
-        }
+        self.written
+            .iter()
+            .rev()
+            .find(|(written, _)| *written == column)
+            .map(|(_, binding)| binding.clone())
+            .unwrap_or_else(|| format!("prev_{column}"))
     }
 }
 
@@ -69,6 +60,7 @@ impl State {
 pub struct Tic {
     pub state: State,
     bindings: Vec<(String, String)>,
+    stages: usize,
 }
 
 impl Tic {
@@ -76,42 +68,86 @@ impl Tic {
         Tic {
             state: State::default(),
             bindings,
+            stages: 0,
         }
     }
 
     /// Adds one stage's bindings, which every later stage may read.
     fn stage(&mut self, bindings: Vec<(String, String)>) {
-        self.state.wrote(&bindings);
-        self.bindings.extend(bindings);
+        let at = self.stages;
+        self.stages += 1;
+        let mut bindings = bindings;
+        for index in 0..bindings.len() {
+            let (name, expr) = bindings[index].clone();
+            let Some(column) = column_of(&name) else {
+                self.bindings.push((name, expr));
+                continue;
+            };
+            let binding = format!("s{at}_{column}");
+            self.bindings.push((binding.clone(), expr));
+            self.state.written.push((column, binding.clone()));
+            // A stage names its own results the way every stage does, so
+            // the ones after it in the same stage are pointed at the name
+            // this one landed under.
+            for (_, later) in bindings.iter_mut().skip(index + 1) {
+                *later = rename(later, &name, &binding);
+            }
+        }
     }
 
     /// Adds a stage that only runs while `running` holds, which is how the
     /// engine's early returns read from outside the function.
     ///
     /// Every state column the stage computes lands under a second name and
-    /// the column itself picks between that and what it held before, so a
-    /// later stage reading the column sees the value the engine would.
+    /// the column itself picks between that and what it held before.
     fn stage_when(&mut self, running: &str, bindings: Vec<(String, String)>) {
+        let at = self.stages;
         let mut gated = Vec::new();
         for (name, expr) in bindings {
-            match name.strip_prefix("now_") {
-                Some(column) if state_columns().contains(&column) => {
-                    let held = format!("ran_{column}");
+            match column_of(&name) {
+                Some(column) => {
+                    let held = format!("ran{at}_{column}");
                     let unless = self.state.get(column);
                     gated.push((held.clone(), expr));
                     gated.push((name, format!("if({running}, {held}, {unless})")));
                 }
-                _ => gated.push((name, expr)),
+                None => gated.push((name, expr)),
             }
         }
         self.stage(gated);
     }
 }
 
+/// `expr` with every whole-word use of `from` replaced by `to`.
+fn rename(expr: &str, from: &str, to: &str) -> String {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(expr.len());
+    let mut rest = expr;
+    while let Some(at) = rest.find(from) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + from.len()..].chars().next();
+        out.push_str(&rest[..at]);
+        if before.is_some_and(ident) || after.is_some_and(ident) {
+            out.push_str(from);
+        } else {
+            out.push_str(to);
+        }
+        rest = &rest[at + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The state column a stage's binding writes, if it writes one.
+fn column_of(name: &str) -> Option<&'static str> {
+    let column = name.strip_prefix("now_")?;
+    state_columns().into_iter().find(|known| *known == column)
+}
+
 /// The engine tables more than one stage reads, as constant arrays indexed
 /// by id plus one.
 fn constants(db: &str) -> Vec<(String, String)> {
-    vec![
+    let mut constants = vec![
         ("rnd".to_owned(), table_column(db, "rndtable", "value")),
         (
             "tantoangle".to_owned(),
@@ -121,7 +157,25 @@ fn constants(db: &str) -> Vec<(String, String)> {
             "line_side0".to_owned(),
             table_column(db, "lv_lines", "side0"),
         ),
-    ]
+        ("state_tics".to_owned(), table_column(db, "states", "tics")),
+        (
+            "state_sprite".to_owned(),
+            table_column(db, "states", "sprite"),
+        ),
+        (
+            "state_frame".to_owned(),
+            table_column(db, "states", "frame"),
+        ),
+        (
+            "state_nextstate".to_owned(),
+            table_column(db, "states", "nextstate"),
+        ),
+        (
+            "state_action".to_owned(),
+            table_column(db, "states", "action"),
+        ),
+    ];
+    constants
 }
 
 /// One table column as an array indexed by `id` plus one. The sort is
@@ -144,10 +198,9 @@ pub fn state_columns() -> Vec<&'static str> {
 
 /// `INSERT INTO {db}.native_state (...) WITH ... SELECT ... FROM ...`.
 ///
-/// `row` gives one expression per state column, in any order; the insert
-/// names its columns and emits them in the contract's order, so a column
-/// nobody wrote is a panic here rather than a wrong row in the table.
-fn insert(db: &str, with: &[(String, String)], row: &[(&str, String)], from: &str) -> String {
+/// The bindings are one flat `WITH` list, which is what a statement whose
+/// bindings do not chain wants.
+fn insert_flat(db: &str, with: &[(String, String)], row: &[(&str, String)], from: &str) -> String {
     let columns = state_columns();
     assert_eq!(
         row.len(),
@@ -161,12 +214,12 @@ fn insert(db: &str, with: &[(String, String)], row: &[(&str, String)], from: &st
                 .iter()
                 .find(|(column, _)| column == name)
                 .unwrap_or_else(|| panic!("no expression for {name}"));
-            format!("    {expr} AS {name}")
+            format!("    ({expr}) AS {name}")
         })
         .collect();
     let bindings: Vec<String> = with
         .iter()
-        .map(|(name, expr)| format!("    {expr} AS {name}"))
+        .map(|(name, expr)| format!("    ({expr}) AS {name}"))
         .collect();
     format!(
         "INSERT INTO {db}.native_state\n(\n{}\n)\nWITH\n{}\nSELECT\n{}\nFROM\n{from}",
@@ -178,6 +231,156 @@ fn insert(db: &str, with: &[(String, String)], row: &[(&str, String)], from: &st
         bindings.join(",\n"),
         select.join(",\n"),
     )
+}
+
+/// `INSERT INTO {db}.native_state (...) SELECT ... FROM ...`, with the
+/// bindings staged as nested subqueries.
+///
+/// A binding named in another binding's text is expanded into it rather
+/// than shared, so a chain of aliases grows the query tree by the product
+/// of its branches. A subquery's column is not expanded, so the bindings
+/// are cut into stages at every point where one would read another from
+/// the same stage, and each stage is one subquery over the one below it.
+///
+/// `row` gives one expression per state column, in any order; the insert
+/// names its columns and emits them in the contract's order, so a column
+/// nobody wrote is a panic here rather than a wrong row in the table.
+fn insert(
+    db: &str,
+    with: &[(String, String)],
+    row: &[(&str, String)],
+    from: &str,
+    carried: &[&str],
+) -> String {
+    let columns = state_columns();
+    assert_eq!(
+        row.len(),
+        columns.len(),
+        "the row does not fill every column"
+    );
+    let select: Vec<String> = columns
+        .iter()
+        .map(|name| {
+            let (_, expr) = row
+                .iter()
+                .find(|(column, _)| column == name)
+                .unwrap_or_else(|| panic!("no expression for {name}"));
+            format!("    ({expr}) AS {name}")
+        })
+        .collect();
+    format!(
+        "INSERT INTO {db}.native_state\n(\n{}\n)\nSELECT\n{}\nFROM\n(\n{}\n)",
+        columns
+            .iter()
+            .map(|name| format!("    {name}"))
+            .collect::<Vec<_>>()
+            .join(",\n"),
+        select.join(",\n"),
+        indent(&nest(&stages(with), from, &select.join(" "), carried)),
+    )
+}
+
+/// How large a binding may grow once the bindings it names in the same
+/// stage are expanded into it. A chain that stays under this costs one
+/// subquery for the lot; one that does not is cut.
+const EXPANDED_LIMIT: usize = 3_000;
+
+/// The bindings cut into stages, each of which reads only what an earlier
+/// stage produced or what it can carry without growing past the limit.
+fn stages(with: &[(String, String)]) -> Vec<Vec<(String, String)>> {
+    let mut stages: Vec<Vec<(String, String)>> = Vec::new();
+    let mut current: Vec<(String, String)> = Vec::new();
+    let mut expanded: Vec<usize> = Vec::new();
+    for (name, expr) in with {
+        let mut size = expr.len();
+        for (at, (earlier, _)) in current.iter().enumerate() {
+            size += references(expr, earlier) * expanded[at];
+        }
+        if size > EXPANDED_LIMIT && !current.is_empty() {
+            stages.push(std::mem::take(&mut current));
+            expanded.clear();
+            size = expr.len();
+        }
+        current.push((name.clone(), expr.clone()));
+        expanded.push(size);
+    }
+    if !current.is_empty() {
+        stages.push(current);
+    }
+    stages
+}
+
+/// How often `expr` names `binding` as a whole word.
+fn references(expr: &str, binding: &str) -> usize {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    expr.match_indices(binding)
+        .filter(|(at, _)| {
+            let before = expr[..*at].chars().next_back();
+            let after = expr[at + binding.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+        .count()
+}
+
+/// The stages as nested subqueries over `from`, innermost first.
+///
+/// A stage hands up only what something above it still reads. `SELECT *`
+/// would carry every binding to the top, and the analyser resolves the
+/// whole list again at each level, which costs more than the stages save.
+fn nest(stages: &[Vec<(String, String)>], from: &str, row: &str, carried: &[&str]) -> String {
+    // The last stage that reads each binding, counting the row as one
+    // past the end.
+    let mut last_use: Vec<Vec<usize>> = Vec::new();
+    for (at, stage) in stages.iter().enumerate() {
+        let mut uses = Vec::new();
+        for (name, _) in stage {
+            let mut last = at;
+            for (later, above) in stages.iter().enumerate().skip(at + 1) {
+                if above.iter().any(|(_, expr)| references(expr, name) > 0) {
+                    last = later;
+                }
+            }
+            if references(row, name) > 0 {
+                last = stages.len();
+            }
+            uses.push(last);
+        }
+        last_use.push(uses);
+    }
+
+    let mut sql = from.to_owned();
+    for (at, stage) in stages.iter().enumerate() {
+        let mut columns: Vec<String> = carried.iter().map(|name| format!("    {name}")).collect();
+        for (below, earlier) in stages.iter().enumerate().take(at) {
+            for (index, (name, _)) in earlier.iter().enumerate() {
+                if last_use[below][index] >= at {
+                    columns.push(format!("    {name}"));
+                }
+            }
+        }
+        columns.extend(
+            stage
+                .iter()
+                .map(|(name, expr)| format!("    ({expr}) AS {name}")),
+        );
+        sql = if at == 0 {
+            format!("SELECT\n{}\nFROM {from}", columns.join(",\n"))
+        } else {
+            format!(
+                "SELECT\n{}\nFROM\n(\n{}\n)",
+                columns.join(",\n"),
+                indent(&sql)
+            )
+        };
+    }
+    sql
+}
+
+fn indent(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -207,6 +410,6 @@ mod tests {
                 (name, "0".to_owned())
             })
             .collect();
-        insert("nat", &[], &row, "(SELECT 1)");
+        insert("nat", &[], &row, "(SELECT 1)", &[]);
     }
 }

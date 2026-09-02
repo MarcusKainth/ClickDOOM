@@ -105,7 +105,7 @@ fn guards(db: &str) -> Vec<Statement> {
 }
 
 fn state_row(db: &str) -> String {
-    super::insert(db, &constants(db), &row(db), &sources(db))
+    super::insert_flat(db, &constants(db), &row(db), &sources(db))
 }
 
 // ---------------------------------------------------------------------------

@@ -101,17 +101,20 @@ Native mode runs DOOM's simulation and renderer as SQL against a level loaded
 from the WAD. Its contract is `NATIVE.md`; its commands live under
 `clickdoom native`.
 
-    make native-load    # load doom1.wad, decode E1M7, build the tables native mode reads
-    make native-smoke   # render the first gameplay frame from the probe fixture and check its hash
-    make native-demo    # play demo3 in a window at 35 Hz
-    make native-parity  # every tic and every frame of demo3 against the reference emulator
+    make native-smoke     # render the first gameplay frame from the probe fixture and check its hash
     make gen-probe-trace  # the reference emulator's per-frame game state for demo3
+
+    clickdoom native load --wad rom/wad/doom1.wad --map E1M7 --demo DEMO3 <conn>
+    clickdoom native load --probe refemu/reference_traces/demo3/probe.<romhash>.tsv <conn>
+    clickdoom native demo demo3 --from probe <conn>
+    clickdoom native diff <tics> --probe <path> <conn>
 
 `native load` writes only the tables `native/schema.sql` declares and leaves the
 rest of the database alone, so it is safe against the shared `clickdoom`
 database. `--probe PATH` also loads the reference emulator's state rows, which
 is how the renderer is driven before the simulation is complete
-(`native demo demo3 --from probe`).
+(`native demo demo3 --from probe`). `native diff` runs the simulation and
+reports the first tic and field on which it and the probe disagree.
 
 The two resident statements stay open for a session and stream one row per
 tic; the server settings they need are mounted from

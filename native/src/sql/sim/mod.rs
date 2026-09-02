@@ -7,6 +7,7 @@
 pub mod hud;
 pub mod setup;
 pub mod spec;
+pub mod tick;
 
 use clickdoom_spec::native_state;
 

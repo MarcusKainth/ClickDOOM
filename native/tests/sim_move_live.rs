@@ -2,9 +2,9 @@
 //!
 //! The push, the bob and the view height are checked against
 //! `native/tests/support/walk.rs`, a reader written from `p_user.c` and
-//! `p_mobj.c`. What the blockmap decides is checked by running until the
-//! simulation says it cannot carry a tic through: the first thirty-one
-//! tics of `DEMO3` cross no wall, and the thirty-second does.
+//! `p_mobj.c`. What the blockmap decides is checked by carrying every tic
+//! of the run through: `DEMO3`'s player crosses no wall until the tic the
+//! slide takes over, and the run reaches past it.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -22,9 +22,15 @@ mod support;
 use support::db::Fixture;
 use support::walk;
 
-/// How far the run goes. `DEMO3`'s player walks a corridor and touches
-/// nothing solid until the tic after this one.
-const CLEAR_TICS: u32 = 31;
+/// How far the run goes. `DEMO3`'s player walks a corridor, meets a wall
+/// on the last of these tics and slides along it.
+const CLEAR_TICS: u32 = 32;
+
+/// How far the reader beside this test follows. It works out a free move
+/// and knows nothing of the blockmap, so it stops at the tic the wall
+/// first changes where the player ends up. `sim_parity_live` carries that
+/// tic against the engine itself.
+const FREE_TICS: u32 = 31;
 
 /// What `P_TouchSpecialThing` leaves after the clip the player walks onto.
 const CLIP_AMMO: i32 = 60;
@@ -39,7 +45,7 @@ async fn the_player_walks_the_way_the_engine_walks() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, CLEAR_TICS + 1));
+    plan.push(sim::tick::demo_statement(&db, 1, CLEAR_TICS));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -56,7 +62,7 @@ async fn the_player_walks_the_way_the_engine_walks() {
              FROM {db}.native_state ORDER BY tic"
         ))
         .await;
-    assert_eq!(rows.len() as usize, CLEAR_TICS as usize + 2);
+    assert_eq!(rows.len(), CLEAR_TICS as usize + 1);
 
     the_clear_tics_are_carried_through(&rows);
     the_push_and_the_bob_are_what_the_engine_works_out(&rows);
@@ -88,18 +94,13 @@ struct Tic {
     angleturn: i16,
 }
 
-/// A tic the simulation could not produce in full says so, and the walk
-/// down the first corridor is not one of them.
+/// A tic the simulation could not produce in full says so, and none of
+/// the walk down the first corridor is one of them.
 fn the_clear_tics_are_carried_through(rows: &[Tic]) {
-    for row in rows.iter().filter(|row| row.tic <= CLEAR_TICS) {
+    for row in rows {
         assert_eq!(row.unresolved, 0, "tic {} was not carried through", row.tic);
     }
-    let blocked = rows.last().expect("the run has a last tic");
-    assert_eq!(blocked.tic, CLEAR_TICS + 1);
-    assert_eq!(
-        blocked.unresolved, 1,
-        "the tic the player first meets a wall on is one the slide has to take over"
-    );
+    assert_eq!(rows.last().expect("the run has a last tic").tic, CLEAR_TICS);
 }
 
 /// `P_Thrust`, `P_XYMovement`'s friction and `P_CalcHeight`, against a
@@ -117,7 +118,7 @@ fn the_push_and_the_bob_are_what_the_engine_works_out(rows: &[Tic]) {
     };
     for row in rows
         .iter()
-        .filter(|row| row.tic > 0 && row.tic <= CLEAR_TICS)
+        .filter(|row| row.tic > 0 && row.tic <= FREE_TICS)
     {
         let step = player.tic(
             &finesine,

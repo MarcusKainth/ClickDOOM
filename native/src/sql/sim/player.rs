@@ -428,6 +428,8 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         floorz: "pl_floorz",
         ceilingz: "pl_ceilingz",
         subsector: "pl_subsector",
+        angle: "pl_new_angle",
+        uses: "pl_uses",
     };
     let world = World {
         m_x: &arrays[0],
@@ -466,12 +468,15 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         ("mv_subsector".to_owned(), held(mobj::moving::SUBSECTOR)),
         ("mv_x".to_owned(), held(mobj::moving::X)),
         ("mv_y".to_owned(), held(mobj::moving::Y)),
-        ("mv_blocked".to_owned(), held(mobj::moving::BLOCKED)),
+        ("mv_unfinished".to_owned(), mobj::unfinished("mv")),
+        ("mv_useline".to_owned(), mobj::use_line("mv")),
+        ("mv_leftx".to_owned(), held(mobj::moving::MOMX)),
+        ("mv_lefty".to_owned(), held(mobj::moving::MOMY)),
         ("pk_alive".to_owned(), held(mobj::moving::ALIVE)),
     ];
     bindings.extend(mobj::friction(
-        "pl_pushx",
-        "pl_pushy",
+        "mv_leftx",
+        "mv_lefty",
         "pl_z",
         "mv_floorz",
         &state.get("p_cmd_forwardmove"),
@@ -531,11 +536,12 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
              OR state_tics[1 + mv_state] = 0))"
                 .to_owned(),
         ),
-        // A wall the slide has to take over, or a state with an action
-        // behind it, is a tic this cannot produce in full.
+        // A move the loop ran out of steps for, a state with an action
+        // behind it, or a use press that reached a special line, is a tic
+        // this cannot produce in full.
         (
             "now_unresolved".to_owned(),
-            "toUInt8(mv_blocked = 1 OR pl_action_needed = 1)".to_owned(),
+            "toUInt8(mv_unfinished = 1 OR pl_action_needed = 1 OR mv_useline >= 0)".to_owned(),
         ),
     ]);
     bindings

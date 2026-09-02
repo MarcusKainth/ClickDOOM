@@ -5,8 +5,11 @@
 //! statements and issues them.
 
 pub mod setup;
+pub mod spec;
 
 use clickdoom_spec::native_state;
+
+use super::Statement;
 
 /// Columns `native_state` carries beyond the contract's field list.
 const EXTRA_FIELDS: [&str; 4] = ["unresolved", "unimplemented", "dbg_ran", "dbg_prnd"];
@@ -16,6 +19,94 @@ const EXTRA_FIELDS: [&str; 4] = ["unresolved", "unimplemented", "dbg_ran", "dbg_
 pub mod unimplemented {
     /// A sector special that spawns a door thinker.
     pub const SECTOR_DOOR: u64 = 1 << 0;
+}
+
+/// Every statement a loaded level needs before its first tic: the guards
+/// the engine's own setup stops on, and the row it leaves behind.
+pub fn load_statements(db: &str) -> Vec<Statement> {
+    let mut statements = spec::guards(db);
+    statements.extend(setup::statements(db));
+    statements
+}
+
+/// The newest binding holding each state column as a tic builds up.
+///
+/// The engine's order is total: a function reads whatever the last function
+/// to write a field left there. A stage reads a column through this, so it
+/// names an earlier stage's result where there is one and the previous
+/// tic's value where there is not.
+#[derive(Default)]
+pub struct State {
+    written: Vec<&'static str>,
+}
+
+impl State {
+    /// The binding holding `column` at this point in the tic.
+    pub fn get(&self, column: &str) -> String {
+        if self.written.contains(&column) {
+            format!("now_{column}")
+        } else {
+            format!("prev_{column}")
+        }
+    }
+
+    /// Records the state columns a stage's bindings wrote.
+    fn wrote(&mut self, bindings: &[(String, String)]) {
+        for (name, _) in bindings {
+            if let Some(column) = name.strip_prefix("now_")
+                && let Some(column) = state_columns().into_iter().find(|c| *c == column)
+            {
+                self.written.push(column);
+            }
+        }
+    }
+}
+
+/// A tic's bindings as its stages are added, and what each column holds.
+pub struct Tic {
+    pub state: State,
+    bindings: Vec<(String, String)>,
+}
+
+impl Tic {
+    fn new(bindings: Vec<(String, String)>) -> Tic {
+        Tic {
+            state: State::default(),
+            bindings,
+        }
+    }
+
+    /// Adds one stage's bindings, which every later stage may read.
+    fn stage(&mut self, bindings: Vec<(String, String)>) {
+        self.state.wrote(&bindings);
+        self.bindings.extend(bindings);
+    }
+}
+
+/// The engine tables more than one stage reads, as constant arrays indexed
+/// by id plus one.
+fn constants(db: &str) -> Vec<(String, String)> {
+    vec![
+        ("rnd".to_owned(), table_column(db, "rndtable", "value")),
+        (
+            "tantoangle".to_owned(),
+            table_column(db, "tantoangle", "value"),
+        ),
+        (
+            "line_side0".to_owned(),
+            table_column(db, "lv_lines", "side0"),
+        ),
+    ]
+}
+
+/// One table column as an array indexed by `id` plus one. The sort is
+/// explicit because an aggregate reads its input in whatever order the
+/// pipeline hands it over.
+fn table_column(db: &str, table: &str, column: &str) -> String {
+    format!(
+        "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((id, {column}))))\n     \
+         FROM {db}.{table})"
+    )
 }
 
 /// Every column a state row carries, in `native_state`'s order.
@@ -31,7 +122,7 @@ pub fn state_columns() -> Vec<&'static str> {
 /// `row` gives one expression per state column, in any order; the insert
 /// names its columns and emits them in the contract's order, so a column
 /// nobody wrote is a panic here rather than a wrong row in the table.
-fn insert(db: &str, with: &[(&str, String)], row: &[(&str, String)], from: &str) -> String {
+fn insert(db: &str, with: &[(String, String)], row: &[(&str, String)], from: &str) -> String {
     let columns = state_columns();
     assert_eq!(
         row.len(),

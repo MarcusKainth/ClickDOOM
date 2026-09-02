@@ -4,6 +4,7 @@
 //! them; that is the whole of the driver's part in loading a level.
 
 pub mod fixed;
+pub mod parity;
 pub mod probe;
 pub mod rowbinary;
 pub mod statement;

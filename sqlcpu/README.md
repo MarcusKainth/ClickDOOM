@@ -9,7 +9,7 @@ hashes. `PURITY.md` states what that means and what may not leave it.
 Decoding the ROM inside ClickHouse is allowed; doing it outside the database
 and inserting the result is not, which is PUR-11. That is why the decode step
 is SQL rather than a script. `schema.sql` and `decode.sql` are the CPU, and
-`clickdoom decode` only runs them.
+`clickdoom emulation decode` only runs them.
 
 ## Tests
 

@@ -22,6 +22,21 @@ interface, `src/checkpoint.rs` and `src/render.rs` build hash and readout SQL
 text, `src/frames.rs` writes a frame file, and `src/bench/` is the throughput
 harness.
 
+## The command line
+
+`clickdoom` has one namespace per execution mode, and `src/cli/` has one
+module per namespace.
+
+`clickdoom emulation` runs the CPU in SQL: `ping`, `load-rom`, `bootstrap`,
+`decode`, `render`, `preflight`, `run`, `diff` and `bench`. Each takes the
+same connection flags, `--host`, `--port`, `--user`, `--database` and
+`--password`, and the password falls back to `$CLICKHOUSE_PASSWORD` so it
+never has to appear in `ps`.
+
+`clickdoom native` names the mode that runs DOOM's own simulation and
+renderer as SQL. It has no subcommands, so invoking it reports a usage error
+and exits 2. `clickdoom native --help` describes the namespace.
+
 ## Frame readout
 
 The readout reconstructs the raw framebuffer and palette bytes from
@@ -57,8 +72,9 @@ against a live ClickHouse. None of its checks are eyeballed:
 4. The ANSI render of a hand-computed 2x2 case, byte-exact against an
    independently computed escape sequence.
 5. The PPM render of that same 2x2 case.
-6. The file `clickdoom run --frame-dir` writes for a committed frame, byte
-   for byte against what the same query returns, and named after the frame.
+6. The file `clickdoom emulation run --frame-dir` writes for a committed
+   frame, byte for byte against what the same query returns, and named after
+   the frame.
 
 The frame hash is defined over the indexed representation and PPM over
 expanded RGB, so the two share no single value. Check 3 is what ties them

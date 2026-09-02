@@ -62,6 +62,6 @@ jobs:
         env:
           INSTRUCTIONS: ${{ github.event.inputs.deep_diff_instructions || '5000000' }}
         run: |
-          ./target/release/clickdoom diff "$INSTRUCTIONS" --host localhost --port 8123 \
+          ./target/release/clickdoom emulation diff "$INSTRUCTIONS" --host localhost --port 8123 \
               --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
               --refemu-bin target/release/refemu

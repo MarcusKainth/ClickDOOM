@@ -106,8 +106,8 @@ shared one and does not need `make up`. ClickHouse counts executions of an
 expression DAG in a process-static map that no `SYSTEM` statement resets, and
 the fold-alone and end-to-end arms emit the same step lambda, so two arms
 sharing a server share one counter: the first to run pays for the compilation
-and the second collects it. `clickdoom bench compare-versions` runs the same
-benchmark once per arm image.
+and the second collects it. `clickdoom emulation bench compare-versions` runs
+the same benchmark once per arm image.
 
 Each arm runs `--warmup` batches before it times anything, and the run is
 refused unless a warm-up batch compiled something and no timed batch did.

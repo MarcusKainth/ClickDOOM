@@ -68,7 +68,7 @@ impl WindowRecord {
     }
 }
 
-/// One `bench canonical` invocation, one ClickHouse version.
+/// One `emulation bench canonical` invocation, one ClickHouse version.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CanonicalRecord {
     pub timestamp: String,
@@ -117,7 +117,7 @@ impl From<&CanonicalReport> for CanonicalRecord {
     }
 }
 
-/// One arm of a `bench compare-versions` run: a name, the server version
+/// One arm of an `emulation bench compare-versions` run: a name, the server version
 /// that answered, and one `WindowRecord` per (repeat, window).
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ArmRecord {
@@ -127,7 +127,7 @@ pub struct ArmRecord {
     pub windows: Vec<WindowRecord>,
 }
 
-/// One `bench compare-versions` invocation, comparing every arm.
+/// One `emulation bench compare-versions` invocation, comparing every arm.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CompareRecord {
     pub timestamp: String,
@@ -267,7 +267,7 @@ fn batch_table(windows: &[WindowRecord]) -> String {
 
 pub fn render_canonical(record: &CanonicalRecord) -> String {
     let mut out = format!(
-        "`bench canonical`, {}, K={}, HWM={}, {} warm-up + {} timed batch(es) per arm, ROM {}, {}\n\n",
+        "`emulation bench canonical`, {}, K={}, HWM={}, {} warm-up + {} timed batch(es) per arm, ROM {}, {}\n\n",
         record.timestamp,
         record.k,
         record.hwm,
@@ -299,7 +299,7 @@ pub fn render_canonical(record: &CanonicalRecord) -> String {
 
 pub fn render_compare(record: &CompareRecord) -> String {
     let mut out = format!(
-        "`bench compare-versions`, {}, K={}, HWM={}, {} repeat(s) of {} batch(es), ROM {}, {}\n\n",
+        "`emulation bench compare-versions`, {}, K={}, HWM={}, {} repeat(s) of {} batch(es), ROM {}, {}\n\n",
         record.timestamp,
         record.k,
         record.hwm,

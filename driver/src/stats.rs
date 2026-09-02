@@ -3,6 +3,11 @@
 //! Reporting only. The clock is read to rate-limit the line and to divide by,
 //! and nothing here reaches a statement or a committed result, so every read
 //! carries a `purity-ok:` annotation saying which.
+//!
+//! Two lines, one per mode. [`StatsLine`] counts instructions for a run of
+//! the CPU in SQL; [`NativeStatsLine`] counts tics and frames for a paced
+//! run of DOOM's own simulation and renderer. Both report what the window
+//! they cover actually did, never a target.
 
 use std::time::{Duration, Instant}; // purity-ok: rate reporting on stderr, no emulator result depends on it
 
@@ -134,20 +139,20 @@ impl<C: Clock> StatsLine<C> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
 
     #[derive(Clone)]
-    struct FakeClock(Rc<Cell<Duration>>);
+    pub(super) struct FakeClock(Rc<Cell<Duration>>);
 
     impl FakeClock {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             FakeClock(Rc::new(Cell::new(Duration::ZERO)))
         }
 
-        fn advance(&self, by: Duration) {
+        pub(super) fn advance(&self, by: Duration) {
             self.0.set(self.0.get() + by);
         }
     }
@@ -273,5 +278,297 @@ mod tests {
         let stats = StatsLine::start(clock, second());
         let line = stats.finish(counters(0, 0, 0));
         assert_eq!(field(&line, "instr_per_sec_mean"), "0.0");
+    }
+}
+
+/// What a paced native run has done since this process started.
+///
+/// The durations are totals: the line divides them by the frames or tics of
+/// the window it covers, so what comes out is the mean cost of one.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeCounters {
+    pub tics: u64,
+    pub frames: u64,
+    /// From a tic's row being sent to its state row being readable, over
+    /// every tic. Absent for a run whose states came from somewhere else.
+    pub sim: Option<Duration>,
+    /// From a frame's row being sent to the frame being readable.
+    pub render: Duration,
+    /// The read-backs that carried the frames, inside that.
+    pub poll: Duration,
+    /// Putting the frames on the screen.
+    pub blit: Duration,
+    /// Writing the frames out as files, which is a query per frame and not
+    /// something a run at 35 Hz does.
+    pub write: Duration,
+    /// Tics the simulation is ahead of the frame being drawn. Absent for a
+    /// run with no simulation.
+    pub lookahead: Option<u32>,
+    /// Tics that were not ready by their deadline.
+    pub late: u64,
+}
+
+/// A `key=value` progress line for a paced native run, emitted at most once
+/// per interval.
+///
+/// `tics_per_sec` and `fps` are what the window since the previous line
+/// achieved, not the rate it was aiming for, so a run that cannot hold 35 Hz
+/// says so. The closing line is marked `final` and covers the whole run.
+pub struct NativeStatsLine<C: Clock> {
+    clock: C,
+    interval: Duration,
+    started: Duration,
+    origin: NativeCounters,
+    window_started: Duration,
+    window: NativeCounters,
+}
+
+impl<C: Clock> NativeStatsLine<C> {
+    /// Starts reporting at the clock's current reading, with the run
+    /// standing at `at`. Nothing comes out until `interval` has passed.
+    ///
+    /// `at` is what a run that did something before it started pacing
+    /// itself passes: the rates then cover the paced part, and the work
+    /// before it neither counts towards them nor against them.
+    pub fn start(clock: C, interval: Duration, at: NativeCounters) -> Self {
+        let now = clock.elapsed();
+        NativeStatsLine {
+            clock,
+            interval,
+            started: now,
+            origin: at,
+            window_started: now,
+            window: at,
+        }
+    }
+
+    /// The line to print, or `None` while less than `interval` has passed
+    /// since the last one. The caller prints it.
+    pub fn tick(&mut self, counters: NativeCounters) -> Option<String> {
+        let now = self.clock.elapsed();
+        if now.saturating_sub(self.window_started) < self.interval {
+            return None;
+        }
+        let line = line(
+            "",
+            now.saturating_sub(self.window_started),
+            &self.window,
+            &counters,
+        );
+        self.window_started = now;
+        self.window = counters;
+        Some(line)
+    }
+
+    /// The run's totals, whatever the interval says.
+    pub fn finish(&self, counters: NativeCounters) -> String {
+        line(
+            "final ",
+            self.clock.elapsed().saturating_sub(self.started),
+            &self.origin,
+            &counters,
+        )
+    }
+}
+
+/// One line over the span from `before` to `now`, `seconds` long.
+fn line(kind: &str, span: Duration, before: &NativeCounters, now: &NativeCounters) -> String {
+    let seconds = span.as_secs_f64();
+    let tics = now.tics.saturating_sub(before.tics);
+    let frames = now.frames.saturating_sub(before.frames);
+    let mut out = format!(
+        "# native {kind}elapsed={seconds:.1}s tics/s={:.1} fps={:.1}",
+        per_sec(tics, seconds),
+        per_sec(frames, seconds),
+    );
+    if let Some(sim) = now.sim {
+        let was = before.sim.unwrap_or_default();
+        out.push_str(&format!(
+            " sim={:.1}ms",
+            mean_ms(sim.saturating_sub(was), tics)
+        ));
+    }
+    out.push_str(&format!(
+        " render={:.1}ms poll={:.1}ms blit={:.1}ms write={:.1}ms",
+        mean_ms(now.render.saturating_sub(before.render), frames),
+        mean_ms(now.poll.saturating_sub(before.poll), frames),
+        mean_ms(now.blit.saturating_sub(before.blit), frames),
+        mean_ms(now.write.saturating_sub(before.write), frames),
+    ));
+    if let Some(lookahead) = now.lookahead {
+        out.push_str(&format!(" lookahead={lookahead}"));
+    }
+    out.push_str(&format!(
+        " late={} tics={} frames={}",
+        now.late, now.tics, now.frames
+    ));
+    out
+}
+
+/// Events per second. A window with no time in it has no rate and reports
+/// 0.0, rather than the infinity a bare division gives.
+fn per_sec(count: u64, seconds: f64) -> f64 {
+    if seconds > 0.0 {
+        count as f64 / seconds
+    } else {
+        0.0
+    }
+}
+
+/// The mean of `total` over `count`, in milliseconds. Zero events cost
+/// nothing on average rather than an infinity.
+fn mean_ms(total: Duration, count: u64) -> f64 {
+    if count > 0 {
+        total.as_secs_f64() * 1e3 / count as f64
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::tests::FakeClock;
+    use super::*;
+
+    fn ms(millis: u64) -> Duration {
+        Duration::from_millis(millis)
+    }
+
+    fn field<'a>(line: &'a str, key: &str) -> &'a str {
+        let prefix = format!("{key}=");
+        line.split(' ')
+            .find_map(|pair| pair.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("no {key}= in {line:?}"))
+    }
+
+    fn counters(tics: u64, frames: u64) -> NativeCounters {
+        NativeCounters {
+            tics,
+            frames,
+            render: ms(20) * frames as u32,
+            poll: ms(2) * frames as u32,
+            blit: ms(1) * frames as u32,
+            write: ms(4) * frames as u32,
+            ..NativeCounters::default()
+        }
+    }
+
+    #[test]
+    fn the_line_reports_the_rate_the_window_achieved() {
+        let clock = FakeClock::new();
+        let mut stats = NativeStatsLine::start(
+            clock.clone(),
+            Duration::from_secs(1),
+            NativeCounters::default(),
+        );
+        assert!(stats.tick(counters(10, 10)).is_none());
+
+        clock.advance(Duration::from_secs(1));
+        let line = stats.tick(counters(35, 35)).expect("a line");
+        assert!(line.starts_with("# native elapsed="), "{line:?}");
+        assert_eq!(field(&line, "tics/s"), "35.0");
+        assert_eq!(field(&line, "fps"), "35.0");
+        assert_eq!(field(&line, "render"), "20.0ms");
+        assert_eq!(field(&line, "poll"), "2.0ms");
+        assert_eq!(field(&line, "blit"), "1.0ms");
+        assert_eq!(field(&line, "write"), "4.0ms");
+        assert_eq!(field(&line, "late"), "0");
+        assert_eq!(field(&line, "frames"), "35");
+    }
+
+    /// A run that cannot hold the rate says the rate it held.
+    #[test]
+    fn a_window_that_fell_behind_reports_what_it_managed() {
+        let clock = FakeClock::new();
+        let mut stats = NativeStatsLine::start(
+            clock.clone(),
+            Duration::from_secs(1),
+            NativeCounters::default(),
+        );
+        clock.advance(Duration::from_secs(2));
+        let mut slow = counters(40, 40);
+        slow.late = 12;
+        let line = stats.tick(slow).expect("a line");
+        assert_eq!(field(&line, "fps"), "20.0");
+        assert_eq!(field(&line, "late"), "12");
+    }
+
+    /// A run with no simulation has no simulation cost to report, and says
+    /// nothing rather than 0.0.
+    #[test]
+    fn a_run_without_a_simulation_names_neither_it_nor_a_lookahead() {
+        let clock = FakeClock::new();
+        let mut stats = NativeStatsLine::start(
+            clock.clone(),
+            Duration::from_secs(1),
+            NativeCounters::default(),
+        );
+        clock.advance(Duration::from_secs(1));
+        let line = stats.tick(counters(35, 35)).expect("a line");
+        assert!(!line.contains("sim="), "{line:?}");
+        assert!(!line.contains("lookahead="), "{line:?}");
+    }
+
+    #[test]
+    fn a_run_with_a_simulation_reports_what_a_tic_cost_and_how_far_ahead_it_is() {
+        let clock = FakeClock::new();
+        let mut stats = NativeStatsLine::start(
+            clock.clone(),
+            Duration::from_secs(1),
+            NativeCounters::default(),
+        );
+        let mut counters = counters(0, 0);
+        counters.sim = Some(Duration::ZERO);
+        counters.lookahead = Some(0);
+        assert!(stats.tick(counters).is_none());
+
+        clock.advance(Duration::from_secs(1));
+        counters = self::counters(35, 35);
+        counters.sim = Some(ms(5) * 35);
+        counters.lookahead = Some(35);
+        let line = stats.tick(counters).expect("a line");
+        assert_eq!(field(&line, "sim"), "5.0ms");
+        assert_eq!(field(&line, "lookahead"), "35");
+    }
+
+    #[test]
+    fn the_closing_line_covers_the_run_and_is_marked_final() {
+        let clock = FakeClock::new();
+        let mut stats = NativeStatsLine::start(
+            clock.clone(),
+            Duration::from_secs(1),
+            NativeCounters::default(),
+        );
+        clock.advance(Duration::from_secs(1));
+        assert!(stats.tick(counters(35, 35)).is_some());
+        clock.advance(Duration::from_secs(1));
+        let line = stats.finish(counters(70, 70));
+        assert!(line.starts_with("# native final "), "{line:?}");
+        assert_eq!(field(&line, "fps"), "35.0");
+        assert_eq!(field(&line, "frames"), "70");
+    }
+
+    /// A run that warmed up before it started pacing reports the paced
+    /// part, so the warm-up neither counts towards the rate nor against it.
+    #[test]
+    fn the_rates_cover_the_run_from_where_it_started_counting() {
+        let clock = FakeClock::new();
+        let stats = NativeStatsLine::start(clock.clone(), Duration::from_secs(1), counters(1, 1));
+        clock.advance(Duration::from_secs(1));
+        let line = stats.finish(counters(36, 36));
+        assert_eq!(field(&line, "fps"), "35.0");
+        assert_eq!(field(&line, "frames"), "36", "the count is the whole run");
+    }
+
+    #[test]
+    fn a_window_with_no_time_or_no_frames_in_it_reports_zero_rather_than_an_infinity() {
+        assert_eq!(per_sec(35, 0.0), 0.0);
+        assert_eq!(mean_ms(ms(20), 0), 0.0);
+        let clock = FakeClock::new();
+        let stats =
+            NativeStatsLine::start(clock, Duration::from_secs(1), NativeCounters::default());
+        let line = stats.finish(NativeCounters::default());
+        assert_eq!(field(&line, "fps"), "0.0");
+        assert_eq!(field(&line, "render"), "0.0ms");
     }
 }

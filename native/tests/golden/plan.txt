@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.rt_flat_pool (id UInt8, data String)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_colormap_pool (id UInt8, data String)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_palette (id UInt8, data String, rgb String)
 CREATE TABLE IF NOT EXISTS clickdoom_native.ref_frames
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_pool (id UInt8, data String)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_lump
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_frame
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_colposts
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_post
 INSERT INTO clickdoom_native.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary  [4194554 bytes]
 INSERT INTO clickdoom_native.states FORMAT TSVWithNames  [21857 bytes]
 INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]

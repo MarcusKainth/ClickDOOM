@@ -151,9 +151,13 @@ fn statement(db: &str, source: &str) -> String {
     store_wall_range(&mut s);
     render_seg_loop(&mut s);
     visplanes(&mut s);
+    sprites(&mut s);
+    sprite_clip(&mut s);
     wall_pixels(&mut s);
     plane_pixels(&mut s);
     sky_pixels(&mut s);
+    sprite_pixels(&mut s);
+    psprites(&mut s);
     compose(&mut s);
     format!(
         "INSERT INTO {db}.native_frames\nSELECT\n{}\nFROM {}",
@@ -264,6 +268,27 @@ fn constants(s: &mut Stage) {
     s.table("k_range_last", "lv_node_range", "last_ssec", "node");
 
     s.table("k_sec_ceilpic", "lv_sectors_static", "ceilingpic", "id");
+
+    // Sprites. `rt_sprite_frame` is one row per rotation of every frame and
+    // `rt_sprite_colposts` one per column of every picture, both padded to a
+    // fixed stride so a lookup is one index.
+    s.table("k_spr_rotate", "rt_sprite_frame", "rotate", "slot");
+    s.table("k_spr_lump", "rt_sprite_frame", "lump", "slot");
+    s.table("k_spr_flip", "rt_sprite_frame", "flip", "slot");
+    s.table("k_spost_first", "rt_sprite_colposts", "first", "slot");
+    s.table("k_spost_num", "rt_sprite_colposts", "num", "slot");
+    s.table("k_spost_top", "rt_sprite_post", "topdelta", "id");
+    s.table("k_spost_len", "rt_sprite_post", "length", "id");
+    s.table("k_spost_ofs", "rt_sprite_post", "ofs", "id");
+    s.table("k_spl_widthf", "rt_sprite_lump", "width_fixed", "id");
+    s.table("k_spl_left", "rt_sprite_lump", "leftoffset", "id");
+    s.table("k_spl_top", "rt_sprite_lump", "topoffset", "id");
+    s.table("k_state_sprite", "states", "sprite", "id");
+    s.table("k_state_frame", "states", "frame", "id");
+    s.bind(
+        "k_sprpool",
+        format!("assumeNotNull((SELECT data FROM {db}.rt_sprite_pool))"),
+    );
 
     // `checkcoord` as one flat array of 48, four entries per box position.
     s.bind(
@@ -1032,6 +1057,38 @@ fn store_wall_range(s: &mut Stage) {
         };
         s.bind(name, expr);
     }
+
+    // What the drawseg leaves of a sprite behind it. A single-sided wall hides
+    // both ends of one; a two-sided wall hides an end only where its own floor
+    // or ceiling cuts across. `w_topconst` and `w_botconst` mark the two cases
+    // where the clip is the edge of the view rather than the wall loop's own.
+    s.bind(
+        "w_topconst",
+        "arrayMap((bk, bh, fc) -> toUInt8(bk < 0 OR bh >= fc), w_back, w_bh, w_fc)",
+    );
+    s.bind(
+        "w_botconst",
+        "arrayMap((bk, bc, fh) -> toUInt8(bk < 0 OR bc <= fh), w_back, w_bc, w_fh)",
+    );
+    s.bind(
+        "w_sil",
+        "arrayMap((bk, fh, fc, bh, bc, mk) -> toUInt8(\
+         if(bk < 0 OR fh > bh OR bh > v_z OR bc <= fh OR mk = 1, 1, 0) \
+         + if(bk < 0 OR fc < bc OR bc < v_z OR bh >= fc OR mk = 1, 2, 0)), \
+         w_back, w_fh, w_fc, w_bh, w_bc, w_masked)",
+    );
+    s.bind(
+        "w_bsil",
+        "arrayMap((bk, fh, bh, bc) -> multiIf(bk < 0, toInt32(2147483647), \
+         bc <= fh, toInt32(2147483647), fh > bh, fh, toInt32(2147483647)), \
+         w_back, w_fh, w_bh, w_bc)",
+    );
+    s.bind(
+        "w_tsil",
+        "arrayMap((bk, fc, bh, bc) -> multiIf(bk < 0, toInt32(-2147483648), \
+         bh >= fc, toInt32(-2147483648), fc < bc, fc, toInt32(-2147483648)), \
+         w_back, w_fc, w_bh, w_bc)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1462,7 +1519,7 @@ fn wall_pixels(s: &mut Stage) {
         "wall_px",
         format!(
             "arrayFlatten(arrayMap(t -> arrayMap(y -> (\
-             toUInt32(y * {VIEW_WIDTH} + t.1), \
+             toUInt64(y * {VIEW_WIDTH} + t.1) * 1048576, \
              {cmap}), \
              range(t.2.1, t.2.2 + 1)), wall_runs))"
         ),
@@ -1543,7 +1600,7 @@ fn plane_pixels(s: &mut Stage) {
         "flat_px",
         format!(
             "arrayFlatten(arrayMap(f -> arrayMap(x -> (\
-             toUInt32(f.1.2 * {VIEW_WIDTH} + x), \
+             toUInt64(f.1.2 * {VIEW_WIDTH} + x) * 1048576, \
              {cmap}), \
              range(f.1.3, f.1.4 + 1)), fp))"
         ),
@@ -1571,11 +1628,536 @@ fn sky_pixels(s: &mut Stage) {
         "sky_px",
         format!(
             "arrayFlatten(arrayMap(m -> arrayMap(y -> (\
-             toUInt32(y * {VIEW_WIDTH} + toInt32(m.1 % 512)), \
+             toUInt64(y * {VIEW_WIDTH} + toInt32(m.1 % 512)) * 1048576, \
              {cmap}), \
              range(m.2, m.3 + 1)), sky_marks))"
         ),
     );
+}
+
+// ---------------------------------------------------------------------------
+// R_AddSprites, R_ProjectSprite and R_SortVisSprites
+// ---------------------------------------------------------------------------
+
+/// Every thing the frame draws, in the order `R_DrawMasked` draws them.
+///
+/// `R_AddSprites` runs once per sector, at the first subsector of it the walk
+/// reaches, and walks that sector's own list of things. The list is newest
+/// first, because `P_SetThingPosition` pushes onto its head. What comes out is
+/// sorted by scale, smallest first, so the far ones are drawn first.
+fn sprites(s: &mut Stage) {
+    s.state("st_mz", "m_z");
+    s.state("st_mflags", "m_flags");
+    s.state("st_msprite", "m_sprite");
+    s.state("st_mframe", "m_frame");
+    s.state("st_msubsector", "m_subsector");
+    s.state("st_mlinkseq", "m_linkseq");
+
+    // The sectors the walk reached, in the order it first reached one.
+    s.bind(
+        "vis_culled",
+        "arrayMap(sc -> ssec_culled[sc + 1], ssec_order)",
+    );
+    s.bind(
+        "vis_ssec",
+        "arrayFilter((sc, c) -> c = 0, ssec_order, vis_culled)",
+    );
+    s.bind(
+        "sec_order",
+        "arrayDistinct(arrayMap(sc -> k_ssec_sector[sc + 1], vis_ssec))",
+    );
+    // Where each sector sits in that order, counted from one. Zero is a
+    // sector the walk never reached, whose things are never projected.
+    s.bind(
+        "sec_rank",
+        "arrayMap(i -> toUInt32(indexOf(sec_order, toUInt32(i - 1))), arrayEnumerate(st_secfloor))",
+    );
+    s.bind(
+        "th_all",
+        "arrayMap(i -> (toUInt32(i), \
+         toUInt32(if(st_msubsector[i] < 0, 0, sec_rank[k_ssec_sector[st_msubsector[i] + 1] + 1])), \
+         st_mlinkseq[i]), arrayEnumerate(st_mx))",
+    );
+    // A thing off the sector lists is in no list to walk.
+    s.bind(
+        "th_list",
+        "arrayMap(t -> t.1, arraySort(t -> (t.2, -toInt64(t.3), -toInt64(t.1)), \
+         arrayFilter(t -> t.2 > 0 AND bitAnd(st_mflags[t.1], 8) = 0, th_all)))",
+    );
+
+    // The view point's own sine and cosine turn a thing's position into a
+    // distance along the view and an offset across it.
+    s.bind("v_cos", "k_finesine[bitShiftRight(v_angle, 19) + 2049]");
+    s.bind("v_sin", "k_finesine[bitShiftRight(v_angle, 19) + 1]");
+    s.bind(
+        "sp_trx",
+        "arrayMap(i -> toInt32(toInt64(st_mx[i]) - toInt64(v_x)), th_list)",
+    );
+    s.bind(
+        "sp_try",
+        "arrayMap(i -> toInt32(toInt64(st_my[i]) - toInt64(v_y)), th_list)",
+    );
+    s.bind(
+        "sp_tz",
+        format!(
+            "arrayMap((rx, ry) -> toInt32(toInt64({}) + toInt64({})), sp_trx, sp_try)",
+            fixed::fixed_mul("rx", "v_cos"),
+            fixed::fixed_mul("ry", "v_sin")
+        ),
+    );
+    s.bind(
+        "sp_tx",
+        format!(
+            "arrayMap((rx, ry) -> toInt32(toInt64({}) - toInt64({})), sp_trx, sp_try)",
+            fixed::fixed_mul("rx", "v_sin"),
+            fixed::fixed_mul("ry", "v_cos")
+        ),
+    );
+    s.bind(
+        "sp_xscale",
+        format!(
+            "arrayMap(z -> if(z < 262144, toInt32(0), {}), sp_tz)",
+            fixed::fixed_div(&CENTER_X_FRAC.to_string(), "z")
+        ),
+    );
+
+    // Which of the eight pictures of the frame faces the view point.
+    s.bind(
+        "sp_ang",
+        format!(
+            "arrayMap((rx, ry) -> {}, sp_trx, sp_try)",
+            fixed::point_to_angle("rx", "ry", "k_tantoangle")
+        ),
+    );
+    s.bind(
+        "sp_rot",
+        "arrayMap((a, i) -> bitShiftRight(toUInt32(toUInt64(a) + 4294967296 \
+         - toUInt64(st_mangle[i]) + 2415919104), 29), sp_ang, th_list)",
+    );
+    s.bind(
+        "sp_slot",
+        "arrayMap(i -> toUInt32((st_msprite[i] * 32 + bitAnd(st_mframe[i], 32767)) * 8), th_list)",
+    );
+    s.bind(
+        "sp_lump",
+        "arrayMap((sl, r) -> k_spr_lump[sl + if(k_spr_rotate[sl + 1] = 1, toUInt32(r), \
+         toUInt32(0)) + 1], sp_slot, sp_rot)",
+    );
+    s.bind(
+        "sp_flip",
+        "arrayMap((sl, r) -> k_spr_flip[sl + if(k_spr_rotate[sl + 1] = 1, toUInt32(r), \
+         toUInt32(0)) + 1], sp_slot, sp_rot)",
+    );
+
+    // The two screen columns the picture spans.
+    s.bind(
+        "sp_txl",
+        "arrayMap((tx, lp) -> toInt32(toInt64(tx) - toInt64(k_spl_left[lp + 1])), sp_tx, sp_lump)",
+    );
+    s.bind(
+        "sp_txr",
+        "arrayMap((tx, lp) -> toInt32(toInt64(tx) + toInt64(k_spl_widthf[lp + 1])), \
+         sp_txl, sp_lump)",
+    );
+    s.bind(
+        "sp_x1",
+        format!(
+            "arrayMap((tx, xs) -> bitShiftRight(toInt32({CENTER_X_FRAC} + toInt64({})), 16), \
+             sp_txl, sp_xscale)",
+            fixed::fixed_mul("tx", "xs")
+        ),
+    );
+    s.bind(
+        "sp_x2",
+        format!(
+            "arrayMap((tx, xs) -> bitShiftRight(toInt32({CENTER_X_FRAC} + toInt64({})), 16) - 1, \
+             sp_txr, sp_xscale)",
+            fixed::fixed_mul("tx", "xs")
+        ),
+    );
+    s.bind(
+        "sp_ok",
+        format!(
+            "arrayMap((z, tx, x1, x2, lp) -> toUInt8(z >= 262144 \
+             AND toInt32(abs(toInt64(tx))) <= toInt32(bitShiftLeft(toInt64(z), 2)) \
+             AND x1 <= {VIEW_WIDTH} AND x2 >= 0 AND lp >= 0), \
+             sp_tz, sp_tx, sp_x1, sp_x2, sp_lump)"
+        ),
+    );
+
+    // The rest of the vissprite.
+    s.bind(
+        "sp_gzt",
+        "arrayMap((i, lp) -> toInt32(toInt64(st_mz[i]) + toInt64(k_spl_top[lp + 1])), \
+         th_list, sp_lump)",
+    );
+    s.bind(
+        "sp_mid",
+        "arrayMap(g -> toInt32(toInt64(g) - toInt64(v_z)), sp_gzt)",
+    );
+    s.bind("sp_vx1", "arrayMap(x -> greatest(x, 0), sp_x1)");
+    s.bind(
+        "sp_vx2",
+        format!("arrayMap(x -> least(x, {}), sp_x2)", VIEW_WIDTH - 1),
+    );
+    // A thing behind the view plane has no scale, and nothing divides by it:
+    // `R_ProjectSprite` returns before it gets here.
+    s.bind(
+        "sp_xiscale",
+        format!(
+            "arrayMap((f, xs) -> if(xs = 0, toInt32(0), \
+             if(f = 1, toInt32(-toInt64({d})), {d})), sp_flip, sp_xscale)",
+            d = fixed::fixed_div("65536", "greatest(xs, toInt32(1))")
+        ),
+    );
+    s.bind(
+        "sp_frac0",
+        "arrayMap((f, lp, xi, vx1, x1) -> toInt32(\
+         if(f = 1, toInt64(k_spl_widthf[lp + 1]) - 1, toInt64(0)) \
+         + if(vx1 > x1, toInt64(xi) * toInt64(vx1 - x1), toInt64(0))), \
+         sp_flip, sp_lump, sp_xiscale, sp_vx1, sp_x1)",
+    );
+    // The light a thing takes is its own sector's. A thing that draws as a
+    // shadow takes -1, which nothing here draws.
+    s.bind(
+        "sp_light",
+        "arrayMap(i -> toUInt32(least(greatest(toInt64(bitShiftRight(\
+         st_seclight[k_ssec_sector[st_msubsector[i] + 1] + 1], 4)) \
+         + toInt64(v_extralight), 0), 15)), th_list)",
+    );
+    s.bind(
+        "sp_cmap",
+        "arrayMap((i, xs, li) -> multiIf(\
+         bitAnd(st_mflags[i], 262144) != 0, toInt32(-1), \
+         v_fixedcolormap != 0, v_fixedcolormap, \
+         bitAnd(st_mframe[i], 32768) != 0, toInt32(0), \
+         toInt32(k_scalelight[li * 48 + toUInt32(least(bitShiftRight(xs, 12), 47)) + 1])), \
+         th_list, sp_xscale, sp_light)",
+    );
+    s.bind(
+        "sp_sprtop",
+        format!(
+            "arrayMap((md, xs) -> toInt32({} - toInt64({})), sp_mid, sp_xscale)",
+            CENTER_Y << 16,
+            fixed::fixed_mul("md", "xs")
+        ),
+    );
+
+    // Sorted by scale, smallest first, ties in the order they were added,
+    // which is where the engine's own selection sort leaves them.
+    s.bind(
+        "vs_all",
+        "arrayFilter(t -> t.1 = 1, arrayZip(sp_ok, sp_xscale, sp_vx1, sp_vx2, sp_mid, \
+         sp_frac0, sp_xiscale, sp_lump, sp_cmap, sp_sprtop, \
+         arrayMap(i -> st_mx[i], th_list), arrayMap(i -> st_my[i], th_list), \
+         arrayMap(i -> st_mz[i], th_list), sp_gzt, \
+         arrayMap(e -> toUInt32(e), arrayEnumerate(sp_ok))))",
+    );
+    s.bind("vs", "arraySort(t -> (t.2, t.15), vs_all)");
+    // A thing drawn as a shadow reads the framebuffer under it, which is a
+    // frame this does not draw.
+    s.bind(
+        "vs_shadow",
+        "countEqual(arrayMap(t -> t.9, vs), toInt32(-1))",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R_DrawSprite's clipping
+// ---------------------------------------------------------------------------
+
+/// What each drawseg leaves of each sprite.
+///
+/// The drawsegs are scanned from the last one back. A drawseg in front of the
+/// sprite that carries a silhouette clips it, and the first one to reach a
+/// column is the one that decides it. A drawseg behind the sprite decides
+/// nothing.
+fn sprite_clip(s: &mut Stage) {
+    // The clips as they stood after each drawseg wrote its column, which is
+    // what `R_StoreWallRange` copies into the drawseg.
+    let post_cc = format!(
+        "multiIf({mid} != 0, {VIEW_HEIGHT}, {top} != 0, if({midlo} >= {yl}, {midlo}, {yl} - 1), \
+         {mkc} = 1, {yl} - 1, {cc0})",
+        mid = cw("midtex"),
+        top = cw("toptex"),
+        midlo = cw("midlo"),
+        yl = cw("yl"),
+        mkc = cw("mkc"),
+        cc0 = cw("cc0"),
+    );
+    let post_fc = format!(
+        "multiIf({mid} != 0, -1, {bot} != 0, if({botlo} <= {yh}, {botlo}, {yh} + 1), \
+         {mkf} = 1, {yh} + 1, {fc0})",
+        mid = cw("midtex"),
+        bot = cw("bottex"),
+        botlo = cw("botlo"),
+        yh = cw("yh"),
+        mkf = cw("mkf"),
+        fc0 = cw("fc0"),
+    );
+    s.bind(
+        "dsclip",
+        format!(
+            "arraySort(t -> t.1, arrayMap(t -> (toUInt32({ds}) * 512 + toUInt32({x}), \
+             toInt32({post_cc}), toInt32({post_fc})), cw))",
+            ds = cw("ds"),
+            x = cw("x"),
+        ),
+    );
+    // Where each drawseg's run of columns starts in that sort. A drawseg
+    // covers every column between its two ends, so the run is its width.
+    s.bind(
+        "ds_clipbase",
+        "arrayPushFront(arrayPopBack(arrayCumSum(arrayMap((a, b) -> toUInt64(b - a + 1), \
+         ds_x1, ds_x2))), toUInt64(0))",
+    );
+
+    // One row per drawseg, with everything `R_DrawSprite` reads off it.
+    s.bind(
+        "dsq",
+        "arrayMap(i -> (toUInt32(i), ds_x1[i], ds_x2[i], w_sil[i], w_tsil[i], w_bsil[i], \
+         w_masked[i], greatest(w_scale1[i], w_scale2[i]), least(w_scale1[i], w_scale2[i]), \
+         w_topconst[i], w_botconst[i], w_seg[i]), arrayEnumerate(ds_qi))",
+    );
+    // A drawseg is behind the sprite when it is smaller at both ends, or
+    // smaller at one end with the sprite on its front side.
+    let behind = format!(
+        "d.8 < v.2 OR (d.9 < v.2 AND {} = 0)",
+        fixed::point_on_side(
+            "v.11",
+            "v.12",
+            "k_seg_v1x[d.12 + 1]",
+            "k_seg_v1y[d.12 + 1]",
+            "toInt32(toInt64(k_seg_v2x[d.12 + 1]) - toInt64(k_seg_v1x[d.12 + 1]))",
+            "toInt32(toInt64(k_seg_v2y[d.12 + 1]) - toInt64(k_seg_v1y[d.12 + 1]))",
+            16
+        )
+    );
+    s.bind(
+        "sp_q",
+        format!(
+            "arrayMap(v -> arrayReverse(arrayFilter(d -> \
+             d.2 <= v.4 AND d.3 >= v.3 AND (d.4 != 0 OR d.7 = 1) AND NOT ({behind}), dsq)), vs)"
+        ),
+    );
+
+    // One row per sprite column: the two clips, and everything the pixels
+    // read off the sprite.
+    let bottom = "arrayMap(b -> if(b.11 = 1, -1, \
+                  dsclip[ds_clipbase[b.1] + toUInt64(x - b.2) + 1].3), \
+                  arraySlice(arrayFilter(d -> x >= d.2 AND x <= d.3 \
+                  AND bitAnd(d.4, 1) != 0 AND v.13 < d.6, q), 1, 1))";
+    let top = format!(
+        "arrayMap(b -> if(b.10 = 1, {VIEW_HEIGHT}, \
+         dsclip[ds_clipbase[b.1] + toUInt64(x - b.2) + 1].2), \
+         arraySlice(arrayFilter(d -> x >= d.2 AND x <= d.3 \
+         AND bitAnd(d.4, 2) != 0 AND v.14 > d.5, q), 1, 1))"
+    );
+    s.bind(
+        "sp_cols",
+        format!(
+            "arrayFlatten(arrayMap((v, q, k) -> arrayMap(x -> (\
+             toUInt32(k), toInt32(x), \
+             arrayPushBack({bottom}, toInt32({VIEW_HEIGHT}))[1], \
+             arrayPushBack({top}, toInt32(-1))[1], \
+             bitShiftRight(toInt32(toInt64(v.6) + toInt64(v.7) * toInt64(x - v.3)), 16), \
+             v.8, v.5, v.2, toInt32(abs(toInt64(v.7))), v.9, v.10), \
+             range(v.3, v.4 + 1)), vs, sp_q, arrayEnumerate(vs)))"
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R_DrawVisSprite, R_DrawMaskedColumn and R_DrawPlayerSprites
+// ---------------------------------------------------------------------------
+
+/// The pixels of every sprite, each carrying the order it was drawn in so a
+/// nearer sprite covers a farther one.
+fn sprite_pixels(s: &mut Stage) {
+    s.bind(
+        "sp_px",
+        format!(
+            "arrayFlatten(arrayMap(c -> {}, sp_cols))",
+            masked_column("c", "toUInt64(c.1)")
+        ),
+    );
+}
+
+/// The player's own two sprites, drawn over everything at a fixed scale and
+/// clipped only by the edges of the view.
+fn psprites(s: &mut Stage) {
+    s.state("st_psp_state", "psp_state");
+    s.state("st_psp_sx", "psp_sx");
+    s.state("st_psp_sy", "psp_sy");
+    s.state("st_powers", "p_powers");
+
+    s.bind("ps_slot", "arrayFilter(i -> st_psp_state[i] >= 0, [1, 2])");
+    s.bind(
+        "ps_frame",
+        "arrayMap(i -> toUInt32((k_state_sprite[st_psp_state[i] + 1] * 32 \
+         + bitAnd(k_state_frame[st_psp_state[i] + 1], 32767)) * 8), ps_slot)",
+    );
+    s.bind("ps_lump", "arrayMap(f -> k_spr_lump[f + 1], ps_frame)");
+    s.bind("ps_flip", "arrayMap(f -> k_spr_flip[f + 1], ps_frame)");
+    s.bind(
+        "ps_txl",
+        "arrayMap((i, lp) -> toInt32(toInt64(st_psp_sx[i]) - 10485760 \
+         - toInt64(k_spl_left[lp + 1])), ps_slot, ps_lump)",
+    );
+    s.bind(
+        "ps_x1",
+        format!(
+            "arrayMap(tx -> bitShiftRight(toInt32({CENTER_X_FRAC} + toInt64({})), 16), ps_txl)",
+            fixed::fixed_mul("tx", "65536")
+        ),
+    );
+    s.bind(
+        "ps_x2",
+        format!(
+            "arrayMap((tx, lp) -> bitShiftRight(toInt32({CENTER_X_FRAC} + toInt64({})), 16) - 1, \
+             ps_txl, ps_lump)",
+            fixed::fixed_mul(
+                "toInt32(toInt64(tx) + toInt64(k_spl_widthf[lp + 1]))",
+                "65536"
+            )
+        ),
+    );
+    s.bind(
+        "ps_ok",
+        format!(
+            "arrayMap((x1, x2, lp) -> toUInt8(x1 <= {VIEW_WIDTH} AND x2 >= 0 AND lp >= 0), \
+             ps_x1, ps_x2, ps_lump)"
+        ),
+    );
+    // `BASEYCENTER` is 100, and half a unit is added the way the C adds it.
+    s.bind(
+        "ps_mid",
+        "arrayMap((i, lp) -> toInt32(6553600 + 32768 \
+         - (toInt64(st_psp_sy[i]) - toInt64(k_spl_top[lp + 1]))), ps_slot, ps_lump)",
+    );
+    s.bind("ps_vx1", "arrayMap(x -> greatest(x, 0), ps_x1)");
+    s.bind(
+        "ps_vx2",
+        format!("arrayMap(x -> least(x, {}), ps_x2)", VIEW_WIDTH - 1),
+    );
+    s.bind(
+        "ps_xiscale",
+        "arrayMap(f -> if(f = 1, toInt32(-65536), toInt32(65536)), ps_flip)",
+    );
+    s.bind(
+        "ps_frac0",
+        "arrayMap((f, lp, xi, vx1, x1) -> toInt32(\
+         if(f = 1, toInt64(k_spl_widthf[lp + 1]) - 1, toInt64(0)) \
+         + if(vx1 > x1, toInt64(xi) * toInt64(vx1 - x1), toInt64(0))), \
+         ps_flip, ps_lump, ps_xiscale, ps_vx1, ps_x1)",
+    );
+    // The light is the player's own sector's, at the brightest scale.
+    s.bind(
+        "ps_light",
+        "toUInt32(least(greatest(toInt64(bitShiftRight(\
+         st_seclight[k_ssec_sector[st_msubsector[st_mo] + 1] + 1], 4)) \
+         + toInt64(v_extralight), 0), 15))",
+    );
+    s.bind(
+        "ps_cmap",
+        "arrayMap(i -> multiIf(\
+         st_powers[3] > 128 OR bitAnd(st_powers[3], 8) != 0, toInt32(-1), \
+         v_fixedcolormap != 0, v_fixedcolormap, \
+         bitAnd(k_state_frame[st_psp_state[i] + 1], 32768) != 0, toInt32(0), \
+         toInt32(k_scalelight[ps_light * 48 + 48])), ps_slot)",
+    );
+    s.bind(
+        "ps_sprtop",
+        format!(
+            "arrayMap(md -> toInt32({} - toInt64({})), ps_mid)",
+            CENTER_Y << 16,
+            fixed::fixed_mul("md", "65536")
+        ),
+    );
+    // The same column rows a sprite makes, at the fixed scale and clipped by
+    // the view's own edges.
+    s.bind(
+        "ps_cols",
+        format!(
+            "arrayFlatten(arrayMap((k, x1, x2, f0, xi, lp, md, cm, tp) -> arrayMap(x -> (\
+             toUInt32(1048000 + k), toInt32(x), toInt32({VIEW_HEIGHT}), toInt32(-1), \
+             bitShiftRight(toInt32(toInt64(f0) + toInt64(xi) * toInt64(x - x1)), 16), \
+             lp, md, toInt32(65536), toInt32(abs(toInt64(xi))), cm, tp), \
+             range(x1, x2 + 1)), \
+             arrayMap(e -> toUInt32(e), arrayEnumerate(ps_slot)), \
+             ps_vx1, ps_vx2, ps_frac0, ps_xiscale, ps_lump, ps_mid, ps_cmap, ps_sprtop))"
+        ),
+    );
+    s.bind(
+        "ps_visible",
+        "arrayFilter((c, k) -> ps_ok[k] = 1, ps_cols, arrayMap(c -> c.1 - 1048000, ps_cols))",
+    );
+    s.bind(
+        "ps_px",
+        format!(
+            "arrayFlatten(arrayMap(c -> {}, ps_visible))",
+            masked_column("c", "toUInt64(c.1)")
+        ),
+    );
+    s.bind(
+        "ps_shadow",
+        "countEqual(arrayMap(c -> c.10, ps_visible), toInt32(-1))",
+    );
+}
+
+/// One masked column: every post of it, clipped against the two clip rows and
+/// drawn. `c` names the column row and `time` the order it is drawn in.
+fn masked_column(c: &str, time: &str) -> String {
+    let slot = format!("toUInt32({c}.6) * 256 + toUInt32({c}.5)");
+    let frac = format!(
+        "toUInt32(toInt64({c}.7) - bitShiftLeft(toInt64(td), 16) \
+         + toInt64(y - {CENTER_Y}) * toInt64({c}.9))"
+    );
+    let texel = pool(
+        "k_sprpool",
+        &format!("of + toUInt32(bitAnd(bitShiftRight({frac}, 16), 127))"),
+    );
+    let cmap = pool("k_colormap", &format!("toUInt32({c}.10) * 256 + {texel}"));
+    let rows = format!(
+        "arrayMap(y -> (toUInt64(y * {VIEW_WIDTH} + {c}.2) * 1048576 + {time}, {cmap}), \
+         range(yl, greatest(yh + 1, yl)))"
+    );
+    let clipped = let_in(
+        &[
+            (
+                "yl",
+                format!("greatest(bitShiftRight(toInt32(toInt64(ts) + 65535), 16), {c}.4 + 1)"),
+            ),
+            (
+                "yh",
+                format!(
+                    "least(bitShiftRight(toInt32(toInt64(ts) \
+                     + toInt64({c}.8) * toInt64(ln) - 1), 16), {c}.3 - 1)"
+                ),
+            ),
+        ],
+        &rows,
+    );
+    let with_top = let_in(
+        &[(
+            "ts",
+            format!("toInt32(toInt64({c}.11) + toInt64({c}.8) * toInt64(td))"),
+        )],
+        &clipped,
+    );
+    let with_post = let_in(
+        &[
+            ("td", "toInt32(k_spost_top[p + 1])".to_owned()),
+            ("ln", "toInt32(k_spost_len[p + 1])".to_owned()),
+            ("of", "k_spost_ofs[p + 1]".to_owned()),
+        ],
+        &with_top,
+    );
+    format!(
+        "arrayFlatten(arrayMap(p -> {with_post}, \
+         range(k_spost_first[{slot} + 1], \
+         k_spost_first[{slot} + 1] + k_spost_num[{slot} + 1])))"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,9 +2185,36 @@ fn compose(s: &mut Stage) {
             s.db
         ),
     );
-    s.bind("px_all", "arrayConcat(wall_px, flat_px, sky_px)");
-    s.bind("px_sorted", "arraySort(t -> t.1, px_all)");
-    s.bind("px_at", "arrayMap(t -> t.1, px_sorted)");
+    // Every drawn pixel, keyed by where it lands and when it was drawn. The
+    // sort puts a pixel's writers in the order the engine ran them, and only
+    // the last of each survives, which is what drawing over does.
+    // A thing drawn as a shadow reads the framebuffer under it as it goes,
+    // one pixel at a time, and this does not build the frame that way.
+    // Nothing on screen is right once one is visible, so the frame fails.
+    s.bind(
+        "shadow_guard",
+        "arrayResize(CAST([], 'Array(Tuple(UInt64, UInt8))'), \
+         toUInt32(throwIf(vs_shadow + ps_shadow > 0, \
+         'a thing draws as a shadow, which the renderer does not draw')))",
+    );
+    s.bind(
+        "px_all",
+        "arrayConcat(wall_px, flat_px, sky_px, sp_px, ps_px, shadow_guard)",
+    );
+    s.bind("px_ordered", "arraySort(t -> t.1, px_all)");
+    s.bind(
+        "px_ordered_at",
+        "arrayMap(t -> toUInt32(intDiv(t.1, 1048576)), px_ordered)",
+    );
+    s.bind(
+        "px_sorted",
+        "arrayFilter((t, a, n) -> a != n, px_ordered, px_ordered_at, \
+         arrayPushBack(arrayPopFront(px_ordered_at), toUInt32(4294967295)))",
+    );
+    s.bind(
+        "px_at",
+        "arrayMap(t -> toUInt32(intDiv(t.1, 1048576)), px_sorted)",
+    );
     s.bind(
         "px_bytes",
         "arrayStringConcat(arrayMap(t -> char(t.2), px_sorted), '')",

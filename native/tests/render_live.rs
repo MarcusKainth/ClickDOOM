@@ -1,9 +1,9 @@
 //! The frame transform against a real ClickHouse server.
 //!
-//! One frame is rendered from one probed game state and compared, pixel by
-//! pixel, against the framebuffer the real engine drew. The oracle is the
-//! reference emulator's own dump; `native/tests/fixtures/README.md` says
-//! where it came from.
+//! Two frames are rendered from two probed game states and compared, pixel by
+//! pixel, against the framebuffers the real engine drew. The oracle is the
+//! reference emulator's own dump; `native/tests/fixtures/README.md` says where
+//! it came from.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -21,26 +21,70 @@ mod support;
 
 use support::db::Fixture;
 
-/// The frame the fixture holds, and the tic the engine drew it from.
-const FRAME: u32 = 40;
-const TIC: u32 = 3;
+/// One frame of demo3, with the frame it draws over.
+struct Case {
+    /// The frame drawn, the tic the engine drew it from, and the frame before.
+    frame: u32,
+    tic: u32,
+    previous: u32,
+    /// What the reference draws over the view that this does not: the words of
+    /// the heads-up message across the top. Every other pixel of the view
+    /// matches, so this number moves the moment a wall, a flat, the sky or a
+    /// thing does.
+    overdrawn: u64,
+    /// How much of the status bar the frame before no longer carries. The
+    /// engine redraws it every frame, and a widget that changed differs until
+    /// the status bar is drawn here too.
+    status_bar: u64,
+}
 
-/// The pixels of frame 40's view that the reference draws over the walls,
-/// flats and sky: the lamp, the object on the floor to the left, and the
-/// four words of the message across the top. Nothing else differs, so this
-/// number moves the moment a wall, a flat or a sky pixel does.
-const OVERDRAWN: u64 = 1838;
+const CASES: [Case; 2] = [
+    Case {
+        frame: 40,
+        tic: 3,
+        previous: 39,
+        overdrawn: 591,
+        status_bar: 0,
+    },
+    Case {
+        frame: 1000,
+        tic: 963,
+        previous: 999,
+        overdrawn: 993,
+        status_bar: 140,
+    },
+];
 
-const STATE_TSV: &[u8] = include_bytes!("fixtures/demo3-tic3.tsv");
-const FRAME39_FB: &[u8] = include_bytes!("fixtures/demo3-frame39-fb.bin");
-const FRAME39_PAL: &[u8] = include_bytes!("fixtures/demo3-frame39-palette.bin");
-const FRAME40_FB: &[u8] = include_bytes!("fixtures/demo3-frame40-fb.bin");
-const FRAME40_PAL: &[u8] = include_bytes!("fixtures/demo3-frame40-palette.bin");
+const STATES: &[u8] = include_bytes!("fixtures/demo3-states.tsv");
 
-/// The hashes `spec::fb_hash` gives the two fixture frames. A fixture that
+/// Each fixture frame, with the hash `spec::fb_hash` gives it. A fixture that
 /// was replaced by something else fails here rather than passing quietly.
-const FRAME39_HASH: u64 = 0xcd922a65a5e95c23;
-const FRAME40_HASH: u64 = 0x2eb87849ee6d9714;
+const FRAMES: [(u32, &[u8], &[u8], u64); 4] = [
+    (
+        39,
+        include_bytes!("fixtures/demo3-frame39-fb.bin"),
+        include_bytes!("fixtures/demo3-frame39-palette.bin"),
+        0xcd92_2a65_a5e9_5c23,
+    ),
+    (
+        40,
+        include_bytes!("fixtures/demo3-frame40-fb.bin"),
+        include_bytes!("fixtures/demo3-frame40-palette.bin"),
+        0x2eb8_7849_ee6d_9714,
+    ),
+    (
+        999,
+        include_bytes!("fixtures/demo3-frame999-fb.bin"),
+        include_bytes!("fixtures/demo3-frame999-palette.bin"),
+        0x0fe2_7f3c_06fb_13ba,
+    ),
+    (
+        1000,
+        include_bytes!("fixtures/demo3-frame1000-fb.bin"),
+        include_bytes!("fixtures/demo3-frame1000-palette.bin"),
+        0x0153_9e68_8afb_3350,
+    ),
+];
 
 #[derive(Row, Deserialize)]
 struct Difference {
@@ -52,7 +96,7 @@ struct Difference {
 }
 
 #[tokio::test]
-async fn a_rendered_frame_draws_the_walls_flats_and_sky_the_engine_drew() {
+async fn a_rendered_frame_draws_what_the_engine_drew() {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
     let fixture = Fixture::create("render").await;
@@ -69,61 +113,79 @@ async fn a_rendered_frame_draws_the_walls_flats_and_sky_the_engine_drew() {
         panic!("{error}");
     }
 
-    support::probe::load(&fixture, STATE_TSV).await;
+    support::probe::load(&fixture, STATES).await;
     load_reference_frames(&fixture).await;
 
     the_resident_statement_keeps_frame_zero(&fixture).await;
 
-    fixture
-        .execute(&[Statement::sql(render::frame_transform_over(
-            &fixture.database,
-            &format!(
-                "(SELECT toUInt32({FRAME}) AS frame, toUInt32({TIC}) AS tic, \
-                 toUInt8(0) AS melt_step)"
-            ),
-        ))])
-        .await
-        .expect("the frame renders");
-
-    the_status_bar_is_the_frame_before_it(&fixture).await;
-    the_view_matches_everywhere_nothing_was_drawn_over(&fixture).await;
-    the_frame_carries_its_own_bytes_and_colours(&fixture).await;
+    for case in &CASES {
+        render(&fixture, case).await;
+        the_view_matches_everywhere_nothing_was_drawn_over(&fixture, case).await;
+        the_status_bar_is_the_frame_before_it(&fixture, case).await;
+        the_frame_carries_its_own_bytes_and_colours(&fixture, case).await;
+    }
 
     fixture.finish().await;
 }
 
-/// The renderer draws nothing below the view, so those rows have to come
-/// through from the frame before unchanged.
-async fn the_status_bar_is_the_frame_before_it(fixture: &Fixture) {
-    let bar = difference(fixture, Region::StatusBar).await;
-    assert_eq!(
-        bar.differing, 0,
-        "the status bar differs first at ({}, {}): {} against {}",
-        bar.x, bar.y, bar.ours, bar.theirs
-    );
-}
-
-/// Everything in the view is a wall, a flat or the sky, and every one of
-/// them matches. What is left over is what the engine draws afterwards and
-/// this does not: the sprites and the message line.
-async fn the_view_matches_everywhere_nothing_was_drawn_over(fixture: &Fixture) {
-    let view = difference(fixture, Region::View).await;
-    assert_eq!(
-        view.differing, OVERDRAWN,
-        "the view differs in {} pixels, first at ({}, {}): {} against {}",
-        view.differing, view.x, view.y, view.ours, view.theirs
-    );
-}
-
-/// `fb_bytes` and `rgb32` are the same frame in two other shapes, and
-/// `fb_hash` is what the reference's own frame hashes to once the two
-/// sprites and the message are in it.
-async fn the_frame_carries_its_own_bytes_and_colours(fixture: &Fixture) {
+/// Renders one frame over the one before it. The frame before comes from the
+/// reference rather than from this renderer, so each case stands alone.
+async fn render(fixture: &Fixture, case: &Case) {
     let db = &fixture.database;
+    let previous = case.previous;
+    let plan = [
+        Statement::sql(format!(
+            "INSERT INTO {db}.native_frames \
+             SELECT {previous}, 0, fb, \
+             arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, 64001)), \
+             palette, 0, '', xxHash64(concat(fb, palette)), 0, \
+             CAST((0, 0, 0, 0, [], [], [], [], 0), \
+             'Tuple(ready Int32, frags Int32, health Int32, armor Int32, ammo Array(Int32), \
+             maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32)') \
+             FROM {db}.ref_frames WHERE frame = {previous}"
+        )),
+        Statement::sql(render::frame_transform_over(
+            db,
+            &format!(
+                "(SELECT toUInt32({}) AS frame, toUInt32({}) AS tic, toUInt8(0) AS melt_step)",
+                case.frame, case.tic
+            ),
+        )),
+    ];
+    fixture.execute(&plan).await.expect("the frame renders");
+}
+
+/// Everything in the view is a wall, a flat, the sky or a thing, and every one
+/// of them matches. What is left over is what the engine draws afterwards and
+/// this does not.
+async fn the_view_matches_everywhere_nothing_was_drawn_over(fixture: &Fixture, case: &Case) {
+    let view = difference(fixture, case, Region::View).await;
+    assert_eq!(
+        view.differing, case.overdrawn,
+        "frame {} differs in {} view pixels, first at ({}, {}): {} against {}",
+        case.frame, view.differing, view.x, view.y, view.ours, view.theirs
+    );
+}
+
+/// The renderer draws nothing below the view, so those rows come through from
+/// the frame before unchanged.
+async fn the_status_bar_is_the_frame_before_it(fixture: &Fixture, case: &Case) {
+    let bar = difference(fixture, case, Region::StatusBar).await;
+    assert_eq!(
+        bar.differing, case.status_bar,
+        "frame {}'s status bar differs in {} pixels, first at ({}, {}): {} against {}",
+        case.frame, bar.differing, bar.x, bar.y, bar.ours, bar.theirs
+    );
+}
+
+/// `fb_bytes` and `rgb32` are the same frame in two other shapes.
+async fn the_frame_carries_its_own_bytes_and_colours(fixture: &Fixture, case: &Case) {
+    let db = &fixture.database;
+    let frame = case.frame;
     let sizes: Vec<(u64, u64, u64)> = fixture
         .rows(&format!(
             "SELECT length(fb), length(fb_bytes), length(rgb32) \
-             FROM {db}.native_frames WHERE frame = {FRAME}"
+             FROM {db}.native_frames WHERE frame = {frame}"
         ))
         .await;
     assert_eq!(sizes, vec![(64000, 64000, 256000)]);
@@ -131,15 +193,15 @@ async fn the_frame_carries_its_own_bytes_and_colours(fixture: &Fixture) {
     let same: u8 = fixture
         .scalar(&format!(
             "SELECT toUInt8(arrayStringConcat(arrayMap(c -> char(c), fb_bytes), '') = fb) \
-             FROM {db}.native_frames WHERE frame = {FRAME}"
+             FROM {db}.native_frames WHERE frame = {frame}"
         ))
         .await;
-    assert_eq!(same, 1, "fb_bytes is not fb");
+    assert_eq!(same, 1, "frame {frame}: fb_bytes is not fb");
 }
 
-async fn difference(fixture: &Fixture, region: Region) -> Difference {
+async fn difference(fixture: &Fixture, case: &Case, region: Region) -> Difference {
     let sql = parity::first_difference(&fixture.database, region)
-        .replace("{frame:UInt32}", &FRAME.to_string());
+        .replace("{frame:UInt32}", &case.frame.to_string());
     fixture
         .rows::<Difference>(&sql)
         .await
@@ -147,15 +209,11 @@ async fn difference(fixture: &Fixture, region: Region) -> Difference {
         .expect("the comparison returns a row")
 }
 
-/// Puts frame 39 where the renderer reads the frame before, and frame 40
-/// where the comparison reads the reference.
+/// Puts every fixture frame where the comparison reads the reference.
 async fn load_reference_frames(fixture: &Fixture) {
     let db = &fixture.database;
     let mut plan = Vec::new();
-    for (frame, fb, palette) in [
-        (39u32, FRAME39_FB, FRAME39_PAL),
-        (FRAME, FRAME40_FB, FRAME40_PAL),
-    ] {
+    for (frame, fb, palette, _) in FRAMES {
         let mut body = Vec::new();
         sql::rowbinary::u32(&mut body, frame);
         sql::rowbinary::string(&mut body, fb);
@@ -165,17 +223,6 @@ async fn load_reference_frames(fixture: &Fixture) {
             body,
         ));
     }
-    // The frame before, in the shape the renderer reads it back in.
-    plan.push(Statement::sql(format!(
-        "INSERT INTO {db}.native_frames \
-         SELECT 39, 2, fb, \
-         arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, 64001)), \
-         palette, 0, '', xxHash64(concat(fb, palette)), 0, \
-         CAST((0, 0, 0, 0, [], [], [], [], 0), \
-         'Tuple(ready Int32, frags Int32, health Int32, armor Int32, ammo Array(Int32), \
-         maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32)') \
-         FROM {db}.ref_frames WHERE frame = 39"
-    )));
     fixture
         .execute(&plan)
         .await
@@ -186,7 +233,8 @@ async fn load_reference_frames(fixture: &Fixture) {
             "SELECT frame, xxHash64(concat(fb, palette)) FROM {db}.ref_frames ORDER BY frame"
         ))
         .await;
-    assert_eq!(hashes, vec![(39, FRAME39_HASH), (FRAME, FRAME40_HASH)]);
+    let want: Vec<(u32, u64)> = FRAMES.iter().map(|(f, _, _, h)| (*f, *h)).collect();
+    assert_eq!(hashes, want);
 }
 
 /// The statement the resident pipeline runs, driven over its own `input()`
@@ -205,7 +253,7 @@ async fn the_resident_statement_keeps_frame_zero(fixture: &Fixture) {
     sql::rowbinary::string(&mut body, &[b'.'; 128]);
     // A real row, for the frame the padding row shares a number with.
     sql::rowbinary::u32(&mut body, 0);
-    sql::rowbinary::u32(&mut body, TIC);
+    sql::rowbinary::u32(&mut body, CASES[0].tic);
     sql::rowbinary::u8(&mut body, 0);
     sql::rowbinary::string(&mut body, b"");
 
@@ -214,7 +262,8 @@ async fn the_resident_statement_keeps_frame_zero(fixture: &Fixture) {
 
     let frames: Vec<u32> = fixture
         .rows(&format!(
-            "SELECT frame FROM {db}.native_frames WHERE tic = {TIC} ORDER BY frame"
+            "SELECT frame FROM {db}.native_frames WHERE tic = {} ORDER BY frame",
+            CASES[0].tic
         ))
         .await;
     assert_eq!(

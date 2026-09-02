@@ -410,7 +410,7 @@ async fn two_loads_of_the_same_wad_agree_row_for_row() {
         digests.push(digest(&fixture).await);
         fixture.finish().await;
     }
-    assert_eq!(digests[0].len(), 62, "the schema's table count changed");
+    assert_eq!(digests[0].len(), 67, "the schema's table count changed");
     for (a, b) in digests[0].iter().zip(&digests[1]) {
         assert_eq!(a, b, "{} differs between two loads", a.table);
     }

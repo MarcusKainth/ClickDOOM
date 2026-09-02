@@ -137,7 +137,16 @@ CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -mno-relax \
 LDFLAGS := -nostdlib -Wl,--build-id=none -T $(LD)
 LDLIBS  := -lc -lm -lgcc
 
-.PHONY: all toolchain-image check-pinned-hash clean
+# The engine's struct layout for RV32 ILP32, computed by the compiler rather
+# than transcribed. toolchain/layout.c is compiled to assembly and never
+# linked or objcopied, so it cannot reach $(BIN) and cannot move PINNED_HASH.
+LAYOUT     := $(BUILD)/layout.tsv
+LAYOUT_ASM := $(BUILD)/layout.s
+LAYOUT_SRC := toolchain/layout.c
+# refemu's committed copy, which is what the probe reads.
+LAYOUT_COMMITTED := ../refemu/probe/layout.tsv
+
+.PHONY: all toolchain-image check-pinned-hash layout check-layout clean
 
 all: $(BIN) $(MANIFEST)
 
@@ -212,6 +221,31 @@ check-pinned-hash: $(BIN)
 	  exit 1; \
 	fi; \
 	echo "PINNED_HASH matches: $$built"
+
+# Same compiler, same flags, same patched headers the ROM is built from, so
+# the offsets are the ones in the linked binary and not a second opinion.
+# -S stops before the assembler: the `@@` lines are what this is for, and the
+# object file would only be another thing to delete.
+layout: $(LAYOUT)
+
+$(LAYOUT): toolchain-image $(PATCHED_VENDOR)/.stamp $(LAYOUT_SRC)
+	@mkdir -p $(BUILD)
+	docker run --rm --platform $(PLATFORM) \
+	  -v $(CURDIR):/work -w /work \
+	  -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
+	  $(IMAGE):$(IMAGE_TAG) \
+	  sh -c 'riscv-none-elf-gcc $(CFLAGS) -S -o $(LAYOUT_ASM) $(LAYOUT_SRC)'
+	printf '# clickdoom-layout 1\n# columns\tstruct\tfield\toffset\tsize\n' > $@
+	sed -n 's/^[[:space:]]*@@[[:space:]]*//p' $(LAYOUT_ASM) >> $@
+
+# Not part of `all`, for the same reason check-pinned-hash is not: a mismatch
+# reports as "the committed layout is stale", not as a build failure.
+check-layout: $(LAYOUT)
+	@if ! diff -u $(LAYOUT_COMMITTED) $(LAYOUT); then \
+	  echo "::error::$(LAYOUT_COMMITTED) does not match the engine's headers. Run: make gen-layout" >&2; \
+	  exit 1; \
+	fi; \
+	echo "layout.tsv matches: $$(grep -c -v '^#' $(LAYOUT)) rows"
 
 clean:
 	rm -rf $(BUILD)

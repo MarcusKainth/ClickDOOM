@@ -63,6 +63,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-canonical-throughput \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
+        gen-layout \
         fuzz \
         lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
@@ -177,6 +178,11 @@ gen-reference-trace: require-rom build-refemu ## Regenerate the committed refere
 	    --expect-milestone init_graphics=$(EXPECT_INIT_GRAPHICS) \
 	    --out-dir refemu/reference_traces --name demo-boot-to-first-frame
 
+LAYOUT ?= refemu/probe/layout.tsv
+gen-layout: ## Regenerate the committed struct layout from the pinned toolchain
+	make -C rom layout
+	cp rom/build/layout.tsv $(LAYOUT)
+
 gen-demo3-trace: require-rom build-refemu ## Run demo3 to completion and write its manifest. The .tsv is not committed
 	$(REFEMU) trace $(ROM_BIN) --manifest $(ROM_MANIFEST) \
 	    --pinned-hash rom/PINNED_HASH --stop-at halt -n $(DEMO3_MAX) \
@@ -224,12 +230,12 @@ zizmor: ## Workflow security posture
 # Prerequisites in cost order. `lint` needs no container and no ROM, and
 # `check-rom-hash` builds the ROM that `test` and `smoke` both require. Make stops at the first one that fails.
 #
-# `check-rom-hash` names both goals in one `make -C rom` rather than depending
+# `check-rom-hash` names every goal in one `make -C rom` rather than depending
 # on `build-rom` and recursing twice. rom/Makefile's binary depends on the
 # phony `toolchain-image`, so it is rebuilt on every entry, and two entries
 # compile the ROM twice.
 
 gates: lint check-rom-hash test smoke ## Every check ci.yml runs on a pull request
 
-check-rom-hash: ## The built ROM matches rom/PINNED_HASH
-	make -C rom all check-pinned-hash
+check-rom-hash: ## The built ROM matches rom/PINNED_HASH, and the committed layout matches the headers
+	make -C rom all check-pinned-hash check-layout

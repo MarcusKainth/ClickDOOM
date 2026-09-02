@@ -22,10 +22,12 @@ by name rather than restated.
 `scripts/check_purity.sh` reaches and which are review-only. Most have no
 textual signature, so review is the only thing standing behind them.
 
-[`SPEC.md`](SPEC.md) is the contract: the CPU, the memory map, the MMIO surface,
-the batch execution contract, the trace format, the determinism rules. If a
-change needs the contract to move, open a `spec-change` issue. Do not diverge
-from it temporarily.
+[`SPEC.md`](SPEC.md) is emulation mode's contract: the CPU, the memory map,
+the MMIO surface, the batch execution contract, the trace format, the
+determinism rules. [`NATIVE.md`](NATIVE.md) is native mode's: the state row,
+the tic, the frame, the resident statements and parity with the reference
+emulator. If a change needs a contract to move, open a `spec-change` issue. Do
+not diverge from it temporarily.
 
 Touching an invariant is not automatically wrong. The change then has to say how
 the property still holds, and citing the number is the reviewable form of that.

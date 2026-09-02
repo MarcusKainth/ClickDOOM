@@ -1,0 +1,91 @@
+name: Native mode and the reference emulator disagree
+description: The SQL simulation or renderer diverged from the real engine's probed state or frame.
+title: "native: divergence at tic "
+labels: ["divergence", "area: native"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A divergence falsifies native mode's claim, so this form asks for
+        everything needed to reproduce one rather than discuss it.
+
+        If the two agree and something else is wrong, use the bug form.
+
+  - type: input
+    id: rom-sha
+    attributes:
+      label: ROM sha256
+      description: From `rom/build/manifest.json`; the probe rows carry it too.
+    validations:
+      required: true
+
+  - type: input
+    id: wad-sha
+    attributes:
+      label: WAD sha256
+      description: From `rom/wad/doom1.wad.sha256sum`.
+    validations:
+      required: true
+
+  - type: input
+    id: ch-version
+    attributes:
+      label: ClickHouse version
+      placeholder: "26.7.5.10"
+    validations:
+      required: true
+
+  - type: input
+    id: tic
+    attributes:
+      label: First divergent tic (gametic)
+    validations:
+      required: true
+
+  - type: input
+    id: frame
+    attributes:
+      label: First divergent frame, if a frame differs
+    validations:
+      required: false
+
+  - type: dropdown
+    id: what
+    attributes:
+      label: What disagrees
+      options:
+        - A mobj field
+        - A sector or sector thinker field
+        - A player field
+        - prndindex or rndindex
+        - Status bar or message state
+        - The frame hash
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The divergence report
+      description: The output of `clickdoom native diff`, unedited, or the pixel diff for a frame.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: rng
+    attributes:
+      label: Random draws at that tic
+      description: The probe's random-call log rows for the divergent tic, if the divergence involves prndindex.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The commands, from `make native-load` to the report.
+      render: shell
+    validations:
+      required: true

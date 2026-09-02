@@ -71,6 +71,7 @@ enforced by review alone, and its Enforcement table says which.
 <!-- Tick what you ran, by exit code. Nothing else belongs under this heading. -->
 
 - [ ] `make gates`. If you could not run it, say which suites you ran instead
+- [ ] `make native-smoke`, if `native/` or `driver/src/native/` changed
 - [ ] No AI attribution trailers in the commits
 
 ## Anything else

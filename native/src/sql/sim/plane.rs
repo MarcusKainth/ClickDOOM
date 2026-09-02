@@ -271,7 +271,6 @@ pub fn move_plane(plane: &Plane<'_>, target: &str, stuck: &str) -> String {
     let down = format!("{} = -1", plane.direction);
     let floor = format!("{} = {FLOOR}", plane.which);
     let past = past(plane);
-    let _ = &up;
     // A ceiling going up is the one case that never reports a crush.
     let reports = format!("NOT ({floor} = 0 AND {up})");
     // A floor going down is the one case that reverts before it answers.

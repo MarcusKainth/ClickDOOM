@@ -114,3 +114,100 @@ async fn a_seeded_plat_runs_the_way_the_engine_runs_it() {
         "the run has to cover the way down and the wait"
     );
 }
+
+/// `p_spec.h`: how long a switch stays pressed.
+const BUTTONTIME: i32 = 35;
+
+/// The side the seeded button belongs to, and the picture it puts back.
+const BUTTON_LINE: usize = 40;
+const BUTTON_TEXTURE: i32 = 3;
+
+#[derive(Row, Deserialize)]
+struct Pressed {
+    tic: u32,
+    timer: i32,
+    line: i32,
+    texture: i16,
+}
+
+/// A switch that was pressed puts its old picture back when the timer runs
+/// out, and its slot is freed.
+///
+/// Nothing presses a switch yet, so the button is seeded the way the plat
+/// is. What is checked is `P_UpdateSpecials`' half: the timer counting
+/// down, the picture going back on the tic it reaches zero, and the slot
+/// emptying.
+#[tokio::test]
+async fn a_seeded_button_puts_its_picture_back_when_it_runs_out() {
+    let bytes = support::doom1();
+    let wad = Wad::parse(&bytes).unwrap();
+    let fixture = Fixture::create("sim_button").await;
+    let db = fixture.database.clone();
+
+    let mut plan = load::plan(&db, &wad);
+    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
+    plan.extend(sim::load_statements(&db));
+    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    fn put(column: &'static str, value: String) -> (&'static str, String) {
+        (
+            column,
+            format!(
+                "arrayMap((v, i) -> if(i = 1, {value}, v), p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    }
+    let seeded = support::seed::row(
+        &db,
+        SEED_TIC,
+        1,
+        &[
+            put("btn_timer", format!("toInt32({BUTTONTIME})")),
+            put("btn_line", format!("toInt32({BUTTON_LINE})")),
+            put("btn_where", "toInt32(0)".to_owned()),
+            put("btn_texture", format!("toInt32({BUTTON_TEXTURE})")),
+        ],
+    );
+    plan.extend(seeded.into_iter().map(sql::Statement::sql));
+    plan.push(sim::tick::demo_statement(
+        &db,
+        SEED_TIC + 1,
+        SEED_TIC + BUTTONTIME as u32 + 2,
+    ));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    let rows: Vec<Pressed> = fixture
+        .rows(&format!(
+            "SELECT tic, btn_timer[1] AS timer, btn_line[1] AS line, \
+             side_toptexture[1 + line_side0_at] AS texture \
+             FROM {db}.native_state \
+             CROSS JOIN (SELECT any(side0) AS line_side0_at FROM {db}.lv_lines \
+             WHERE id = {BUTTON_LINE}) AS side \
+             WHERE tic > {SEED_TIC} ORDER BY tic"
+        ))
+        .await;
+    fixture.finish().await;
+
+    let ends = SEED_TIC + BUTTONTIME as u32;
+    for row in &rows {
+        let left = ends as i32 - row.tic as i32;
+        assert_eq!(row.timer, left.max(0), "the timer at tic {}", row.tic);
+        if row.tic < ends {
+            assert_eq!(
+                row.line, BUTTON_LINE as i32,
+                "the slot holds at {}",
+                row.tic
+            );
+        } else {
+            assert_eq!(row.line, 0, "the slot is freed at tic {}", row.tic);
+            assert_eq!(
+                row.texture, BUTTON_TEXTURE as i16,
+                "the picture is back at tic {}",
+                row.tic
+            );
+        }
+    }
+    assert!(rows.iter().any(|r| r.tic > ends), "the run passes the end");
+}

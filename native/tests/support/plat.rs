@@ -97,12 +97,8 @@ impl Plat {
     }
 }
 
-/// A state row copied from tic 1 with a `downWaitUpStay` plat on the end
-/// of the thinker list and the sector pointed at it.
-///
-/// `native_state` is a `Join` table, which cannot be read by the same
-/// query that writes it, so the row it copies goes through a table of its
-/// own first.
+/// The overrides that put a `downWaitUpStay` plat on the end of the
+/// thinker list with the sector pointed at it.
 pub fn seed(db: &str, tic: u32, sector: usize, high: i32, low: i32) -> Vec<String> {
     let appended: Vec<(&str, String)> = vec![
         ("s_seq", "toUInt32(p.next_seq)".to_owned()),
@@ -118,37 +114,23 @@ pub fn seed(db: &str, tic: u32, sector: usize, high: i32, low: i32) -> Vec<Strin
         ("s_status", format!("toInt32({DOWN})")),
         ("s_active", "toUInt8(1)".to_owned()),
     ];
-    let columns: Vec<String> = sim::state_columns()
-        .into_iter()
-        .map(|column| {
-            let value = if column == "tic" {
-                format!("toUInt32({tic})")
-            } else if column == "sec_specialdata" {
-                format!(
-                    "arrayMap((v, i) -> toUInt32(if(i = {}, length(p.s_kind) + 1, v)), \
-                     p.sec_specialdata, arrayEnumerate(p.sec_specialdata))",
-                    sector + 1
-                )
-            } else if let Some((_, value)) = appended.iter().find(|(name, _)| *name == column) {
-                format!("arrayPushBack(p.{column}, {value})")
-            } else if column.starts_with("s_") && column != "s_seq" {
-                // Every other thinker field the plat does not use is zero,
-                // in whatever type the column carries.
-                format!("arrayPushBack(p.{column}, p.{column}[1])")
-            } else {
-                format!("p.{column}")
-            };
-            format!("    {value} AS {column}")
-        })
-        .collect();
-    vec![
+    let mut overrides: Vec<(&str, String)> = vec![(
+        "sec_specialdata",
         format!(
-            "CREATE TABLE {db}.plat_seed ENGINE = Memory AS \
-             SELECT * FROM {db}.native_state WHERE tic = 1"
+            "arrayMap((v, i) -> toUInt32(if(i = {}, length(p.s_kind) + 1, v)), \
+             p.sec_specialdata, arrayEnumerate(p.sec_specialdata))",
+            sector + 1
         ),
-        format!(
-            "INSERT INTO {db}.native_state\nSELECT\n{}\nFROM {db}.plat_seed AS p",
-            columns.join(",\n")
-        ),
-    ]
+    )];
+    for column in sim::state_columns() {
+        if !column.starts_with("s_") {
+            continue;
+        }
+        let value = match appended.iter().find(|(name, _)| *name == column) {
+            Some((_, value)) => value.clone(),
+            None => format!("p.{column}[1]"),
+        };
+        overrides.push((column, format!("arrayPushBack(p.{column}, {value})")));
+    }
+    super::seed::row(db, tic, 1, &overrides)
 }

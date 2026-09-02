@@ -106,12 +106,11 @@ field, both values and the thinker involved, then the first frame whose hash
 differs. Two hashes pin `demo3`: frame 220 is `aa27f0470c7c5f3a` and the final
 frame is `d303721d8116e877`.
 
-One field is outside the comparison. A door thinker whose type never reads
-`topcountdown` leaves it as `Z_Malloc` returned it, so the engine carries
-whatever the zone allocator last had at that address and writes that value
-out. `s_count` for a door of such a type is therefore not required to match,
-and a parity run may report it while every other field agrees. Every other
-thinker kind initialises its count before reading it, and those are compared.
+One field is partly outside the comparison. `T_VerticalDoor` never reads a
+door's `topcountdown` while the door goes up, and the engine leaves it as the
+zone allocator returned it until the door reaches the top and writes it. So
+`s_count` for a door thinker whose direction is up is left out of the
+comparison, and every other element of every other field is compared.
 
 ## 8. Determinism
 

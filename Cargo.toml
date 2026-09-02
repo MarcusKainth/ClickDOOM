@@ -26,10 +26,10 @@ http = "1.5"
 http-body-util = "0.1.5"
 hyper = { version = "1.11", features = ["client", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
-minifb = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+softbuffer = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -39,6 +39,7 @@ tokio = { version = "1", features = [
     "sync",
     "time",
 ] }
+winit = "0.30"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [profile.release]

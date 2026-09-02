@@ -58,10 +58,9 @@ Each live suite creates its own, named for the suite and the process id. `run-mi
 
 ## The ClickHouse pin
 
-Pinned to `26.7.5.10` by image digest. The digest appears in
-`docker-compose.yml` and once per service block in the workflows, because GitHub does
-not expose the `env` context to `services.image` and the literal cannot be
-shared. All five must match.
+Pinned to `26.7.5.10` by image digest in `docker-compose.yml`. CI starts the
+server through `make up`, so the digest and the server configuration under
+`docker/clickhouse/config.d/` are read from that one file everywhere.
 
 Bumping it needs a `ci:` pull request carrying nightly deep-diff evidence. A
 minor ClickHouse release can change how an expression is evaluated, and this

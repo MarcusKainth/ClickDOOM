@@ -1,0 +1,13 @@
+<!-- Session defaults for ClickDOOM, mounted alongside config.d/clickdoom.xml.
+
+     `http_receive_timeout` is a user-level setting and the server rejects it
+     in config.d. It bounds how long the server waits for the next byte of a
+     request body, which is the timeout an idle resident statement hits. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <http_receive_timeout>3600</http_receive_timeout>
+            <receive_timeout>3600</receive_timeout>
+        </default>
+    </profiles>
+</clickhouse>

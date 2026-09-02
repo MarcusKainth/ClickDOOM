@@ -44,20 +44,12 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 300
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:26.7.5.10@sha256:800e82865530eb2f1c4bc1b960e43b435fd9b2d83b4bd04a2564a5cfd88fdb6e
-        env:
-          CLICKHOUSE_DB: clickdoom
-          CLICKHOUSE_PASSWORD: clickdoom
-        ports: ["8123:8123", "9000:9000"]
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping || exit 1"
-          --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Start the pinned ClickHouse
+        run: make up
       - name: Build ROM
         run: make -C rom
       - name: Build the reference emulator

@@ -18,5 +18,9 @@ pub fn doom1() -> Vec<u8> {
     std::fs::read(doom1_path()).expect("rom/wad/doom1.wad is committed")
 }
 
-/// The map every live test loads.
+#[cfg(feature = "clickhouse-tests")]
+pub mod patch;
+
+/// The map every live test loads, and the demo that drives it.
 pub const MAP: &str = "E1M7";
+pub const DEMO: &str = "DEMO3";

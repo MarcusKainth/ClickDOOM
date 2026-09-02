@@ -356,19 +356,47 @@ CREATE TABLE IF NOT EXISTS {{DB}}.pnames
 )
 ENGINE = MergeTree ORDER BY id;
 
+-- Every lump in `patch_t` form: the texture patches, the sprites and the
+-- status bar and font graphics. `columnofs` is the lump's own offset table,
+-- one per column.
+CREATE TABLE IF NOT EXISTS {{DB}}.patch_lumps
+(
+    lump        UInt32,   -- wad_lumps.id
+    name        String,
+    width       UInt16,
+    height      UInt16,
+    leftoffset  Int16,
+    topoffset   Int16,
+    columnofs   Array(UInt32)
+)
+ENGINE = MergeTree ORDER BY lump;
+
+-- Every post of every patch column, in the order the column chains them.
+-- `ofs` is the byte offset of the post's pixels inside the lump, which is
+-- the post's own start plus the three bytes of header and pad.
+CREATE TABLE IF NOT EXISTS {{DB}}.patch_posts
+(
+    lump      UInt32,
+    col       UInt16,
+    idx       UInt16,
+    topdelta  UInt8,
+    length    UInt8,
+    ofs       UInt32
+)
+ENGINE = MergeTree ORDER BY (lump, col, idx);
+
 -- `widthmask` is `R_InitTextures`'s `texturewidthmask`: the largest power
 -- of two not past `width`, minus one. `height_fixed` is `height << 16`.
 CREATE TABLE IF NOT EXISTS {{DB}}.tex_textures
 (
-    id             UInt32,
-    name           String,
-    width          UInt16,
-    height         UInt16,
-    widthmask      UInt16,
-    height_fixed   Int32,
-    masked         UInt8,
-    patchcount     UInt16,
-    composite_size UInt32
+    id            UInt32,
+    name          String,
+    width         UInt16,
+    height        UInt16,
+    widthmask     UInt16,
+    height_fixed  Int32,
+    masked        UInt8,
+    patchcount    UInt16
 )
 ENGINE = MergeTree ORDER BY id;
 
@@ -383,22 +411,40 @@ CREATE TABLE IF NOT EXISTS {{DB}}.tex_patches
 )
 ENGINE = MergeTree ORDER BY (texture, idx);
 
+-- Which patches cover each texture column, in patch order. `patch_col` is
+-- the column of the patch that lands on the texture column, and `originy`
+-- is where the patch's rows start in the texture.
+CREATE TABLE IF NOT EXISTS {{DB}}.tex_col_patches
+(
+    texture    UInt32,
+    col        UInt16,
+    idx        UInt16,
+    lump       UInt32,
+    patch_col  UInt16,
+    originy    Int16
+)
+ENGINE = MergeTree ORDER BY (texture, col, idx);
+
 -- `R_GenerateLookup`'s per-column result. `lump` is the single patch's
 -- lump when one patch covers the column, -1 when the column is composed.
 -- `ofs` is the byte offset of the column's posts inside that lump, or
 -- inside the texture's composite when `lump` is -1.
+-- `uncovered` is 1 when no post reaches some row of a composed column, so
+-- the composite keeps the zero it was built from there. `R_GenerateComposite`
+-- leaves those rows at whatever the allocation held.
 CREATE TABLE IF NOT EXISTS {{DB}}.tex_columns
 (
-    texture  UInt32,
-    col      UInt16,
-    patches  UInt16,
-    lump     Int32,
-    ofs      UInt32
+    texture    UInt32,
+    col        UInt16,
+    patches    UInt16,
+    lump       Int32,
+    ofs        UInt32,
+    uncovered  UInt8
 )
 ENGINE = MergeTree ORDER BY (texture, col);
 
--- `R_GenerateComposite`'s buffer for a texture with more than one patch on
--- some column.
+-- `R_GenerateComposite`'s buffer, for a texture with more than one patch on
+-- some column. Its length is `texturecompositesize`.
 CREATE TABLE IF NOT EXISTS {{DB}}.tex_composite
 (
     texture  UInt32,
@@ -457,9 +503,14 @@ CREATE TABLE IF NOT EXISTS {{DB}}.sprite_frames
 )
 ENGINE = MergeTree ORDER BY (sprite, frame);
 
+-- `R_InitSpriteLumps`'s tables. `id` is the engine's own sprite lump
+-- number, counted from the lump after `S_START`, which is what
+-- `sprite_frames.lump` and `sprite_posts.lump` hold. The three scaled
+-- fields are the `fixed_t` forms `R_ProjectSprite` reads.
 CREATE TABLE IF NOT EXISTS {{DB}}.sprite_lumps
 (
-    id           UInt32,   -- wad_lumps.id
+    id           UInt32,
+    lump         UInt32,   -- wad_lumps.id
     name         String,
     width        UInt16,
     height       UInt16,
@@ -480,7 +531,7 @@ ENGINE = MergeTree ORDER BY id;
 
 CREATE TABLE IF NOT EXISTS {{DB}}.sprite_posts
 (
-    lump      UInt32,
+    lump      UInt32,   -- sprite_lumps.id
     col       UInt16,
     idx       UInt16,
     topdelta  UInt8,

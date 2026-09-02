@@ -13,12 +13,33 @@ use crate::tables;
 /// The DDL, with `{{DB}}` still in it.
 const SCHEMA: &str = include_str!("../../schema.sql");
 
+/// The level decode, with its three placeholders still in it.
+const LEVEL_LOAD: &str = include_str!("../../sql/level_load.sql");
+
 /// The database name placeholder every generated statement carries.
 const DB_PLACEHOLDER: &str = "{{DB}}";
 
 /// The schema as one statement per `CREATE`, against `db`.
 pub fn schema_statements(db: &str) -> Vec<Statement> {
     split_statements(&SCHEMA.replace(DB_PLACEHOLDER, db))
+        .into_iter()
+        .map(Statement::sql)
+        .collect()
+}
+
+/// The level decode, one statement at a time, for `map` in `db` driven by
+/// the demo lump `demo`.
+///
+/// Every statement reads `wad_lumps` and writes a derived table, so the
+/// database has to carry a loaded WAD already. A statement that starts
+/// `SELECT throwIf` is a guard: it returns a row, and it fails the load
+/// when the thing it checks is wrong.
+pub fn level_statements(db: &str, map: &str, demo: &str) -> Vec<Statement> {
+    let text = LEVEL_LOAD
+        .replace(DB_PLACEHOLDER, db)
+        .replace("{{MAP}}", map)
+        .replace("{{DEMO}}", demo);
+    split_statements(&text)
         .into_iter()
         .map(Statement::sql)
         .collect()

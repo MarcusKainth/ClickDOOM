@@ -29,8 +29,11 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.lv_ssec_path
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_sector_subsectors
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_node_range
 CREATE TABLE IF NOT EXISTS clickdoom_native.pnames
+CREATE TABLE IF NOT EXISTS clickdoom_native.patch_lumps
+CREATE TABLE IF NOT EXISTS clickdoom_native.patch_posts
 CREATE TABLE IF NOT EXISTS clickdoom_native.tex_textures
 CREATE TABLE IF NOT EXISTS clickdoom_native.tex_patches
+CREATE TABLE IF NOT EXISTS clickdoom_native.tex_col_patches
 CREATE TABLE IF NOT EXISTS clickdoom_native.tex_columns
 CREATE TABLE IF NOT EXISTS clickdoom_native.tex_composite
 CREATE TABLE IF NOT EXISTS clickdoom_native.tex_col_base

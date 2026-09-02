@@ -13,6 +13,7 @@
 # argument covers `scripts/`, which the workflows call.
 
 /SPEC.md              @MarcusKainth
+/NATIVE.md            @MarcusKainth
 /PURITY.md            @MarcusKainth
 /spec/                @MarcusKainth
 

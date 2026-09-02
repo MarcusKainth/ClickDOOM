@@ -26,3 +26,5 @@ was believed at the time.
   is a real, measured throughput cost. Amends ADR-0001's threshold.
 - [ADR-0005](0005-rust-reference-emulator.md) — The reference emulator is Rust,
   and the contract it shares with the SQL side is data and never semantics.
+- [ADR-0006](0006-native-mode-resident-insert-select.md) — Native mode runs as
+  resident streaming `INSERT SELECT` statements, analysed once per session.

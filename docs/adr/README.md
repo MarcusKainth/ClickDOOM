@@ -28,3 +28,6 @@ was believed at the time.
   and the contract it shares with the SQL side is data and never semantics.
 - [ADR-0006](0006-native-mode-resident-insert-select.md) — Native mode runs as
   resident streaming `INSERT SELECT` statements, analysed once per session.
+- [ADR-0007](0007-resident-transport-is-hyper.md) — The resident statement's
+  transport is `hyper`, because the `clickhouse` crate cannot hold a request
+  body open with a flush per row.

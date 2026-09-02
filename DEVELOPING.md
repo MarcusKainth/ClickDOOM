@@ -95,6 +95,37 @@ Only a much longer run reaches a memory comparison, which is why one runs
 nightly rather than on every pull request. The first boundary alone costs about
 14 minutes.
 
+## Native mode
+
+Native mode runs DOOM's simulation and renderer as SQL against a level loaded
+from the WAD. Its contract is `NATIVE.md`; its commands live under
+`clickdoom native`.
+
+    make native-smoke     # render the first gameplay frame from the probe fixture and check its hash
+    make gen-probe-trace  # the reference emulator's per-frame game state for demo3
+
+The root `README.md` walks the commands from a fresh checkout. `native load` writes only the tables `native/schema.sql` declares and leaves the
+rest of the database alone, so it is safe against the shared `clickdoom`
+database. `--probe PATH` also loads the reference emulator's state rows, which
+is how the renderer is driven before the simulation is complete
+(`native demo demo3 --from probe`). `native diff` runs the simulation and
+reports the first tic and field on which it and the probe disagree.
+
+The two resident statements stay open for a session and stream one row per
+tic; the server settings they need are mounted from
+`docker/clickhouse/users.d/` and `docker/clickhouse/config.d/`. A statement
+that dies shows up as rows that stop landing, and the session reopens it and
+resumes from the last committed tic.
+
+The window needs the driver's `window` feature, on by default; `--no-window`
+runs headless and `--frame-dir` writes a PPM per frame (a separate query per
+frame, so not a 35 Hz mode). On Linux the window links against X11 or Wayland
+at run time and needs no build-time packages.
+
+The melt's pass count per frame comes from the reference run and is loaded as
+data from `driver/melt/demo3.tsv`; its provenance is in that directory's
+README.
+
 ## Benchmarks
 
 Timings need a quiet machine, and the numbers in `docs/experiments/` were

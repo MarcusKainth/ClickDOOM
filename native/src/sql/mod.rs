@@ -3,10 +3,13 @@
 //! Nothing here executes. A caller gets a list of [`Statement`]s and issues
 //! them; that is the whole of the driver's part in loading a level.
 
+pub mod bsp;
 pub mod fixed;
 pub mod parity;
+pub mod probe;
 pub mod render;
 pub mod rowbinary;
+pub mod sim;
 pub mod statement;
 
 pub use statement::{Statement, split_statements};
@@ -83,6 +86,26 @@ pub fn wad_insert(db: &str, wad: &crate::wad::Wad<'_>) -> Statement {
         format!("INSERT INTO {db}.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary"),
         body,
     )
+}
+
+/// The columns `native_state` declares, name and type, in declaration order.
+///
+/// The schema is the one place that says what type a state column has.
+/// `probe_state` takes its types from here, so the table the probe loads
+/// into and the table the simulation writes cannot disagree on a type.
+fn native_state_types() -> Vec<(&'static str, &'static str)> {
+    let (_, rest) = SCHEMA
+        .split_once("CREATE TABLE IF NOT EXISTS {{DB}}.native_state\n(\n")
+        .expect("the schema declares native_state");
+    let (body, _) = rest
+        .split_once("\n)\nENGINE")
+        .expect("the native_state declaration ends with its engine");
+    body.lines()
+        .map(|line| line.split("--").next().unwrap_or_default().trim())
+        .map(|line| line.trim_end_matches(','))
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .map(|(name, kind)| (name, kind.trim()))
+        .collect()
 }
 
 /// One insert per constant table, streaming the committed TSV.

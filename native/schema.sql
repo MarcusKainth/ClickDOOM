@@ -625,6 +625,8 @@ ENGINE = MergeTree ORDER BY tic;
 -- The column list and its order are `spec/src/native_state.rs`, which the
 -- reference emulator's probe writes as well. Mobj and sector-thinker
 -- fields are parallel arrays indexed by slot in thinker-list order.
+-- `p_message` and `hu_message` hold the xxh64 of the text, 0 for none,
+-- because that is what both writers can read out of a message.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS {{DB}}.native_state
@@ -668,7 +670,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
     m_target       Array(UInt32),
     m_reactiontime Array(Int32),
     m_threshold    Array(Int32),
-    m_player       Array(UInt8),
+    m_player       Array(Int8),
     m_lastlook     Array(Int32),
     m_sp_x         Array(Int16),
     m_sp_y         Array(Int16),
@@ -760,7 +762,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
     p_killcount        Int32,
     p_itemcount        Int32,
     p_secretcount      Int32,
-    p_message          String,
+    p_message          UInt64,
     p_damagecount      Int32,
     p_bonuscount       Int32,
     p_attacker         UInt32,
@@ -787,7 +789,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
     st_clock            Int32,
     hu_message_on       UInt8,
     hu_message_counter  Int32,
-    hu_message          String,
+    hu_message          UInt64,
     hu_nottobefuckedwith UInt8,
     menu_skullanim      Int32,
     menu_whichskull     Int32,

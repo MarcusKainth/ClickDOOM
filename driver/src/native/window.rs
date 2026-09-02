@@ -1,10 +1,10 @@
 //! The window a paced run blits into.
 //!
 //! The bytes are the ones SQL produced: `rgb32` is 256,000 bytes of
-//! little-endian words, one per pixel, and the window takes words. Between
-//! the table and the screen a word is read out of its four bytes and
-//! repeated to fill the whole number of screen pixels it is drawn at.
-//! Nothing is blended.
+//! little-endian words, one per pixel. They are copied into a 320x200
+//! texture whose format reads them in the order they lie, and the graphics
+//! card repeats each texel over the whole number of screen pixels it is
+//! drawn at. Nothing between the table and the screen changes a byte.
 //!
 //! Behind the `window` feature. Without it the type is still here and
 //! [`Window::open`] still refuses, so a headless build has the same command
@@ -16,6 +16,20 @@ pub const HEIGHT: usize = 200;
 
 /// Bytes of `rgb32`, four per pixel.
 pub const RGB32_BYTES: usize = WIDTH * HEIGHT * 4;
+
+/// The texture the frame is copied into.
+///
+/// Its channels sit where a little-endian `0RGB` word puts them: blue in the
+/// lowest byte, then green, then red, then the byte the frame leaves at
+/// zero. The copy into it is the frame's own bytes and nothing reorders
+/// them.
+///
+/// It is sRGB because the surface the card draws to is. A sample is read out
+/// of the texture's encoding and written back in the surface's, so the byte
+/// only survives that when the two are the same. [`Window::open`] refuses a
+/// surface that disagrees.
+#[cfg(feature = "window")]
+const TEXTURE_FORMAT: pixels::wgpu::TextureFormat = pixels::wgpu::TextureFormat::Bgra8UnormSrgb;
 
 /// Anything that stops a frame from reaching the screen.
 #[derive(Debug, thiserror::Error)]
@@ -334,73 +348,26 @@ impl Run {
     }
 }
 
-/// Reads `rgb32` into `buffer` as the words it holds.
+/// Refuses anything that is not a whole frame.
 ///
-/// The bytes come out of the table untouched; a word is four of them, least
-/// significant first, which is how SQL wrote them.
-///
-/// Public because it is one of the two things that happen between the table
-/// and the screen, and a test that has a frame in hand can check the two
-/// ends against each other without opening a window.
-pub fn words(rgb32: &[u8], buffer: &mut Vec<u32>) -> Result<(), Error> {
+/// The frame is copied into a texture of exactly this size, so a short one
+/// would be drawn with the end of the last frame behind it and a long one
+/// would not fit at all.
+#[cfg(feature = "window")]
+fn whole_frame(rgb32: &[u8]) -> Result<(), Error> {
     if rgb32.len() != RGB32_BYTES {
         return Err(Error::FrameSize { found: rgb32.len() });
     }
-    buffer.clear();
-    buffer.extend(
-        rgb32
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .copied()
-            .map(u32::from_le_bytes),
-    );
     Ok(())
-}
-
-/// Draws `frame` into a `width` by `height` screen buffer, at the largest
-/// whole number of screen pixels per frame pixel that fits, centred, with
-/// the rest black.
-///
-/// Every word written is a word `frame` holds. A frame pixel is repeated,
-/// never blended, so what reaches the screen is what the renderer produced.
-#[cfg(feature = "window")]
-fn blit(frame: &[u32], screen: &mut [u32], width: usize, height: usize) {
-    let scale = (width / WIDTH).min(height / HEIGHT);
-    if scale == 0 || frame.len() < WIDTH * HEIGHT || screen.len() < width * height {
-        screen.fill(0);
-        return;
-    }
-    let (drawn_width, drawn_height) = (WIDTH * scale, HEIGHT * scale);
-    if (drawn_width, drawn_height) != (width, height) {
-        screen.fill(0);
-    }
-    let left = (width - drawn_width) / 2;
-    let top = (height - drawn_height) / 2;
-    for row in 0..HEIGHT {
-        let source = &frame[row * WIDTH..][..WIDTH];
-        let at = (top + row * scale) * width + left;
-        let drawn = &mut screen[at..][..drawn_width];
-        if scale == 1 {
-            drawn.copy_from_slice(source);
-        } else {
-            for (word, run) in source.iter().zip(drawn.chunks_exact_mut(scale)) {
-                run.fill(*word);
-            }
-        }
-        for line in 1..scale {
-            let (above, below) = screen.split_at_mut(at + line * width);
-            below[..drawn_width].copy_from_slice(&above[at..][..drawn_width]);
-        }
-    }
 }
 
 #[cfg(feature = "window")]
 mod backend {
-    use std::num::NonZeroU32;
     use std::sync::Arc;
     use std::time::Duration; // purity-ok: the event pump's timeout, a constant zero, read from no clock
 
+    use pixels::wgpu;
+    use pixels::{Pixels, PixelsBuilder, SurfaceTexture};
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
     use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
@@ -409,10 +376,7 @@ mod backend {
     use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
     use winit::window::{CursorGrabMode, WindowAttributes, WindowId};
 
-    use super::{Error, Grab, HEIGHT, Run, Scale, WIDTH, blit, words};
-
-    /// The words on their way to the window, and the display they go through.
-    type Surface = softbuffer::Surface<Arc<winit::window::Window>, Arc<winit::window::Window>>;
+    use super::{Error, Grab, HEIGHT, RGB32_BYTES, Run, Scale, TEXTURE_FORMAT, WIDTH, whole_frame};
 
     /// The window, and the run the event loop writes into.
     ///
@@ -423,9 +387,13 @@ mod backend {
         title: String,
         scale: Scale,
         window: Option<Arc<winit::window::Window>>,
-        surface: Option<Surface>,
-        /// The screen buffer's size, so it is resized only when it changes.
-        size: Option<(NonZeroU32, NonZeroU32)>,
+        /// The 320x200 texture and the pipeline that draws it, once the
+        /// window exists to draw into.
+        pixels: Option<Pixels<'static>>,
+        /// A size the window has reported, for the next frame to resize the
+        /// surface to. The window cannot be dragged bigger, so this is a
+        /// display whose scale factor changed.
+        resized: Option<(u32, u32)>,
         /// Why the window could not be opened, for [`Window::open`] to
         /// report. The event loop has no other way back to its caller.
         refused: Option<Error>,
@@ -440,8 +408,8 @@ mod backend {
                 title: title.to_owned(),
                 scale,
                 window: None,
-                surface: None,
-                size: None,
+                pixels: None,
+                resized: None,
                 refused: None,
                 warned: false,
                 run: Run::default(),
@@ -458,6 +426,39 @@ mod backend {
                     HEIGHT as f64 * factor,
                 ))
                 .with_resizable(false)
+        }
+
+        /// The texture, and the pipeline that draws it into `window`.
+        ///
+        /// The frame is drawn at the largest whole number of screen pixels
+        /// per frame pixel that fits, centred, with black around it, and
+        /// sampled without filtering. The run paces itself at 35 Hz, so the
+        /// surface does not wait for the display: a frame that is late is
+        /// late already, and blocking here would make the next tic late too.
+        fn draw_into(window: Arc<winit::window::Window>) -> Result<Pixels<'static>, Error> {
+            let size = window.inner_size();
+            let surface = SurfaceTexture::new(size.width, size.height, window);
+            let pixels = PixelsBuilder::new(WIDTH as u32, HEIGHT as u32, surface)
+                .texture_format(TEXTURE_FORMAT)
+                .blend_state(wgpu::BlendState::REPLACE)
+                .alpha_mode(wgpu::CompositeAlphaMode::Opaque)
+                .present_mode(wgpu::PresentMode::AutoNoVsync)
+                .build()
+                .map_err(|err| Error::Open(err.to_string()))?;
+            if pixels.frame().len() != RGB32_BYTES {
+                return Err(Error::Open(format!(
+                    "the texture takes {} bytes, not the {RGB32_BYTES} a frame has",
+                    pixels.frame().len()
+                )));
+            }
+            if pixels.render_texture_format().is_srgb() != TEXTURE_FORMAT.is_srgb() {
+                return Err(Error::Open(format!(
+                    "the surface is {:?} and the texture {TEXTURE_FORMAT:?}, which do not \
+                     agree on sRGB",
+                    pixels.render_texture_format()
+                )));
+            }
+            Ok(pixels)
         }
 
         /// Makes the cursor match the run after an event. `before` is
@@ -495,33 +496,24 @@ mod backend {
             }
         }
 
-        /// Puts `frame` on the screen, at the size the window is now.
-        fn present(&mut self, frame: &[u32]) -> Result<(), Error> {
-            let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
+        /// Copies `rgb32` into the texture and draws it.
+        ///
+        /// The caller has already checked the length, so the copy takes the
+        /// frame's bytes as they lie.
+        fn present(&mut self, rgb32: &[u8]) -> Result<(), Error> {
+            let Some(pixels) = &mut self.pixels else {
                 return Ok(());
             };
-            let inner = window.inner_size();
-            let (Some(width), Some(height)) =
-                (NonZeroU32::new(inner.width), NonZeroU32::new(inner.height))
-            else {
-                return Ok(());
-            };
-            if self.size != Some((width, height)) {
-                surface
-                    .resize(width, height)
+            if let Some((width, height)) = self.resized.take()
+                && width > 0
+                && height > 0
+            {
+                pixels
+                    .resize_surface(width, height)
                     .map_err(|err| Error::Draw(err.to_string()))?;
-                self.size = Some((width, height));
             }
-            let mut screen = surface
-                .buffer_mut()
-                .map_err(|err| Error::Draw(err.to_string()))?;
-            blit(
-                frame,
-                &mut screen,
-                width.get() as usize,
-                height.get() as usize,
-            );
-            screen.present().map_err(|err| Error::Draw(err.to_string()))
+            pixels.frame_mut().copy_from_slice(rgb32);
+            pixels.render().map_err(|err| Error::Draw(err.to_string()))
         }
     }
 
@@ -537,16 +529,12 @@ mod backend {
                     return;
                 }
             };
-            // The context is only needed to make the surface, which keeps
-            // whatever it needs of the display.
-            let made = softbuffer::Context::new(window.clone())
-                .and_then(|context| Surface::new(&context, window.clone()));
-            match made {
-                Ok(surface) => {
+            match App::draw_into(window.clone()) {
+                Ok(pixels) => {
                     self.window = Some(window);
-                    self.surface = Some(surface);
+                    self.pixels = Some(pixels);
                 }
-                Err(err) => self.refused = Some(Error::Open(err.to_string())),
+                Err(err) => self.refused = Some(err),
             }
         }
 
@@ -555,6 +543,7 @@ mod backend {
             match event {
                 WindowEvent::CloseRequested | WindowEvent::Destroyed => self.run.to(Grab::Closing),
                 WindowEvent::Focused(false) => self.run.unfocused(),
+                WindowEvent::Resized(size) => self.resized = Some((size.width, size.height)),
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         match event.state {
@@ -581,11 +570,10 @@ mod backend {
         }
     }
 
-    /// One open window, and the buffer a frame is read into.
+    /// One open window.
     pub struct Window {
         events: EventLoop<()>,
         app: App,
-        buffer: Vec<u32>,
     }
 
     impl Window {
@@ -608,11 +596,7 @@ mod backend {
                     "the event loop did not resume, so there is no window".to_owned(),
                 ));
             }
-            Ok(Window {
-                events,
-                app,
-                buffer: Vec::with_capacity(WIDTH * HEIGHT),
-            })
+            Ok(Window { events, app })
         }
 
         /// Puts one frame on the screen and takes in everything the window
@@ -621,14 +605,14 @@ mod backend {
         /// The keys and the motion a tic samples are what this left behind,
         /// so a run that stops drawing stops reading input.
         pub fn draw(&mut self, rgb32: &[u8]) -> Result<(), Error> {
-            words(rgb32, &mut self.buffer)?;
+            whole_frame(rgb32)?;
             let status = self
                 .events
                 .pump_app_events(Some(Duration::ZERO), &mut self.app);
             if let PumpStatus::Exit(_) = status {
                 self.app.run.to(Grab::Closing);
             }
-            self.app.present(&self.buffer)
+            self.app.present(rgb32)
         }
 
         /// Whether the run goes on. It stops when the window is closed, and
@@ -691,32 +675,25 @@ mod backend {
 
 pub use backend::Window;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "window"))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_word_is_four_bytes_least_significant_first() {
-        let mut rgb32 = vec![0u8; RGB32_BYTES];
-        rgb32[..8].copy_from_slice(&[0x11, 0x22, 0x33, 0x00, 0xff, 0xee, 0xdd, 0x00]);
-        let mut buffer = Vec::new();
-        words(&rgb32, &mut buffer).expect("a whole frame");
-        assert_eq!(buffer.len(), WIDTH * HEIGHT);
-        assert_eq!(buffer[0], 0x0033_2211);
-        assert_eq!(buffer[1], 0x00dd_eeff);
-    }
-
+    /// A frame that is not the size the texture takes is refused rather
+    /// than copied, which would leave the last frame showing through or run
+    /// past the end.
     #[test]
     fn a_frame_of_the_wrong_size_is_refused_rather_than_drawn_short() {
-        let mut buffer = Vec::new();
-        let error = words(&[0; 12], &mut buffer).expect_err("not a frame");
+        whole_frame(&vec![0u8; RGB32_BYTES]).expect("a whole frame");
+        let error = whole_frame(&[0; 12]).expect_err("not a frame");
         assert!(matches!(error, Error::FrameSize { found: 12 }), "{error}");
+        let error = whole_frame(&vec![0u8; RGB32_BYTES + 4]).expect_err("too much");
+        assert!(matches!(error, Error::FrameSize { .. }), "{error}");
     }
 
     /// Every binding names a bit the contract declares, and the weapon keys
     /// sit where it says they sit. A binding onto a bit nothing reads is a
     /// key that does nothing and says nothing about it.
-    #[cfg(feature = "window")]
     #[test]
     fn every_binding_names_a_key_bit_the_contract_declares() {
         use clickdoom_spec::native_state::key;
@@ -745,19 +722,8 @@ mod tests {
         }
     }
 
-    /// The buffer is reused between frames, so it has to be emptied first.
-    #[test]
-    fn a_second_frame_replaces_the_first_rather_than_growing_the_buffer() {
-        let mut buffer = Vec::new();
-        words(&vec![0u8; RGB32_BYTES], &mut buffer).expect("a frame");
-        words(&vec![1u8; RGB32_BYTES], &mut buffer).expect("another frame");
-        assert_eq!(buffer.len(), WIDTH * HEIGHT);
-        assert_eq!(buffer[0], 0x0101_0101);
-    }
-
     /// A sample takes everything the mouse reported since the last one,
     /// whatever the cursor could have done on the screen in that time.
-    #[cfg(feature = "window")]
     #[test]
     fn a_sample_takes_every_report_since_the_last_one() {
         let mut motion = Motion::default();
@@ -770,7 +736,6 @@ mod tests {
 
     /// Movement smaller than one unit is kept rather than rounded away, so
     /// a slow steady drag turns instead of doing nothing.
-    #[cfg(feature = "window")]
     #[test]
     fn motion_below_one_unit_carries_to_a_later_sample() {
         let mut motion = Motion::default();
@@ -784,7 +749,6 @@ mod tests {
 
     /// An input row carries an `i16`. More than that in one sample is taken
     /// over several rather than wrapping round into the other direction.
-    #[cfg(feature = "window")]
     #[test]
     fn a_sample_takes_no_more_than_an_input_row_carries() {
         let mut motion = Motion::default();
@@ -796,7 +760,6 @@ mod tests {
 
     /// A run that holds the cursor turns by everything the mouse reported,
     /// however far in one direction it went.
-    #[cfg(feature = "window")]
     #[test]
     fn a_held_cursor_turns_by_every_report_however_far_the_mouse_went() {
         let mut run = Run::default();
@@ -813,7 +776,6 @@ mod tests {
     /// Nothing is read while the cursor is free, and nothing carries across
     /// a release, so taking the cursor again does not turn the player by
     /// everything the pointer did on the desktop.
-    #[cfg(feature = "window")]
     #[test]
     fn a_free_cursor_reports_no_movement_and_a_release_forgets_what_it_had() {
         let mut run = Run::default();
@@ -829,7 +791,6 @@ mod tests {
 
     /// The click that takes the cursor is not also a shot, and the buttons
     /// count once the run has the cursor.
-    #[cfg(feature = "window")]
     #[test]
     fn the_click_that_takes_the_cursor_does_not_fire() {
         use clickdoom_spec::native_state::key;
@@ -850,7 +811,6 @@ mod tests {
     }
 
     /// Two keys onto one bit: the bit stays set while either is down.
-    #[cfg(feature = "window")]
     #[test]
     fn a_bit_two_keys_share_survives_one_of_them_coming_up() {
         use clickdoom_spec::native_state::key;
@@ -866,7 +826,6 @@ mod tests {
 
     /// The pause key is a press. Holding it down pauses once, not once per
     /// tic, and a press and release inside one tic is not lost.
-    #[cfg(feature = "window")]
     #[test]
     fn the_pause_key_sets_its_bit_once_per_press() {
         use clickdoom_spec::native_state::key;
@@ -886,7 +845,6 @@ mod tests {
     }
 
     /// The lowest weapon key down wins, and no key means no weapon.
-    #[cfg(feature = "window")]
     #[test]
     fn one_weapon_key_at_a_time_reaches_the_command() {
         use clickdoom_spec::native_state::key;
@@ -903,7 +861,6 @@ mod tests {
 
     /// A key held when the window loses focus does not stay down, because
     /// no release for it ever arrives.
-    #[cfg(feature = "window")]
     #[test]
     fn losing_focus_lets_go_of_every_key() {
         use winit::keyboard::KeyCode;
@@ -920,7 +877,6 @@ mod tests {
 
     /// Escape frees the cursor and the run goes on. Escape with the cursor
     /// already free ends it.
-    #[cfg(feature = "window")]
     #[test]
     fn escape_frees_the_cursor_before_it_ends_the_run() {
         use winit::keyboard::KeyCode;
@@ -935,7 +891,6 @@ mod tests {
 
     /// The cursor is free until a click, Escape gives it back, and Escape
     /// with it already free ends the run.
-    #[cfg(feature = "window")]
     #[test]
     fn escape_frees_the_cursor_and_escape_again_ends_the_run() {
         let start = Grab::default();
@@ -957,7 +912,6 @@ mod tests {
 
     /// Losing focus frees the cursor. Getting focus back does not take it
     /// again, so a window the pointer is over is safe to click through.
-    #[cfg(feature = "window")]
     #[test]
     fn losing_focus_frees_the_cursor_and_only_a_click_takes_it_back() {
         assert_eq!(Grab::Locked.unfocused(), Grab::Released);
@@ -967,7 +921,6 @@ mod tests {
     }
 
     /// A run that is closing stays closed whatever else arrives.
-    #[cfg(feature = "window")]
     #[test]
     fn nothing_reopens_a_run_that_is_closing() {
         assert_eq!(Grab::Closing.clicked(), Grab::Closing);
@@ -975,67 +928,21 @@ mod tests {
         assert_eq!(Grab::Closing.escaped(), Grab::Closing);
     }
 
-    /// A screen exactly the frame's size takes the frame's words in the
-    /// frame's order.
-    #[cfg(feature = "window")]
+    /// The texture takes the frame's bytes as they lie, so its format has to
+    /// be the one whose channels sit where a word puts them. Swap the format
+    /// and the picture comes out with red and blue exchanged.
     #[test]
-    fn a_screen_the_size_of_the_frame_takes_it_word_for_word() {
-        let frame: Vec<u32> = (0..WIDTH * HEIGHT).map(|word| word as u32).collect();
-        let mut screen = vec![0xdead_beef; WIDTH * HEIGHT];
-        blit(&frame, &mut screen, WIDTH, HEIGHT);
-        assert_eq!(screen, frame);
+    fn the_texture_format_reads_a_word_the_way_the_table_wrote_it() {
+        let word: u32 = 0x0033_2211;
+        assert_eq!(word.to_le_bytes(), [0x11, 0x22, 0x33, 0x00]);
+        assert_eq!(TEXTURE_FORMAT, pixels::wgpu::TextureFormat::Bgra8UnormSrgb);
     }
 
-    /// A bigger screen repeats each word over the square of screen pixels it
-    /// is drawn at, and puts nothing else anywhere.
-    #[cfg(feature = "window")]
+    /// A texture holds four bytes per pixel over the whole frame, so the
+    /// copy into it is the whole of `rgb32` and nothing else.
     #[test]
-    fn a_bigger_screen_repeats_each_word_and_invents_none() {
-        let frame: Vec<u32> = (0..WIDTH * HEIGHT)
-            .map(|word| word as u32 | 0x0010_0000)
-            .collect();
-        let (width, height) = (WIDTH * 3, HEIGHT * 3);
-        let mut screen = vec![0xdead_beef; width * height];
-        blit(&frame, &mut screen, width, height);
-        for y in 0..height {
-            for x in 0..width {
-                assert_eq!(
-                    screen[y * width + x],
-                    frame[(y / 3) * WIDTH + x / 3],
-                    "at {x},{y}"
-                );
-            }
-        }
-    }
-
-    /// A screen that is not a whole multiple of the frame draws the frame
-    /// centred at the scale that fits and leaves the rest black.
-    #[cfg(feature = "window")]
-    #[test]
-    fn a_screen_that_does_not_divide_evenly_gets_black_around_the_frame() {
-        let frame = vec![0x00ff_ffff; WIDTH * HEIGHT];
-        let (width, height) = (WIDTH * 2 + 10, HEIGHT * 2 + 6);
-        let mut screen = vec![0xdead_beef; width * height];
-        blit(&frame, &mut screen, width, height);
-        assert_eq!(screen[0], 0, "the top left corner is not black");
-        assert_eq!(screen[width * height - 1], 0, "the bottom right one is not");
-        let lit = screen.iter().filter(|word| **word == 0x00ff_ffff).count();
-        assert_eq!(lit, WIDTH * 2 * HEIGHT * 2);
-        assert_eq!(
-            screen[3 * width + 5],
-            0x00ff_ffff,
-            "the frame is off centre"
-        );
-    }
-
-    /// A screen too small for one whole frame pixel is left black rather
-    /// than drawn into past its end.
-    #[cfg(feature = "window")]
-    #[test]
-    fn a_screen_smaller_than_the_frame_is_left_black() {
-        let frame = vec![0x00ff_ffff; WIDTH * HEIGHT];
-        let mut screen = vec![0xdead_beef; 16 * 16];
-        blit(&frame, &mut screen, 16, 16);
-        assert!(screen.iter().all(|word| *word == 0));
+    fn the_texture_is_exactly_one_frame_of_bytes() {
+        assert_eq!(RGB32_BYTES, WIDTH * HEIGHT * 4);
+        assert_eq!(TEXTURE_FORMAT.block_copy_size(None), Some(4));
     }
 }

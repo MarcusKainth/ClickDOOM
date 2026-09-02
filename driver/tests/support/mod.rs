@@ -87,3 +87,18 @@ pub async fn drop_database(db: &Db, database: &str) {
         .await
         .expect("the database is dropped");
 }
+
+/// The words `rgb32` holds, four bytes each, least significant first.
+///
+/// The driver copies those bytes into the window's texture without reading
+/// them, so this reader lives here: it is what a test with a frame in hand
+/// uses to check the words against what the palette says they should be.
+pub fn rgb32_words(rgb32: &[u8]) -> Vec<u32> {
+    rgb32
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_le_bytes)
+        .collect()
+}

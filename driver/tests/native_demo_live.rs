@@ -149,10 +149,10 @@ async fn a_demo_run_draws_every_frame_and_leaves_what_it_was_asked_to() {
         .expect("the database is dropped");
 }
 
-/// `rgb32` is what reaches the screen, and the driver reinterprets it
-/// without touching a channel. This checks the two ends against each other:
-/// every word is the palette entry for that pixel, in the order the window
-/// takes.
+/// `rgb32` is what reaches the screen, and the driver copies it into the
+/// window's texture without touching a channel. This checks the two ends
+/// against each other: every word is the palette entry for that pixel, in
+/// the order the texture reads them.
 #[tokio::test]
 async fn rgb32_is_the_word_the_window_blits() {
     let (database, admin) = loaded("rgb32").await;
@@ -186,8 +186,8 @@ async fn rgb32_is_the_word_the_window_blits() {
     session.close().await.expect("the statement finished");
 
     assert_eq!(frame.rgb32.len(), window::RGB32_BYTES);
-    let mut words = Vec::new();
-    window::words(&frame.rgb32, &mut words).expect("a whole frame");
+    let words = support::rgb32_words(&frame.rgb32);
+    assert_eq!(words.len(), window::WIDTH * window::HEIGHT);
     for (at, (pixel, word)) in frame.fb.iter().zip(&words).enumerate() {
         let entry = usize::from(*pixel) * 3;
         let (r, g, b) = (

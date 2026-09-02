@@ -11,8 +11,11 @@
 //! database, [`probe`] loads the reference emulator's state rows, [`melt`]
 //! the screen wipe's schedule, and [`schedule`] reads back which frames a
 //! run renders and what each one draws from.
+//!
+//! A paced run adds [`pace`], the 35 Hz tic clock.
 
 pub mod melt;
+pub mod pace;
 pub mod plan;
 pub mod probe;
 pub mod rowbinary;

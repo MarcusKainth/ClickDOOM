@@ -19,6 +19,7 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+minifb = { workspace = true, optional = true }
 refemu.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
@@ -28,6 +29,12 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [features]
+default = ["window"]
+# The window a paced run blits into. Behind a feature because minifb needs
+# X11 or Wayland development packages on Linux, and a headless build has
+# --no-window and --frame-dir without them.
+window = ["dep:minifb"]
+
 # The tests that execute generated SQL against a real ClickHouse server.
 # Behind a feature rather than behind `#[ignore]`, so a run either includes
 # them or visibly does not, and an unreachable server is a failure rather

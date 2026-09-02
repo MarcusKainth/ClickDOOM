@@ -99,10 +99,11 @@ async fn a_renderer_only_session_draws_the_frames_the_engine_drew() {
         session
             .feed_render(row.frame, row.tic, row.melt_step)
             .unwrap_or_else(|e| panic!("feeding frame {}: {e}", row.frame));
-        let (frame, _) = session
+        let frame = session
             .wait_frame(row.frame, FRAME_TIMEOUT)
             .await
-            .unwrap_or_else(|e| panic!("{e}"));
+            .unwrap_or_else(|e| panic!("{e}"))
+            .frame;
         assert_eq!(
             frame.fb.len(),
             64_000,

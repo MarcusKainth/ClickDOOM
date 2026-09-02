@@ -141,13 +141,13 @@ async fn render_up_to(
         session
             .feed_render(row.frame, row.tic, row.melt_step)
             .map_err(|err| failed(format!("feeding frame {}: {err}", row.frame)))?;
-        let (frame, took) = session
+        let waited = session
             .wait_frame(row.frame, FRAME_TIMEOUT)
             .await
             .map_err(|err| failed(err.to_string()))?;
-        elapsed += took;
-        last = took;
-        fb_hash = frame.fb_hash;
+        elapsed += waited.waited;
+        last = waited.waited;
+        fb_hash = waited.frame.fb_hash;
         if against_probe && diverged.is_none() && fb_hash != row.probe_fb_hash {
             diverged = Some((row.frame, fb_hash.clone(), row.probe_fb_hash.clone()));
         }

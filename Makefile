@@ -261,6 +261,10 @@ format: ## Formatting, every language. Rust at rust-toolchain.toml's version
 
 clippy: ## Rust lints. --all-targets so the test files are covered too
 	cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+	# The driver's `window` feature pulls in a window system. Both shapes are
+	# built, because a host with no window system builds the other one.
+	cargo clippy --locked -p clickdoom-driver --no-default-features --all-targets \
+	    --features clickhouse-tests -- -D warnings
 
 typos: ## Spelling, over prose and identifiers. _typos.toml holds the exceptions
 	cargo install --locked --quiet typos-cli@1.50.0

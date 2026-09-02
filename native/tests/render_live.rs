@@ -252,6 +252,25 @@ async fn the_frame_carries_its_own_bytes_and_colours(fixture: &Fixture, case: &C
         ))
         .await;
     assert_eq!(same, 1, "frame {frame}: fb_bytes is not fb");
+
+    // Each rgb32 word is the pixel's palette entry as a little-endian 0RGB
+    // word: blue, green, red, zero. A display reads the words as they lie.
+    // The expected string is built once from `fb_bytes`; indexing `rgb32`
+    // per pixel would copy the 256 KB string once per pixel.
+    let same: u8 = fixture
+        .scalar(&format!(
+            "SELECT toUInt8(arrayStringConcat(arrayMap(c -> concat( \
+                 substring(palette, 3 * c + 3, 1), \
+                 substring(palette, 3 * c + 2, 1), \
+                 substring(palette, 3 * c + 1, 1), \
+                 '\\0'), fb_bytes), '') = rgb32) \
+             FROM {db}.native_frames WHERE frame = {frame}"
+        ))
+        .await;
+    assert_eq!(
+        same, 1,
+        "frame {frame}: rgb32 words are not little-endian 0RGB"
+    );
 }
 
 async fn difference(fixture: &Fixture, case: &Case, region: Region) -> Difference {

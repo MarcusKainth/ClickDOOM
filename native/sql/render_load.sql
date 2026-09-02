@@ -212,16 +212,18 @@ FROM
 );
 
 -- The palettes the ROM writes: `gammatable[0][PLAYPAL[i]]`, and the same
--- bytes again as the 0RGB words a display takes.
+-- bytes again as the 0RGB words a display takes, each word little-endian:
+-- blue, green, red, then the zero byte.
 INSERT INTO {{DB}}.rt_palette (id, data, rgb)
 SELECT
     p.id,
     arrayStringConcat(arrayMap(k -> char(g.m[reinterpretAsUInt8(substring(p.data, k + 1, 1))]),
                                range(768)), '') AS data,
-    arrayStringConcat(arrayMap(k -> concat('\0',
-        char(g.m[reinterpretAsUInt8(substring(p.data, k * 3 + 1, 1))]),
+    arrayStringConcat(arrayMap(k -> concat(
+        char(g.m[reinterpretAsUInt8(substring(p.data, k * 3 + 3, 1))]),
         char(g.m[reinterpretAsUInt8(substring(p.data, k * 3 + 2, 1))]),
-        char(g.m[reinterpretAsUInt8(substring(p.data, k * 3 + 3, 1))])), range(256)), '') AS rgb
+        char(g.m[reinterpretAsUInt8(substring(p.data, k * 3 + 1, 1))]),
+        '\0'), range(256)), '') AS rgb
 FROM {{DB}}.playpal AS p
 CROSS JOIN
 (

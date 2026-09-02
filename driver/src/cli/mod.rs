@@ -81,7 +81,7 @@ pub fn main() -> ExitCode {
     let result = runtime.block_on(async {
         match &cli.command {
             Command::Emulation(cmd) => emulation::run(cmd).await,
-            Command::Native(cmd) => native::run(cmd),
+            Command::Native(cmd) => native::run(cmd).await,
         }
     });
     match result {
@@ -207,19 +207,57 @@ mod tests {
         assert!(Cli::try_parse_from(["clickdoom", "emulation"]).is_err());
     }
 
+    /// One parseable argument list per `native` subcommand, same roster
+    /// rule as `EMULATION_LINES`.
+    const NATIVE_LINES: &[&[&str]] = &[&["session-check"], &["session-check", "--rows", "10"]];
+
     #[test]
-    fn native_parses_and_takes_no_subcommand() {
-        Cli::try_parse_from(["clickdoom", "native"]).expect("native parses on its own");
+    fn every_native_subcommand_parses_under_the_namespace() {
+        for line in NATIVE_LINES {
+            let args = argv(&["clickdoom", "native"], line);
+            if let Err(err) = Cli::try_parse_from(&args) {
+                panic!("{args:?} did not parse: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_needs_a_subcommand() {
+        assert!(Cli::try_parse_from(["clickdoom", "native"]).is_err());
         assert!(Cli::try_parse_from(["clickdoom", "native", "load"]).is_err());
     }
 
     #[test]
-    fn a_bare_native_reports_a_usage_error() {
-        let cli = Cli::try_parse_from(["clickdoom", "native"]).expect("native parses");
+    fn no_native_subcommand_answers_at_the_top_level() {
+        for line in NATIVE_LINES {
+            let args = argv(&["clickdoom"], line);
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "{args:?} still parses at the top level"
+            );
+        }
+    }
+
+    #[test]
+    fn session_check_takes_the_shared_connection_flags() {
+        let cli = Cli::try_parse_from([
+            "clickdoom",
+            "native",
+            "session-check",
+            "--host",
+            "elsewhere",
+            "--database",
+            "probe",
+            "--max-p50-ms",
+            "2.5",
+        ])
+        .expect("session-check takes the connection flags");
         let Command::Native(cmd) = &cli.command else {
             panic!("parsed something other than native");
         };
-        let failure = native::run(cmd).expect_err("native has nothing to run");
-        assert_eq!(failure.exit, Exit::Usage);
+        let native::Command::SessionCheck(check) = &cmd.command;
+        assert_eq!(check.conn.host, "elsewhere");
+        assert_eq!(check.conn.database, "probe");
+        assert_eq!(check.max_p50_ms, 2.5);
     }
 }

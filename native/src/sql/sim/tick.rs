@@ -16,7 +16,7 @@
 
 use crate::sql::Statement;
 
-use super::{Tic, game, hud, player, spec, state_columns};
+use super::{Tic, game, hud, lights, player, spec, state_columns};
 
 /// The columns the session streams, in wire order. `pad` carries the
 /// padding row the transport writes behind the statement text.
@@ -157,6 +157,9 @@ fn bindings(db: &str) -> Tic {
     let think = player::think(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, think);
+    let thinkers = lights::thinkers(&tic.state);
+    let running = game::running(&tic.state);
+    tic.stage_when(&running, thinkers);
     let specials = spec::update_specials(&tic.state, db);
     let running = game::running(&tic.state);
     tic.stage_when(&running, specials);

@@ -19,6 +19,7 @@ wih = "wih"                       # write-log icount hash, a SQL alias
 compilability = "compilability"   # whether ClickHouse's JIT can compile an expression
 Parm = "Parm"                     # M_CheckParm, a DOOM engine function
 VERTEXES = "VERTEXES"             # the WAD lump name, spelled that way in the file
+alph = "alph"                     # alphSwitchList, a DOOM engine table
 
 [default]
 extend-ignore-re = [

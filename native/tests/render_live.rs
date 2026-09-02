@@ -1,7 +1,8 @@
 //! The frame transform against a real ClickHouse server.
 //!
-//! Three frames are rendered from three probed game states and compared,
-//! pixel by pixel, against the framebuffers the real engine drew. The oracle
+//! Five frames are rendered from the probed game states they were drawn from
+//! and compared, pixel by pixel, against the framebuffers the real engine
+//! drew. The oracle
 //! is the reference emulator's own dump; `native/tests/fixtures/README.md`
 //! says where it came from.
 //!
@@ -27,23 +28,43 @@ struct Case {
     frame: u32,
     tic: u32,
     previous: u32,
+    /// How many passes of the melt have run by this frame, and zero once the
+    /// melt is over. A melt frame draws over the screen the wipe started
+    /// from, not over the frame before it, so it has no previous frame to
+    /// stand on.
+    melt_step: u8,
 }
 
-const CASES: [Case; 3] = [
+const CASES: [Case; 5] = [
+    Case {
+        frame: 0,
+        tic: 2,
+        previous: 0,
+        melt_step: 1,
+    },
+    Case {
+        frame: 20,
+        tic: 2,
+        previous: 0,
+        melt_step: 22,
+    },
     Case {
         frame: 40,
         tic: 3,
         previous: 39,
+        melt_step: 0,
     },
     Case {
         frame: 110,
         tic: 73,
         previous: 109,
+        melt_step: 0,
     },
     Case {
         frame: 1000,
         tic: 963,
         previous: 999,
+        melt_step: 0,
     },
 ];
 
@@ -51,7 +72,19 @@ const STATES: &[u8] = include_bytes!("fixtures/demo3-states.tsv");
 
 /// Each fixture frame, with the hash `spec::fb_hash` gives it. A fixture that
 /// was replaced by something else fails here rather than passing quietly.
-const FRAMES: [(u32, &[u8], &[u8], u64); 6] = [
+const FRAMES: [(u32, &[u8], &[u8], u64); 8] = [
+    (
+        0,
+        include_bytes!("fixtures/demo3-frame0-fb.bin"),
+        include_bytes!("fixtures/demo3-frame0-palette.bin"),
+        0xfe5d_82c0_f42d_45f1,
+    ),
+    (
+        20,
+        include_bytes!("fixtures/demo3-frame20-fb.bin"),
+        include_bytes!("fixtures/demo3-frame20-palette.bin"),
+        0x5609_b242_d753_d5d6,
+    ),
     (
         39,
         include_bytes!("fixtures/demo3-frame39-fb.bin"),
@@ -142,8 +175,9 @@ async fn a_rendered_frame_draws_what_the_engine_drew() {
 async fn render(fixture: &Fixture, case: &Case) {
     let db = &fixture.database;
     let previous = case.previous;
-    let plan = [
-        Statement::sql(format!(
+    let mut plan = Vec::new();
+    if case.melt_step == 0 {
+        plan.push(Statement::sql(format!(
             "INSERT INTO {db}.native_frames \
              SELECT {previous}, 0, fb, \
              arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, 64001)), \
@@ -156,15 +190,15 @@ async fn render(fixture: &Fixture, case: &Case) {
              maxammo Array(Int32), arms Array(Int32), keyboxes Array(Int32), faceindex Int32, \
              armsbg Int32)') \
              FROM {db}.ref_frames WHERE frame = {previous}"
-        )),
-        Statement::sql(render::frame_transform_over(
-            db,
-            &format!(
-                "(SELECT toUInt32({}) AS frame, toUInt32({}) AS tic, toUInt8(0) AS melt_step)",
-                case.frame, case.tic
-            ),
-        )),
-    ];
+        )));
+    }
+    plan.push(Statement::sql(render::frame_transform_over(
+        db,
+        &format!(
+            "(SELECT toUInt32({}) AS frame, toUInt32({}) AS tic, toUInt8({}) AS melt_step)",
+            case.frame, case.tic, case.melt_step
+        ),
+    )));
     fixture.execute(&plan).await.expect("the frame renders");
 }
 

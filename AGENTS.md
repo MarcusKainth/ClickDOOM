@@ -81,7 +81,9 @@ file and pass it:
       --body-file <filled.md>
 
 If a model did most of the work, name it in the description. That is not held
-against the change, and it is the one place the attribution belongs.
+against the change, and it is the one place the attribution belongs. A model
+does not know its own version, so it writes the name the session lead gives
+it rather than a guess.
 
 ## Filing an issue
 

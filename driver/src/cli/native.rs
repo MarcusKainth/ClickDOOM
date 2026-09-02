@@ -19,7 +19,7 @@ use super::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::rowbinary::Row;
 use crate::native::settings::resident_settings;
-use crate::native::stream::Resident;
+use crate::native::stream::{CLOSE_TIMEOUT, Resident};
 
 /// `clickdoom native`.
 #[derive(Args)]
@@ -178,17 +178,38 @@ async fn stream_rows(cmd: &SessionCheckCmd, db: &Db, table: &str) -> Result<Meas
     .map_err(|err| failed(format!("opening the resident statement: {err}")))?;
 
     let mut visible = Vec::with_capacity(cmd.rows as usize);
+    let mut streamed = Ok(());
     for tic in 1..=cmd.rows {
-        let took = send_and_wait(&resident, db, table, tic).await?;
-        visible.push(took);
-        if let Some(rest) = TIC.checked_sub(took) {
-            tokio::time::sleep(rest).await;
+        match send_and_wait(&resident, db, table, tic).await {
+            Ok(took) => {
+                visible.push(took);
+                if let Some(rest) = TIC.checked_sub(took) {
+                    tokio::time::sleep(rest).await;
+                }
+            }
+            Err(failure) => {
+                streamed = Err(failure);
+                break;
+            }
         }
     }
-    resident
-        .close()
-        .await
-        .map_err(|err| failed(format!("the statement did not finish cleanly: {err}")))?;
+    // The statement goes whether the rows landed or not. A row that stops
+    // landing is a statement the server has ended, and the close is what
+    // carries the server's own message for it. Leaving it open holds one of
+    // the server's connections.
+    let closed = resident.close(CLOSE_TIMEOUT).await;
+    match (streamed, closed) {
+        (Ok(()), Ok(())) => {}
+        (Ok(()), Err(err)) => {
+            return Err(failed(format!(
+                "the statement did not finish cleanly: {err}"
+            )));
+        }
+        (Err(streamed), Ok(())) => return Err(streamed),
+        (Err(streamed), Err(err)) => {
+            return Err(failed(format!("{}: {err}", streamed.message)));
+        }
+    }
 
     visible.sort_unstable();
     Ok(Measured {
@@ -219,8 +240,7 @@ async fn send_and_wait(
         }
         if sent.elapsed() >= VISIBLE_TIMEOUT {
             return Err(failed(format!(
-                "row {tic} was still not readable after {VISIBLE_TIMEOUT:?}. The statement \
-                 has stopped; look for its exception in system.query_log"
+                "row {tic} was still not readable after {VISIBLE_TIMEOUT:?}"
             )));
         }
     }

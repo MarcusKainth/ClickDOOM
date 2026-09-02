@@ -9,6 +9,9 @@
 pub struct Statement {
     pub sql: String,
     pub body: Vec<u8>,
+    /// Settings the server has to know before it parses the statement, so
+    /// a caller sends them as URL parameters rather than in the text.
+    pub settings: Vec<(String, String)>,
 }
 
 impl Statement {
@@ -16,13 +19,24 @@ impl Statement {
         Statement {
             sql: sql.into(),
             body: Vec::new(),
+            settings: Vec::new(),
         }
+    }
+
+    /// The same statement, to be issued under `settings`.
+    pub fn with(mut self, settings: &[(&str, &str)]) -> Statement {
+        self.settings = settings
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        self
     }
 
     pub fn data(sql: impl Into<String>, body: Vec<u8>) -> Statement {
         Statement {
             sql: sql.into(),
             body,
+            settings: Vec::new(),
         }
     }
 

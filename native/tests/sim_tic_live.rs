@@ -47,7 +47,7 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::steps_statement(&db, 1, TICS));
+    plan.push(sim::tick::demo_statement(&db, 1, TICS));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -111,7 +111,7 @@ async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
     };
 
     fixture
-        .execute(&[sim::tick::steps_statement(db, 101, 101)])
+        .execute(&[sim::tick::demo_statement(db, 101, 101)])
         .await
         .unwrap();
     let taken = read(101).await;
@@ -122,7 +122,7 @@ async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
 
     // The counter runs down, and the widget goes off when it hits zero.
     fixture
-        .execute(&[sim::tick::steps_statement(db, 102, 101 + MSGTIMEOUT as u32)])
+        .execute(&[sim::tick::demo_statement(db, 102, 101 + MSGTIMEOUT as u32)])
         .await
         .unwrap();
     let running = read(102).await;

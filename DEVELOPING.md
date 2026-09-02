@@ -102,7 +102,11 @@ from the WAD. Its contract is `NATIVE.md`; its commands live under
 `clickdoom native`.
 
     make native-smoke     # render the first gameplay frame from the probe fixture and check its hash
-    make gen-probe-trace  # the reference emulator's per-frame game state for demo3
+    make gen-probe-trace  # the reference emulator's per-frame game state for demo3, not committed
+    make native-load      # decode the WAD into the native database, plus the probe trace when it exists
+    make native-demo      # demo3 at 35 Hz in a window, from the probed states
+    make native-play      # the loaded level from the keyboard and mouse
+    make native-parity    # every demo3 frame and tic against the reference emulator; exit 3 on the first that differs
 
 The root `README.md` walks the commands from a fresh checkout. `native load` writes only the tables `native/schema.sql` declares and leaves the
 rest of the database alone, so it is safe against the shared `clickdoom`

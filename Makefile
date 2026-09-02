@@ -71,7 +71,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         gen-layout gen-probe-trace gen-probe-fixture \
-        native-smoke \
+        native-smoke native-load native-demo native-play native-parity require-probe-trace \
         fuzz \
         lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
@@ -142,6 +142,33 @@ probe_fixture_meta = $(probe_fixture:.tsv=.json)
 # names. Rendering it needs every frame before it, and the fixture carries the
 # melt's last frame, so the run is three frames long.
 native_smoke_frame = $(shell sed -n 's/.*"first_gameplay_frame": *\([0-9]*\).*/\1/p' $(probe_fixture_meta))
+
+# The reference emulator's state at every demo3 frame, which gen-probe-trace
+# writes and which is not committed. Named the way reference_trace is.
+probe_trace = refemu/reference_traces/demo3/probe.$$(cut -c1-12 rom/PINNED_HASH).tsv
+require-probe-trace:
+	test -f $(probe_trace) || { echo "$(probe_trace) missing. Run: make gen-probe-trace" >&2; exit 1; }
+
+native-load: up build-clickdoom ## Decode the WAD into the native database, and load the probe trace when it exists
+	$(CLICKDOOM) native load --fresh $(native_conn) $(no_stdin)
+	if test -f $(probe_trace); then $(CLICKDOOM) native load --probe $(probe_trace) $(native_conn) $(no_stdin); fi
+
+native-demo: up build-clickdoom require-probe-trace ## Play demo3 at 35 Hz in a window from the probed states
+	$(CLICKDOOM) native load --probe $(probe_trace) $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native demo demo3 $(native_conn) $(no_stdin)
+
+native-play: up build-clickdoom ## Play the loaded level from the keyboard and mouse
+	$(CLICKDOOM) native play $(native_conn) $(no_stdin)
+
+# Both halves of the differential over the whole of demo3: every frame the
+# renderer draws against the engine's own hash, and the simulation tic by tic
+# against the engine's own state. Exit 3 on the first frame or tic that differs.
+DEMO3_TICS ?= 2134
+native-parity: up build-clickdoom require-probe-trace ## Every demo3 frame and tic against the reference emulator
+	$(CLICKDOOM) native load --fresh $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native load --probe $(probe_trace) $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native demo demo3 --no-window --expect-probe-fbhash $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native diff $(DEMO3_TICS) --probe $(probe_trace) $(native_conn) $(no_stdin)
 
 native-smoke: up build-clickdoom ## Render the first gameplay frame from the committed probe fixture and check its hash
 	test -n "$(probe_fixture)" || { echo "no probe fixture in refemu/probe/fixtures/. Run: make gen-probe-fixture" >&2; exit 1; }

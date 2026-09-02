@@ -46,22 +46,30 @@ pub fn slope_div(num: &str, den: &str) -> String {
 /// of `(dx, dy)` as a `UInt32`. `tantoangle` names a constant
 /// `Array(UInt32)` holding the engine's table.
 pub fn point_to_angle(dx: &str, dy: &str, tantoangle: &str) -> String {
-    let ax = abs32(dx);
-    let ay = abs32(dy);
-    let t = |num: &str, den: &str| format!("{tantoangle}[1 + {}]", slope_div(num, den));
-    let t_yx = t(&ay, &ax);
-    let t_xy = t(&ax, &ay);
-    format!(
-        "multiIf({dx} = 0 AND {dy} = 0, toUInt32(0), \
-         {dx} >= 0 AND {dy} >= 0 AND {dx} > {dy}, {t_yx}, \
-         {dx} >= 0 AND {dy} >= 0, toUInt32(1073741823 - toInt64({t_xy})), \
-         {dx} >= 0 AND {ax} > {ay}, toUInt32(4294967296 - toInt64({t_yx})), \
-         {dx} >= 0, toUInt32(3221225472 + toInt64({t_xy})), \
-         {dy} >= 0 AND {ax} > {ay}, toUInt32(2147483647 - toInt64({t_yx})), \
-         {dy} >= 0, toUInt32(1073741824 + toInt64({t_xy})), \
-         {ax} > {ay}, toUInt32(2147483648 + toInt64({t_yx})), \
-         toUInt32(3221225471 - toInt64({t_xy})))"
-    )
+    let values = vec![
+        ("pa_dx".to_owned(), format!("toInt32({dx})")),
+        ("pa_dy".to_owned(), format!("toInt32({dy})")),
+        ("pa_ax".to_owned(), abs32("pa_dx")),
+        ("pa_ay".to_owned(), abs32("pa_dy")),
+        (
+            "pa_yx".to_owned(),
+            format!("{tantoangle}[1 + {}]", slope_div("pa_ay", "pa_ax")),
+        ),
+        (
+            "pa_xy".to_owned(),
+            format!("{tantoangle}[1 + {}]", slope_div("pa_ax", "pa_ay")),
+        ),
+    ];
+    let body = "multiIf(pa_dx = 0 AND pa_dy = 0, toUInt32(0), \
+         pa_dx >= 0 AND pa_dy >= 0 AND pa_dx > pa_dy, pa_yx, \
+         pa_dx >= 0 AND pa_dy >= 0, toUInt32(1073741823 - toInt64(pa_xy)), \
+         pa_dx >= 0 AND pa_ax > pa_ay, toUInt32(4294967296 - toInt64(pa_yx)), \
+         pa_dx >= 0, toUInt32(3221225472 + toInt64(pa_xy)), \
+         pa_dy >= 0 AND pa_ax > pa_ay, toUInt32(2147483647 - toInt64(pa_yx)), \
+         pa_dy >= 0, toUInt32(1073741824 + toInt64(pa_xy)), \
+         pa_ax > pa_ay, toUInt32(2147483648 + toInt64(pa_yx)), \
+         toUInt32(3221225471 - toInt64(pa_xy)))";
+    crate::sql::bind::chain_in("pa", &values, body)
 }
 
 /// `P_AproxDistance`: `|dx| + |dy| - min(|dx|, |dy|) / 2`, wrapping.

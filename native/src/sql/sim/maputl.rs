@@ -30,8 +30,10 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     let line = |column: &str| table_column(db, "lv_lines", column);
     let node = |column: &str| table_column(db, "lv_nodes", column);
     let mut constants = vec![
-        ("line_v1x".to_owned(), vertex(db, "x")),
-        ("line_v1y".to_owned(), vertex(db, "y")),
+        ("line_v1x".to_owned(), vertex(db, "v1", "x")),
+        ("line_v1y".to_owned(), vertex(db, "v1", "y")),
+        ("line_v2x".to_owned(), vertex(db, "v2", "x")),
+        ("line_v2y".to_owned(), vertex(db, "v2", "y")),
         ("line_dx".to_owned(), line("dx")),
         ("line_dy".to_owned(), line("dy")),
         ("line_flags".to_owned(), line("flags")),
@@ -90,11 +92,11 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants
 }
 
-/// A line's first vertex, which `P_BoxOnLineSide` compares a box against.
-fn vertex(db: &str, axis: &str) -> String {
+/// One end of every line, which the side tests compare a point against.
+fn vertex(db: &str, end: &str, axis: &str) -> String {
     format!(
         "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((l.id, v.{axis}))))\
-         \n     FROM {db}.lv_lines AS l INNER JOIN {db}.lv_vertexes AS v ON v.id = l.v1)"
+         \n     FROM {db}.lv_lines AS l INNER JOIN {db}.lv_vertexes AS v ON v.id = l.{end})"
     )
 }
 
@@ -227,6 +229,218 @@ pub fn opening(line: &str, floorheight: &str, ceilingheight: &str) -> String {
          (least({fceil}, {bceil}), greatest({ffloor}, {bfloor}), \
          if({ffloor} > {bfloor}, {bfloor}, {ffloor})))",
         field("line_side1")
+    )
+}
+
+/// `p_maputl.c`: how many blocks a trace walks before it gives up.
+const TRAVERSE_BLOCKS: i64 = 64;
+/// `m_fixed.h`
+const FRACUNIT: i64 = 1 << 16;
+/// `p_local.h`: the shift that turns a `fixed_t` into a block-relative
+/// fraction.
+const MAPBTOFRAC: u32 = MAPBLOCKSHIFT - 16;
+const MAPBLOCKSIZE: i64 = 1 << MAPBLOCKSHIFT;
+
+/// Where each field of a trace sits in its tuple.
+pub mod trace {
+    pub const X1: usize = 1;
+    pub const Y1: usize = 2;
+    pub const X2: usize = 3;
+    pub const Y2: usize = 4;
+}
+
+/// Where each field of an intercept sits in its tuple.
+pub mod intercept {
+    pub const LINE: usize = 1;
+    pub const FRAC: usize = 2;
+}
+
+/// One trace, as the tuple [`path_traverse`] reads.
+pub fn tracing(x1: &str, y1: &str, x2: &str, y2: &str) -> String {
+    format!("(toInt64({x1}), toInt64({y1}), toInt64({x2}), toInt64({y2}))")
+}
+
+/// `P_PathTraverse` with `PT_ADDLINES`, over an array of traces.
+///
+/// Each answer is the lines the trace crosses, in the order
+/// `P_TraverseIntercepts` hands them to a traverser: nearest first, and
+/// among equal fractions the one the block walk found first. A line past
+/// the end of the trace is left out, which is what the walk's own
+/// `maxfrac` does.
+///
+/// `PT_ADDTHINGS` is not here. No caller in this simulation asks for
+/// things yet, and no caller anywhere in the engine asks for the early
+/// out.
+pub fn path_traverse(traces: &str) -> String {
+    let t = |field: usize| format!("tr.{field}");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    // A trace that starts exactly on a block edge is nudged off it, so
+    // the walk does not have to decide which side it is on.
+    value(
+        "pt_x1",
+        format!(
+            "toInt64({} + if(bitAnd({} - bmap_orgx, {}) = 0, {FRACUNIT}, 0))",
+            t(trace::X1),
+            t(trace::X1),
+            MAPBLOCKSIZE - 1
+        ),
+    );
+    value(
+        "pt_y1",
+        format!(
+            "toInt64({} + if(bitAnd({} - bmap_orgy, {}) = 0, {FRACUNIT}, 0))",
+            t(trace::Y1),
+            t(trace::Y1),
+            MAPBLOCKSIZE - 1
+        ),
+    );
+    value("pt_dx", format!("toInt64({} - pt_x1)", t(trace::X2)));
+    value("pt_dy", format!("toInt64({} - pt_y1)", t(trace::Y2)));
+    // The walk is in block coordinates from the blockmap's own origin.
+    value("pt_rx1", "toInt64(pt_x1 - bmap_orgx)".to_owned());
+    value("pt_ry1", "toInt64(pt_y1 - bmap_orgy)".to_owned());
+    value("pt_rx2", format!("toInt64({} - bmap_orgx)", t(trace::X2)));
+    value("pt_ry2", format!("toInt64({} - bmap_orgy)", t(trace::Y2)));
+    value("pt_xt1", format!("bitShiftRight(pt_rx1, {MAPBLOCKSHIFT})"));
+    value("pt_yt1", format!("bitShiftRight(pt_ry1, {MAPBLOCKSHIFT})"));
+    value("pt_xt2", format!("bitShiftRight(pt_rx2, {MAPBLOCKSHIFT})"));
+    value("pt_yt2", format!("bitShiftRight(pt_ry2, {MAPBLOCKSHIFT})"));
+    let fixed_div = |a: &str, b: &str| {
+        super::super::fixed::fixed_div(&format!("toInt32({a})"), &format!("toInt32({b})"))
+    };
+    value(
+        "pt_mapxstep",
+        "toInt64(multiIf(pt_xt2 > pt_xt1, 1, pt_xt2 < pt_xt1, -1, 0))".to_owned(),
+    );
+    value(
+        "pt_mapystep",
+        "toInt64(multiIf(pt_yt2 > pt_yt1, 1, pt_yt2 < pt_yt1, -1, 0))".to_owned(),
+    );
+    value(
+        "pt_ystep",
+        format!(
+            "toInt64(if(pt_mapxstep = 0, {}, {}))",
+            256 * FRACUNIT,
+            fixed_div("pt_ry2 - pt_ry1", "abs(pt_rx2 - pt_rx1)")
+        ),
+    );
+    value(
+        "pt_xstep",
+        format!(
+            "toInt64(if(pt_mapystep = 0, {}, {}))",
+            256 * FRACUNIT,
+            fixed_div("pt_rx2 - pt_rx1", "abs(pt_ry2 - pt_ry1)")
+        ),
+    );
+    let partial = |mapstep: &str, rel: &str| {
+        format!(
+            "toInt64(multiIf({mapstep} > 0, {FRACUNIT} - bitAnd(bitShiftRight({rel}, {MAPBTOFRAC}), {}), \
+             {mapstep} < 0, bitAnd(bitShiftRight({rel}, {MAPBTOFRAC}), {}), {FRACUNIT}))",
+            FRACUNIT - 1,
+            FRACUNIT - 1
+        )
+    };
+    let fixed_mul = |a: &str, b: &str| format!("bitShiftRight(({a}) * ({b}), 16)");
+    value(
+        "pt_yintercept",
+        format!(
+            "toInt64(bitShiftRight(pt_ry1, {MAPBTOFRAC}) + {})",
+            fixed_mul(&partial("pt_mapxstep", "pt_rx1"), "pt_ystep")
+        ),
+    );
+    value(
+        "pt_xintercept",
+        format!(
+            "toInt64(bitShiftRight(pt_rx1, {MAPBTOFRAC}) + {})",
+            fixed_mul(&partial("pt_mapystep", "pt_ry1"), "pt_xstep")
+        ),
+    );
+    // The block walk. The engine adds a block's lines at the top of each
+    // pass, before it decides which way to step, so the walk records the
+    // block it is standing in whatever it does next. A block off the map
+    // is recorded as -1, because the iterators return early for one and
+    // the walk carries on.
+    let cell = "if(w.1 >= 0 AND w.1 < bmap_cols AND w.2 >= 0 AND w.2 < bmap_rows, \
+                w.2 * bmap_cols + w.1, toInt64(-1))";
+    let step = "multiIf(\
+         w.1 = pt_xt2 AND w.2 = pt_yt2, (w.1, w.2, w.3, w.4, toUInt8(1), seen), \
+         bitShiftRight(w.4, 16) = w.2, \
+         (w.1 + pt_mapxstep, w.2, w.3, w.4 + pt_ystep, toUInt8(0), seen), \
+         bitShiftRight(w.3, 16) = w.1, \
+         (w.1, w.2 + pt_mapystep, w.3 + pt_xstep, w.4, toUInt8(0), seen), \
+         (w.1, w.2, w.3, w.4, toUInt8(0), seen))";
+    value(
+        "pt_cells",
+        format!(
+            "arrayFilter(c -> c >= 0, arrayFold((w, s) -> if(w.5 = 1, w, \
+             arrayMap(seen -> {step}, [arrayPushBack(w.6, {cell})])[1]), \
+             range({TRAVERSE_BLOCKS}), \
+             (pt_xt1, pt_yt1, pt_xintercept, pt_yintercept, toUInt8(0), \
+             CAST([], 'Array(Int64)'))).6)"
+        ),
+    );
+    // `PIT_AddLineIntercepts`: a line is crossed when its ends fall on
+    // opposite sides of the trace. A short trace compares the trace's own
+    // ends against the line instead, which is what the engine does to
+    // keep the two routines' precision apart.
+    let side_of_trace = |x: &str, y: &str| {
+        super::super::fixed::point_on_side(x, y, "pt_x1", "pt_y1", "pt_dx", "pt_dy", 8)
+    };
+    let side_of_line = |x: &str, y: &str| {
+        super::super::fixed::point_on_line_side(
+            x,
+            y,
+            "line_v1x[1 + l]",
+            "line_v1y[1 + l]",
+            "line_dx[1 + l]",
+            "line_dy[1 + l]",
+        )
+    };
+    let long = format!(
+        "pt_dx > {far} OR pt_dy > {far} OR pt_dx < -{far} OR pt_dy < -{far}",
+        far = 16 * FRACUNIT
+    );
+    let crossed = format!(
+        "if({long}, \
+         {} != {}, \
+         {} != {})",
+        side_of_trace("line_v1x[1 + l]", "line_v1y[1 + l]"),
+        side_of_trace("line_v2x[1 + l]", "line_v2y[1 + l]"),
+        side_of_line("toInt32(pt_x1)", "toInt32(pt_y1)"),
+        side_of_line("toInt32(pt_x1 + pt_dx)", "toInt32(pt_y1 + pt_dy)"),
+    );
+    let frac = super::super::fixed::intercept_vector(
+        "toInt32(pt_x1)",
+        "toInt32(pt_y1)",
+        "toInt32(pt_dx)",
+        "toInt32(pt_dy)",
+        "line_v1x[1 + l]",
+        "line_v1y[1 + l]",
+        "line_dx[1 + l]",
+        "line_dy[1 + l]",
+    );
+    value(
+        "pt_hits",
+        format!(
+            "arrayFilter(h -> h.{} >= 0 AND h.{} <= {FRACUNIT}, \
+             arrayMap(l -> (toInt32(l), toInt32(if({crossed}, {frac}, -1))), {}))",
+            intercept::FRAC,
+            intercept::FRAC,
+            lines_in("pt_cells")
+        ),
+    );
+    // `P_TraverseIntercepts` takes the nearest each time, and a strict
+    // comparison leaves an equal fraction where the walk put it.
+    let body = format!(
+        "arrayMap(p -> p.2, arraySort(p -> (p.2.{}, p.1), \
+         arrayMap((h, i) -> (i, h), pt_hits, arrayEnumerate(pt_hits))))",
+        intercept::FRAC
+    );
+    format!(
+        "arrayMap(tr -> {}, {traces})",
+        crate::sql::bind::chain(&values, &body)
     )
 }
 

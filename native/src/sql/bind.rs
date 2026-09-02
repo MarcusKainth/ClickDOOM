@@ -10,8 +10,13 @@
 //! [`chain`] takes values in dependency order and returns one expression.
 
 /// The lambda parameter each level binds its values into.
-fn level_name(at: usize) -> String {
-    format!("b{at}")
+///
+/// A chain written inside another chain's body has to take a `prefix` of
+/// its own. The outer chain rewrites its value names wherever they appear,
+/// the inner lambda included, so a parameter both share would shadow the
+/// outer one at the point the inner body reads it.
+fn level_name(prefix: &str, at: usize) -> String {
+    format!("{prefix}{at}")
 }
 
 /// `values` bound in order, ending in `body`.
@@ -22,6 +27,12 @@ fn level_name(at: usize) -> String {
 /// dependencies allow, because a level's tuple is expanded into every
 /// level above it and depth multiplies.
 pub fn chain(values: &[(String, String)], body: &str) -> String {
+    chain_in("b", values, body)
+}
+
+/// [`chain`] with the lambda parameters named `<prefix>0`, `<prefix>1` and
+/// so on, for a chain that sits inside another one's body.
+pub fn chain_in(prefix: &str, values: &[(String, String)], body: &str) -> String {
     let (values, body) = inline_single_uses(values, body);
     if values.is_empty() {
         return body;
@@ -32,19 +43,19 @@ pub fn chain(values: &[(String, String)], body: &str) -> String {
     let mut members: Vec<Vec<String>> = Vec::new();
     for (at, level) in levels.iter().enumerate() {
         let mut tuple: Vec<String> = (1..=carried.len())
-            .map(|index| format!("{}.{index}", level_name(at.wrapping_sub(1))))
+            .map(|index| format!("{}.{index}", level_name(prefix, at.wrapping_sub(1))))
             .collect();
         for (_, expr) in level {
-            tuple.push(resolve(expr, &carried, at));
+            tuple.push(resolve(prefix, expr, &carried, at));
         }
         carried.extend(level.iter().map(|(name, _)| name.clone()));
         members.push(tuple);
     }
-    let mut sql = resolve(&body, &carried, levels.len());
+    let mut sql = resolve(prefix, &body, &carried, levels.len());
     for at in (0..levels.len()).rev() {
         sql = format!(
             "arrayMap({} -> {sql}, [tuple({})])[1]",
-            level_name(at),
+            level_name(prefix, at),
             members[at].join(", ")
         );
     }
@@ -94,10 +105,14 @@ fn count(expr: &str, binding: &str) -> usize {
 
 /// `expr` with every bound name replaced by its place in the tuple the
 /// level below `at` holds.
-fn resolve(expr: &str, carried: &[String], at: usize) -> String {
+fn resolve(prefix: &str, expr: &str, carried: &[String], at: usize) -> String {
     let mut out = expr.to_owned();
     for (index, name) in carried.iter().enumerate() {
-        out = rename(&out, name, &format!("{}.{}", level_name(at - 1), index + 1));
+        out = rename(
+            &out,
+            name,
+            &format!("{}.{}", level_name(prefix, at - 1), index + 1),
+        );
     }
     out
 }
@@ -205,6 +220,19 @@ mod tests {
     fn a_name_inside_a_longer_one_is_left_alone() {
         let sql = chain(&values(&[("a", "1")]), "a + ab + a_b");
         assert_eq!(sql, "(1) + ab + a_b");
+    }
+
+    /// A chain inside another one has to take a prefix of its own, so the
+    /// inner lambda does not shadow the parameter the outer body reads.
+    #[test]
+    fn a_prefix_names_the_lambda_parameters() {
+        let inner = chain_in("pa", &values(&[("a", "x + 1")]), "a + a");
+        assert_eq!(inner, "arrayMap(pa0 -> pa0.1 + pa0.1, [tuple(x + 1)])[1]");
+        let outer = chain(&values(&[("v", &inner)]), "v + v");
+        assert!(
+            outer.starts_with("arrayMap(b0 -> b0.1 + b0.1, [tuple(arrayMap(pa0"),
+            "{outer}"
+        );
     }
 
     #[test]

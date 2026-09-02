@@ -4,6 +4,10 @@
 //! its own pieces go, which is what lets the emulator run a binary built
 //! without this project's linker script.
 //!
+//! An ELF's symbol table names both code and data, at every binding, which is
+//! what lets a caller read a named global out of the machine's memory without
+//! debug information.
+//!
 //! Everything here parses input the emulator did not produce, so every field
 //! is bounds-checked against the file it came from and a malformed file is an
 //! error rather than a panic.
@@ -19,6 +23,8 @@ const EM_RISCV: u16 = 243;
 const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
+const STT_NOTYPE: u8 = 0;
+const STT_OBJECT: u8 = 1;
 const STT_FUNC: u8 = 2;
 
 const EHDR_SIZE: usize = 52;
@@ -71,8 +77,21 @@ impl fmt::Debug for Segment {
 pub struct Image {
     pub entry: u32,
     pub segments: Vec<Segment>,
-    /// Every function symbol, sorted by address. Empty for a flat binary.
+    /// Every named symbol, sorted by address then by name. Empty for a flat
+    /// binary.
     pub symbols: Vec<Symbol>,
+}
+
+/// What a symbol names.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum SymbolKind {
+    /// Code, `STT_FUNC`.
+    Function,
+    /// A variable, `STT_OBJECT`.
+    Object,
+    /// A symbol the file gives no type. Kept only when it has a size, which
+    /// is what separates an assembler-defined region from a label.
+    Untyped,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -80,6 +99,7 @@ pub struct Symbol {
     pub addr: u32,
     pub size: u32,
     pub name: String,
+    pub kind: SymbolKind,
 }
 
 impl Image {
@@ -121,7 +141,29 @@ impl Image {
         bounds.filter(|(start, end)| start < end)
     }
 
-    /// Parses an ELF, taking its loadable segments and function symbols.
+    /// The symbol with this exact name.
+    ///
+    /// A name can repeat across translation units, and the first in address
+    /// order is the one returned.
+    pub fn symbol(&self, name: &str) -> Option<&Symbol> {
+        self.symbols.iter().find(|s| s.name == name)
+    }
+
+    /// The function whose body covers `addr`.
+    ///
+    /// The nearest preceding function decides, so an address in a gap between
+    /// two functions has no answer rather than being attributed to the one
+    /// before it.
+    pub fn function_containing(&self, addr: u32) -> Option<&Symbol> {
+        let before = self.symbols.partition_point(|s| s.addr <= addr);
+        self.symbols[..before]
+            .iter()
+            .rev()
+            .find(|s| s.kind == SymbolKind::Function)
+            .filter(|s| addr.wrapping_sub(s.addr) < s.size)
+    }
+
+    /// Parses an ELF, taking its loadable segments and its symbols.
     pub fn parse_elf(bytes: &[u8]) -> Result<Self, ImageError> {
         let read = Reader(bytes);
         if bytes.len() < EHDR_SIZE {
@@ -235,12 +277,15 @@ fn read_symbols(
         for entry in 0..size / SYM_SIZE {
             let sym = offset + entry * SYM_SIZE;
             let info = read.u8(sym + 12, "a symbol's kind")?;
-            if info & 0xF != STT_FUNC {
-                continue;
-            }
+            let sym_size = read.u32(sym + 8, "a symbol's size")?;
+            let kind = match info & 0xF {
+                STT_FUNC => SymbolKind::Function,
+                STT_OBJECT => SymbolKind::Object,
+                STT_NOTYPE if sym_size > 0 => SymbolKind::Untyped,
+                _ => continue,
+            };
             let name_at = read.u32(sym, "a symbol's name")? as usize;
             let addr = read.u32(sym + 4, "a symbol's address")?;
-            let sym_size = read.u32(sym + 8, "a symbol's size")?;
             let name = read.string(str_off, str_size, name_at)?;
             if name.is_empty() {
                 continue;
@@ -249,6 +294,7 @@ fn read_symbols(
                 addr,
                 size: sym_size,
                 name,
+                kind,
             });
         }
     }
@@ -310,6 +356,8 @@ pub fn read_image(bytes: Vec<u8>, load_addr: Option<u32>) -> Result<Image, Image
 mod tests {
     use super::*;
 
+    const SHT_STRTAB: u32 = 3;
+
     /// Builds an ELF with one loadable segment, so the reader is tested
     /// against bytes rather than against a file that happens to be present.
     fn elf_with(entry: u32, vaddr: u32, body: &[u8], flags: u32, memsz: u32) -> Vec<u8> {
@@ -335,6 +383,58 @@ mod tests {
         ph[24..28].copy_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(body);
         out
+    }
+
+    /// The same ELF with a symbol table, from `(name, addr, size, st_info)`
+    /// tuples. `st_info` is the binding in its high nibble and the type in its
+    /// low one, exactly as the file spells it.
+    fn elf_with_symbols(symbols: &[(&str, u32, u32, u8)]) -> Vec<u8> {
+        let mut out = elf_with(0x8000_0000, 0x8000_0000, &[1, 2, 3, 4], PF_X | 4, 4);
+
+        // Index 0 of both tables is the reserved empty entry.
+        let mut strtab = vec![0u8];
+        let mut symtab = vec![0u8; SYM_SIZE];
+        for (name, addr, size, info) in symbols {
+            let name_at = strtab.len() as u32;
+            strtab.extend_from_slice(name.as_bytes());
+            strtab.push(0);
+            let mut entry = [0u8; SYM_SIZE];
+            entry[0..4].copy_from_slice(&name_at.to_le_bytes());
+            entry[4..8].copy_from_slice(&addr.to_le_bytes());
+            entry[8..12].copy_from_slice(&size.to_le_bytes());
+            entry[12] = *info;
+            symtab.extend_from_slice(&entry);
+        }
+
+        let sym_at = out.len();
+        out.extend_from_slice(&symtab);
+        let str_at = out.len();
+        out.extend_from_slice(&strtab);
+        let shoff = out.len();
+        out.extend_from_slice(&[0u8; SHDR_SIZE * 3]);
+
+        let mut section = |index: usize, kind: u32, offset: usize, size: usize, link: u32| {
+            let at = shoff + index * SHDR_SIZE;
+            out[at + 4..at + 8].copy_from_slice(&kind.to_le_bytes());
+            out[at + 16..at + 20].copy_from_slice(&(offset as u32).to_le_bytes());
+            out[at + 20..at + 24].copy_from_slice(&(size as u32).to_le_bytes());
+            out[at + 24..at + 28].copy_from_slice(&link.to_le_bytes());
+        };
+        section(1, SHT_SYMTAB, sym_at, symtab.len(), 2);
+        section(2, SHT_STRTAB, str_at, strtab.len(), 0);
+
+        out[32..36].copy_from_slice(&(shoff as u32).to_le_bytes());
+        out[46..48].copy_from_slice(&(SHDR_SIZE as u16).to_le_bytes());
+        out[48..50].copy_from_slice(&3u16.to_le_bytes());
+        out
+    }
+
+    /// `st_info` for a global and for a file-local symbol of a given type.
+    const fn global(kind: u8) -> u8 {
+        (1 << 4) | kind
+    }
+    const fn local(kind: u8) -> u8 {
+        kind
     }
 
     #[test]
@@ -436,6 +536,76 @@ mod tests {
         };
         // The one address that saturates: a region from here to here.
         assert_eq!(image.text_region(), None);
+    }
+
+    #[test]
+    fn a_symbol_table_yields_functions_objects_and_sized_untyped_names() {
+        let bytes = elf_with_symbols(&[
+            ("main", 0x8000_0000, 16, global(STT_FUNC)),
+            ("gametic", 0x8010_0000, 4, global(STT_OBJECT)),
+            ("priority.2", 0x8010_0004, 4, local(STT_OBJECT)),
+            ("wad_blob", 0x8020_0000, 64, global(STT_NOTYPE)),
+            ("a_plain_label", 0x8030_0000, 0, global(STT_NOTYPE)),
+            ("a_file_name.c", 0, 0, local(4)),
+        ]);
+        let image = Image::parse_elf(&bytes).unwrap();
+        let named: Vec<(&str, SymbolKind)> = image
+            .symbols
+            .iter()
+            .map(|s| (s.name.as_str(), s.kind))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("main", SymbolKind::Function),
+                ("gametic", SymbolKind::Object),
+                ("priority.2", SymbolKind::Object),
+                ("wad_blob", SymbolKind::Untyped),
+            ],
+            "a sizeless untyped name and a file name are not addresses"
+        );
+    }
+
+    #[test]
+    fn a_symbol_is_found_by_its_exact_name() {
+        let bytes = elf_with_symbols(&[
+            ("gametic", 0x8010_0000, 4, global(STT_OBJECT)),
+            ("gametic_backup", 0x8010_0004, 4, global(STT_OBJECT)),
+        ]);
+        let image = Image::parse_elf(&bytes).unwrap();
+        assert_eq!(image.symbol("gametic").unwrap().addr, 0x8010_0000);
+        assert_eq!(image.symbol("gametic").unwrap().size, 4);
+        assert_eq!(image.symbol("gametic_backup").unwrap().addr, 0x8010_0004);
+        assert_eq!(image.symbol("gametic\0"), None);
+        assert_eq!(image.symbol("nothing"), None);
+    }
+
+    #[test]
+    fn the_function_containing_an_address_is_the_one_whose_body_covers_it() {
+        let bytes = elf_with_symbols(&[
+            ("first", 0x8000_0000, 16, global(STT_FUNC)),
+            // A gap, then a second function, then data above both.
+            ("second", 0x8000_0020, 8, global(STT_FUNC)),
+            ("gametic", 0x8010_0000, 4, global(STT_OBJECT)),
+        ]);
+        let image = Image::parse_elf(&bytes).unwrap();
+        for (addr, want) in [
+            (0x8000_0000, Some("first")),
+            (0x8000_000C, Some("first")),
+            (0x8000_0010, None),
+            (0x8000_0020, Some("second")),
+            (0x8000_0028, None),
+            // A data address is in no function, and neither is one below the
+            // first.
+            (0x8010_0000, None),
+            (0x7FFF_FFFC, None),
+        ] {
+            assert_eq!(
+                image.function_containing(addr).map(|s| s.name.as_str()),
+                want,
+                "at {addr:#010x}"
+            );
+        }
     }
 
     #[test]

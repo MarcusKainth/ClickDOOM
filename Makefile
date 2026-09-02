@@ -109,7 +109,7 @@ test: up require-rom build-refemu ## Every suite, live ones included
 	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
 	    cargo test --locked --workspace --features clickhouse-tests -- --nocapture
 	cargo test --locked --release --workspace --features refemu/rom-tests \
-	    --test reference_trace --test demo3_parity -- --nocapture
+	    --test reference_trace --test demo3_parity --test rom_symbols -- --nocapture
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence

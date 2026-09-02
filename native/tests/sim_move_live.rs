@@ -178,3 +178,57 @@ fn the_clip_on_the_floor_is_picked_up_once(rows: &[Tic]) {
         assert_eq!(row.mobjs, after.mobjs, "the list holds at tic {}", row.tic);
     }
 }
+
+/// A move too fast for one step, blocked on its first half.
+///
+/// `P_XYMovement` halves the move before it tries it, and its loop runs
+/// `while (xmove || ymove)`, so a finished move has spent both. That is
+/// the engine's own condition and the first thing checked here.
+///
+/// The position is not the engine's. The demo never reaches the speed
+/// that splits a move, so nothing arbitrates the geometry yet and the
+/// numbers are what this simulation answers, recorded so a change to the
+/// loop has to be deliberate.
+///
+/// The start and the momentum come from a sweep of demo3's own positions:
+/// this is one of the places in `E1M7` where the wall the first half meets
+/// leaves the second half somewhere to go.
+#[tokio::test]
+async fn a_fast_move_blocked_on_its_first_half_spends_the_second() {
+    let bytes = support::doom1();
+    let wad = Wad::parse(&bytes).unwrap();
+    let fixture = Fixture::create("sim_move_split").await;
+    let db = fixture.database.clone();
+    let mut plan = load::plan(&db, &wad);
+    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
+    plan.extend(sim::load_statements(&db));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    let mover = support::world::Mover {
+        x: 23392724,
+        y: 28237257,
+        z: 0,
+        momx: 16 << 16,
+        momy: -(28 << 16),
+        radius: 16 << 16,
+        height: 56 << 16,
+        angle: 0,
+        uses: 0,
+    };
+    let rows: Vec<support::world::Moved> = fixture.rows(&support::world::select(&db, &mover)).await;
+    fixture.finish().await;
+
+    let moved = &rows[0];
+    assert_eq!(
+        (moved.xmove, moved.ymove, moved.phase),
+        (0, 0, DONE),
+        "the move has to be spent and the loop finished"
+    );
+    assert_eq!((moved.x, moved.y), (23508477, 25229679));
+}
+
+/// `mobj.rs`: the phase a finished move ends on.
+const DONE: i64 = 5;

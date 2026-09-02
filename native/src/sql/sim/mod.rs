@@ -4,6 +4,7 @@
 //! into expressions over the state row. Nothing executes: a caller gets
 //! statements and issues them.
 
+pub mod doors;
 pub mod game;
 pub mod hud;
 pub mod inter;
@@ -11,9 +12,11 @@ pub mod lights;
 pub mod map;
 pub mod maputl;
 pub mod mobj;
+pub mod plane;
 pub mod player;
 pub mod setup;
 pub mod spec;
+pub mod specials;
 pub mod tick;
 
 use clickdoom_spec::native_state;
@@ -152,7 +155,7 @@ fn column_of(name: &str) -> Option<&'static str> {
 
 /// The engine tables more than one stage reads, as constant arrays indexed
 /// by id plus one.
-fn constants(db: &str) -> Vec<(String, String)> {
+pub fn constants(db: &str) -> Vec<(String, String)> {
     let mut constants = vec![
         ("rnd".to_owned(), table_column(db, "rndtable", "value")),
         (
@@ -182,6 +185,7 @@ fn constants(db: &str) -> Vec<(String, String)> {
         ),
     ];
     constants.extend(maputl::constants(db));
+    constants.extend(plane::constants(db));
     constants.extend(inter::constants(db));
     constants.extend(player::constants(db));
     constants

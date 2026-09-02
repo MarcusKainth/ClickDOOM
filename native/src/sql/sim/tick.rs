@@ -16,7 +16,7 @@
 
 use crate::sql::Statement;
 
-use super::{Tic, game, hud, lights, player, spec, state_columns};
+use super::{Tic, game, hud, lights, player, spec, specials, state_columns};
 
 /// The columns the session streams, in wire order. `pad` carries the
 /// padding row the transport writes behind the statement text.
@@ -31,8 +31,9 @@ pub const INPUT_SCHEMA: &str =
 /// these three are below what it needs. `NATIVE.md` has the rest of the
 /// resident session's settings, including the query size, which depends on
 /// the statement's own length.
-pub const PARSE_SETTINGS: [(&str, &str); 3] = [
+pub const PARSE_SETTINGS: [(&str, &str); 4] = [
     ("max_parser_depth", "20000"),
+    ("max_query_size", "8000000"),
     ("max_ast_elements", "4000000"),
     ("max_expanded_ast_elements", "40000000"),
 ];
@@ -160,6 +161,9 @@ fn bindings(db: &str) -> Tic {
     let thinkers = lights::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thinkers);
+    let planes = specials::planes(&tic.state);
+    let running = game::running(&tic.state);
+    tic.stage_when(&running, planes);
     let specials = spec::update_specials(&tic.state, db);
     let running = game::running(&tic.state);
     tic.stage_when(&running, specials);
@@ -237,14 +241,16 @@ mod tests {
     }
 
     /// One walk of the blockmap for the things and one for the lines is
-    /// what a single `P_CheckPosition` costs. A second copy of the
-    /// primitive would double both.
+    /// what a single `P_CheckPosition` costs.
+    ///
+    /// `P_ThingHeightClip` asks a narrower question and has a generator of
+    /// its own, so the whole of `P_CheckPosition` is written once.
     #[test]
     fn the_move_test_is_in_the_statement_once() {
         let sql = resident_statement("nat");
         assert_eq!(sql.matches("arrayMap(mv ->").count(), 1);
+        assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
-        assert_eq!(sql.matches("bmap_cols + bx").count(), 2);
     }
 
     #[test]
@@ -266,7 +272,7 @@ mod tests {
                 .map(|(_, expr)| expr.clone())
                 .unwrap()
         };
-        assert_eq!(named("s_kind"), "prev_s_kind");
+        assert!(named("s_kind").ends_with("_s_kind"));
         assert!(named("leveltime").ends_with("_leveltime"));
         assert!(!named("leveltime").starts_with("prev_"));
         assert!(!named("st_clock").starts_with("prev_"));

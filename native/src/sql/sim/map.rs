@@ -100,10 +100,15 @@ pub struct World<'a> {
 /// picked, spechit)`: whether the move is allowed, the heights it would
 /// stand between, the subsector it would stand in, the mobj slots it
 /// touched that can be picked up, and the special lines it crossed.
-pub fn try_moves(moves: &str, world: &World<'_>) -> String {
-    let m = |field: usize| format!("mv.{field}");
-    let (x, y) = (m(ask::X), m(ask::Y));
-    let (radius, flags) = (m(ask::RADIUS), m(ask::FLAGS));
+/// What `P_CheckPosition` works out from the lines around a point: the
+/// sector it stands in and the floor and ceiling the openings leave.
+///
+/// `P_BlockLinesIterator` stops at the first line that blocks, so only the
+/// lines the walk reached before that one move the floor and the ceiling.
+/// Both callers need exactly this much, so it is written once.
+fn line_reach(field: &dyn Fn(usize) -> String, world: &World<'_>) -> Vec<(String, String)> {
+    let (x, y) = (field(ask::X), field(ask::Y));
+    let radius = field(ask::RADIUS);
     let mut values: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
@@ -127,38 +132,16 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
         "tm_baseceiling",
         format!("toInt32({}[1 + tm_sector])", world.ceilingheight),
     );
-    bind("tm_thing_cells", maputl::cells("tm_bbox", MAXRADIUS));
     bind("tm_line_cells", maputl::cells("tm_bbox", 0));
-    bind("tm_thing_at", things_in("tm_thing_cells", world));
     bind("tm_line_at", maputl::lines_in("tm_line_cells"));
     bind(
-        "tm_thing_touch",
-        touching(&m(ask::SLOT), &x, &y, &radius, world),
-    );
-    bind("tm_line_hit", crossing(&flags, &m(ask::IS_PLAYER)));
-    bind(
-        "tm_thing_stop",
-        format!(
-            "toUInt32(indexOf(arrayMap(k -> toUInt8(bitAnd({}[k], {MF_SOLID}) != 0), \
-             tm_thing_touch), 1))",
-            world.m_flags
-        ),
+        "tm_line_hit",
+        crossing(&field(ask::FLAGS), &field(ask::IS_PLAYER)),
     );
     bind(
         "tm_line_stop",
         "toUInt32(indexOf(arrayMap(l -> l.2, tm_line_hit), toUInt8(1)))".to_owned(),
     );
-    bind(
-        "tm_picked",
-        format!(
-            "if(bitAnd({flags}, {MF_PICKUP}) = 0, CAST([], 'Array(UInt32)'), \
-             arrayMap(k -> toUInt32(k), arrayFilter(k -> bitAnd({}[k], {MF_SPECIAL}) != 0, \
-             if(tm_thing_stop = 0, tm_thing_touch, arraySlice(tm_thing_touch, 1, tm_thing_stop)))))",
-            world.m_flags
-        ),
-    );
-    // Only the lines the walk reached before something blocked it move
-    // the floor and the ceiling or land on the special list.
     bind(
         "tm_line_open",
         "arrayMap(h -> h.1, if(tm_line_stop = 0, tm_line_hit, \
@@ -183,6 +166,64 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
         "toInt32(arrayMin(arrayPushBack(arrayMap(o -> o.1, tm_openings), \
          tm_baseceiling)))"
             .to_owned(),
+    );
+    values
+}
+
+/// Where each field of [`heights`]'s answer sits.
+pub mod height {
+    pub const FLOORZ: usize = 1;
+    pub const CEILINGZ: usize = 2;
+}
+
+/// `P_ThingHeightClip`'s half of `P_CheckPosition`, over every ask in
+/// `asks`: what a thing at a point would stand between.
+///
+/// The engine runs the whole of `P_CheckPosition` here and reads only
+/// `tmfloorz` and `tmceilingz` out of it. Nothing else it works out
+/// changes those: `PIT_CheckThing` decides whether the move is allowed and
+/// leaves the heights alone, and the special lines and the pickups are the
+/// caller's business. So this asks the narrower question and the things,
+/// the special lines and the pickups are not in it.
+pub fn heights(asks: &str, world: &World<'_>) -> String {
+    let field = |at: usize| format!("clip.{at}");
+    let values = line_reach(&field, world);
+    let body = "(tm_floorz, tm_ceilingz)".to_owned();
+    format!(
+        "arrayMap(clip -> {}, {asks})",
+        bind::chain_in("ln", &values, &body)
+    )
+}
+
+pub fn try_moves(moves: &str, world: &World<'_>) -> String {
+    let m = |field: usize| format!("mv.{field}");
+    let (x, y) = (m(ask::X), m(ask::Y));
+    let (radius, flags) = (m(ask::RADIUS), m(ask::FLAGS));
+    let mut values: Vec<(String, String)> = line_reach(&m, world);
+    let mut bind = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    bind("tm_thing_cells", maputl::cells("tm_bbox", MAXRADIUS));
+    bind("tm_thing_at", things_in("tm_thing_cells", world));
+    bind(
+        "tm_thing_touch",
+        touching(&m(ask::SLOT), &x, &y, &radius, world),
+    );
+    bind(
+        "tm_thing_stop",
+        format!(
+            "toUInt32(indexOf(arrayMap(k -> toUInt8(bitAnd({}[k], {MF_SOLID}) != 0), \
+             tm_thing_touch), 1))",
+            world.m_flags
+        ),
+    );
+    bind(
+        "tm_picked",
+        format!(
+            "if(bitAnd({flags}, {MF_PICKUP}) = 0, CAST([], 'Array(UInt32)'), \
+             arrayMap(k -> toUInt32(k), arrayFilter(k -> bitAnd({}[k], {MF_SPECIAL}) != 0, \
+             if(tm_thing_stop = 0, tm_thing_touch, arraySlice(tm_thing_touch, 1, tm_thing_stop)))))",
+            world.m_flags
+        ),
     );
     bind(
         "tm_dropoffz",

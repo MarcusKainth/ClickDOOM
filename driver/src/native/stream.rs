@@ -13,12 +13,17 @@
 //! longer landing: close it and the error is there. The response is read
 //! from the moment the request is sent, so a response that does arrive
 //! earlier is recorded the same way.
+//!
+//! The server reads the request body to its end before it answers, and one
+//! of its own connections is busy for the whole of that. [`Resident::close`]
+//! therefore takes a bound, and drops the connection when it passes.
 
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
+use std::time::Duration; // purity-ok: a bound on a wait in the driver loop, never a value a statement reads
 
 use bytes::{BufMut, Bytes, BytesMut};
 use http::{Request, Response, StatusCode};
@@ -43,6 +48,11 @@ const EXCEPTION_CODE: &str = "x-clickhouse-exception-code";
 
 /// How much of a server message an error carries.
 const MESSAGE_CHARS: usize = 1000;
+
+/// The bound the driver gives [`Resident::close`]. The server answers
+/// within a round trip of the last byte of the body, so anything past this
+/// is a server that has stopped answering.
+pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Anything that stops a resident statement from opening or from taking
 /// another row.
@@ -80,6 +90,11 @@ pub enum ResidentError {
         status: Option<u16>,
         message: String,
     },
+    /// The body closed and no response followed inside the bound
+    /// [`Resident::close`] was given. The connection is dropped, so the
+    /// server stops reading the body.
+    #[error("the server did not answer within {waited:?} of the body closing")]
+    Unanswered { waited: Duration },
     #[error("the task reading the response panicked: {source}")]
     Watcher {
         #[source]
@@ -251,21 +266,29 @@ impl Resident {
         self.outcome.get().is_none()
     }
 
-    /// Ends the body and reports what the server said.
+    /// Ends the body and reports what the server said, waiting at most
+    /// `bound` for it.
     ///
-    /// `Ok` means the server took every row. This waits for the response,
-    /// which a server that has stopped answering never sends: wrap it in a
-    /// timeout when a caller cannot block.
-    pub async fn close(self) -> Result<(), ResidentError> {
+    /// `Ok` means the server took every row. A server that stops answering
+    /// leaves one of its connections reading a body nothing is going to
+    /// finish, so when `bound` passes the connection is dropped and the
+    /// call reports [`ResidentError::Unanswered`].
+    pub async fn close(self, bound: Duration) -> Result<(), ResidentError> {
         let Resident {
             rows,
             outcome,
-            response,
+            mut response,
             connection,
         } = self;
         drop(rows);
-        let joined = response.await;
+        let joined = tokio::time::timeout(bound, &mut response).await;
+        // The connection goes either way. When the bound passes, dropping
+        // it is what ends the server's read of the body.
         connection.abort();
+        let Ok(joined) = joined else {
+            response.abort();
+            return Err(ResidentError::Unanswered { waited: bound });
+        };
         joined.map_err(|source| ResidentError::Watcher { source })?;
         match outcome.get() {
             Some(Err(ended)) => Err(ended.into()),
@@ -382,8 +405,62 @@ fn head(text: &str, chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
     use super::super::settings::QUERY_SIZE_SLACK;
     use super::*;
+
+    #[tokio::test]
+    async fn a_server_that_says_nothing_ends_the_close_at_its_bound() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a local port");
+        let port = listener.local_addr().expect("the bound address").port();
+        // Takes the request, reads it to the end and answers nothing, which
+        // is a server that has stopped answering.
+        let served = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("the client connects");
+            let mut request = Vec::new();
+            socket
+                .read_to_end(&mut request)
+                .await
+                .expect("the client hangs up");
+            request.len()
+        });
+
+        let conn = ConnArgs {
+            host: "127.0.0.1".to_owned(),
+            port,
+            user: "default".to_owned(),
+            database: "default".to_owned(),
+            password: Some(String::new()),
+        };
+        let resident = Resident::open(
+            &conn,
+            "INSERT INTO t SELECT tic",
+            "tic UInt32, pad String",
+            &[],
+        )
+        .await
+        .expect("the request goes out");
+
+        let bound = Duration::from_millis(200);
+        let error = resident
+            .close(bound)
+            .await
+            .expect_err("a server that says nothing cannot end the statement");
+        assert!(
+            matches!(error, ResidentError::Unanswered { waited } if waited == bound),
+            "{error}"
+        );
+
+        let read = tokio::time::timeout(Duration::from_secs(5), served)
+            .await
+            .expect("the close has to hang up, so the server sees the end of the body")
+            .expect("the serving task");
+        assert!(read > 0, "the server saw none of the request");
+    }
 
     #[test]
     fn the_query_size_slack_covers_the_appended_format_clause() {

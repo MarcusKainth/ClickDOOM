@@ -164,7 +164,7 @@ async fn one_statement_takes_a_hundred_tics_and_chains_them() {
         }
     }
     resident
-        .close()
+        .close(FAILURE_TIMEOUT)
         .await
         .expect("the statement ran to the end");
 
@@ -236,9 +236,9 @@ async fn a_statement_the_server_cannot_parse_reports_its_message_on_close() {
         "no response is due while the body is open"
     );
 
-    let closed = tokio::time::timeout(FAILURE_TIMEOUT, resident.close())
+    let closed = resident
+        .close(FAILURE_TIMEOUT)
         .await
-        .unwrap_or_else(|_| panic!("close did not report anything within {FAILURE_TIMEOUT:?}"))
         .expect_err("a statement the server rejected is not a clean close");
     let ResidentError::Ended { status, message } = &closed else {
         panic!("expected Ended, got {closed}");
@@ -295,9 +295,9 @@ async fn a_statement_that_fails_on_a_row_stops_writing_and_says_why() {
         .expect("polling the row that failed");
     assert_eq!(landed, 0, "the row that failed must not be stored");
 
-    let closed = tokio::time::timeout(FAILURE_TIMEOUT, resident.close())
+    let closed = resident
+        .close(FAILURE_TIMEOUT)
         .await
-        .unwrap_or_else(|_| panic!("close did not report anything within {FAILURE_TIMEOUT:?}"))
         .expect_err("a statement that threw is not a clean close");
     let ResidentError::Ended { status, message } = &closed else {
         panic!("expected Ended, got {closed}");
@@ -382,7 +382,7 @@ async fn a_statement_too_large_for_a_url_parameter_opens() {
         }
     }
     resident
-        .close()
+        .close(FAILURE_TIMEOUT)
         .await
         .expect("the statement ran to the end");
     teardown(&database).await;

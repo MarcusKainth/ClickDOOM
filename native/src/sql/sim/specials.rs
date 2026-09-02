@@ -373,6 +373,8 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         m_floorz: &s("m_floorz"),
         m_ceilingz: &s("m_ceilingz"),
     };
+    // The player's stage compacts the list before this one runs, so every
+    // slot it leaves is alive.
     value(
         "plane_alive",
         format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
@@ -531,12 +533,15 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         k = s("s_kind"),
         d = s("sec_specialdata"),
     );
+    // A plane that crushes keeps moving into what is stuck, which the
+    // clip here does not do, so a running thinker with crush set leaves
+    // the tic unresolved.
     let unresolved = format!(
         "toUInt8({} = 1 OR plane_shared = 1 OR plane_clip.{} = 1 \
          OR arrayExists(j -> plane_done[j] = 1 AND {k2} = {FLOOR2} \
          AND plane_type[j] IN ({CHANGERS}), arrayEnumerate({k})) \
-         OR arrayExists(j -> plane_runs[j] = 1 AND (plane_moved[j].{} = 1 OR plane_door[j].{} = 1), \
-         arrayEnumerate({k})))",
+         OR arrayExists(j -> plane_runs[j] = 1 AND (plane_moved[j].{} = 1 OR plane_door[j].{} = 1 \
+         OR plane_crush[j] = 1), arrayEnumerate({k})))",
         s("unresolved"),
         plane::clipped::UNRESOLVED,
         plane::moved::REVERTED,

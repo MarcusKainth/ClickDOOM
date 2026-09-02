@@ -28,10 +28,12 @@ the source does not produce fails the suite.
 | `rndtable.tsv` | `rndtable` | `m_random.c` |
 | `fuzzoffset.tsv` | `fuzzoffset` | `r_draw.c` |
 | `gammatable.tsv` | `gammatable` | `tables.c` |
+| `messages.tsv` | every string the header defines | `d_englsh.h` |
 
 The `id` column is the C array index, so a value that names another table's
 entry is that table's `id`. `gammatable` is two-dimensional and keys on
-`(level, id)`.
+`(level, id)`. `messages` is not an array at all and keys on the name the
+header defines each string under.
 
 ## What the columns hold
 
@@ -48,3 +50,7 @@ and numbered from one.
 `animdefs` and `switchlist` keep the terminator rows the engine stops at:
 `animdefs.istexture` is `-1` on the last row, and `switchlist.name1` is
 empty.
+
+`messages.text` is the string literal's own bytes. C and TSV escape a
+newline, a tab and a backslash the same way, so the cell is the literal with
+its quotes taken off.

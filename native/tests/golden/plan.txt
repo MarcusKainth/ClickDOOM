@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.tantoangle (id UInt32, value UInt32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rndtable (id UInt32, value UInt8)
 CREATE TABLE IF NOT EXISTS clickdoom_native.fuzzoffset (id UInt32, value Int32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.gammatable (level UInt8, id UInt32, value UInt8)
+CREATE TABLE IF NOT EXISTS clickdoom_native.messages (name String, text String)
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_vertexes
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_lines
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_sides
@@ -69,6 +70,13 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_lump
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_frame
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_colposts
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_sprite_post
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_message (hash UInt64, name String, text String)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_pool (id UInt8, data String)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_patch
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_slot (slot UInt32, name String, patch UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_colposts (slot UInt32, first UInt32, num UInt16)
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_post
+CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_backing (id UInt8, data String)
 INSERT INTO clickdoom_native.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary  [4194554 bytes]
 INSERT INTO clickdoom_native.states FORMAT TSVWithNames  [21857 bytes]
 INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]
@@ -84,3 +92,4 @@ INSERT INTO clickdoom_native.tantoangle FORMAT TSVWithNames  [29294 bytes]
 INSERT INTO clickdoom_native.rndtable FORMAT TSVWithNames  [1837 bytes]
 INSERT INTO clickdoom_native.fuzzoffset FORMAT TSVWithNames  [370 bytes]
 INSERT INTO clickdoom_native.gammatable FORMAT TSVWithNames  [11895 bytes]
+INSERT INTO clickdoom_native.messages FORMAT TSVWithNames  [7787 bytes]

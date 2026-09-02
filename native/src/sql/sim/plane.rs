@@ -7,7 +7,7 @@
 
 use crate::sql::bind;
 
-use super::map::{self, World, answer};
+use super::map::{self, World};
 use super::maputl::{BOX_BOTTOM, BOX_LEFT, BOX_RIGHT, BOX_TOP, MAPBLOCKSHIFT, MAXRADIUS};
 
 /// The sector tables a plane thinker reads, as constant arrays indexed by
@@ -132,7 +132,7 @@ pub fn change_sector(
     // stands, so the ask is the thing's own place.
     value(
         "cs_answers",
-        map::try_moves(
+        map::heights(
             &format!(
                 "arrayMap(k -> {}, cs_slots)",
                 map::asking(
@@ -164,8 +164,8 @@ pub fn change_sector(
              arrayEnumerate(cs_slots))",
             was_z = was(things.m_z),
             was_floorz = was(things.m_floorz),
-            floorz = format!("toInt64({})", answered(answer::FLOORZ)),
-            ceilingz = format!("toInt64({})", answered(answer::CEILINGZ)),
+            floorz = format!("toInt64({})", answered(map::height::FLOORZ)),
+            ceilingz = format!("toInt64({})", answered(map::height::CEILINGZ)),
         ),
     );
     value(

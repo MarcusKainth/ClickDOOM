@@ -243,15 +243,13 @@ mod tests {
     /// One walk of the blockmap for the things and one for the lines is
     /// what a single `P_CheckPosition` costs.
     ///
-    /// Two stages ask for one: the player's move and the clip the plane
-    /// thinkers run over the things they moved. They cannot share a batch,
-    /// because the second reads the world the first left. Every other
-    /// caller goes through one of those two, so the count is the number of
-    /// stages that ask and not the number of callers.
+    /// `P_ThingHeightClip` asks a narrower question and has a generator of
+    /// its own, so the whole of `P_CheckPosition` is written once.
     #[test]
-    fn the_move_test_is_in_the_statement_once_for_each_stage_that_asks() {
+    fn the_move_test_is_in_the_statement_once() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 2);
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 1);
+        assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
     }
 

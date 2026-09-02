@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["spec", "refemu", "driver", "executor"]
+members = ["spec", "refemu", "driver", "executor", "native"]
 # Pins its own nightly for libFuzzer, so it is not a member.
 exclude = ["fuzz"]
 
@@ -14,6 +14,7 @@ repository = "https://github.com/MarcusKainth/ClickDOOM"
 [workspace.dependencies]
 clickdoom-spec = { path = "spec" }
 clickdoom-executor = { path = "executor" }
+clickdoom-native = { path = "native" }
 refemu = { path = "refemu" }
 testcontainers = { version = "0.27", features = ["http_wait"] }
 testcontainers-modules = { version = "0.15", features = ["clickhouse"] }

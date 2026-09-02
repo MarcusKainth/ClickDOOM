@@ -20,6 +20,10 @@
   - changed-files:
       - any-glob-to-any-file: executor/**
 
+"area: native":
+  - changed-files:
+      - any-glob-to-any-file: native/**
+
 # render lives inside driver/, so it is named file by file rather than by
 # directory. Everything else under driver/ is the loop itself.
 "area: render":

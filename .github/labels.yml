@@ -34,6 +34,10 @@
   color: "0052cc"
   description: "The arrayFold batch loop, write-log memory, batch commit, MMIO plumbing"
 
+- name: "area: native"
+  color: "0052cc"
+  description: "Native mode: the tic simulation and renderer as SQL, and the WAD loader"
+
 - name: "area: driver"
   color: "0052cc"
   description: "The client loop that ticks the batch statement and blits frames"

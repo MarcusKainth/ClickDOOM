@@ -87,10 +87,10 @@ guarantee nobody made.
 |---|---|---|
 | PUR-1 to PUR-4 | Review only. No textual signature | |
 | PUR-5 to PUR-8 | Review only. No textual signature | |
-| PUR-9 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `scripts/` |
+| PUR-9 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `native/` `scripts/` |
 | PUR-10 | Review only. No textual signature | |
 | PUR-11 | Review only. No textual signature | |
-| PUR-12 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `scripts/` |
+| PUR-12 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `native/` `scripts/` |
 
 A hit that is genuinely benign is annotated on the line with
 `purity-ok: <reason>`, which the script honours. An annotation is a claim a

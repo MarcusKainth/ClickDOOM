@@ -21,6 +21,7 @@ Parm = "Parm"                     # M_CheckParm, a DOOM engine function
 VERTEXES = "VERTEXES"             # the WAD lump name, spelled that way in the file
 alph = "alph"                     # alphSwitchList, a DOOM engine table
 aprox = "aprox"                   # P_AproxDistance, a DOOM engine function
+PLAS = "PLAS"                     # SPR_PLAS, the plasma gun's sprite
 
 [default]
 extend-ignore-re = [

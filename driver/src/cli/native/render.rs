@@ -88,7 +88,7 @@ pub(crate) async fn run(cmd: &RenderCmd) -> Result<Exit, Failure> {
         &cmd.conn,
         database,
         None,
-        &clickdoom_native::sql::render::frame_transform(database),
+        Some(&clickdoom_native::sql::render::frame_transform(database)),
     )
     .await
     .map_err(|err| failed(format!("opening the renderer: {err}")))?;

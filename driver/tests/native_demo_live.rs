@@ -171,7 +171,7 @@ async fn rgb32_is_the_word_the_window_blits() {
         &conn_args(&database),
         &database,
         None,
-        &sql::render::frame_transform(&database),
+        Some(&sql::render::frame_transform(&database)),
     )
     .await
     .expect("opening the renderer alone");

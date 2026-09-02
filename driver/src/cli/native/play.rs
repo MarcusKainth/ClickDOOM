@@ -65,7 +65,7 @@ pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
         &cmd.conn,
         database,
         Some(&tick::resident_statement(database)),
-        &clickdoom_native::sql::render::frame_transform(database),
+        Some(&clickdoom_native::sql::render::frame_transform(database)),
     )
     .await
     .map_err(|err| failed(format!("opening the session: {err}")))?;

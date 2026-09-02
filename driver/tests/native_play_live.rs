@@ -54,7 +54,7 @@ async fn a_key_the_driver_streams_reaches_the_tic_command() {
         &conn,
         &database,
         Some(&tick::resident_statement(&database)),
-        &sql::render::frame_transform(&database),
+        Some(&sql::render::frame_transform(&database)),
     )
     .await
     .expect("opening the session");

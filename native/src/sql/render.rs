@@ -174,6 +174,7 @@ fn statement(db: &str, source: &str) -> String {
     sky_pixels(&mut s);
     sprite_pixels(&mut s);
     psprites(&mut s);
+    fuzz(&mut s);
     message(&mut s);
     status_bar(&mut s);
     compose(&mut s);
@@ -461,8 +462,11 @@ fn bsp_order(s: &mut Stage) {
     );
     s.bind(
         "rank_segbase",
-        "arrayPushFront(arrayPopBack(arrayCumSum(arrayMap(sc -> k_ssec_num[sc + 1], ssec_order))), \
-         toUInt64(0))",
+        shifted(
+            "arrayCumSum(arrayMap(sc -> k_ssec_num[sc + 1], ssec_order))",
+            "toUInt64(0)",
+            true,
+        ),
     );
 }
 
@@ -1471,11 +1475,19 @@ fn visplanes(s: &mut Stage) {
     s.bind("pm", "arraySort(t -> t.1, arrayConcat(pm_ceil, pm_floor))");
     s.bind(
         "pm_prev",
-        "arrayPushFront(arrayPopBack(pm), (toUInt32(4294967295), toInt32(255), toInt32(255)))",
+        shifted(
+            "pm",
+            "(toUInt32(4294967295), toInt32(255), toInt32(255))",
+            true,
+        ),
     );
     s.bind(
         "pm_next",
-        "arrayPushBack(arrayPopFront(pm), (toUInt32(4294967295), toInt32(255), toInt32(255)))",
+        shifted(
+            "pm",
+            "(toUInt32(4294967295), toInt32(255), toInt32(255))",
+            false,
+        ),
     );
     // A span starts in a column where a row is covered and the column to its
     // left is not, and ends where the column to its right is not. What the
@@ -1951,8 +1963,11 @@ fn sprite_clip(s: &mut Stage) {
     // covers every column between its two ends, so the run is its width.
     s.bind(
         "ds_clipbase",
-        "arrayPushFront(arrayPopBack(arrayCumSum(arrayMap((a, b) -> toUInt64(b - a + 1), \
-         ds_x1, ds_x2))), toUInt64(0))",
+        shifted(
+            "arrayCumSum(arrayMap((a, b) -> toUInt64(b - a + 1), ds_x1, ds_x2))",
+            "toUInt64(0)",
+            true,
+        ),
     );
 
     // One row per drawseg, with everything `R_DrawSprite` reads off it.
@@ -2017,10 +2032,11 @@ fn sprite_clip(s: &mut Stage) {
 /// The pixels of every sprite, each carrying the order it was drawn in so a
 /// nearer sprite covers a farther one.
 fn sprite_pixels(s: &mut Stage) {
+    s.bind("sp_lit", "arrayFilter(c -> c.10 >= 0, sp_cols)");
     s.bind(
         "sp_px",
         format!(
-            "arrayFlatten(arrayMap(c -> {}, sp_cols))",
+            "arrayFlatten(arrayMap(c -> {}, sp_lit))",
             masked_column("c", "toUInt64(c.1)")
         ),
     );
@@ -2135,16 +2151,13 @@ fn psprites(s: &mut Stage) {
         "ps_visible",
         "arrayFilter((c, k) -> ps_ok[k] = 1, ps_cols, arrayMap(c -> c.1 - 1048000, ps_cols))",
     );
+    s.bind("ps_lit", "arrayFilter(c -> c.10 >= 0, ps_visible)");
     s.bind(
         "ps_px",
         format!(
-            "arrayFlatten(arrayMap(c -> {}, ps_visible))",
+            "arrayFlatten(arrayMap(c -> {}, ps_lit))",
             masked_column("c", "toUInt64(c.1)")
         ),
-    );
-    s.bind(
-        "ps_shadow",
-        "countEqual(arrayMap(c -> c.10, ps_visible), toInt32(-1))",
     );
 }
 
@@ -2253,7 +2266,11 @@ fn message(s: &mut Stage) {
     );
     s.bind(
         "hu_x",
-        "arrayPushFront(arrayPopBack(arrayMap(x -> toInt32(x), arrayCumSum(hu_step))), toInt32(0))",
+        shifted(
+            "arrayMap(x -> toInt32(x), arrayCumSum(hu_step))",
+            "toInt32(0)",
+            true,
+        ),
     );
     // The line stops at the first character that would not fit.
     s.bind(
@@ -2506,6 +2523,177 @@ fn ui_restore(r: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// R_DrawFuzzColumn
+// ---------------------------------------------------------------------------
+
+/// A thing drawn as a shadow.
+///
+/// `R_DrawFuzzColumn` never reads the picture. It reads the frame it is
+/// drawing into, one row above or below the pixel it is about to write, and
+/// puts that colour back through colormap 6. Which of the two it reads is
+/// `fuzzoffset[fuzzpos]`, and `fuzzpos` steps once per pixel drawn and carries
+/// on into the next frame.
+///
+/// Reading below is always the frame as it stood before the shadow started,
+/// because a column draws downwards. Reading above is that same frame unless
+/// the row above is one this column has just written, so each column is walked
+/// in one fold carrying the row it last wrote and the colour it put there.
+fn fuzz(s: &mut Stage) {
+    s.table("k_fuzzoffset", "fuzzoffset", "value", "id");
+    s.bind(
+        "prev_fuzzpos",
+        format!(
+            "coalesce(joinGetOrNull('{}.native_frames', 'fuzzpos', toUInt32(frame - 1)), \
+             toUInt8(0))",
+            s.db
+        ),
+    );
+    s.bind(
+        "fz_cols",
+        "arrayFilter(c -> c.10 < 0, arrayConcat(sp_cols, ps_visible))",
+    );
+    // Every shadow on screen shares one walk of `fuzzpos` and they are drawn
+    // one after another, so two of them would each need the frame as it stood
+    // when it began.
+    s.bind(
+        "fz_guard",
+        "throwIf(length(arrayDistinct(arrayMap(c -> c.1, fz_cols))) > 1, \
+         'more than one thing draws as a shadow in one frame')",
+    );
+    s.bind(
+        "fz_time",
+        "arrayReduce('min', arrayPushBack(arrayMap(c -> c.1, fz_cols), toUInt32(4294967295)))",
+    );
+
+    // The rows each column writes, in the order it writes them.
+    // `R_DrawFuzzColumn` pulls the two ends one row inside the view before it
+    // starts, because it reads a row past each of them.
+    let post_yl = "greatest(bitShiftRight(toInt32(toInt64(ts) + 65535), 16), c.4 + 1)";
+    let post_yh = "least(bitShiftRight(toInt32(toInt64(ts) \
+                   + toInt64(c.8) * toInt64(ln) - 1), 16), c.3 - 1)";
+    let clamped = let_in(
+        &[
+            ("fyl", format!("if({post_yl} = 0, 1, {post_yl})")),
+            (
+                "fyh",
+                format!(
+                    "if({post_yh} = {last}, {last} - 1, {post_yh})",
+                    last = VIEW_HEIGHT - 1
+                ),
+            ),
+        ],
+        "arrayMap(y -> toInt32(y), range(fyl, greatest(fyh + 1, fyl)))",
+    );
+    let with_top = let_in(
+        &[(
+            "ts",
+            "toInt32(toInt64(c.11) + toInt64(c.8) * toInt64(td))".to_owned(),
+        )],
+        &clamped,
+    );
+    let with_post = let_in(
+        &[
+            ("td", "toInt32(k_spost_top[p + 1])".to_owned()),
+            ("ln", "toInt32(k_spost_len[p + 1])".to_owned()),
+        ],
+        &with_top,
+    );
+    let slot = "toUInt32(c.6) * 256 + toUInt32(c.5)";
+    s.bind(
+        "fz_rows",
+        format!(
+            "arrayMap(c -> arrayFlatten(arrayMap(p -> {with_post}, \
+             range(k_spost_first[{slot} + 1], \
+             k_spost_first[{slot} + 1] + k_spost_num[{slot} + 1]))), fz_cols)"
+        ),
+    );
+    s.bind(
+        "fz_start",
+        shifted(
+            "arrayCumSum(arrayMap(r -> toUInt64(length(r)), fz_rows))",
+            "toUInt64(0)",
+            true,
+        ),
+    );
+
+    // The corner of the frame the shadow reads, one row past each end of it.
+    s.bind("fz_x0", "arrayReduce('min', arrayMap(c -> c.2, fz_cols))");
+    s.bind("fz_x1", "arrayReduce('max', arrayMap(c -> c.2, fz_cols))");
+    s.bind("fz_w", "fz_x1 - fz_x0 + 1");
+    s.bind(
+        "fz_y0",
+        "greatest(arrayReduce('min', arrayFlatten(fz_rows)) - 1, 0)",
+    );
+    s.bind(
+        "fz_y1",
+        format!(
+            "least(arrayReduce('max', arrayFlatten(fz_rows)) + 1, {})",
+            VIEW_HEIGHT - 1
+        ),
+    );
+
+    // The frame as it stood when the shadow started, over that corner only.
+    // Everything the view put down covers every pixel of it, so sorting the
+    // pixels by where they land gives the corner row by row.
+    s.bind(
+        "fz_under",
+        "arrayFilter(t -> intDiv(t.1, 1048576) % 320 >= toUInt64(fz_x0) \
+         AND intDiv(t.1, 1048576) % 320 <= toUInt64(fz_x1) \
+         AND intDiv(intDiv(t.1, 1048576), 320) >= toUInt64(fz_y0) \
+         AND intDiv(intDiv(t.1, 1048576), 320) <= toUInt64(fz_y1), \
+         arrayConcat(wall_px, flat_px, sky_px, \
+         arrayFilter(t -> t.1 % 1048576 < toUInt64(fz_time), arrayConcat(sp_px, ps_px))))",
+    );
+    s.bind("fz_sorted", "arraySort(t -> t.1, fz_under)");
+    s.bind(
+        "fz_sorted_at",
+        "arrayMap(t -> toUInt32(intDiv(t.1, 1048576)), fz_sorted)",
+    );
+    s.bind(
+        "fz_box",
+        format!(
+            "arrayMap(t -> t.2, arrayFilter((t, a, n) -> a != n, fz_sorted, fz_sorted_at, {}))",
+            shifted("fz_sorted_at", "toUInt32(4294967295)", false)
+        ),
+    );
+    // A corner the view left a hole in would read whatever fell into the gap.
+    s.bind(
+        "fz_box_guard",
+        "throwIf(NOT empty(fz_cols) \
+         AND length(fz_box) != toUInt64(fz_w) * (toUInt64(fz_y1) - toUInt64(fz_y0) + 1), \
+         'the frame under a shadow has a hole in it')",
+    );
+
+    // One column at a time, carrying the row it last wrote and the colour it
+    // put there, because the row above may be that one.
+    let at = |row: &str| format!("fz_box[({row} - fz_y0) * fz_w + (c.2 - fz_x0) + 1]");
+    let source = format!(
+        "if(k_fuzzoffset[(prev_fuzzpos + start + t.2 - 1) % 50 + 1] > 0, {below}, \
+         if(acc.1 = t.1 - 1, acc.2, {above}))",
+        below = at("t.1 + 1"),
+        above = at("t.1 - 1"),
+    );
+    let shade = pool("k_colormap", &format!("6 * 256 + {source}"));
+    s.bind(
+        "fz_px",
+        format!(
+            "arrayFlatten(arrayMap((c, rows, start) -> arrayFold((acc, t) -> \
+             (t.1, {shade}, \
+              arrayPushBack(acc.3, (toUInt64(t.1 * {VIEW_WIDTH} + c.2) * 1048576 \
+                + toUInt64(c.1), {shade}))), \
+             arrayZip(rows, arrayMap(e -> toUInt64(e), arrayEnumerate(rows))), \
+             (toInt32(-2), toUInt8(0), CAST([], 'Array(Tuple(UInt64, UInt8))'))).3, \
+             fz_cols, fz_rows, fz_start))"
+        ),
+    );
+    // `fuzzpos` steps once per pixel drawn and carries into the next frame.
+    s.bind(
+        "fuzzpos",
+        "toUInt8((toUInt64(prev_fuzzpos) + length(fz_px)) % 50)",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The framebuffer
 // ---------------------------------------------------------------------------
 
@@ -2533,18 +2721,9 @@ fn compose(s: &mut Stage) {
     // Every drawn pixel, keyed by where it lands and when it was drawn. The
     // sort puts a pixel's writers in the order the engine ran them, and only
     // the last of each survives, which is what drawing over does.
-    // A thing drawn as a shadow reads the framebuffer under it as it goes,
-    // one pixel at a time, and this does not build the frame that way.
-    // Nothing on screen is right once one is visible, so the frame fails.
-    s.bind(
-        "shadow_guard",
-        "arrayResize(CAST([], 'Array(Tuple(UInt64, UInt8))'), \
-         toUInt32(throwIf(vs_shadow + ps_shadow > 0, \
-         'a thing draws as a shadow, which the renderer does not draw')))",
-    );
     s.bind(
         "px_all",
-        "arrayConcat(wall_px, flat_px, sky_px, sp_px, ps_px, hu_px, sb_px, shadow_guard)",
+        "arrayConcat(wall_px, flat_px, sky_px, sp_px, ps_px, hu_px, sb_px, fz_px)",
     );
     s.bind("px_ordered", "arraySort(t -> t.1, px_all)");
     s.bind(
@@ -2552,9 +2731,13 @@ fn compose(s: &mut Stage) {
         "arrayMap(t -> toUInt32(intDiv(t.1, 1048576)), px_ordered)",
     );
     s.bind(
+        "px_ordered_next",
+        shifted("px_ordered_at", "toUInt32(4294967295)", false),
+    );
+    s.bind(
         "px_sorted",
         "arrayFilter((t, a, n) -> a != n, px_ordered, px_ordered_at, \
-         arrayPushBack(arrayPopFront(px_ordered_at), toUInt32(4294967295)))",
+         px_ordered_next)",
     );
     s.bind(
         "px_at",
@@ -2564,13 +2747,10 @@ fn compose(s: &mut Stage) {
         "px_bytes",
         "arrayStringConcat(arrayMap(t -> char(t.2), px_sorted), '')",
     );
-    s.bind(
-        "px_prev_at",
-        "arrayPushFront(arrayPopBack(px_at), toUInt32(4294967295))",
-    );
+    s.bind("px_prev_at", shifted("px_at", "toUInt32(4294967295)", true));
     s.bind(
         "px_next_at",
-        "arrayPushBack(arrayPopFront(px_at), toUInt32(4294967295))",
+        shifted("px_at", "toUInt32(4294967295)", false),
     );
     s.bind(
         "run_head",
@@ -2588,7 +2768,8 @@ fn compose(s: &mut Stage) {
     // to just before this one.
     s.bind(
         "run_gap_from",
-        "arrayPushFront(arrayMap(e -> e + 1, arrayPopBack(run_end)), toUInt32(0))",
+        "if(empty(run_end), run_end, \
+         arrayPushFront(arrayMap(e -> e + 1, arrayPopBack(run_end)), toUInt32(0)))",
     );
     s.bind(
         "fb",
@@ -2651,14 +2832,6 @@ fn compose(s: &mut Stage) {
         "fb_hash",
         "xxHash64(concat(fb, palette)) + hu_guard + sb_guard",
     );
-    s.bind(
-        "fuzzpos",
-        format!(
-            "coalesce(joinGetOrNull('{}.native_frames', 'fuzzpos', toUInt32(frame - 1)), \
-             toUInt8(0))",
-            s.db
-        ),
-    );
     // What each widget drew, for the frame after this one to compare against.
     s.bind(
         "st_cache",
@@ -2688,6 +2861,18 @@ fn output_columns() -> String {
     ]
     .map(|name| format!("    {name}"))
     .join(",\n")
+}
+
+/// An array shifted one place, with `fill` taking the place that opens up.
+/// `arrayPushFront` on an empty array would make it one long, which every
+/// caller here pairs with the array it came from.
+fn shifted(arr: &str, fill: &str, forward: bool) -> String {
+    let (drop, push) = if forward {
+        ("arrayPopBack", "arrayPushFront")
+    } else {
+        ("arrayPopFront", "arrayPushBack")
+    };
+    format!("if(empty({arr}), {arr}, {push}({drop}({arr}), {fill}))")
 }
 
 /// A local name inside a lambda. ClickHouse has no `let`, and a one-element

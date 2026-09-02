@@ -1,9 +1,9 @@
 //! The frame transform against a real ClickHouse server.
 //!
-//! Two frames are rendered from two probed game states and compared, pixel by
-//! pixel, against the framebuffers the real engine drew. The oracle is the
-//! reference emulator's own dump; `native/tests/fixtures/README.md` says where
-//! it came from.
+//! Three frames are rendered from three probed game states and compared,
+//! pixel by pixel, against the framebuffers the real engine drew. The oracle
+//! is the reference emulator's own dump; `native/tests/fixtures/README.md`
+//! says where it came from.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -29,11 +29,16 @@ struct Case {
     previous: u32,
 }
 
-const CASES: [Case; 2] = [
+const CASES: [Case; 3] = [
     Case {
         frame: 40,
         tic: 3,
         previous: 39,
+    },
+    Case {
+        frame: 110,
+        tic: 73,
+        previous: 109,
     },
     Case {
         frame: 1000,
@@ -46,7 +51,7 @@ const STATES: &[u8] = include_bytes!("fixtures/demo3-states.tsv");
 
 /// Each fixture frame, with the hash `spec::fb_hash` gives it. A fixture that
 /// was replaced by something else fails here rather than passing quietly.
-const FRAMES: [(u32, &[u8], &[u8], u64); 4] = [
+const FRAMES: [(u32, &[u8], &[u8], u64); 6] = [
     (
         39,
         include_bytes!("fixtures/demo3-frame39-fb.bin"),
@@ -58,6 +63,18 @@ const FRAMES: [(u32, &[u8], &[u8], u64); 4] = [
         include_bytes!("fixtures/demo3-frame40-fb.bin"),
         include_bytes!("fixtures/demo3-frame40-palette.bin"),
         0x2eb8_7849_ee6d_9714,
+    ),
+    (
+        109,
+        include_bytes!("fixtures/demo3-frame109-fb.bin"),
+        include_bytes!("fixtures/demo3-frame109-palette.bin"),
+        0x0efa_da37_fbd0_c792,
+    ),
+    (
+        110,
+        include_bytes!("fixtures/demo3-frame110-fb.bin"),
+        include_bytes!("fixtures/demo3-frame110-palette.bin"),
+        0xffca_3225_ffc1_4b77,
     ),
     (
         999,

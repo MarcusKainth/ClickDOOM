@@ -42,6 +42,7 @@ no_stdin = < /dev/null
 # the same way the generator names its own output, so a re-pinned ROM does not
 # silently reuse the previous one's trace.
 ROM_BIN ?= rom/build/doom-rv32im.bin
+ROM_ELF ?= rom/build/doom-rv32im.elf
 ROM_MANIFEST ?= rom/build/manifest.json
 CLICKDOOM_DATABASE ?= clickdoom
 CLICKDOOM_RUN_K ?= 60000
@@ -63,7 +64,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         bench-canonical-throughput \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
-        gen-layout \
+        gen-layout gen-probe-trace gen-probe-fixture \
         fuzz \
         lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
@@ -100,6 +101,7 @@ build-clickdoom: ## Build the driver binary
 
 require-rom:
 	test -f $(ROM_BIN) || { echo "$(ROM_BIN) missing. Run: make build-rom" >&2; exit 1; }
+	test -f $(ROM_ELF) || { echo "$(ROM_ELF) missing. Run: make build-rom" >&2; exit 1; }
 
 ##@ Test
 
@@ -110,7 +112,8 @@ test: up require-rom build-refemu ## Every suite, live ones included
 	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
 	    cargo test --locked --workspace --features clickhouse-tests -- --nocapture
 	cargo test --locked --release --workspace --features refemu/rom-tests \
-	    --test reference_trace --test demo3_parity --test rom_symbols -- --nocapture
+	    --test reference_trace --test demo3_parity --test rom_symbols \
+	    --test probe_fixture -- --nocapture
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence
@@ -179,6 +182,24 @@ gen-reference-trace: require-rom build-refemu ## Regenerate the committed refere
 	    --out-dir refemu/reference_traces --name demo-boot-to-first-frame
 
 LAYOUT ?= refemu/probe/layout.tsv
+# The frames the committed fixture holds: the first, the last three of the
+# screen melt with the first gameplay frame among them, and one from the middle
+# of the demo. A row carries every mobj and every sector, so a handful is all
+# that fits in a file worth committing.
+PROBE_FIXTURE_FRAMES ?= 0,39..41,1000
+
+gen-probe-trace: require-rom build-refemu ## Dump the engine's state at every demo3 frame. The .tsv is not committed
+	$(REFEMU) probe $(ROM_ELF) --manifest $(ROM_MANIFEST) \
+	    --pinned-hash rom/PINNED_HASH --layout $(LAYOUT) \
+	    --stop-at halt -n $(DEMO3_MAX) \
+	    --out-dir refemu/reference_traces/demo3 --name probe
+
+gen-probe-fixture: require-rom build-refemu ## Regenerate the committed probe fixture
+	$(REFEMU) probe $(ROM_ELF) --manifest $(ROM_MANIFEST) \
+	    --pinned-hash rom/PINNED_HASH --layout $(LAYOUT) \
+	    --frames $(PROBE_FIXTURE_FRAMES) -n $(DEMO3_MAX) \
+	    --out-dir refemu/probe/fixtures --name demo3-frames
+
 gen-layout: ## Regenerate the committed struct layout from the pinned toolchain
 	make -C rom layout
 	cp rom/build/layout.tsv $(LAYOUT)

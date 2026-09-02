@@ -28,6 +28,13 @@ runs the whole `demo3` demo against the values its manifest records. Needs
 
 Coverage-guided fuzzing. See `../fuzz/README.md`.
 
+## The game-state probe
+
+`refemu probe` reads DOOM's own structures out of the machine's RAM and writes
+one row per frame commit, in the shape the native-mode SQL simulation writes.
+[`probe/README.md`](probe/README.md) says what the columns hold and what the
+parity query has to ignore.
+
 ## Reference traces
 
 `reference_traces/` holds committed traces, each named after the ROM it came

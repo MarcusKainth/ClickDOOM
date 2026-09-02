@@ -1,0 +1,19 @@
+{
+  "schema": "refemu.probe-meta/1",
+  "refemu_version": "0.1.0",
+  "state_schema_version": 1,
+  "rom_sha256": "9a6a47d01119f67580e48e9875207186c25efd56ff93019df331eb307cfaa5d9",
+  "layout_sha256": "8023cffc780274f9c9ec7f50e9b21f5896d328fd613308bf655b748c79489968",
+  "probe_file": "probe.9a6a47d01119.tsv",
+  "probe_file_sha256": "8198e84679469aee0e53d4decc1ba7aa3647d0f4ac38a284699bd5b47377d866",
+  "probe_file_bytes": 122717376,
+  "probe_row_count": 2172,
+  "frame_commit_count": 2172,
+  "first_gameplay_frame": 40,
+  "stop_condition": "halt",
+  "final_icount": 2300210133,
+  "halted": true,
+  "elapsed_seconds": 13,
+  "elapsed_millis": 125,
+  "instructions_per_second": 175241398
+}

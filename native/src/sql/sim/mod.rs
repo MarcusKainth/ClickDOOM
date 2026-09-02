@@ -4,6 +4,7 @@
 //! into expressions over the state row. Nothing executes: a caller gets
 //! statements and issues them.
 
+pub mod game;
 pub mod hud;
 pub mod setup;
 pub mod spec;
@@ -82,6 +83,28 @@ impl Tic {
     fn stage(&mut self, bindings: Vec<(String, String)>) {
         self.state.wrote(&bindings);
         self.bindings.extend(bindings);
+    }
+
+    /// Adds a stage that only runs while `running` holds, which is how the
+    /// engine's early returns read from outside the function.
+    ///
+    /// Every state column the stage computes lands under a second name and
+    /// the column itself picks between that and what it held before, so a
+    /// later stage reading the column sees the value the engine would.
+    fn stage_when(&mut self, running: &str, bindings: Vec<(String, String)>) {
+        let mut gated = Vec::new();
+        for (name, expr) in bindings {
+            match name.strip_prefix("now_") {
+                Some(column) if state_columns().contains(&column) => {
+                    let held = format!("ran_{column}");
+                    let unless = self.state.get(column);
+                    gated.push((held.clone(), expr));
+                    gated.push((name, format!("if({running}, {held}, {unless})")));
+                }
+                _ => gated.push((name, expr)),
+            }
+        }
+        self.stage(gated);
     }
 }
 

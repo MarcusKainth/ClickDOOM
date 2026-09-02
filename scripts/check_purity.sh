@@ -43,7 +43,7 @@ scan() { # scan <rule> <dir> <description> <pattern...>
 
 # PUR-9: no mechanism that delegates computation to a subprocess.
 UDF_PATTERNS=('executable' 'python\(' 'CREATE FUNCTION.*AS.*script')
-for d in sqlcpu executor driver scripts; do
+for d in sqlcpu executor driver native scripts; do
   scan PUR-9 "$d" "executable UDF / subprocess delegation" "${UDF_PATTERNS[@]}"
 done
 
@@ -59,7 +59,7 @@ CLOCK_PATTERNS=(
   'blockNumber\(' 'rowNumberInAllBlocks\('
   'Instant::now' 'SystemTime::now' 'std::time::' '\brand::' 'thread_rng\(' 'getrandom'
 )
-for d in sqlcpu executor driver scripts; do
+for d in sqlcpu executor driver native scripts; do
   scan PUR-12 "$d" "wall clock / randomness / block order" "${CLOCK_PATTERNS[@]}"
 done
 

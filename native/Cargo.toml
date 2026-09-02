@@ -1,0 +1,12 @@
+[package]
+name = "clickdoom-native"
+description = "Native mode: DOOM's tic simulation and renderer as ClickHouse SQL text, and the WAD loader that feeds them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clickdoom-spec.workspace = true
+thiserror.workspace = true

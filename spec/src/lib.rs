@@ -1,8 +1,9 @@
 //! The contract every ClickDOOM engine has to agree on.
 //!
-//! This crate carries what `SPEC.md` states and nothing else: the memory map,
-//! the MMIO register offsets, the halt-reason vocabulary, the checkpoint
-//! format and its hashes, and the ROM manifest and its pinned hash.
+//! This crate carries what `SPEC.md` and `NATIVE.md` state and nothing else:
+//! the memory map, the MMIO register offsets, the halt-reason vocabulary, the
+//! checkpoint format and its hashes, the ROM manifest and its pinned hash, and
+//! the native-mode state row.
 //!
 //! It carries no decode and no execute logic. The reference emulator and the
 //! SQL engine must stay independent implementations, because that is the only
@@ -14,6 +15,7 @@ pub mod checkpoint;
 pub mod halt;
 pub mod manifest;
 pub mod map;
+pub mod native_state;
 
 pub use checkpoint::{
     CHECKPOINT_INTERVAL, Checkpoint, RAM_HASH_INTERVAL, TraceConfig, XXH64_SEED, fb_hash, ram_hash,

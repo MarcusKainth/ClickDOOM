@@ -479,6 +479,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clickdoom-native"
+version = "0.1.0"
+dependencies = [
+ "clickdoom-spec",
+ "thiserror",
+]
+
+[[package]]
 name = "clickdoom-spec"
 version = "0.1.0"
 dependencies = [

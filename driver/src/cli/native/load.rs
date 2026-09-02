@@ -5,7 +5,7 @@ use std::time::Duration; // purity-ok: summing the timings plan.rs measured, for
 
 use clap::Args;
 use clickdoom_native::sql::{self, Statement};
-use clickdoom_native::{load, wad::Wad};
+use clickdoom_native::wad::Wad;
 
 use crate::cli::{Exit, Failure, failed};
 use crate::client::{ConnArgs, Db};
@@ -16,8 +16,7 @@ const MAP_DEFAULT: &str = "E1M7";
 const DEMO_DEFAULT: &str = "DEMO3";
 
 /// The sky texture episode one carries. The shareware WAD has only the one
-/// episode, and which texture an episode uses is a name rather than
-/// something to work out.
+/// episode, and which texture an episode uses is a name the caller gives.
 const SKY_DEFAULT: &str = "SKY1";
 
 #[derive(Args)]
@@ -28,9 +27,9 @@ const SKY_DEFAULT: &str = "SKY1";
     long_about = "\
 Issue every statement a loaded level needs, in order: the schema, the WAD's
 lumps, the engine's constant tables, the level decode, the renderer's own
-tables, the simulation's first state row and the demo's melt schedule. The driver issues them and times each
-phase. What the statements are, and what order they go in inside a phase,
-belongs to the SQL that generates them.
+tables, the simulation's first state row and the demo's melt schedule. The
+driver issues them and times each phase. What the statements are, and what
+order they go in inside a phase, belongs to the SQL that generates them.
 
 Loading twice is loading once. Every table the schema declares is emptied
 first, so a re-run replaces what is there rather than doubling it, and a
@@ -94,7 +93,7 @@ async fn load_level(cmd: &LoadCmd, db: &Db) -> Result<Exit, Failure> {
             cmd.wad.display()
         ))
     })?;
-    let melt = melt::load_statements(database, &cmd.demo).map_err(|err| failed(err.to_string()))?;
+    let phases = phases(cmd, &wad).map_err(|err| failed(err.to_string()))?;
 
     println!(
         "{} into {}:{}/{database}: map {}, demo {}, sky {}",
@@ -105,29 +104,22 @@ async fn load_level(cmd: &LoadCmd, db: &Db) -> Result<Exit, Failure> {
         cmd.demo,
         cmd.sky
     );
-    let reports = plan::run(db, &phases(cmd, &wad, melt))
+    let reports = plan::run(db, &phases)
         .await
         .map_err(|err| failed(err.to_string()))?;
     report(&reports);
     Ok(Exit::Ok)
 }
 
-/// The phases, in the only order their own documentation allows: the level
-/// decode reads the lumps the base phase inserts, the renderer's tables
-/// read the decoded level, and both need the schema that precedes them.
-fn phases(cmd: &LoadCmd, wad: &Wad<'_>, melt: Vec<Statement>) -> Vec<plan::Phase> {
+/// What the load issues: its own tables emptied, then the phases that fill
+/// them.
+fn phases(cmd: &LoadCmd, wad: &Wad<'_>) -> Result<Vec<plan::Phase>, melt::UnknownDemo> {
     let database = &cmd.conn.database;
-    vec![
-        plan::Phase::new("empty", empty(database, cmd.fresh)),
-        plan::Phase::new("base", load::plan(database, wad)),
-        plan::Phase::new(
-            "level",
-            sql::level_statements(database, &cmd.map, &cmd.demo),
-        ),
-        plan::Phase::new("render", sql::render_statements(database, &cmd.sky)),
-        plan::Phase::new("sim", sql::sim::load_statements(database)),
-        plan::Phase::new("melt", melt),
-    ]
+    let mut phases = vec![plan::Phase::new("empty", empty(database, cmd.fresh))];
+    phases.extend(plan::level_phases(
+        database, wad, &cmd.map, &cmd.demo, &cmd.sky,
+    )?);
+    Ok(phases)
 }
 
 /// The reference emulator's state rows, for a run that renders from them.
@@ -217,7 +209,8 @@ mod tests {
     fn names(cmd: &LoadCmd) -> Vec<&'static str> {
         let bytes = b"IWAD\x00\x00\x00\x00\x0c\x00\x00\x00".to_vec();
         let wad = Wad::parse(&bytes).expect("an empty WAD parses");
-        phases(cmd, &wad, Vec::new())
+        phases(cmd, &wad)
+            .expect("the default demo has a committed melt schedule")
             .iter()
             .map(|p| p.name)
             .collect()

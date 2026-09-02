@@ -3,13 +3,38 @@
 //!
 //! The statements come from `clickdoom_native`, which decides what they are
 //! and what order they go in. This issues them, times each group and stops
-//! at the first failure. It decides nothing.
+//! at the first failure.
 
 use std::time::{Duration, Instant}; // purity-ok: reporting how long a load took, read by no statement
 
-use clickdoom_native::sql::Statement;
+use clickdoom_native::sql::{self, Statement};
+use clickdoom_native::{load, wad::Wad};
 
 use crate::client::{self, Db};
+use crate::native::melt;
+
+/// The phases that fill a database from a WAD, in the only order their own
+/// documentation allows: the level decode reads the lumps the base phase
+/// inserts, and the renderer's tables and the simulation's first state row
+/// read the decoded level.
+///
+/// The database has to be empty of these tables already. Emptying it is the
+/// caller's, because a command and a test start from different places.
+pub fn level_phases(
+    database: &str,
+    wad: &Wad<'_>,
+    map: &str,
+    demo: &str,
+    sky: &str,
+) -> Result<Vec<Phase>, melt::UnknownDemo> {
+    Ok(vec![
+        Phase::new("base", load::plan(database, wad)),
+        Phase::new("level", sql::level_statements(database, map, demo)),
+        Phase::new("render", sql::render_statements(database, sky)),
+        Phase::new("sim", sql::sim::load_statements(database)),
+        Phase::new("melt", melt::load_statements(database, demo)?),
+    ])
+}
 
 /// A statement the server refused, with enough of the text to find it.
 #[derive(Debug, thiserror::Error)]

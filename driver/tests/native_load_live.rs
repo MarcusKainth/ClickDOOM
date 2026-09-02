@@ -16,35 +16,16 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use std::path::{Path, PathBuf};
-
-use clickdoom_driver::client::{ConnArgs, Db};
+use clickdoom_driver::client::Db;
 use clickdoom_driver::native::{melt, plan, probe};
 use clickdoom_native::sql::{self, Statement, probe as shape};
-use clickdoom_native::{load, wad::Wad};
+use clickdoom_native::wad::Wad;
+
+mod support;
+
+use support::{DEMO, MAP, SKY, committed_fixture, conn_args, doom1};
 
 /// The map, demo and sky every case here loads.
-const MAP: &str = "E1M7";
-const DEMO: &str = "DEMO3";
-const SKY: &str = "SKY1";
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
-fn conn_args(database: &str) -> ConnArgs {
-    ConnArgs {
-        host: std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
-        port: std::env::var("CLICKHOUSE_HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(8123),
-        user: "default".to_owned(),
-        database: database.to_owned(),
-        password: None,
-    }
-}
-
 /// A private database per case, named for this process and the case, so
 /// nothing here touches a shared one.
 struct Fixture {
@@ -109,28 +90,23 @@ impl Fixture {
 
 /// The phases `clickdoom native load` issues, built the same way.
 fn level_phases(database: &str, wad: &Wad<'_>) -> Vec<plan::Phase> {
-    vec![
-        plan::Phase::new(
-            "empty",
-            sql::schema_tables()
-                .into_iter()
-                .map(|table| Statement::sql(format!("TRUNCATE TABLE IF EXISTS {database}.{table}")))
-                .collect(),
-        ),
-        plan::Phase::new("base", load::plan(database, wad)),
-        plan::Phase::new("level", sql::level_statements(database, MAP, DEMO)),
-        plan::Phase::new("render", sql::render_statements(database, SKY)),
-        plan::Phase::new("sim", sql::sim::load_statements(database)),
-        plan::Phase::new(
-            "melt",
-            melt::load_statements(database, DEMO).expect("demo3 has a committed schedule"),
-        ),
-    ]
+    let mut phases = vec![plan::Phase::new(
+        "empty",
+        sql::schema_tables()
+            .into_iter()
+            .map(|table| Statement::sql(format!("TRUNCATE TABLE IF EXISTS {database}.{table}")))
+            .collect(),
+    )];
+    phases.extend(
+        plan::level_phases(database, wad, MAP, DEMO, SKY)
+            .expect("demo3 has a committed melt schedule"),
+    );
+    phases
 }
 
 #[tokio::test]
 async fn a_level_load_fills_the_tables_and_loading_twice_changes_nothing() {
-    let bytes = std::fs::read(repo_root().join("rom/wad/doom1.wad")).expect("the WAD is committed");
+    let bytes = doom1();
     let wad = Wad::parse(&bytes).expect("the WAD parses");
     let fixture = Fixture::create("level").await;
     let phases = level_phases(&fixture.database, &wad);
@@ -190,26 +166,6 @@ async fn the_melt_schedule_carries_the_running_total_sql_computed() {
     assert_eq!(steps.last(), Some(&(39, 41)), "the melt's last frame");
 
     fixture.finish().await;
-}
-
-/// The one committed probe file. `refemu/tests/probe_fixture.rs` holds it to
-/// one per ROM, so a glob names it without pinning the hash in its name.
-fn committed_fixture() -> PathBuf {
-    let dir = repo_root().join("refemu/probe/fixtures");
-    let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|e| e == "tsv"))
-        .collect();
-    found.sort();
-    match found.len() {
-        1 => found.remove(0),
-        _ => panic!(
-            "{} holds {} probe files, not one",
-            dir.display(),
-            found.len()
-        ),
-    }
 }
 
 #[tokio::test]

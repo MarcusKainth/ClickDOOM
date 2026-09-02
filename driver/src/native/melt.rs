@@ -2,9 +2,9 @@
 //!
 //! The renderer takes `melt_step` per frame and draws the wipe at that
 //! point. How many passes each frame advanced by is a property of the run
-//! the reference emulator recorded, not something to work out, so it is
-//! committed under `driver/melt/` and streamed into `melt_schedule`. SQL
-//! turns the per-frame counts into the running total.
+//! the reference emulator recorded. The counts are committed under
+//! `driver/melt/` and streamed into `melt_schedule`, and SQL turns them
+//! into the running total.
 
 use clickdoom_native::sql::Statement;
 

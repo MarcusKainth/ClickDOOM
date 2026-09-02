@@ -27,5 +27,5 @@ pub mod stream;
 pub mod url;
 pub mod window;
 
-pub use session::{Frame, Recovery, Session, SessionError};
+pub use session::{Frame, Recovery, Session, SessionError, Waited};
 pub use stream::{Resident, ResidentError};

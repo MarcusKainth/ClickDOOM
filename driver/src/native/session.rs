@@ -110,6 +110,17 @@ pub struct Frame {
     pub fb_hash: String,
 }
 
+/// One frame, with what it cost to get it.
+#[derive(Debug)]
+pub struct Waited {
+    pub frame: Frame,
+    /// From the row being sent to the frame being readable.
+    pub waited: Duration,
+    /// How long the poll that found it took, which is the round trip that
+    /// carries the frame's bytes back.
+    pub read: Duration,
+}
+
 /// What one call to [`Session::recover`] found.
 #[derive(Debug)]
 pub struct Recovery {
@@ -289,15 +300,18 @@ impl Session {
     /// The budget is the caller's, because what a frame may take depends on
     /// what the caller is doing: a paced run has a tic, a one-off render has
     /// as long as it needs.
-    pub async fn wait_frame(
-        &self,
-        frame: u32,
-        timeout: Duration,
-    ) -> Result<(Frame, Duration), SessionError> {
+    pub async fn wait_frame(&self, frame: u32, timeout: Duration) -> Result<Waited, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
         loop {
-            if let Some(frame) = self.poll_frame(frame).await? {
-                return Ok((frame, started.elapsed()));
+            let polled = Instant::now(); // purity-ok: measuring one read-back, see the import
+            let found = self.poll_frame(frame).await?;
+            let read = polled.elapsed();
+            if let Some(frame) = found {
+                return Ok(Waited {
+                    frame,
+                    waited: started.elapsed(),
+                    read,
+                });
             }
             let waited = started.elapsed();
             if waited >= timeout {

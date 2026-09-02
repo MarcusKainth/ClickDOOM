@@ -8,8 +8,9 @@ use clickdoom_native::sql::sim::tick;
 use crate::cli::{Exit, Failure, failed};
 use crate::client::ConnArgs;
 use crate::native::pace::{Pace, TIC};
+use crate::native::session::TIC_TIMEOUT;
 use crate::native::window::{Scale, Window};
-use crate::native::{Session, statements};
+use crate::native::{Session, schedule};
 use crate::stats::{Clock, Monotonic, NativeCounters, NativeStatsLine};
 
 /// How long one tic or one frame may take before the run calls the
@@ -57,14 +58,14 @@ pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
     let db = cmd.conn.connect();
     let mut window = Window::open("ClickDOOM", cmd.scale).map_err(|err| failed(err.to_string()))?;
 
-    statements::clear_frames(&db, database)
+    schedule::clear_frames(&db, database)
         .await
         .map_err(|err| failed(format!("emptying the frames table: {err}")))?;
     let session = Session::open(
         &cmd.conn,
         database,
         Some(&tick::resident_statement(database)),
-        &statements::render(database),
+        &clickdoom_native::sql::render::frame_transform(database),
     )
     .await
     .map_err(|err| failed(format!("opening the session: {err}")))?;
@@ -144,7 +145,7 @@ async fn play(
             .feed_sim(next, tick::source::KEYS, keys, mouse_dx, mouse_dy)
             .map_err(|err| failed(format!("feeding tic {next}: {err}")))?;
         let ran = session
-            .wait_sim(next)
+            .wait_sim(next, TIC_TIMEOUT)
             .await
             .map_err(|err| failed(err.to_string()))?;
         counters.sim = counters.sim.map(|total| total + ran);
@@ -188,7 +189,7 @@ async fn warm(
 
     let (drawn, ran) = tokio::join!(
         session.wait_frame(0, FRAME_TIMEOUT),
-        session.wait_sim(first)
+        session.wait_sim(first, FRAME_TIMEOUT)
     );
     let drawn = drawn.map_err(|err| failed(err.to_string()))?;
     let ran = ran.map_err(|err| failed(err.to_string()))?;

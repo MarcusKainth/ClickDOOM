@@ -119,11 +119,21 @@ pub fn ansi_render_sql(db: &str, width: u32, height: u32) -> String {
 }
 
 /// The latest `frames_out` row rendered as one complete binary PPM (P6)
-/// image, as a single string. Binary PPM needs no encoder and no
-/// dependency: a five-token ASCII header followed by raw RGB triples,
-/// row-major, is the entire format, and SQL builds both halves with string
-/// concatenation alone.
+/// image, as a single string.
 pub fn ppm_render_sql(db: &str, width: u32, height: u32) -> String {
+    let latest =
+        |column| format!("SELECT {column} FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1");
+    ppm_sql_over(&latest("fb"), &latest("palette"), width, height)
+}
+
+/// One complete binary PPM (P6) image, as a single string, from a source of
+/// `fb` bytes and a source of `palette` bytes.
+///
+/// Binary PPM needs no encoder and no dependency: a five-token ASCII header
+/// followed by raw RGB triples, row-major, is the entire format, and SQL
+/// builds both halves with string concatenation alone. Each source is a
+/// `SELECT` returning the one column it is named for and one row.
+pub fn ppm_sql_over(fb: &str, palette: &str, width: u32, height: u32) -> String {
     let header = format!("P6\n{width} {height}\n255\n");
     let area = width * height;
     let pixel_hex = format!(
@@ -138,12 +148,12 @@ pub fn ppm_render_sql(db: &str, width: u32, height: u32) -> String {
         "SELECT concat('{header}', unhex({pixel_hex})) AS ppm\n\
          FROM\n  \
              (SELECT arrayMap(i -> reinterpretAsUInt8(substring(fb, i, 1)), range(1, {area} + 1)) AS px\n   \
-              FROM (SELECT fb FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1)) AS pixels,\n  \
+              FROM ({fb})) AS pixels,\n  \
              (SELECT arrayMap(i -> tuple(\n      \
                  reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 1, 1)),\n      \
                  reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 2, 1)),\n      \
                  reinterpretAsUInt8(substring(palette, (i - 1) * 3 + 3, 1))\n    \
              ), range(1, 257)) AS pal_rgb\n   \
-              FROM (SELECT palette FROM {db}.frames_out ORDER BY frame_no DESC LIMIT 1)) AS palettes"
+              FROM ({palette})) AS palettes"
     )
 }

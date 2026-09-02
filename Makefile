@@ -32,6 +32,12 @@ conn = --host $(CH_HOST) --port $(CH_PORT) --password "$(CLICKHOUSE_PASSWORD)"
 CLICKDOOM ?= ./target/release/clickdoom
 clickdoom_conn = --host $(CH_HOST) --port $(CH_HTTP_PORT) --password "$(CLICKHOUSE_PASSWORD)" --database "$(CLICKDOOM_DATABASE)"
 
+# Native mode has a database of its own. A native load empties the tables its
+# schema declares, and those names are not the emulation ones, but keeping the
+# two apart means a native run cannot slow an emulation run's merges either.
+CLICKDOOM_NATIVE_DATABASE ?= clickdoom_native
+native_conn = --host $(CH_HOST) --port $(CH_HTTP_PORT) --password "$(CLICKHOUSE_PASSWORD)" --database "$(CLICKDOOM_NATIVE_DATABASE)"
+
 # clickhouse-client blocks forever on an INSERT when stdin is an open pipe
 # rather than at EOF. Every target here is non-interactive, so stdin is closed
 # for all of them. Without it `make diff` inside a pipeline, an editor task
@@ -65,6 +71,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         gen-layout gen-probe-trace gen-probe-fixture \
+        native-smoke \
         fuzz \
         lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
@@ -122,6 +129,26 @@ diff: up require-rom build-refemu build-clickdoom ## Differential run of N instr
 
 smoke: ## The differential run CI uses, at 100,000 instructions
 	$(MAKE) diff N=100000
+
+##@ Native
+#
+# The committed probe fixture and the metadata beside it.
+# refemu/tests/probe_fixture.rs holds the directory to one file per ROM, so a
+# wildcard names it without repeating the ROM hash here.
+probe_fixture = $(wildcard refemu/probe/fixtures/*.tsv)
+probe_fixture_meta = $(probe_fixture:.tsv=.json)
+
+# The first frame after the screen melt, which the fixture's own metadata
+# names. Rendering it needs every frame before it, and the fixture carries the
+# melt's last frame, so the run is three frames long.
+native_smoke_frame = $(shell sed -n 's/.*"first_gameplay_frame": *\([0-9]*\).*/\1/p' $(probe_fixture_meta))
+
+native-smoke: up build-clickdoom ## Render the first gameplay frame from the committed probe fixture and check its hash
+	test -n "$(probe_fixture)" || { echo "no probe fixture in refemu/probe/fixtures/. Run: make gen-probe-fixture" >&2; exit 1; }
+	test -n "$(native_smoke_frame)" || { echo "$(probe_fixture_meta) names no first_gameplay_frame" >&2; exit 1; }
+	$(CLICKDOOM) native load --fresh $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native load --probe $(probe_fixture) $(native_conn) $(no_stdin)
+	$(CLICKDOOM) native render --frame $(native_smoke_frame) --expect-probe-fbhash $(native_conn) $(no_stdin)
 
 ##@ Bench
 #
@@ -256,7 +283,7 @@ zizmor: ## Workflow security posture
 # phony `toolchain-image`, so it is rebuilt on every entry, and two entries
 # compile the ROM twice.
 
-gates: lint check-rom-hash test smoke ## Every check ci.yml runs on a pull request
+gates: lint check-rom-hash test smoke native-smoke ## Every check ci.yml runs on a pull request
 
 check-rom-hash: ## The built ROM matches rom/PINNED_HASH, and the committed layout matches the headers
 	make -C rom all check-pinned-hash check-layout

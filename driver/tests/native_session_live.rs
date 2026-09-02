@@ -64,7 +64,7 @@ async fn setup(database: &str) -> ConnArgs {
         ),
         format!(
             "CREATE TABLE {database}.native_frames \
-             (frame UInt32, fb String, palette String, rgb32 String, fb_hash String) \
+             (frame UInt32, fb String, palette String, rgb32 String, fb_hash UInt64) \
              ENGINE = Join(ANY, LEFT, frame)"
         ),
     ] {
@@ -99,6 +99,9 @@ fn sim_statement(database: &str) -> String {
 
 /// Builds a frame out of the state row for the tic it is given, so a frame
 /// that reads the wrong tic is visible in its bytes.
+///
+/// `fb_hash` is a `UInt64`, as `native/schema.sql` declares it. The session
+/// is what renders it as the 16 hex digits a caller compares.
 fn render_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_frames \
@@ -107,8 +110,8 @@ fn render_statement(database: &str) -> String {
                     toUInt32(tic)) % 256)), {FB_BYTES}) AS fb, \
                 repeat(char(melt_step), {PALETTE_BYTES}) AS palette, \
                 repeat(char(1), {RGB32_BYTES}) AS rgb32, \
-                lpad(lower(hex(toUInt64(joinGet('{database}.native_state', 'leveltime', \
-                    toUInt32(tic))))), 16, '0') AS fb_hash \
+                toUInt64(joinGet('{database}.native_state', 'leveltime', \
+                    toUInt32(tic))) AS fb_hash \
          FROM input('{RENDER_INPUT_SCHEMA}') WHERE frame > 0"
     )
 }
@@ -187,7 +190,7 @@ async fn a_session_runs_tics_and_their_frames_in_order() {
     let session = Session::open(
         &conn,
         &database,
-        &sim_statement(&database),
+        Some(&sim_statement(&database)),
         &render_statement(&database),
     )
     .await
@@ -275,7 +278,7 @@ async fn a_killed_statement_is_found_and_recovered() {
     let mut session = Session::open(
         &conn,
         &database,
-        &sim_statement(&database),
+        Some(&sim_statement(&database)),
         &render_statement(&database),
     )
     .await

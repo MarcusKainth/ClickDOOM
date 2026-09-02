@@ -8,13 +8,15 @@
 //! [`session`] drives the two statements of one session together.
 //!
 //! The one-off side is beside it: [`plan`] issues the statements that load a
-//! database, [`probe`] loads the reference emulator's state rows, and
-//! [`melt`] the screen wipe's schedule.
+//! database, [`probe`] loads the reference emulator's state rows, [`melt`]
+//! the screen wipe's schedule, and [`schedule`] reads back which frames a
+//! run renders and what each one draws from.
 
 pub mod melt;
 pub mod plan;
 pub mod probe;
 pub mod rowbinary;
+pub mod schedule;
 pub mod session;
 pub mod settings;
 pub mod stream;

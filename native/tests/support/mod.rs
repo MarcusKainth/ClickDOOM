@@ -27,6 +27,7 @@ pub mod probe;
 pub mod spawn;
 pub mod ticcmd;
 pub mod ticker;
+pub mod traverse;
 pub mod walk;
 
 /// The map every live test loads, the demo that drives it, and the sky the

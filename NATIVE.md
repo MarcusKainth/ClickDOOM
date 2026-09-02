@@ -84,6 +84,14 @@ none, so the driver detects death by rows that stop landing. The driver sends
 the row for tic t+1 only after the row for tic t is readable. A statement that
 ends is reopened, and the session resumes from the highest committed tic.
 
+Static data enters a statement as scalar constants evaluated once. A constant
+array is held as one value per element, and in a statement dozens of
+subqueries deep each element costs kilobytes, so the pixel pools and every
+other large constant are `String`s indexed with `substring`; a string constant
+is one value whatever its length. A per-frame array captured inside a lambda is
+copied once per element of the array being mapped, so per-pixel lookups go to
+constants only and per-frame data is consumed element-wise.
+
 Rows reach the statement one block each. Rows written into a statement from a
 `VALUES` list share one block whatever `max_insert_block_size` says, so every
 row of that block reads the state from before the block; tests that drive a

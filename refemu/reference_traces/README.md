@@ -154,8 +154,10 @@ Not a checkpoint trace. One row of DOOM's game state per frame commit, in the
 shape the native-mode SQL simulation writes, so the two can be compared tic by
 tic. [`refemu/probe/README.md`](../probe/README.md) says what the columns hold.
 
-`make gen-probe-trace` writes it. The `.tsv` is not committed, for the same
-reason the `demo3` checkpoint trace is not: it is large, it changes with every
-ROM, and it is regenerable. The `.json` beside it records the ROM's sha256, the
-layout table's sha256, the file's own sha256 and size, the row and frame
-counts, and the first gameplay frame.
+`make gen-probe-trace` writes it, along with
+`demo3/probe-rng.<rom sha256 prefix>.tsv`, which logs every `P_Random` call
+with the function that made it. Neither `.tsv` is committed, for the same
+reason the `demo3` checkpoint trace is not: they are large, they change with
+every ROM, and they are regenerable. The `.json` beside them records the ROM's
+sha256, the layout table's sha256, each file's own sha256 and size, the row and
+frame counts, and the first gameplay frame.

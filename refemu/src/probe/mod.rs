@@ -14,6 +14,7 @@
 
 pub mod layout;
 pub mod ram;
+pub mod rng;
 pub mod row;
 pub mod world;
 
@@ -27,6 +28,7 @@ use crate::image::Image;
 use crate::trace::{Observer, Step};
 
 pub use layout::Layout;
+pub use rng::RngLog;
 pub use world::{Engine, ThinkerKind};
 
 /// Anything that stops the probe reading a frame.
@@ -74,6 +76,8 @@ pub enum ProbeError {
     ColumnOutOfOrder { wrote: String, want: String },
     #[error("the row stopped after {wrote} of {total} columns")]
     RowTooShort { wrote: usize, total: usize },
+    #[error("a call from {ra:#010x} is in no function, so nothing names its caller")]
+    UnknownCaller { ra: u32 },
     #[error("writing a row: {0}")]
     Write(String),
 }
@@ -190,6 +194,12 @@ impl<W: Write> Probe<W> {
             written: Written::default(),
             failed: None,
         })
+    }
+
+    /// The engine, resolved. A second observer over the same run reads its
+    /// globals rather than resolving them again.
+    pub const fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     /// The sink, once the run is over.

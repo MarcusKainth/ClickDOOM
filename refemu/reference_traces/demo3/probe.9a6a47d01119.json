@@ -10,10 +10,14 @@
   "probe_row_count": 2172,
   "frame_commit_count": 2172,
   "first_gameplay_frame": 40,
+  "rng_file": "probe-rng.9a6a47d01119.tsv",
+  "rng_file_sha256": "34c4f48ccf8baf91d2983e80d04c1736ad8937e3d15911bbf3a9069dec039a75",
+  "rng_file_bytes": 735929,
+  "rng_row_count": 22991,
   "stop_condition": "halt",
   "final_icount": 2300210133,
   "halted": true,
-  "elapsed_seconds": 13,
-  "elapsed_millis": 125,
-  "instructions_per_second": 175241398
+  "elapsed_seconds": 14,
+  "elapsed_millis": 235,
+  "instructions_per_second": 161582967
 }

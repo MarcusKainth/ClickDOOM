@@ -150,17 +150,18 @@ impl Image {
     }
 
     /// The function whose body covers `addr`.
-    ///
-    /// The nearest preceding function decides, so an address in a gap between
-    /// two functions has no answer rather than being attributed to the one
-    /// before it.
     pub fn function_containing(&self, addr: u32) -> Option<&Symbol> {
-        let before = self.symbols.partition_point(|s| s.addr <= addr);
-        self.symbols[..before]
+        function_containing(&self.symbols, addr)
+    }
+
+    /// Every function symbol, for a caller that has to name addresses after
+    /// the image itself is gone.
+    pub fn functions(&self) -> Vec<Symbol> {
+        self.symbols
             .iter()
-            .rev()
-            .find(|s| s.kind == SymbolKind::Function)
-            .filter(|s| addr.wrapping_sub(s.addr) < s.size)
+            .filter(|s| s.kind == SymbolKind::Function)
+            .cloned()
+            .collect()
     }
 
     /// Parses an ELF, taking its loadable segments and its symbols.
@@ -250,6 +251,19 @@ impl Image {
             symbols,
         })
     }
+}
+
+/// The function whose body covers `addr`, in symbols sorted by address.
+///
+/// The nearest preceding function decides, so an address in a gap between two
+/// functions has no answer rather than being attributed to the one before it.
+pub fn function_containing(symbols: &[Symbol], addr: u32) -> Option<&Symbol> {
+    let before = symbols.partition_point(|s| s.addr <= addr);
+    symbols[..before]
+        .iter()
+        .rev()
+        .find(|s| s.kind == SymbolKind::Function)
+        .filter(|s| addr.wrapping_sub(s.addr) < s.size)
 }
 
 fn read_symbols(

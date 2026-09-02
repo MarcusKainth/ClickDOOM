@@ -163,3 +163,81 @@ fn regenerating_the_fixture_reproduces_it() {
         "the fixture is stale. Run `make gen-probe-fixture`."
     );
 }
+
+/// Every `P_Random` call is named by the function that made it.
+///
+/// The set of callers is the check. Before the first frame the only things
+/// that ask for a random number are the level's own setup and the light
+/// thinkers running their first tics.
+#[cfg(feature = "rom-tests")]
+#[test]
+fn the_random_call_log_names_the_caller_of_every_call() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let elf = repo.join("rom").join("build").join("doom-rv32im.elf");
+    assert!(
+        elf.exists(),
+        "this needs {}, which is not built. Run `make build-rom`.",
+        elf.display()
+    );
+    let image = refemu::Image::parse_elf(&std::fs::read(&elf).unwrap()).unwrap();
+    let layout = refemu::probe::Layout::parse(
+        &std::fs::read_to_string(probe_dir().join("layout.tsv")).unwrap(),
+    )
+    .unwrap();
+
+    let map = clickdoom_spec::MemoryMap::clickdoom();
+    let mut cpu = refemu::Cpu::new(
+        refemu::Memory::new(
+            map,
+            refemu::Devices::registers(clickdoom_spec::IPMS_DEFAULT),
+        ),
+        image.entry,
+    );
+    cpu.load(&image).unwrap();
+    cpu.set_text_region(image.text_region());
+    cpu.enable_decode_cache();
+
+    let mut rows = Vec::new();
+    let mut probe =
+        refemu::probe::Probe::new(&image, &layout, "0".parse().unwrap(), std::io::sink()).unwrap();
+    let mut log = refemu::probe::RngLog::new(&image, probe.engine(), &mut rows).unwrap();
+    refemu::trace::run(
+        &mut cpu,
+        clickdoom_spec::TraceConfig::default(),
+        20_000_000,
+        &mut refemu::trace::Both(&mut probe, &mut log),
+    );
+    assert_eq!(log.failed, None, "the log stopped on an error");
+    assert!(log.rows > 0, "no P_Random call was logged");
+
+    let text = String::from_utf8(rows).unwrap();
+    let mut callers = std::collections::BTreeSet::new();
+    let mut tic: Option<&str> = None;
+    let mut want = 0u64;
+    for line in text.lines() {
+        let values: Vec<&str> = line.split('\t').collect();
+        assert_eq!(values.len(), 5, "{line}");
+        // Call indices count from zero within each tic and rise by one.
+        if tic != Some(values[0]) {
+            tic = Some(values[0]);
+            want = 0;
+        }
+        assert_eq!(values[1].parse::<u64>().unwrap(), want, "{line}");
+        want += 1;
+        callers.insert(values[2].to_owned());
+    }
+    assert_eq!(
+        callers,
+        [
+            "P_SpawnLightFlash",
+            "P_SpawnMapThing",
+            "P_SpawnMobj",
+            "P_SpawnStrobeFlash",
+            "T_LightFlash",
+        ]
+        .map(str::to_owned)
+        .into_iter()
+        .collect(),
+        "the callers before the first frame are not the ones this ROM has"
+    );
+}

@@ -16,8 +16,9 @@ use crate::exec::Cpu;
 use crate::image::Image;
 use crate::memory::Memory;
 use crate::mmio::Devices;
-use crate::probe::{self, Frames, Layout, Probe};
+use crate::probe::{self, Frames, Layout, Probe, RngLog, rng};
 use crate::trace;
+use crate::trace::Both;
 
 use super::point::{StopAt, parse_count};
 use super::{Exit, Failure, MachineArgs, RunOutcome, failed, gate, usage, write_json};
@@ -59,6 +60,12 @@ pub struct ProbeCmd {
     /// beside the rows
     #[arg(long, value_name = "PATH")]
     pub meta_out: Option<PathBuf>,
+    /// Also log every P_Random call with its caller, here
+    #[arg(long, value_name = "PATH", conflicts_with = "rng_name")]
+    pub rng_out: Option<PathBuf>,
+    /// Filename stem for the random-call log, used with --out-dir
+    #[arg(long, value_name = "STEM", requires = "out_dir")]
+    pub rng_name: Option<String>,
 }
 
 pub const PROBE_META_SCHEMA: &str = "refemu.probe-meta/1";
@@ -77,6 +84,10 @@ pub struct ProbeMeta {
     pub probe_row_count: u64,
     pub frame_commit_count: u64,
     pub first_gameplay_frame: Option<u64>,
+    pub rng_file: Option<String>,
+    pub rng_file_sha256: Option<String>,
+    pub rng_file_bytes: Option<u64>,
+    pub rng_row_count: Option<u64>,
     pub stop_condition: Option<String>,
     pub final_icount: u64,
     pub halted: bool,
@@ -161,11 +172,20 @@ pub(crate) fn run(quiet: bool, cmd: &ProbeCmd) -> Result<Exit, Failure> {
             _ => None,
         });
 
+    let rng_path =
+        match (&cmd.rng_out, &cmd.out_dir, &cmd.rng_name) {
+            (Some(path), _, _) => Some(path.clone()),
+            (None, Some(dir), Some(name)) => Some(dir.join(
+                hashed_filename(name, &rom_sha256, ".tsv").map_err(|e| failed(e.to_string()))?,
+            )),
+            _ => None,
+        };
+
     let mut cpu = load(&image, &manifest, &cmd.machine)?;
 
     // Hashed as it is written, so a file of any size still has a hash and is
     // never read back to find out what it holds.
-    let sink = Sink::new(out_path.as_deref())?;
+    let sink = Sink::new(out_path.as_deref(), &probe::header())?;
     let mut probe = Probe::new(
         &image,
         &layout,
@@ -174,20 +194,43 @@ pub(crate) fn run(quiet: bool, cmd: &ProbeCmd) -> Result<Exit, Failure> {
     )
     .map_err(|e| failed(e.to_string()))?;
 
+    let mut rng = match &rng_path {
+        Some(path) => Some(
+            RngLog::new(
+                &image,
+                probe.engine(),
+                Sink::new(Some(path.as_path()), &rng::header())?,
+            )
+            .map_err(|e| failed(e.to_string()))?,
+        ),
+        None => None,
+    };
+
     // purity-ok: reported in the metadata, never read by the machine.
     let started = std::time::Instant::now();
-    let stop = trace::run(
-        &mut cpu,
-        TraceConfig::default(),
-        cmd.max_instructions,
-        &mut probe,
-    );
+    let stop = {
+        let mut both = Both(&mut probe, &mut rng);
+        trace::run(
+            &mut cpu,
+            TraceConfig::default(),
+            cmd.max_instructions,
+            &mut both,
+        )
+    };
     let elapsed = started.elapsed();
 
     if let Some(error) = probe.failed.clone() {
         return Err(failed(error.to_string()));
     }
+    if let Some(error) = rng.as_ref().and_then(|rng| rng.failed.clone()) {
+        return Err(failed(error.to_string()));
+    }
     let written = probe.written.clone();
+    let rng_rows = rng.as_ref().map(|rng| rng.rows);
+    let rng_written = match rng {
+        Some(rng) => Some(rng.into_sink().finish()?),
+        None => None,
+    };
     let sink = probe.into_sink();
     let (digest, bytes_written) = sink.finish()?;
 
@@ -232,6 +275,13 @@ pub(crate) fn run(quiet: bool, cmd: &ProbeCmd) -> Result<Exit, Failure> {
             probe_row_count: written.rows,
             frame_commit_count: written.frames_seen,
             first_gameplay_frame: written.first_gameplay_frame,
+            rng_file: rng_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned()),
+            rng_file_sha256: rng_written.as_ref().map(|(digest, _)| digest.clone()),
+            rng_file_bytes: rng_written.as_ref().map(|(_, bytes)| *bytes),
+            rng_row_count: rng_rows,
             stop_condition: stop_condition.map(str::to_owned),
             final_icount: cpu.icount(),
             halted,
@@ -281,7 +331,7 @@ struct Sink {
 }
 
 impl Sink {
-    fn new(path: Option<&Path>) -> Result<Self, Failure> {
+    fn new(path: Option<&Path>, header: &str) -> Result<Self, Failure> {
         let out: Box<dyn std::io::Write> = match path {
             Some(path) if path != Path::new("-") => Box::new(std::io::BufWriter::new(
                 std::fs::File::create(path)
@@ -296,7 +346,6 @@ impl Sink {
             error: None,
         };
         use std::io::Write as _;
-        let header = probe::header();
         sink.write_all(header.as_bytes())
             .map_err(|e| failed(format!("writing the header: {e}")))?;
         Ok(sink)

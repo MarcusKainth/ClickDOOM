@@ -192,7 +192,7 @@ gen-probe-trace: require-rom build-refemu ## Dump the engine's state at every de
 	$(REFEMU) probe $(ROM_ELF) --manifest $(ROM_MANIFEST) \
 	    --pinned-hash rom/PINNED_HASH --layout $(LAYOUT) \
 	    --stop-at halt -n $(DEMO3_MAX) \
-	    --out-dir refemu/reference_traces/demo3 --name probe
+	    --out-dir refemu/reference_traces/demo3 --name probe --rng-name probe-rng
 
 gen-probe-fixture: require-rom build-refemu ## Regenerate the committed probe fixture
 	$(REFEMU) probe $(ROM_ELF) --manifest $(ROM_MANIFEST) \

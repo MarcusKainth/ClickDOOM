@@ -456,6 +456,7 @@ dependencies = [
  "chrono",
  "clap",
  "clickdoom-executor",
+ "clickdoom-native",
  "clickdoom-spec",
  "clickhouse",
  "http",

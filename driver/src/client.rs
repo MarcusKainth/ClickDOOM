@@ -104,6 +104,19 @@ impl Db {
         Ok(())
     }
 
+    /// Runs an `INSERT ... FORMAT <format>` whose rows travel as the request
+    /// body rather than inside the statement text.
+    ///
+    /// The body reaches the server as it stands. Nothing here parses it,
+    /// reorders it or fills anything in; the statement's own column list and
+    /// format say how the server reads it.
+    pub async fn run_with_body(&self, sql: &str, body: bytes::Bytes) -> Result<(), Error> {
+        let mut insert = self.client.insert_formatted_with(sql);
+        insert.send(body).await?;
+        insert.end().await?;
+        Ok(())
+    }
+
     /// Runs a statement and fetches a single row.
     pub async fn fetch_one<T>(&self, sql: &str) -> Result<T, Error>
     where

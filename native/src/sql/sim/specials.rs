@@ -318,22 +318,19 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         ),
     );
     // The sectors that move, in list order, and the clip they all share.
+    // Both walks start from `plane_act`, the slots the pass was entered
+    // for.
     value(
         "plane_moving",
-        format!(
-            "arrayMap(j -> toInt32(plane_sector[j]), \
-             arrayFilter(j -> plane_runs[j] = 1, arrayEnumerate({})))",
-            s("s_kind")
-        ),
+        "arrayMap(j -> toInt32(plane_sector[j]), \
+         arrayFilter(j -> plane_runs[j] = 1, plane_act))"
+            .to_owned(),
     );
     // The sectors that move are few and there are many, so the height goes
     // in by a fold over the thinkers that moved one.
     value(
         "plane_running",
-        format!(
-            "arrayFilter(j -> plane_runs[j] = 1, arrayEnumerate({}))",
-            s("s_kind")
-        ),
+        "arrayFilter(j -> plane_runs[j] = 1, plane_act)".to_owned(),
     );
     let trying = |which: i64, from: &str| {
         format!(
@@ -551,17 +548,61 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         CHANGERS = CHANGES_TEXTURE,
         k = s("s_kind"),
     );
-    let body = format!(
-        "({keep}, {ceiling}, {direction}, {count}, {kind_now}, {z}, {floorz}, {ceilingz}, \
-         {specialdata}, {unresolved}, {floor}, {status})"
-    );
+    // Each member of the pass's answer, as what it computes and what the
+    // same field holds on a tic the pass does not run. The two are written
+    // together because the second is the fold's starting value and has to
+    // agree with the first member for member. `held` reads them back by
+    // position.
+    let answer: Vec<(String, String)> = vec![
+        (
+            keep,
+            format!("arrayMap(j -> toUInt8(1), arrayEnumerate({}))", s("s_kind")),
+        ),
+        (ceiling, s("sec_ceilingheight")),
+        (direction, s("s_direction")),
+        (count, s("s_count")),
+        (kind_now, s("s_type")),
+        (z, s("m_z")),
+        (floorz, s("m_floorz")),
+        (ceilingz, s("m_ceilingz")),
+        (specialdata, s("sec_specialdata")),
+        (unresolved, format!("toUInt8({})", s("unresolved"))),
+        (floor, s("sec_floorheight")),
+        (status, s("s_status")),
+    ];
+    let tuple = |member: fn(&(String, String)) -> &String| {
+        format!(
+            "({})",
+            answer
+                .iter()
+                .map(member)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     // The values go through one chain rather than becoming bindings of
     // their own. A binding read more than once inside a SELECT is expanded
     // at each place that reads it, and the clip is too big to write out
     // five times.
+    //
+    // The chain is the body of a fold over `acting`, which holds one entry
+    // on a tic whose thinker list carries a plane thinker and none on a
+    // tic that does not, so a tic that runs none of them costs the list
+    // walk alone. Both of the pass's walks start from `plane_act`, because
+    // a lambda body that reads neither of its parameters is evaluated
+    // outside the lambda and the fold then skips nothing.
     let held = |field: usize| format!("planes.{field}");
     let mut bindings = vec![
-        ("planes".to_owned(), bind::chain_in("plane", &values, &body)),
+        (
+            "planes".to_owned(),
+            format!(
+                "arrayFold((plane_at, plane_act) -> {}, {}, {})",
+                bind::chain_in("plane", &values, &tuple(|a| &a.0)),
+                acting(state),
+                tuple(|a| &a.1),
+            ),
+        ),
         ("kept".to_owned(), held(1)),
         (
             "thinker_slot".to_owned(),
@@ -600,6 +641,28 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     bindings
 }
 
+/// The slots the pass has anything to do for, as a list holding one entry
+/// or none.
+///
+/// `P_RunThinkers` reaches `T_VerticalDoor`, `T_PlatRaise` and
+/// `T_MoveFloor` only for a thinker of one of those kinds whose function
+/// is on the list, so a tic whose list carries none of them leaves every
+/// field the pass writes alone. The entry is the whole slot list, because
+/// the pass answers for all of them at once.
+fn acting(state: &State) -> String {
+    let s = |column: &str| state.get(column);
+    format!(
+        "arrayFilter(a -> notEmpty(a), [arrayFilter(j -> {active}[j] = 1 \
+         AND {k}[j] IN ({DOOR}, {PLAT}, {FLOOR}, {CEILING}), arrayEnumerate({k}))])",
+        active = s("s_active"),
+        k = s("s_kind"),
+        DOOR = kind::DOOR,
+        PLAT = kind::PLAT,
+        FLOOR = kind::FLOOR,
+        CEILING = kind::CEILING,
+    )
+}
+
 /// The plane a door drives: the sector's ceiling, at the speed and in the
 /// direction the thinker carries.
 fn door_plane<'a>(sector: &'a str, height: &'a str) -> Plane<'a> {
@@ -611,5 +674,77 @@ fn door_plane<'a>(sector: &'a str, height: &'a str) -> Plane<'a> {
         which: "plane_which[j]",
         direction: "plane_direction[j]",
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pass() -> String {
+        planes(&State::default())
+            .into_iter()
+            .find(|(name, _)| name == "planes")
+            .map(|(_, expr)| expr)
+            .expect("the pass is one binding")
+    }
+
+    #[test]
+    fn the_pass_is_one_fold_over_the_slots_it_runs_for() {
+        let sql = pass();
+        assert_eq!(sql.matches("arrayFold((plane_at, plane_act) ->").count(), 1);
+        assert_eq!(sql.matches("arrayFilter(a -> notEmpty(a), [").count(), 1);
+        assert!(sql.contains(&format!("IN ({}, {}, ", kind::DOOR, kind::PLAT)));
+    }
+
+    /// A lambda body that reads neither of its parameters is evaluated
+    /// outside the lambda, so the fold skips the clip only while both of
+    /// the pass's walks start from the slots it hands them.
+    #[test]
+    fn both_walks_start_from_the_folds_parameter() {
+        assert_eq!(pass().matches("= 1, plane_act)").count(), 2);
+    }
+
+    /// The fold's starting value stands in for the answer, so it has to
+    /// carry one member per member of it.
+    #[test]
+    fn what_the_pass_leaves_has_a_member_for_each_one_it_writes() {
+        let sql = pass();
+        let arguments = split(
+            sql.strip_suffix(')')
+                .expect("a call")
+                .split_once('(')
+                .expect("a call")
+                .1,
+        );
+        let [_lambda, _acting, start] = arguments.as_slice() else {
+            panic!("the fold takes three arguments, not {}", arguments.len())
+        };
+        let members = split(
+            start
+                .strip_prefix('(')
+                .and_then(|t| t.strip_suffix(')'))
+                .expect("a tuple"),
+        );
+        assert_eq!(members.len(), 12);
+    }
+
+    /// `text` cut at the commas outside every bracket.
+    fn split(text: &str) -> Vec<String> {
+        let mut parts = vec![String::new()];
+        let mut depth = 0;
+        for c in text.chars() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            parts.last_mut().expect("a part").push(c);
+        }
+        parts.into_iter().map(|p| p.trim().to_owned()).collect()
     }
 }

@@ -51,6 +51,18 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             format!("toInt32({})", at("s_sector")),
         ),
         ("light_kind".to_owned(), at("s_kind")),
+        // The list carries the plane thinkers too, and none of what
+        // follows is theirs.
+        (
+            "light_runs".to_owned(),
+            format!(
+                "toUInt8(light_kind IN ({}, {}, {}, {}))",
+                kind::LIGHT_FLASH,
+                kind::STROBE,
+                kind::GLOW,
+                kind::FIRE_FLICKER
+            ),
+        ),
         (
             "light_fires".to_owned(),
             format!("toUInt8({count} - 1 = 0)"),
@@ -133,7 +145,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!("arrayMap((v, i) -> if(i = {index}, {value}, v), {array}, arrayEnumerate({array}))")
     };
     let body = format!(
-        "({}, {}, {}, toUInt32({} + light_drew))",
+        "if(light_runs = 0, light_at, ({}, {}, {}, toUInt32({} + light_drew)))",
         put(held(held::LIGHTLEVEL), sector, "light_level"),
         put(held(held::COUNT), "j", "light_count"),
         put(held(held::DIRECTION), "j", "light_direction"),

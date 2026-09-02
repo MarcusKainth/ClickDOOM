@@ -35,10 +35,11 @@ the key that goes into it has been pressed.
 The key bits are clickdoom_spec::native_state::key and the SQL side builds
 the tic command out of them, the way G_BuildTiccmd does. Arrows or WASD
 move, Ctrl fires, Space uses, Shift runs, Alt strafes, 1 to 7 select a
-weapon, P pauses and Escape ends the run.
+weapon and P pauses.
 
-The pointer is not captured, so mouse movement stops at the edge of the
-window.
+Click in the window to take the mouse: the pointer is held and hidden, and
+turning follows the mouse however far it moves. Escape frees the mouse, and
+Escape again ends the run.
 
 Exit codes: 0 the run finished, 1 it failed."
 )]

@@ -19,21 +19,23 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-minifb = { workspace = true, optional = true }
 refemu.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+softbuffer = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
+winit = { workspace = true, optional = true }
 
 [features]
 default = ["window"]
-# The window a paced run blits into. Behind a feature because minifb needs
-# X11 or Wayland development packages on Linux, and a headless build has
-# --no-window and --frame-dir without them.
-window = ["dep:minifb"]
+# The window a paced run blits into. Behind a feature so that a headless
+# build has --no-window and --frame-dir on a machine with no window system
+# at all. winit and softbuffer load X11 and Wayland at run time, so building
+# with it needs no development packages either.
+window = ["dep:softbuffer", "dep:winit"]
 
 # The tests that execute generated SQL against a real ClickHouse server.
 # Behind a feature rather than behind `#[ignore]`, so a run either includes

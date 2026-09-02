@@ -118,8 +118,12 @@ needs the level and nothing else:
 
 ```sh
 clickdoom native load                  # decode doom1.wad's E1M7 into the database
-clickdoom native play                  # a window driven by the keyboard and mouse; Escape ends it
+clickdoom native play                  # a window driven by the keyboard and mouse
 ```
+
+Click in the window to take the mouse: the pointer is held and hidden, and
+turning follows the mouse however far it moves. Escape frees the mouse, and
+Escape again ends the run.
 
 Playing `demo3` draws each frame from the game state the real engine had at
 that frame, which the reference emulator records from the ROM. That needs the

@@ -10,7 +10,7 @@ use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::pace::{Pace, TIC};
 use crate::native::window::{Scale, Window};
-use crate::native::{Session, schedule};
+use crate::native::{Session, SessionError, schedule};
 use crate::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
 use crate::stats::{Clock, Monotonic, NativeCounters, NativeStatsLine};
 
@@ -209,10 +209,15 @@ async fn draw(
     let waited = match session.wait_frame(row.frame, FRAME_TIMEOUT).await {
         Ok(waited) => waited,
         // A statement the server gave up on takes rows and commits none, so
-        // a frame that never lands is the only sign. Reopening it and
-        // feeding the frame again is what tells a dead statement from a
-        // slow one.
-        Err(_) => {
+        // a frame that never lands is the only sign of it. Reopening the
+        // statement and feeding the frame again is what tells a dead
+        // statement from a slow one.
+        //
+        // Only that. A refused feed, a failed read or a frame that decoded
+        // wrongly all say what went wrong already, and reopening the
+        // statement would throw that away and report the retry's outcome
+        // instead.
+        Err(SessionError::FrameTimeout { .. }) => {
             let recovery = session
                 .recover(&cmd.conn)
                 .await
@@ -230,6 +235,7 @@ async fn draw(
                 .await
                 .map_err(|err| failed(err.to_string()))?
         }
+        Err(err) => return Err(failed(err.to_string())),
     };
 
     run.counters.tics += 1;

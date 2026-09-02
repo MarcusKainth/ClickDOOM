@@ -61,24 +61,24 @@ mod tests {
 
     fn nodes() -> Nodes<'static> {
         Nodes {
-            x: "nd_x",
-            y: "nd_y",
-            dx: "nd_dx",
-            dy: "nd_dy",
-            child0: "nd_c0",
-            child1: "nd_c1",
-            count: "nd_n",
+            x: "node_x",
+            y: "node_y",
+            dx: "node_dx",
+            dy: "node_dy",
+            child0: "node_c0",
+            child1: "node_c1",
+            count: "node_n",
         }
     }
 
     #[test]
     fn the_descent_starts_at_the_root_and_stops_at_a_leaf() {
         let text = point_in_subsector("mx", "my", &nodes(), "19");
-        assert!(text.contains("toUInt32(nd_n - 1)"));
+        assert!(text.contains("toUInt32(node_n - 1)"));
         assert!(text.contains("range(19)"));
         assert!(text.contains("bitAnd(acc, 32768) != 0, acc"));
         assert!(text.contains("bitAnd(arrayFold"));
-        assert!(text.starts_with("if(nd_n = 0, toUInt32(0),"));
+        assert!(text.starts_with("if(node_n = 0, toUInt32(0),"));
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub mod patch;
 #[cfg(feature = "clickhouse-tests")]
 pub mod probe;
 pub mod spawn;
+pub mod ticcmd;
 pub mod ticker;
 
 /// The map every live test loads, the demo that drives it, and the sky the

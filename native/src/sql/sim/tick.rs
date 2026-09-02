@@ -16,7 +16,7 @@
 
 use crate::sql::Statement;
 
-use super::{Tic, hud, spec, state_columns};
+use super::{Tic, game, hud, spec, state_columns};
 
 /// The columns the session streams, in wire order. `pad` carries the
 /// padding row the transport writes behind the statement text.
@@ -99,10 +99,13 @@ fn transform(db: &str, from: &str) -> String {
 fn bindings(db: &str) -> Vec<(String, String)> {
     let mut tic = Tic::new(previous(db));
     tic.stage(super::constants(db));
-    tic.stage(command(db));
+    let command = game::command(&tic.state, db);
+    tic.stage(command);
+    let special = game::special_buttons(&tic.state);
+    tic.stage(special);
     let specials = spec::update_specials(&tic.state, db);
-    tic.stage(specials);
-    tic.stage(leveltime());
+    tic.stage_when(game::RUNNING, specials);
+    tic.stage_when(game::RUNNING, leveltime());
     let tickers = hud::tickers(&tic.state);
     tic.stage(tickers);
     tic.stage(melt());
@@ -125,48 +128,6 @@ fn previous(db: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
-}
-
-/// `G_ReadDemoTiccmd`, or the command the session built from the keys.
-///
-/// The demo's commands are a constant array indexed by tic, because the
-/// lump is fixed for the session and a tic reads one entry. A tic past the
-/// last command is where `G_CheckDemoStatus` ends the playback.
-fn command(db: &str) -> Vec<(String, String)> {
-    let column = |name: &str| {
-        format!(
-            "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((tic, {name}))))\
-             \n     FROM {db}.demo_cmds)"
-        )
-    };
-    let playing = format!(
-        "source = {} AND tic <= length(demo_forwardmove)",
-        source::DEMO
-    );
-    let demo = |name: &str, cast: &str| format!("{cast}(if({playing}, demo_{name}[tic], 0))");
-    vec![
-        ("demo_forwardmove".to_owned(), column("forwardmove")),
-        ("demo_sidemove".to_owned(), column("sidemove")),
-        ("demo_angleturn".to_owned(), column("angleturn")),
-        ("demo_buttons".to_owned(), column("buttons")),
-        (
-            "now_p_cmd_forwardmove".to_owned(),
-            demo("forwardmove", "toInt8"),
-        ),
-        ("now_p_cmd_sidemove".to_owned(), demo("sidemove", "toInt8")),
-        (
-            "now_p_cmd_angleturn".to_owned(),
-            demo("angleturn", "toInt16"),
-        ),
-        ("now_p_cmd_buttons".to_owned(), demo("buttons", "toUInt8")),
-        (
-            "now_demo_end".to_owned(),
-            format!(
-                "toUInt8(source = {} AND tic > length(demo_forwardmove))",
-                source::DEMO
-            ),
-        ),
-    ]
 }
 
 /// The last line of `P_Ticker`.

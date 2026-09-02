@@ -91,15 +91,68 @@ testing is checked against (SPEC §7). Everything else is workstream-local.
 
 ## Quick start
 
+Build once, start the database, then pick a mode. `clickdoom help` lists the
+commands and `clickdoom <mode> <command> --help` every flag; the lines below
+are the shortest path to a frame in each mode.
+
 ```sh
-make up        # pinned ClickHouse via docker compose
-make build-rom # reproducible DOOM ROM (dockerized rv32 toolchain)
-make test      # every suite, riscv-tests inside the database included
-make smoke     # 100,000-instruction differential run against the oracle
+make up                                # the pinned ClickHouse, via docker compose
+cargo build --locked --release         # target/release/clickdoom and target/release/refemu
+export PATH="$PWD/target/release:$PATH"
+export CLICKHOUSE_PASSWORD=clickdoom   # the compose file's password; every command reads it
 ```
 
+Every command connects to `localhost:8123` and the `clickdoom` database unless
+`--host`, `--port` or `--database` say otherwise.
+
+### Native mode
+
+DOOM's own simulation and renderer as SQL, at the engine's 35 Hz. Playing
+needs the level and nothing else:
+
+```sh
+clickdoom native load                  # decode doom1.wad's E1M7 into the database
+clickdoom native play                  # a window driven by the keyboard and mouse; Escape ends it
+```
+
+Playing `demo3` draws each frame from the game state the real engine had at
+that frame, which the reference emulator records from the ROM. That needs the
+ROM, so it needs Docker for the pinned toolchain:
+
+```sh
+make build-rom                         # the DOOM ROM, in the pinned rv32 toolchain image
+make gen-probe-trace                   # refemu runs demo3 and dumps the state at every frame
+clickdoom native load --probe refemu/reference_traces/demo3/probe.$(cut -c1-12 rom/PINNED_HASH).tsv
+clickdoom native demo demo3            # demo3 at 35 Hz in a window; --no-window --frame-dir DIR writes a PPM per frame
+clickdoom native diff 200 --probe refemu/reference_traces/demo3/probe.$(cut -c1-12 rom/PINNED_HASH).tsv
+```
+
+`native demo --expect-probe-fbhash` exits 3 on the first frame that is not
+byte-identical to the engine's own. `native diff` runs the simulation for the
+tics you name and exits 3 on the first tic and field where it and the engine
+disagree.
+
+### Emulation mode
+
+The RV32IM CPU as SQL, executing the DOOM ROM. It needs the ROM, and boots it
+to the first frame in about 15 million instructions:
+
+```sh
+make build-rom
+clickdoom emulation run --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+    --k 60000 --hwm 20000 --target-icount 15393136 --stop-at-frame 0 \
+    --trace refemu/reference_traces/demo-boot-to-first-frame.$(cut -c1-12 rom/PINNED_HASH).tsv
+clickdoom emulation render ansi        # the latest committed frame, in the terminal
+clickdoom emulation diff 100000        # sqlcpu and refemu side by side for 100,000 instructions
+```
+
+`emulation run` is resumable: stop it and run the same line again and it
+carries on from the last committed batch. The trace it takes is the reference
+emulator's checkpoint file, and a checkpoint that differs stops the run.
+
 `make lint` runs the purity check plus the linters, and is what CI runs on
-every pull request. `make help` lists every target.
+every pull request. `make help` lists every target, including the ones that
+wrap the lines above.
 
 ## Contributing
 

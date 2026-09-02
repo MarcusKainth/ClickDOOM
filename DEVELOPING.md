@@ -123,8 +123,8 @@ resumes from the last committed tic.
 
 The window needs the driver's `window` feature, on by default; `--no-window`
 runs headless and `--frame-dir` writes a PPM per frame (a separate query per
-frame, so not a 35 Hz mode). On Linux the window links against X11 or Wayland
-at run time and needs no build-time packages.
+frame, so not a 35 Hz mode). On Linux the window loads X11 or Wayland and the
+graphics driver at run time and needs no build-time packages.
 
 The melt's pass count per frame comes from the reference run and is loaded as
 data from `driver/melt/demo3.tsv`; its provenance is in that directory's

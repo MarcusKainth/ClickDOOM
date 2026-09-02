@@ -13,51 +13,15 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use clickdoom_driver::client::ConnArgs;
+mod support;
+
+use support::{committed_fixture, conn_args, repo_root};
 
 /// The gametics the committed fixture records: the melt's, the first
 /// gameplay tic, the one after it, and one from the middle of the demo.
 const FIRST_RECORDED_TIC: u32 = 2;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
-fn conn_args(database: &str) -> ConnArgs {
-    ConnArgs {
-        host: std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
-        port: std::env::var("CLICKHOUSE_HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(8123),
-        user: "default".to_owned(),
-        database: database.to_owned(),
-        password: None,
-    }
-}
-
-/// The one committed probe file, as `refemu/tests/probe_fixture.rs` holds
-/// the directory to.
-fn committed_fixture() -> PathBuf {
-    let dir = repo_root().join("refemu/probe/fixtures");
-    let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|e| e == "tsv"))
-        .collect();
-    found.sort();
-    match found.len() {
-        1 => found.remove(0),
-        _ => panic!(
-            "{} holds {} probe files, not one",
-            dir.display(),
-            found.len()
-        ),
-    }
-}
 
 fn clickdoom(database: &str, args: &[&str]) -> (i32, String) {
     let conn = conn_args(database);

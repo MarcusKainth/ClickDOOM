@@ -45,6 +45,7 @@ diverged."
 )]
 pub struct DiffCmd {
     /// Tics to run and compare
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
     pub tics: u32,
     #[command(flatten)]
     pub conn: ConnArgs,
@@ -80,12 +81,6 @@ struct FieldRow {
 }
 
 pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
-    if cmd.tics == 0 {
-        return Err(Failure {
-            exit: Exit::Usage,
-            message: "TICS has to be at least 1".into(),
-        });
-    }
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
 
@@ -261,10 +256,12 @@ mod tests {
 
     /// The comparison needs a tic to compare, and running none of them and
     /// reporting agreement would be a check that never ran.
-    #[tokio::test]
-    async fn running_no_tics_is_a_usage_error() {
-        let cmd = parsed(&["0", "--probe", "p.tsv"]);
-        let failure = run(&cmd).await.expect_err("no tics to run");
-        assert_eq!(failure.exit, Exit::Usage);
+    #[test]
+    fn running_no_tics_does_not_parse() {
+        let Err(error) = Only::try_parse_from(["diff", "0", "--probe", "p.tsv"]) else {
+            panic!("zero tics compares nothing and must not parse");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(Only::try_parse_from(["diff", "1", "--probe", "p.tsv"]).is_ok());
     }
 }

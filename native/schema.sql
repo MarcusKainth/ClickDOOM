@@ -846,6 +846,19 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_frames
 ENGINE = Join(ANY, LEFT, frame)
 SETTINGS join_any_take_last_row = 1;
 
+-- How far the screen melt has advanced at each frame it covers. `passes` is
+-- how many times `wipe_ScreenWipe` ran at that frame, and `melt_step` is the
+-- running total the renderer takes. `driver/melt/` holds the rows the driver
+-- streams in and says where they came from. A frame with no row here is not
+-- a melt frame.
+CREATE TABLE IF NOT EXISTS {{DB}}.melt_schedule
+(
+    frame      UInt32,
+    passes     UInt8,
+    melt_step  UInt8
+)
+ENGINE = MergeTree ORDER BY frame;
+
 -- ---------------------------------------------------------------------------
 -- The renderer's own tables, built by `native/sql/render_load.sql` from the
 -- engine's constant tables and the level. They hold what

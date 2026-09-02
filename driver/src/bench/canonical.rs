@@ -34,12 +34,12 @@ use refemu::snapshot::{Kind, Snapshot};
 use serde::{Deserialize, Serialize};
 
 use super::regime::{self, Regime};
-use crate::bootstrap::BatchCommitRow;
 use crate::client::{ConnArgs, Db, Error};
-use crate::fold_result::FoldResult;
-use crate::preflight::{PINNED_HASH, SCHEMA_SQL};
+use crate::emulation::bootstrap::BatchCommitRow;
+use crate::emulation::fold_result::FoldResult;
+use crate::emulation::preflight::{PINNED_HASH, SCHEMA_SQL};
+use crate::emulation::rom::{RAM_WORDS_DEFAULT, WordRow};
 use crate::render::{FRAMEBUFFER_WORDS, PALETTE_WORDS};
-use crate::rom::{RAM_WORDS_DEFAULT, WordRow};
 use crate::sql::split_statements;
 
 /// The database each arm provisions on its own server.
@@ -164,7 +164,7 @@ pub enum CanonicalError {
     #[error(transparent)]
     Db(#[from] Error),
     #[error(transparent)]
-    Bootstrap(#[from] crate::bootstrap::SeedError),
+    Bootstrap(#[from] crate::emulation::bootstrap::SeedError),
 }
 
 /// Which half of the measurement an arm runs.
@@ -364,13 +364,13 @@ pub(crate) async fn create_and_load_database(
     let mut window_conn = conn.clone();
     window_conn.database = database.to_string();
     let loaded_db = window_conn.connect();
-    crate::rom::load(&loaded_db, bin, manifest_path, RAM_WORDS_DEFAULT)
+    crate::emulation::rom::load(&loaded_db, bin, manifest_path, RAM_WORDS_DEFAULT)
         .await
         .map_err(|e| CanonicalError::Read {
             path: bin.to_owned(),
             source: std::io::Error::other(e.to_string()),
         })?;
-    crate::decode::decode(&loaded_db, database, text_start_word, text_end_word).await?;
+    crate::emulation::decode::decode(&loaded_db, database, text_start_word, text_end_word).await?;
     Ok(())
 }
 
@@ -1257,7 +1257,8 @@ async fn provision_and_run(
     let db = db_at(conn, ARM_DATABASE);
     match window.seed {
         Seed::Reset => {
-            crate::bootstrap::seed(&db, &crate::bootstrap::RESET_REGS).await?;
+            crate::emulation::bootstrap::seed(&db, &crate::emulation::bootstrap::RESET_REGS)
+                .await?;
         }
         Seed::Snapshot(snapshot) => {
             db.run("TRUNCATE TABLE ram").await?;

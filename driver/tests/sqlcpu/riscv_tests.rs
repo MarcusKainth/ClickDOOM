@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use clickdoom_driver::client::Db;
-use clickdoom_driver::decode;
-use clickdoom_driver::fold_result::FoldResult;
+use clickdoom_driver::emulation::decode;
+use clickdoom_driver::emulation::fold_result::FoldResult;
 use clickdoom_executor::config::{HALT_ECALL, WRITE_LOG_HIGH_WATER_MARK_DEFAULT};
 use clickdoom_executor::fold::{SelectOnlyArgs, select_only};
 use clickdoom_spec::RAM_BASE;

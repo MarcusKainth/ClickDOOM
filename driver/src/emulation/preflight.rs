@@ -22,12 +22,12 @@ use clickdoom_executor::fold::{SelectOnlyArgs, select_only};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
 
 use crate::client::{ConnArgs, Db, Error};
-use crate::fold_result::FoldResult;
-use crate::rom::RAM_WORDS_DEFAULT;
+use crate::emulation::fold_result::FoldResult;
+use crate::emulation::rom::RAM_WORDS_DEFAULT;
 use crate::sql::split_statements;
 
-pub(crate) const SCHEMA_SQL: &str = include_str!("../../sqlcpu/schema.sql");
-pub(crate) const PINNED_HASH: &str = include_str!("../../rom/PINNED_HASH");
+pub(crate) const SCHEMA_SQL: &str = include_str!("../../../sqlcpu/schema.sql");
+pub(crate) const PINNED_HASH: &str = include_str!("../../../rom/PINNED_HASH");
 
 #[derive(Debug, thiserror::Error)]
 pub enum GateError {

@@ -9,9 +9,10 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::bench;
 use crate::bench::canonical;
-use crate::bootstrap::{self, Seeded};
 use crate::client::ConnArgs;
-use crate::{decode, preflight, render, rom};
+use crate::emulation::bootstrap::{self, Seeded};
+use crate::emulation::{decode, preflight, rom};
+use crate::render;
 
 /// What the process reports.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -476,7 +477,7 @@ async fn cmd_render(cmd: &RenderCmd) -> Result<Exit, Failure> {
 }
 
 async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
-    let args = crate::run::Args {
+    let args = crate::emulation::run::Args {
         bin: &cmd.bin,
         manifest_path: &cmd.manifest,
         k: cmd.k,
@@ -486,16 +487,16 @@ async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
         stop_at_frame: cmd.stop_at_frame,
         frame_dir: cmd.frame_dir.as_deref(),
     };
-    let outcome = crate::run::run(&cmd.conn, &args)
+    let outcome = crate::emulation::run::run(&cmd.conn, &args)
         .await
         .map_err(|err| failed(err.to_string()))?;
     eprintln!("final_batch_id\t{}", outcome.final_batch_id);
     eprintln!("final_icount\t{}", outcome.final_icount);
     eprintln!("frames_observed\t{}", outcome.frames_observed);
     match outcome.stop {
-        crate::run::Stop::Interrupted => eprintln!("stop\tinterrupted"),
-        crate::run::Stop::ReachedTarget => eprintln!("stop\treached_target"),
-        crate::run::Stop::HaltedAtOrPastTarget { reason } => {
+        crate::emulation::run::Stop::Interrupted => eprintln!("stop\tinterrupted"),
+        crate::emulation::run::Stop::ReachedTarget => eprintln!("stop\treached_target"),
+        crate::emulation::run::Stop::HaltedAtOrPastTarget { reason } => {
             eprintln!("stop\thalted\treason\t{reason}")
         }
     }
@@ -507,7 +508,7 @@ async fn cmd_diff(cmd: &DiffCmd) -> Result<Exit, Failure> {
         .ephemeral_database
         .clone()
         .unwrap_or_else(|| format!("clickdoom_diff_{}", std::process::id()));
-    let args = crate::diff::Args {
+    let args = crate::emulation::diff::Args {
         bin: &cmd.bin,
         manifest_path: &cmd.manifest,
         hwm: cmd.hwm,
@@ -516,28 +517,30 @@ async fn cmd_diff(cmd: &DiffCmd) -> Result<Exit, Failure> {
         refemu_bin: cmd.refemu_bin.clone(),
         target_icount: cmd.n,
     };
-    let outcome = crate::diff::run(&cmd.conn, &args).await.map_err(|err| {
-        use crate::diff::DiffError;
-        match err {
-            DiffError::RomHash(..)
-            | DiffError::CheckpointMismatch { .. }
-            | DiffError::SqlcpuOutranRefemuHalt { .. }
-            | DiffError::SqlcpuHaltedAlone { .. }
-            | DiffError::RefemuHaltedAlone { .. }
-            | DiffError::HaltShapeMismatch { .. }
-            | DiffError::OracleTraceShortfall { .. }
-            | DiffError::CountShortfall { .. } => gate(err.to_string()),
-            DiffError::Read { .. }
-            | DiffError::HaltReportParse { .. }
-            | DiffError::Manifest(_)
-            | DiffError::Spawn(..)
-            | DiffError::RefemuFailed(..)
-            | DiffError::NoTraceLine(..)
-            | DiffError::Db(_)
-            | DiffError::Bootstrap(_)
-            | DiffError::Provision(_) => failed(err.to_string()),
-        }
-    })?;
+    let outcome = crate::emulation::diff::run(&cmd.conn, &args)
+        .await
+        .map_err(|err| {
+            use crate::emulation::diff::DiffError;
+            match err {
+                DiffError::RomHash(..)
+                | DiffError::CheckpointMismatch { .. }
+                | DiffError::SqlcpuOutranRefemuHalt { .. }
+                | DiffError::SqlcpuHaltedAlone { .. }
+                | DiffError::RefemuHaltedAlone { .. }
+                | DiffError::HaltShapeMismatch { .. }
+                | DiffError::OracleTraceShortfall { .. }
+                | DiffError::CountShortfall { .. } => gate(err.to_string()),
+                DiffError::Read { .. }
+                | DiffError::HaltReportParse { .. }
+                | DiffError::Manifest(_)
+                | DiffError::Spawn(..)
+                | DiffError::RefemuFailed(..)
+                | DiffError::NoTraceLine(..)
+                | DiffError::Db(_)
+                | DiffError::Bootstrap(_)
+                | DiffError::Provision(_) => failed(err.to_string()),
+            }
+        })?;
     eprintln!(
         "diff: no divergence found -- {} register checkpoints compared through icount={} ({} of them also memory+framebuffer checkpoints)",
         outcome.checkpoints_compared, outcome.final_icount, outcome.ram_hash_checkpoints_compared

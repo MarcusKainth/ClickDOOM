@@ -35,6 +35,52 @@ pub enum Error {
     NotBuilt,
 }
 
+/// Which key on the keyboard sends which of the engine's key bits.
+///
+/// A binding, not a computation: the bits are
+/// `clickdoom_spec::native_state::key`, and the SQL side is what builds a
+/// tic command out of them.
+#[cfg(feature = "window")]
+const BINDINGS: [(minifb::Key, u32); 18] = {
+    use clickdoom_spec::native_state::key;
+    use minifb::Key;
+    [
+        (Key::Right, key::RIGHT),
+        (Key::Left, key::LEFT),
+        (Key::Up, key::UP),
+        (Key::W, key::UP),
+        (Key::Down, key::DOWN),
+        (Key::S, key::DOWN),
+        (Key::LeftCtrl, key::FIRE),
+        (Key::RightCtrl, key::FIRE),
+        (Key::Space, key::USE),
+        (Key::E, key::USE),
+        (Key::LeftAlt, key::STRAFE),
+        (Key::RightAlt, key::STRAFE),
+        (Key::LeftShift, key::SPEED),
+        (Key::RightShift, key::SPEED),
+        (Key::Comma, key::STRAFE_LEFT),
+        (Key::A, key::STRAFE_LEFT),
+        (Key::Period, key::STRAFE_RIGHT),
+        (Key::D, key::STRAFE_RIGHT),
+    ]
+};
+
+/// The weapon keys, in the order the engine numbers the weapons.
+#[cfg(feature = "window")]
+const WEAPONS: [minifb::Key; 7] = {
+    use minifb::Key;
+    [
+        Key::Key1,
+        Key::Key2,
+        Key::Key3,
+        Key::Key4,
+        Key::Key5,
+        Key::Key6,
+        Key::Key7,
+    ]
+};
+
 /// How much bigger than 320x200 the window is drawn.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Scale {
@@ -72,12 +118,17 @@ pub fn words(rgb32: &[u8], buffer: &mut Vec<u32>) -> Result<(), Error> {
 
 #[cfg(feature = "window")]
 mod backend {
-    use super::{Error, HEIGHT, Scale, WIDTH, words};
+    use super::{BINDINGS, Error, HEIGHT, Scale, WEAPONS, WIDTH, words};
 
     /// One open window, and the buffer a frame is read into.
     pub struct Window {
         window: minifb::Window,
         buffer: Vec<u32>,
+        /// Where the pointer was when the last tic sampled it.
+        pointer: Option<(f32, f32)>,
+        /// Whether the pause key was down when the last tic sampled it.
+        /// The engine takes a pause as one press, not as a key being held.
+        paused_held: bool,
     }
 
     impl Window {
@@ -98,6 +149,8 @@ mod backend {
             Ok(Window {
                 window,
                 buffer: Vec::with_capacity(WIDTH * HEIGHT),
+                pointer: None,
+                paused_held: false,
             })
         }
 
@@ -112,6 +165,55 @@ mod backend {
         /// Whether the window is still there. A run stops when it is not.
         pub fn is_open(&self) -> bool {
             self.window.is_open() && !self.window.is_key_down(minifb::Key::Escape)
+        }
+
+        /// The key bits down now, ferried through unchanged.
+        ///
+        /// The pause bit is set for the one sample the key goes down on,
+        /// because the engine takes it as a press rather than as a hold and
+        /// would otherwise toggle every tic it is held for.
+        pub fn keys(&mut self) -> u32 {
+            use clickdoom_spec::native_state::key;
+            let mut bits = 0;
+            for (from, bit) in BINDINGS {
+                if self.window.is_key_down(from) {
+                    bits |= bit;
+                }
+            }
+            if self.window.get_mouse_down(minifb::MouseButton::Left) {
+                bits |= key::FIRE;
+            }
+            if self.window.get_mouse_down(minifb::MouseButton::Right) {
+                bits |= key::USE;
+            }
+            for (weapon, from) in WEAPONS.into_iter().enumerate() {
+                if self.window.is_key_down(from) {
+                    bits |= (weapon as u32 + 1) << key::WEAPON_SHIFT;
+                    break;
+                }
+            }
+            let pause = self.window.is_key_down(minifb::Key::P);
+            if pause && !self.paused_held {
+                bits |= key::PAUSE;
+            }
+            self.paused_held = pause;
+            bits
+        }
+
+        /// How far the pointer moved since the last sample.
+        ///
+        /// The pointer is not captured, so it stops at the edge of the
+        /// window and the movement stops with it.
+        pub fn mouse(&mut self) -> (i16, i16) {
+            let Some(at) = self.window.get_mouse_pos(minifb::MouseMode::Pass) else {
+                return (0, 0);
+            };
+            let moved = match self.pointer {
+                Some((x, y)) => ((at.0 - x) as i16, (at.1 - y) as i16),
+                None => (0, 0),
+            };
+            self.pointer = Some(at);
+            moved
         }
     }
 }
@@ -134,6 +236,14 @@ mod backend {
 
         pub fn is_open(&self) -> bool {
             false
+        }
+
+        pub fn keys(&mut self) -> u32 {
+            0
+        }
+
+        pub fn mouse(&mut self) -> (i16, i16) {
+            (0, 0)
         }
     }
 }
@@ -160,6 +270,38 @@ mod tests {
         let mut buffer = Vec::new();
         let error = words(&[0; 12], &mut buffer).expect_err("not a frame");
         assert!(matches!(error, Error::FrameSize { found: 12 }), "{error}");
+    }
+
+    /// Every binding names a bit the contract declares, and the weapon keys
+    /// sit where it says they sit. A binding onto a bit nothing reads is a
+    /// key that does nothing and says nothing about it.
+    #[cfg(feature = "window")]
+    #[test]
+    fn every_binding_names_a_key_bit_the_contract_declares() {
+        use clickdoom_spec::native_state::key;
+        let declared = key::RIGHT
+            | key::LEFT
+            | key::UP
+            | key::DOWN
+            | key::FIRE
+            | key::USE
+            | key::STRAFE
+            | key::SPEED
+            | key::STRAFE_LEFT
+            | key::STRAFE_RIGHT
+            | key::PAUSE;
+        for (from, bit) in BINDINGS {
+            assert_eq!(bit.count_ones(), 1, "{from:?} sends more than one bit");
+            assert_eq!(bit & declared, bit, "{from:?} sends a bit nothing declares");
+        }
+        for (weapon, from) in WEAPONS.into_iter().enumerate() {
+            let bits = (weapon as u32 + 1) << key::WEAPON_SHIFT;
+            assert_eq!(
+                bits & key::WEAPON_MASK,
+                bits,
+                "{from:?} is not a weapon key"
+            );
+        }
     }
 
     /// The buffer is reused between frames, so it has to be emptied first.

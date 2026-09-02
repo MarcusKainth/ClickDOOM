@@ -92,6 +92,15 @@ is one value whatever its length. A per-frame array captured inside a lambda is
 copied once per element of the array being mapped, so per-pixel lookups go to
 constants only and per-frame data is consumed element-wise.
 
+A statement costs what it holds rather than what a tic asks of it. Every node
+is evaluated for every row, both arms of an `if` included, and a lambda's body
+is evaluated even where the array it maps over is empty. `arrayFold` is the
+one exception: it runs its body once per element and not at all for none, so
+a stage a tic has no work for is written as the body of a fold over what it
+has to do. A lambda body that reads neither of its parameters is evaluated
+outside the lambda whatever the fold does, so such a body has to lead back to
+one of them.
+
 Rows reach the statement one block each. Rows written into a statement from a
 `VALUES` list share one block whatever `max_insert_block_size` says, so every
 row of that block reads the state from before the block; tests that drive a

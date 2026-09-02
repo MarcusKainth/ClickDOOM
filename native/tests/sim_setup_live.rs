@@ -42,7 +42,7 @@ async fn the_first_state_row_is_the_level_the_wad_describes() {
         support::DEMO,
     ));
     plan.push(probe::schema_statement(&fixture.database));
-    plan.extend(sim::setup::statements(&fixture.database));
+    plan.extend(sim::load_statements(&fixture.database));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");

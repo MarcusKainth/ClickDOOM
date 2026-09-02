@@ -22,6 +22,7 @@ pub fn doom1() -> Vec<u8> {
 pub mod patch;
 
 pub mod spawn;
+pub mod ticker;
 
 /// The map every live test loads, and the demo that drives it.
 pub const MAP: &str = "E1M7";

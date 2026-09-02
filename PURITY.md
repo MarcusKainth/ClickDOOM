@@ -3,7 +3,7 @@
 Committed before any implementation code, so the rules can't drift to fit the
 code. Changes require maintainer approval (CODEOWNERS).
 
-The rules below are numbered `PUR-1` to `PUR-12` and are cited by number
+The rules below are numbered `PUR-1` to `PUR-15` and are cited by number
 everywhere else: in the pull request template, in issue forms, and in
 `scripts/check_purity.sh`'s error messages. Touching one is not automatically
 wrong. The change then has to say how the property still holds, and citing the
@@ -11,13 +11,27 @@ number is the reviewable form of that.
 
 ## The claim
 
-The actual 1993 id Software DOOM engine (via the doomgeneric port), compiled
-unmodified* to bare-metal RV32IM, executes on a CPU implemented **entirely in
-ClickHouse SQL**, reading the shareware `doom1.wad`.
+ClickDOOM has two modes, and each makes its own claim.
+
+Emulation mode: the actual 1993 id Software DOOM engine (via the doomgeneric
+port), compiled unmodified* to bare-metal RV32IM, executes on a CPU implemented
+**entirely in ClickHouse SQL**, reading the shareware `doom1.wad`.
+
+Native mode: DOOM's own game simulation and renderer, written as ClickHouse
+SQL, run the shareware `doom1.wad` and produce, tic for tic and pixel for
+pixel, the state and the frames the real engine produces. The real engine
+running in the reference emulator is the oracle that says so.
 
 \* "Unmodified" = the platform layer (doomgeneric's `DG_*` hooks, crt0,
 libc) is ours; the game engine sources are upstream, patched only where the
 port requires (documented in `rom/patches/`).
+
+## Which rules apply where
+
+PUR-1 to PUR-3 describe the CPU and apply to emulation mode. PUR-4 to PUR-12
+apply to both modes. PUR-13 to PUR-15 describe native mode. `SPEC.md` is
+emulation mode's contract and `NATIVE.md` is native mode's; neither applies to
+the other mode.
 
 ## SQL must do
 
@@ -57,6 +71,22 @@ there.
 - **PUR-12.** Wall-clock or host-environment dependence on any computation
   path.
 
+## Native mode
+
+- **PUR-13.** All game simulation runs in SQL: the thinkers in the engine's
+  order, collision, line-of-sight, the random number draws, sector specials,
+  the player's tic including building its command from key state, and the
+  status bar, message and menu tickers.
+- **PUR-14.** All rendering runs in SQL: texture composition, BSP traversal,
+  wall, plane and sprite drawing with the engine's clipping, the status bar
+  and message drawing, the palette choice and the screen melt.
+- **PUR-15.** The driver may insert the WAD's lumps as raw bytes and the
+  engine's constant tables generated from the vendored engine source by the
+  checked-in generator, stream one input row per tic, poll results, and blit
+  frame bytes as SQL produced them. Everything derived from a lump is derived
+  in SQL. A constant table that cannot be regenerated from `rom/vendor/` by
+  that generator is a PUR-11 violation.
+
 ## Explicitly allowed
 
 These are carve-outs from the rules above, not rules of their own.
@@ -74,6 +104,13 @@ These are carve-outs from the rules above, not rules of their own.
 - Recording wall-clock time in a benchmark harness. A harness measures the
   system from outside; no emulator result depends on what it reads. Annotate
   each use with `purity-ok:` and say so.
+- Pacing native mode to 35 Hz and printing a progress line. The clock decides
+  when the driver sends the next row and what it reports; no value the
+  simulation or the renderer computes depends on it. Annotate each read with
+  `purity-ok:` and say so.
+- Reinterpreting bytes the server produced as the words a window wants. The
+  frame row already holds the RGB words; the driver hands them over as they
+  are.
 
 ## Enforcement
 
@@ -91,6 +128,7 @@ guarantee nobody made.
 | PUR-10 | Review only. No textual signature | |
 | PUR-11 | Review only. No textual signature | |
 | PUR-12 | `check_purity.sh` | `sqlcpu/` `executor/` `driver/` `native/` `scripts/` |
+| PUR-13 to PUR-15 | Review only, plus the parity gates: a simulation or renderer that computed outside SQL would still have to match the engine, and `make native-smoke` and `make native-parity` check that it does. Neither gate can tell where a value was computed | |
 
 A hit that is genuinely benign is annotated on the line with
 `purity-ok: <reason>`, which the script honours. An annotation is a claim a

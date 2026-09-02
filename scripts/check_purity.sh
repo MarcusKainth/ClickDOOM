@@ -24,14 +24,14 @@ scan() { # scan <rule> <dir> <description> <pattern...>
   # `git ls-files`, not a raw filesystem walk. A plain `grep -R` has no concept
   # of .gitignore and walks into whatever happens to be on disk: a local
   # `.venv/` left by `uv sync`, `__pycache__/`, any generated-artifact
-  # directory. Scoping to tracked files makes this about the project's own
-  # code. A check that fails on untracked vendor code is not evidence of a
-  # defect.
+  # directory. Tracked files and untracked files git would not ignore are the
+  # project's own code; a new file is scanned before it is ever staged, so
+  # `make lint` reports it the same way CI will.
   #
   # This script is excluded from its own scan. It names every forbidden pattern
   # as a literal, so scanning it would report itself.
   local files
-  files=$(git ls-files -- "$dir" | grep -E '\.(sql|sh|rs)$' | grep -v '^scripts/check_purity\.sh$') || true
+  files=$(git ls-files --cached --others --exclude-standard -- "$dir" | grep -E '\.(sql|sh|rs)$' | grep -v '^scripts/check_purity\.sh$') || true
   [ -n "$files" ] || return 0
   for pat in "$@"; do
     if printf '%s\n' "$files" | xargs grep -InE "$pat" -- | grep -v 'purity-ok:' ; then

@@ -10,7 +10,11 @@
 //!   * `--frame-dir` leaves one PPM per frame, named by the frame;
 //!   * `--expect-probe-fbhash` exits 3 on a frame the engine did not draw,
 //!     which is what `native/tests/fixtures/README.md` shows for a frame
-//!     rendered over the wrong one.
+//!     rendered over the wrong one;
+//!   * `rgb32`, which is what reaches the screen, is the palette applied to
+//!     the framebuffer, laid out as the window wants it. The frame hash
+//!     covers `fb` and the palette and not `rgb32`, so nothing else would
+//!     notice those words packed the other way round.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -21,9 +25,16 @@
 
 use std::process::Command;
 
+use clickdoom_driver::native::{Session, probe, schedule, window};
+use clickdoom_native::sql;
+
 mod support;
 
-use support::{committed_fixture, conn_args, repo_root};
+use support::{committed_fixture, conn_args, drop_database, loaded, repo_root};
+
+/// How long the first frame of a session may take, which is the statement
+/// being analysed.
+const FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120); // purity-ok: a timeout in the harness, never a value a statement reads
 
 /// The last frame the committed fixture can draw: it holds the melt's first
 /// and last frames and the two after them, then jumps, and a frame draws
@@ -136,4 +147,60 @@ async fn a_demo_run_draws_every_frame_and_leaves_what_it_was_asked_to() {
         .run(&format!("DROP DATABASE IF EXISTS {database}"))
         .await
         .expect("the database is dropped");
+}
+
+/// `rgb32` is what reaches the screen, and the driver reinterprets it
+/// without touching a channel. This checks the two ends against each other:
+/// every word is the palette entry for that pixel, in the order the window
+/// takes.
+#[tokio::test]
+async fn rgb32_is_the_word_the_window_blits() {
+    let (database, admin) = loaded("rgb32").await;
+    probe::load(&admin, &database, &committed_fixture())
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    let plan = schedule::from_probe(&admin, &database, Some(0))
+        .await
+        .expect("the probe rows say which frames to draw");
+    let row = plan.first().expect("a frame to draw");
+
+    schedule::clear_frames(&admin, &database)
+        .await
+        .expect("an empty frames table");
+    let session = Session::open(
+        &conn_args(&database),
+        &database,
+        None,
+        &sql::render::frame_transform(&database),
+    )
+    .await
+    .expect("opening the renderer alone");
+    session
+        .feed_render(row.frame, row.tic, row.melt_step)
+        .expect("feeding the frame");
+    let frame = session
+        .wait_frame(row.frame, FRAME_TIMEOUT)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"))
+        .frame;
+    session.close().await.expect("the statement finished");
+
+    assert_eq!(frame.rgb32.len(), window::RGB32_BYTES);
+    let mut words = Vec::new();
+    window::words(&frame.rgb32, &mut words).expect("a whole frame");
+    for (at, (pixel, word)) in frame.fb.iter().zip(&words).enumerate() {
+        let entry = usize::from(*pixel) * 3;
+        let (r, g, b) = (
+            u32::from(frame.palette[entry]),
+            u32::from(frame.palette[entry + 1]),
+            u32::from(frame.palette[entry + 2]),
+        );
+        assert_eq!(
+            *word,
+            r << 16 | g << 8 | b,
+            "pixel {at} is {word:#010x}, not the palette's ({r}, {g}, {b})"
+        );
+    }
+
+    drop_database(&admin, &database).await;
 }

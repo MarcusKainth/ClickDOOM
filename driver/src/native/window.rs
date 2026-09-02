@@ -51,10 +51,10 @@ pub enum Scale {
 /// The bytes come out of the table untouched; a word is four of them, least
 /// significant first, which is how SQL wrote them.
 ///
-/// Only a build with a window draws, and only a test checks this without
-/// one.
-#[cfg(any(feature = "window", test))]
-fn words(rgb32: &[u8], buffer: &mut Vec<u32>) -> Result<(), Error> {
+/// Public because it is the whole of what happens between the table and the
+/// screen, and a test that has a frame in hand can check the two ends
+/// against each other without opening a window.
+pub fn words(rgb32: &[u8], buffer: &mut Vec<u32>) -> Result<(), Error> {
     if rgb32.len() != RGB32_BYTES {
         return Err(Error::FrameSize { found: rgb32.len() });
     }

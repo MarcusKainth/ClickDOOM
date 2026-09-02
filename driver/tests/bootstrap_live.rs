@@ -12,8 +12,8 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use clickdoom_driver::bootstrap::{self, RESET_REGS, Seeded};
 use clickdoom_driver::client::{ConnArgs, Db};
+use clickdoom_driver::emulation::bootstrap::{self, RESET_REGS, Seeded};
 use clickdoom_driver::sql::split_statements;
 use clickdoom_spec::RAM_BASE;
 use clickhouse::Row;

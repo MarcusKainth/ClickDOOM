@@ -35,8 +35,8 @@ use refemu::cli::report::RunReport;
 use crate::bench::canonical::{CanonicalError, create_and_load_database, db_at};
 use crate::checkpoint::{checkpoint_sql, reg_checkpoint_sql};
 use crate::client::{ConnArgs, Error};
-use crate::preflight::PINNED_HASH;
-use crate::rom::RAM_WORDS_DEFAULT;
+use crate::emulation::preflight::PINNED_HASH;
+use crate::emulation::rom::RAM_WORDS_DEFAULT;
 use crate::sql::split_statements;
 
 #[derive(Debug, thiserror::Error)]
@@ -126,7 +126,7 @@ pub enum DiffError {
     #[error(transparent)]
     Db(#[from] Error),
     #[error(transparent)]
-    Bootstrap(#[from] crate::bootstrap::SeedError),
+    Bootstrap(#[from] crate::emulation::bootstrap::SeedError),
     #[error(transparent)]
     Provision(#[from] CanonicalError),
 }
@@ -332,7 +332,7 @@ async fn run_inner(
     )
     .await?;
     let db = db_at(conn, &args.database);
-    crate::bootstrap::seed(&db, &crate::bootstrap::RESET_REGS).await?;
+    crate::emulation::bootstrap::seed(&db, &crate::emulation::bootstrap::RESET_REGS).await?;
     db.run(&commit::cpu_state_flush_sql(&args.database)).await?;
     let clickhouse_version: String = db.fetch_one("SELECT version()").await?;
     eprintln!("  provisioned: decoded rows={decn}, ClickHouse {clickhouse_version}");

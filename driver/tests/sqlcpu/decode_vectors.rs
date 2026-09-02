@@ -7,7 +7,7 @@
 //! then execute correctly.
 
 use clickdoom_driver::client::Db;
-use clickdoom_driver::decode;
+use clickdoom_driver::emulation::decode;
 use clickhouse::Row;
 use serde::Deserialize;
 

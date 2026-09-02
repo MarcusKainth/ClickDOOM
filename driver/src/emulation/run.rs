@@ -24,17 +24,17 @@ use clickdoom_spec::{Manifest, RAM_BASE, RAM_HASH_INTERVAL};
 
 use crate::checkpoint::checkpoint_sql;
 use crate::client::{ConnArgs, Error};
+use crate::emulation::preflight;
+use crate::emulation::rom::RAM_WORDS_DEFAULT;
 use crate::frames;
-use crate::preflight;
 use crate::render;
-use crate::rom::RAM_WORDS_DEFAULT;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[error(transparent)]
     Preflight(#[from] preflight::GateError),
     #[error(transparent)]
-    Bootstrap(#[from] crate::bootstrap::SeedError),
+    Bootstrap(#[from] crate::emulation::bootstrap::SeedError),
     #[error(transparent)]
     Manifest(#[from] clickdoom_spec::manifest::ManifestError),
     #[error(transparent)]
@@ -117,7 +117,7 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
 
     preflight::check(&db, conn, args.bin, args.manifest_path, args.k, args.hwm).await?;
 
-    crate::bootstrap::seed(&db, &crate::bootstrap::RESET_REGS).await?;
+    crate::emulation::bootstrap::seed(&db, &crate::emulation::bootstrap::RESET_REGS).await?;
     db.run(&commit::cpu_state_flush_sql(&conn.database)).await?;
 
     let manifest = Manifest::read(args.manifest_path)?;

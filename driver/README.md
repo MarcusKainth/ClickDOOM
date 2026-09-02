@@ -10,6 +10,18 @@ ferries key events in, blits output, and does housekeeping that computes
 nothing. Frame readout is computation, so it is a SQL query that lives here and
 runs SQL-side.
 
+## Layout
+
+`src/emulation/` holds what is specific to running the RV32IM CPU in SQL: the
+ROM load, the reset seed, the text-region decode, the pre-flight gates, the
+resumable batch loop and the differential run against the reference emulator.
+
+Everything beside it names no instruction and no register. `src/client.rs` is
+the connection, `src/sql.rs` splits a multi-statement string for the HTTP
+interface, `src/checkpoint.rs` and `src/render.rs` build hash and readout SQL
+text, `src/frames.rs` writes a frame file, and `src/bench/` is the throughput
+harness.
+
 ## Frame readout
 
 The readout reconstructs the raw framebuffer and palette bytes from

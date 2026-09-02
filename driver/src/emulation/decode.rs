@@ -10,7 +10,7 @@
 use crate::client::{Db, Error};
 use crate::sql::split_statements;
 
-const DECODE_SQL: &str = include_str!("../../sqlcpu/decode.sql");
+const DECODE_SQL: &str = include_str!("../../../sqlcpu/decode.sql");
 
 /// Rebuilds `decoded` from `ram`'s current contents, over the text region
 /// `[text_start_word, text_end_word)`.

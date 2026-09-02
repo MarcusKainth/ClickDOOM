@@ -86,7 +86,7 @@ async fn a_renderer_only_session_draws_the_frames_the_engine_drew() {
     assert!(matches!(refused, SessionError::NoSim { .. }), "{refused}");
     assert_eq!(
         session
-            .wait_sim(plan[0].tic)
+            .wait_sim(plan[0].tic, FRAME_TIMEOUT)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string()),

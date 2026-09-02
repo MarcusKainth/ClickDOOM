@@ -37,6 +37,10 @@ const RGB32_BYTES: usize = 320 * 200 * 4;
 /// How long one frame may take to appear before the test gives up.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The same for a tic. The stand-in statements here are small, so this is a
+/// margin rather than a budget anything approaches.
+const FIRST_ROW_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn conn_args(database: &str) -> ConnArgs {
     ConnArgs {
         host: std::env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
@@ -140,7 +144,7 @@ async fn run_tic(session: &Session, tic: u32) -> (Duration, Duration, Frame) {
         .feed_sim(tic, 1, tic, -(tic as i16), tic as i16)
         .unwrap_or_else(|e| panic!("feeding tic {tic}: {e}"));
     let waited = session
-        .wait_sim(tic)
+        .wait_sim(tic, FIRST_ROW_TIMEOUT)
         .await
         .unwrap_or_else(|e| panic!("waiting for tic {tic}: {e}"));
 
@@ -320,7 +324,7 @@ async fn a_killed_statement_is_found_and_recovered() {
     let error = match session.feed_sim(next, 1, next, 0, 0) {
         Err(error) => error,
         Ok(()) => session
-            .wait_sim(next)
+            .wait_sim(next, FIRST_ROW_TIMEOUT)
             .await
             .expect_err("the killed statement cannot write the tic"),
     };

@@ -45,9 +45,11 @@ pub const STATE_TABLE: &str = "native_state";
 /// The table the renderer writes, keyed by frame.
 pub const FRAMES_TABLE: &str = "native_frames";
 
-/// How long [`Session::wait_sim`] waits for a tic before it calls the
-/// statement dead. A tic's budget is 28.6 ms, so this is a wide margin over
-/// the slowest tic and not a target.
+/// How long a paced run waits for one tic of a warm statement before it
+/// calls the statement dead. A tic's budget is 28.6 ms, so this is a wide
+/// margin over the slowest tic and not a target. The first tic of a session
+/// is not one of these: it pays for the statement's analysis, and a caller
+/// passes its own budget for that.
 pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a wait pauses between polls. The poll is a query round trip,
@@ -244,14 +246,21 @@ impl Session {
 
     /// Waits for the simulation to write `tic`, and returns how long that
     /// took. The caller sends the next tic only after this returns.
-    pub async fn wait_sim(&self, tic: u32) -> Result<Duration, SessionError> {
+    ///
+    /// The budget is the caller's, as it is for
+    /// [`wait_frame`](Session::wait_frame) and for the same reason: the
+    /// first tic of a session pays for the statement's analysis, which is
+    /// seconds, and every tic after it is milliseconds.
+    /// [`TIC_TIMEOUT`] is the one a paced run uses once the statement is
+    /// warm.
+    pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Duration, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
         loop {
             if self.committed_tic().await? >= tic {
                 return Ok(started.elapsed());
             }
             let waited = started.elapsed();
-            if waited >= TIC_TIMEOUT {
+            if waited >= timeout {
                 return Err(SessionError::TicTimeout { tic, waited });
             }
             tokio::time::sleep(POLL_SLEEP).await;

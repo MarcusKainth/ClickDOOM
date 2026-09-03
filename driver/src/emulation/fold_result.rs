@@ -28,4 +28,9 @@ pub struct FoldResult {
     pub pal_wl_addr: Vec<u32>,
     pub pal_wl_val: Vec<u32>,
     pub pal_wl_icount: Vec<u64>,
+    /// The register checkpoints the fold crossed. `cp_regs` is flat,
+    /// [`clickdoom_executor::fold::CHECKPOINT_REGS`] words per entry.
+    pub cp_icount: Vec<u64>,
+    pub cp_pc: Vec<u32>,
+    pub cp_regs: Vec<u32>,
 }

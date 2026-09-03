@@ -1,10 +1,11 @@
 //! The batch fold: SPEC halt semantics, early termination (halt, write-log
-//! high-water mark, FRAME_COMMIT), and the write-log versioning fix (every
+//! high-water mark, FRAME_COMMIT), the write-log versioning fix (every
 //! write-log entry carries its own retiring instruction's icount, not the
-//! batch's final icount).
+//! batch's final icount), and the register checkpoints the batch crosses.
 
 use clickdoom_spec::{
-    FRAMEBUFFER_BASE, FRAMEBUFFER_SIZE, MMIO_BASE, MMIO_SIZE, PALETTE_BASE, PALETTE_SIZE, RAM_BASE,
+    CHECKPOINT_INTERVAL, FRAMEBUFFER_BASE, FRAMEBUFFER_SIZE, MMIO_BASE, MMIO_SIZE, PALETTE_BASE,
+    PALETTE_SIZE, RAM_BASE,
 };
 
 use crate::config::{
@@ -219,17 +220,34 @@ fn fb_pal_wa_provably_outside_text(ram_base: u32, ram_words: u32, text_end_widx:
     true
 }
 
+/// How many registers a checkpoint records, one per x1..x31. `cp_regs`
+/// holds this many words per entry, in register order, so entry `n`
+/// occupies `arraySlice(cp_regs, (n - 1) * CHECKPOINT_REGS + 1,
+/// CHECKPOINT_REGS)`.
+pub const CHECKPOINT_REGS: u32 = 31;
+
 /// The `arrayFold` lambda body: `(acc, i) -> tuple(...)`.
 ///
-/// Accumulator (7-tuple): pc, regs\[31\], wl, control, icount, mmio,
-/// fbpal_wl, where pc is a byte address, regs is x1..x31 (no x0 slot), wl =
-/// tuple(addr\[\], val\[\], icount\[\]) (RAM's write-log), control =
+/// Accumulator (8-tuple): pc, regs\[31\], wl, control, icount, mmio,
+/// fbpal_wl, cp, where pc is a byte address, regs is x1..x31 (no x0 slot),
+/// wl = tuple(addr\[\], val\[\], icount\[\]) (RAM's write-log), control =
 /// tuple(stopped, halted, halt_reason, halt_pc, halt_extra), mmio =
-/// tuple(console_bytes\[\], keyq_pos, tuple(frame_no, frame_committed)), and
+/// tuple(console_bytes\[\], keyq_pos, tuple(frame_no, frame_committed)),
 /// fbpal_wl = tuple(fb_addr\[\], fb_val\[\], fb_icount\[\], pal_addr\[\],
 /// pal_val\[\], pal_icount\[\]) — FRAMEBUFFER/PALETTE's own write-log lanes,
 /// never scanned, kept separate from RAM's write-log because nothing ever
-/// reads either region.
+/// reads either region — and cp = tuple(cp_icount\[\], cp_pc\[\],
+/// cp_regs\[\]), the register checkpoints the batch crossed.
+///
+/// A checkpoint is appended by the step that follows the one retiring an
+/// instruction whose count is a multiple of `CHECKPOINT_INTERVAL`, reading
+/// pc, the register file and the count straight off the incoming
+/// accumulator. `cp_regs` is flat: [`CHECKPOINT_REGS`] words per entry, in
+/// the same order as `cp_icount`.
+///
+/// A boundary landing on the batch's own last retired instruction has no
+/// following step and so is not in `cp`. It is the batch's committed
+/// `cpu_state` row, which the caller already has.
 ///
 /// acc.5 is the ABSOLUTE icount (`UInt64`), not a per-batch retired count:
 /// seeded from the batch's starting icount as `arrayFold`'s initial-value
@@ -674,6 +692,19 @@ fn build_step_inner(
          if({retiring_pal_store}, arrayPushBack(acc.7.6, acc.5 + 1), acc.7.6))"
     );
 
+    // Read off the incoming accumulator, one step after the boundary
+    // instruction retired, so pc, the register file and the count are the
+    // values that boundary left behind. `i > 0` keeps a batch that starts
+    // on a boundary from recording the entry the batch before it recorded.
+    let at_checkpoint = format!(
+        "((NOT {stopped}) AND i > 0 AND acc.5 != 0 AND modulo(acc.5, {CHECKPOINT_INTERVAL}) = 0)"
+    );
+    let new_cp = format!(
+        "if({at_checkpoint}, \
+         tuple(arrayPushBack(acc.8.1, acc.5), arrayPushBack(acc.8.2, {pc}), arrayConcat(acc.8.3, acc.2)), \
+         acc.8)"
+    );
+
     let retiring_mmio_store = format!("({step_retires} AND {is_mmio_store})");
 
     let new_console = format!(
@@ -698,7 +729,8 @@ fn build_step_inner(
          {new_control},\
          if({step_retires}, acc.5 + 1, acc.5),\
          {new_mmio},\
-         {new_fbpal_wl})"
+         {new_fbpal_wl},\
+         {new_cp})"
     );
     // The `halt_code` binding is the innermost one, so the probes reach its
     // scope the same way they reach a variant's own bindings.
@@ -759,7 +791,7 @@ pub const WL0_EMPTY: &str = "tuple(emptyArrayUInt32(), emptyArrayUInt32(), empty
 
 fn init_acc(pc0: &str, regs0: &str, wl0: &str, icount0: &str, keyq0: &str) -> String {
     format!(
-        "tuple(toUInt32({pc0}), {regs0}, {wl0}, tuple(toUInt8(0), toUInt8(0), toUInt8(0), toUInt32(0), toUInt32(0)), toUInt64({icount0}), tuple(emptyArrayUInt8(), toUInt32({keyq0}), tuple(toUInt32(0), toUInt8(0))), tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64(), emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()))"
+        "tuple(toUInt32({pc0}), {regs0}, {wl0}, tuple(toUInt8(0), toUInt8(0), toUInt8(0), toUInt32(0), toUInt32(0)), toUInt64({icount0}), tuple(emptyArrayUInt8(), toUInt32({keyq0}), tuple(toUInt32(0), toUInt8(0))), tuple(emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64(), emptyArrayUInt32(), emptyArrayUInt32(), emptyArrayUInt64()), tuple(emptyArrayUInt64(), emptyArrayUInt32(), emptyArrayUInt32()))"
     )
 }
 
@@ -887,7 +919,8 @@ pub fn select_only_variant(
          r.4.5 AS halt_extra, toUInt32(r.5 - toUInt64({icount0})) AS retired,\n       \
          r.6.1 AS console_bytes, r.6.2 AS keyq_pos, r.6.3.1 AS frame_no, r.6.3.2 AS frame_committed,\n       \
          r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,\n       \
-         r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount\n\
+         r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount,\n       \
+         r.8.1 AS cp_icount, r.8.2 AS cp_pc, r.8.3 AS cp_regs\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
          {FOLD_SETTINGS}",
         decode_with(db)
@@ -985,7 +1018,7 @@ pub fn batch_variant(
          (batch_id, icount, pc, regs, halted, halt_reason, exit_code,\n   \
          keyq_pos, has_frame, frame_no, wl_addr, wl_val, wl_icount,\n   \
          fb_wl_addr, fb_wl_val, fb_wl_icount, pal_wl_addr, pal_wl_val, pal_wl_icount,\n   \
-         console_bytes)\n\
+         console_bytes, cp_icount, cp_pc, cp_regs)\n\
          WITH{},\n  \
          (SELECT tuple(batch_id, pc, regs, icount, keyq_pos)\n     \
          FROM {db}.batch_commit ORDER BY batch_id DESC LIMIT 1) AS PREV\n\
@@ -997,7 +1030,8 @@ pub fn batch_variant(
          r.3.1 AS wl_addr, r.3.2 AS wl_val, r.3.3 AS wl_icount,\n       \
          r.7.1 AS fb_wl_addr, r.7.2 AS fb_wl_val, r.7.3 AS fb_wl_icount,\n       \
          r.7.4 AS pal_wl_addr, r.7.5 AS pal_wl_val, r.7.6 AS pal_wl_icount,\n       \
-         r.6.1 AS console_bytes\n\
+         r.6.1 AS console_bytes,\n       \
+         r.8.1 AS cp_icount, r.8.2 AS cp_pc, r.8.3 AS cp_regs\n\
          FROM (SELECT arrayFold((acc, i) -> {step}, range({k}), {init}) AS r)\n\
          {FOLD_SETTINGS}",
         decode_with(db)

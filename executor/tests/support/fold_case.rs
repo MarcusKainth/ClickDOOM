@@ -79,6 +79,9 @@ pub struct FoldRow {
     pub pal_wl_addr: Vec<u32>,
     pub pal_wl_val: Vec<u32>,
     pub pal_wl_icount: Vec<u64>,
+    pub cp_icount: Vec<u64>,
+    pub cp_pc: Vec<u32>,
+    pub cp_regs: Vec<u32>,
 }
 
 impl FoldRow {

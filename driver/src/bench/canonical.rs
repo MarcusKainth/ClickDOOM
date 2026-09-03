@@ -621,6 +621,9 @@ async fn commit_fold_batch(
         pal_wl_val: result.pal_wl_val,
         pal_wl_icount: result.pal_wl_icount,
         console_bytes: result.console_bytes,
+        cp_icount: result.cp_icount,
+        cp_pc: result.cp_pc,
+        cp_regs: result.cp_regs,
     };
     let batch_id = row.batch_id;
     db.insert_all("batch_commit", std::iter::once(row)).await?;
@@ -1050,6 +1053,9 @@ async fn seed_snapshot(db: &Db, snapshot: &Snapshot) -> Result<(), CanonicalErro
         pal_wl_val: Vec::new(),
         pal_wl_icount: Vec::new(),
         console_bytes: Vec::new(),
+        cp_icount: Vec::new(),
+        cp_pc: Vec::new(),
+        cp_regs: Vec::new(),
     };
     db.insert_all("batch_commit", std::iter::once(row)).await?;
     Ok(())

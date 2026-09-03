@@ -40,6 +40,9 @@ pub(crate) struct BatchCommitRow {
     pub pal_wl_val: Vec<u32>,
     pub pal_wl_icount: Vec<u64>,
     pub console_bytes: Vec<u8>,
+    pub cp_icount: Vec<u64>,
+    pub cp_pc: Vec<u32>,
+    pub cp_regs: Vec<u32>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +97,9 @@ pub async fn seed(db: &Db, regs: &[u32]) -> Result<Seeded, SeedError> {
         pal_wl_val: Vec::new(),
         pal_wl_icount: Vec::new(),
         console_bytes: Vec::new(),
+        cp_icount: Vec::new(),
+        cp_pc: Vec::new(),
+        cp_regs: Vec::new(),
     };
     db.insert_all("batch_commit", std::iter::once(row)).await?;
 

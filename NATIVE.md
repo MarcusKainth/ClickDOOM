@@ -22,12 +22,12 @@ cell lists, the BSP ancestor paths, and the level's initial state.
 
 The engine's own constant tables (`states`, `mobjinfo`, `sprnames`,
 `weaponinfo`, `finesine`, `finetangent`, `tantoangle`, `rndtable`,
-`gammatable`, `fuzzoffset`, `checkcoord`, the animation and switch name lists)
-are program data. They are generated from the vendored engine source under
-`rom/vendor/doomgeneric/` by `native/src/bin/gen_tables.rs` into
-`native/tables/*.tsv`, and a test fails if regeneration differs from what is
-committed. A table that cannot be traced to the vendored source this way does
-not belong in the tree.
+`gammatable`, `fuzzoffset`, `checkcoord`, the sound ids, the animation and
+switch name lists) are program data. They are generated from the vendored
+engine source under `rom/vendor/doomgeneric/` by
+`native/src/bin/gen_tables.rs` into `native/tables/*.tsv`, and a test fails
+if regeneration differs from what is committed. A table that cannot be
+traced to the vendored source this way does not belong in the tree.
 
 ## 3. The state row
 

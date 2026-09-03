@@ -46,6 +46,9 @@ pub enum CError {
     #[error("{file}: no array named {name} with an initializer")]
     NoArray { file: String, name: String },
 
+    #[error("{file}: no enumerator list tagged {name}")]
+    NoEnum { file: String, name: String },
+
     #[error("{file}: {name} declares {declared} entries and initializes {actual}")]
     TooManyEntries {
         file: String,

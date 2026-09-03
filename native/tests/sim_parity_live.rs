@@ -7,8 +7,8 @@
 //! are checked against the engine's own. Then the weapon sprite walks up
 //! the screen, bobs, and is swapped for the shotgun the player picks up,
 //! against the engine's own positions. Then the things on the list cycle
-//! their states, and `A_Look` takes the player as the first monster's
-//! target on the tic the engine does.
+//! their states, `A_Look` takes the player as the first monster's target on
+//! the tic the engine does, and the sound it makes there is a draw.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -75,6 +75,19 @@ const USE_INTO_NOTHING: u32 = 42;
 /// carries `A_Chase`, which is not written, so this tic and every one
 /// after it says it could not be produced.
 const FIRST_CHASE: u32 = 77;
+
+/// `gametic, prndindex` read out of the reference emulator's demo3 trace.
+///
+/// The index holds still on a tic that draws nothing and moves by one for
+/// each draw. Gametic 77 is the first tic the two part: the engine draws
+/// three times there and this simulation once.
+const RANDOM: [(u32, u8); 5] = [(2, 209), (40, 226), (61, 233), (76, 241), (77, 244)];
+
+/// What the run leaves at `FIRST_CHASE`: the engine's index at the tic
+/// before, and the one of that tic's three draws this makes, which is the
+/// sound a monster plays on seeing the player. The two that are missing
+/// are `P_NewChaseDir`'s and `A_Chase`'s.
+const FIRST_CHASE_PRNDINDEX: u8 = 242;
 
 /// `gametic, m_state[118], m_target[118]` around that monster, and the
 /// state cycle of the thing in slot 25, read out of the reference
@@ -155,6 +168,7 @@ struct Walked {
     readyweapon: i32,
     pendingweapon: i32,
     attackdown: u8,
+    prndindex: u8,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -170,7 +184,7 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              m_lastlook[34] AS lastlook34, \
              psp_state, psp_sx, psp_sy, \
              p_readyweapon AS readyweapon, p_pendingweapon AS pendingweapon, \
-             p_attackdown AS attackdown \
+             p_attackdown AS attackdown, prndindex \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -291,6 +305,15 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             (state, frame, target, awake),
             "the things at gametic {tic}"
         );
+    }
+    for (tic, prndindex) in RANDOM {
+        let row = at(tic);
+        let (ours, theirs) = if tic < FIRST_CHASE {
+            (row.prndindex, prndindex)
+        } else {
+            (row.prndindex, FIRST_CHASE_PRNDINDEX)
+        };
+        assert_eq!(ours, theirs, "the random index at gametic {tic}");
     }
     // `P_LookForPlayers` walks `lastlook` round to the one player in the
     // game and stops there, whatever it decides.

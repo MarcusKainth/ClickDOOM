@@ -16,6 +16,8 @@ const GRAVITY: i64 = 1 << 16;
 const VIEWHEIGHT: i64 = 41 << 16;
 
 /// `p_mobj.h`
+const MF_SHOOTABLE: i64 = 4;
+const MF_AMBUSH: i64 = 32;
 const MF_NOGRAVITY: i64 = 512;
 const MF_SKULLFLY: i64 = 0x100_0000;
 
@@ -60,10 +62,10 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
 /// over the list rather than a fold, and the order between them cannot be
 /// seen.
 ///
-/// Five things leave the tic unresolved rather than being guessed: a thing
-/// with momentum or standing off its floor, a cycle that removes the
-/// thing, a routine this does not run, `A_Look` on a sector that has heard
-/// something, and a cycle that wants more states than it is given.
+/// These leave the tic unresolved rather than being guessed: a thing with
+/// momentum or standing off its floor, a cycle that removes the thing, a
+/// routine this does not run, and a cycle that wants more states than it
+/// is given.
 pub fn thinkers(state: &State) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let slot = s("p_mo");
@@ -110,16 +112,35 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
          mt_cycles, mt_next)"
             .to_owned(),
     );
+    // `A_Look` reads its sector's sound target before it looks for the
+    // player, and a shootable one becomes the thing's target.
+    bind(
+        "mt_heard",
+        format!(
+            "arrayMap((l, ss) -> toUInt32(if(l = 1, {}[1 + ssec_sector[1 + ss]], 0)), \
+             mt_looks, {})",
+            s("sec_soundtarget"),
+            s("m_subsector")
+        ),
+    );
+    bind(
+        "mt_shootable",
+        format!(
+            "arrayMap(h -> toUInt8(h != 0 AND bitAnd({}[h], {MF_SHOOTABLE}) != 0), mt_heard)",
+            s("m_flags")
+        ),
+    );
+
     // The sight checks a tic needs, batched into one call of the
     // primitive. A tic that asks nothing passes an empty list.
     //
     // A look asks about the player. A chase asks about the target the
-    // thing already holds, and a thing whose look wakes it takes the
-    // player as its target, so the pair a woken thing needs is the one
-    // its look already asked. Both lists come out of the tic-start
-    // snapshot: a state cycle enters at most one routine, so a thing that
-    // looks does not chase in the same entry, and only a look moves a
-    // target.
+    // thing already holds. A look whose sector heard something asks about
+    // what it heard, because a thing carrying `MF_AMBUSH` wakes on that
+    // only where it can see it and the chase that follows reads the same
+    // answer. All three lists come out of the tic-start snapshot: a state
+    // cycle enters at most one routine, so a thing that looks does not
+    // chase in the same entry, and only a look moves a target.
     bind(
         "mt_lookers",
         "arrayFilter((k, l) -> l = 1, mt_slots, mt_looks)".to_owned(),
@@ -148,40 +169,60 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     };
     let target = |column: &str| format!("{}[{}[k]]", s(column), s("m_target"));
     bind(
+        "mt_hearers",
+        "arrayFilter((k, sh) -> sh = 1, mt_slots, mt_shootable)".to_owned(),
+    );
+    let heard = |column: &str| format!("{}[mt_heard[k]]", s(column));
+    bind(
         "mt_pairs",
         format!(
-            "arrayConcat(arrayMap(k -> {}, mt_lookers), arrayMap(k -> {}, mt_chasers))",
+            "arrayConcat(arrayMap(k -> {}, mt_lookers), arrayMap(k -> {}, mt_chasers), \
+             arrayMap(k -> {}, mt_hearers))",
             pairs("k", &player),
             pairs("k", &target),
+            pairs("k", &heard),
         ),
     );
     bind("mt_seen", sight::check_sight("mt_pairs"));
-    // The chasers' answers, which the lookers' come before. A slot in
-    // neither list indexes at 0 and reads the default, which is the
-    // answer a thing that asked nothing gets.
+    // The chasers' answers, then the hearers', each behind the list before
+    // it. A slot in none of the lists indexes at 0 and reads the default,
+    // which is the answer a thing that asked nothing gets.
     bind(
         "mt_chase_seen",
         "arraySlice(mt_seen, 1 + length(mt_lookers), length(mt_chasers))".to_owned(),
     );
     bind(
-        "mt_sees_target",
-        "arrayMap((k, l) -> toUInt8(if(l = 1, mt_seen[indexOf(mt_lookers, k)], \
-         mt_chase_seen[indexOf(mt_chasers, k)])), mt_slots, mt_looks)"
+        "mt_hearer_seen",
+        "arraySlice(mt_seen, 1 + length(mt_lookers) + length(mt_chasers), length(mt_hearers))"
             .to_owned(),
     );
-    // `A_Look` reads the sector's sound target before it looks for the
-    // player, and this does not run that half.
     bind(
-        "mt_heard",
+        "mt_heard_seen",
+        "arrayMap(k -> toUInt8(mt_hearer_seen[indexOf(mt_hearers, k)]), mt_slots)".to_owned(),
+    );
+    // A deaf thing wakes on what it heard only where it can see it. Every
+    // other one takes it as its target and wakes, and the sight was asked
+    // anyway so the chase that follows reads the target it holds.
+    bind(
+        "mt_hears",
         format!(
-            "arrayMap((l, ss) -> toUInt8(l = 1 AND {}[1 + ssec_sector[1 + ss]] != 0), \
-             mt_looks, {})",
-            s("sec_soundtarget"),
-            s("m_subsector")
+            "arrayMap((fl, sh, hs) -> toUInt8(sh = 1 \
+             AND (bitAnd(fl, {MF_AMBUSH}) = 0 OR hs = 1)), {}, mt_shootable, mt_heard_seen)",
+            s("m_flags")
         ),
     );
     bind(
-        "mt_wakes",
+        "mt_sees_target",
+        "arrayMap((k, l, h, hs) -> toUInt8(multiIf(h = 1, hs, \
+         l = 1, mt_seen[indexOf(mt_lookers, k)], \
+         mt_chase_seen[indexOf(mt_chasers, k)])), \
+         mt_slots, mt_looks, mt_hears, mt_heard_seen)"
+            .to_owned(),
+    );
+    // `P_LookForPlayers`, which a look runs where its sector heard nothing
+    // it wakes on.
+    bind(
+        "mt_finds",
         format!(
             "arrayMap((k, l, mx, my, ma) -> if(l = 1, {}, toUInt8(0)), \
              mt_slots, mt_looks, {}, {}, {})",
@@ -199,6 +240,28 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             s("m_angle"),
         ),
     );
+    bind(
+        "mt_wakes",
+        "arrayMap((h, f) -> toUInt8(h = 1 OR f = 1), mt_hears, mt_finds)".to_owned(),
+    );
+    // Only the walk over the players writes `lastlook`, and a look that
+    // wakes on what it heard never reaches it.
+    bind(
+        "mt_looked",
+        "arrayMap((l, h) -> toUInt8(l = 1 AND h = 0), mt_looks, mt_hears)".to_owned(),
+    );
+    // What the look leaves as the target. A thing that heard something
+    // shootable takes it even where the sight a deaf one needs fails, and
+    // the walk over the players overwrites it where that finds one.
+    bind(
+        "mt_target",
+        format!(
+            "arrayMap((l, sh, h, f, hd, tg) -> toUInt32(multiIf(l = 0, tg, \
+             h = 1, hd, f = 1, {slot}, sh = 1, hd, tg)), \
+             mt_looks, mt_shootable, mt_hears, mt_finds, mt_heard, {})",
+            s("m_target")
+        ),
+    );
 
     // `P_SetMobjState`, unrolled twice. Each entry sets the state, its
     // wait and its picture, then runs the routine the state carries. The
@@ -209,13 +272,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_one",
         format!(
-            "arrayMap((k, c, n, w, l, h, still, st, tc, tg, th, ll, ty) -> ({}), \
-             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_heard, mt_still, \
-             {}, {}, {}, {}, {}, {})",
+            "arrayMap((k, c, n, w, l, lk, tt, still, st, tc, th, ll, ty) -> ({}), \
+             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, mt_still, \
+             {}, {}, {}, {}, {})",
             entry_one(&slot),
             s("m_state"),
             s("m_tics"),
-            s("m_target"),
             s("m_threshold"),
             s("m_lastlook"),
             s("m_type"),
@@ -422,16 +484,16 @@ fn entry_one(slot: &str) -> String {
             "toInt32(multiIf({enters}, state_tics[1 + n], \
              k = {slot} OR tc = -1, tc, tc - 1))"
         ),
-        format!("toUInt32(if(l = 1 AND w = 1, {slot}, tg))"),
+        "toUInt32(tt)".to_owned(),
         "toInt32(if(l = 1, 0, th))".to_owned(),
-        format!("toInt32(if(l = 1, {}, ll))", enemy::LASTLOOK),
+        format!("toInt32(if(lk = 1, {}, ll))", enemy::LASTLOOK),
         format!(
             "toInt32(multiIf(NOT ({enters}), -1, \
              l = 1 AND w = 1, mobj_seestate[1 + ty], \
              state_tics[1 + n] = 0, state_nextstate[1 + n], -1))"
         ),
         format!(
-            "toUInt8(multiIf(k = {slot}, 0, still = 0, 1, c = 0, 0, n = 0, 1, h = 1, 1, \
+            "toUInt8(multiIf(k = {slot}, 0, still = 0, 1, c = 0, 0, n = 0, 1, \
              state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
              AND state_action[1 + n] != a_chase, 1, 0))"
         ),

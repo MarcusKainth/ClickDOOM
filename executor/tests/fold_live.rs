@@ -366,6 +366,31 @@ mod live {
         fx.finish().await;
     }
 
+    /// Both §1's misaligned rule and §2's out-of-region rule fire for this
+    /// address, and the contract says misalignment wins. It is the case the
+    /// two engines disagreed on: the fold answered `BAD_ADDR` from arm
+    /// order alone while `refemu` decided alignment before the region.
+    #[tokio::test]
+    async fn a_misaligned_access_outside_every_region_halts_misaligned() {
+        let fx = Fixture::create("misaligned_outside_every_region").await;
+        // Address 1 is in no region, and misaligned for a word access.
+        let insns = [load(1, 1, WORD, 0)];
+        let row = run_checked(
+            &fx,
+            &FoldCase {
+                insns: &insns,
+                ram_words: Some(8),
+                k: Some(1),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!((row.halted, row.halt_reason), (1, HALT_MISALIGNED));
+        assert_eq!(row.halt_extra, 1, "the faulting address");
+        assert_eq!(row.x(1), 0, "the load did not retire");
+        fx.finish().await;
+    }
+
     #[tokio::test]
     async fn halt_misaligned() {
         let fx = Fixture::create("halt_misaligned").await;
@@ -714,6 +739,29 @@ mod live {
         .await;
         assert_eq!((row.halted, row.halt_reason), (1, HALT_BAD_ADDR));
         assert_eq!(row.halt_pc, RAM_BASE + 4, "the store's own pc");
+        assert!(row.fb_wl_addr.is_empty());
+        fx.finish().await;
+    }
+
+    /// §1's misaligned rule and §2 clause 2's word-width rule both fire for
+    /// this store, and misalignment wins. The aligned case above is the one
+    /// clause 2 owns on its own.
+    #[tokio::test]
+    async fn framebuffer_misaligned_narrow_store_halts_misaligned() {
+        let fx = Fixture::create("framebuffer_misaligned_narrow_store").await;
+        let insns = [addi(1, 0x1234), store(1, FRAMEBUFFER_BASE + 1, HALF)];
+        let row = run_raw(
+            &fx,
+            &FoldCase {
+                insns: &insns,
+                k: Some(2),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!((row.halted, row.halt_reason), (1, HALT_MISALIGNED));
+        assert_eq!(row.halt_pc, RAM_BASE + 4, "the store's own pc");
+        assert_eq!(row.halt_extra, FRAMEBUFFER_BASE + 1);
         assert!(row.fb_wl_addr.is_empty());
         fx.finish().await;
     }

@@ -4,9 +4,11 @@
 //! region is read-only, and a store there is a self-modify halt rather than a
 //! write that lands.
 //!
-//! Alignment is checked before region membership, so a misaligned access to an
-//! address in no region reports misalignment rather than a bad address. The
-//! two engines have to agree on which, and the order is what decides it.
+//! Alignment is checked before region membership and before the width rule, so
+//! a misaligned access to an address in no region reports misalignment rather
+//! than a bad address, and so does a misaligned narrow store to a pixel
+//! region. Both engines produce that reason, and the order here is what
+//! decides it on this side.
 
 use clickdoom_spec::map::{MemoryMap, Region};
 
@@ -426,6 +428,23 @@ mod tests {
         for offset in 0..4 {
             assert!(m.read(RAM_BASE + offset, 1, 0).is_ok());
             assert!(m.write(RAM_BASE + offset, 1, 0xAB, 0).is_ok());
+        }
+    }
+
+    /// Misalignment is decided before the width rule as well as before the
+    /// region, so a narrow store to a pixel region that is also misaligned
+    /// is misaligned rather than a bad address. The aligned narrow store
+    /// below is the case the width rule owns on its own.
+    #[test]
+    fn a_misaligned_narrow_store_to_the_pixel_regions_is_misaligned() {
+        let mut m = memory();
+        for base in [FRAMEBUFFER_BASE, PALETTE_BASE] {
+            let addr = base + 1;
+            assert_eq!(
+                m.write(addr, 2, 0xFF, 0),
+                Err(MemFault::Misaligned { addr, width: 2 }),
+                "a misaligned halfword store at {addr:#010x} was not misaligned"
+            );
         }
     }
 

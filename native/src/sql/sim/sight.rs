@@ -2,7 +2,8 @@
 //!
 //! `P_CheckSight` rejects the pair out of the `REJECT` matrix, then crosses
 //! the BSP from the root and asks every subsector the trace passes through
-//! whether a wall closes the view.
+//! whether a wall closes the view. The matrix answers for every pair asked
+//! and the crossing runs only over the ones it lets through.
 //!
 //! Two things are written differently from the C and answer the same.
 //!
@@ -103,7 +104,6 @@ mod seg {
     pub const STEPPED: usize = 4;
     pub const DUCKED: usize = 5;
     pub const TWOSIDED: usize = 6;
-    pub const REACHED: usize = 7;
 }
 
 /// Where each field of a pair sits in its tuple.
@@ -192,6 +192,14 @@ pub fn seg_openings(heights: &Heights<'_>) -> Vec<(String, String)> {
                 c = heights.ceilingheight
             ),
         ),
+        // What a seg divides, in one value per seg, so a check walks one
+        // array and copies none of them.
+        (
+            "seg_facts".to_owned(),
+            "arrayZip(seg_line, seg_opentop, seg_openbottom, seg_stepped, seg_ducked, \
+             seg_twosided)"
+                .to_owned(),
+        ),
     ]
 }
 
@@ -227,22 +235,6 @@ pub fn check_sight(pairs: &str) -> String {
     value(
         "si_bottom0",
         format!("toInt32({} - toInt64(si_zstart))", a(ask::Z2)),
-    );
-
-    // The trivial rejection, out of the matrix the level carries.
-    value(
-        "si_pnum",
-        format!(
-            "toInt64(toInt64(ssec_sector[1 + {}]) * numsectors + toInt64(ssec_sector[1 + {}]))",
-            a(ask::SUBSECTOR1),
-            a(ask::SUBSECTOR2)
-        ),
-    );
-    value(
-        "si_rejected",
-        "toUInt8(bitAnd(reinterpretAsUInt8(substring(reject_bits, \
-         1 + intDiv(si_pnum, 8), 1)), bitShiftLeft(1, modulo(si_pnum, 8))) != 0)"
-            .to_owned(),
     );
 
     // One step of every subsector's ancestor path: whether the descent
@@ -294,9 +286,12 @@ pub fn check_sight(pairs: &str) -> String {
          arrayFilter((c, m) -> m = 1, si_shut_upto, path_after))"
             .to_owned(),
     );
+    // The segs of the subsectors the trace reaches, which is where the
+    // whole cost of a check goes, so the ones it does not reach are
+    // dropped before the crossing runs.
     value(
-        "si_seg_reached",
-        "arrayMap(ss -> si_reached[1 + ss], seg_subsector)".to_owned(),
+        "si_segs",
+        "arrayFilter((f, ss) -> si_reached[1 + ss] = 1, seg_facts, seg_subsector)".to_owned(),
     );
 
     // `P_CrossSubsector` for every seg of every subsector the trace
@@ -320,10 +315,53 @@ pub fn check_sight(pairs: &str) -> String {
         "toUInt8(arrayExists(c -> c.1 = 1, si_crossed))".to_owned(),
     );
 
-    let body = "toUInt8(si_rejected = 0 AND si_shut = 0 AND si_top > si_bottom)";
-    format!(
-        "arrayMap(sight -> {}, {pairs})",
-        bind::chain_in("si", &values, body)
+    let body = "toUInt8(si_shut = 0 AND si_top > si_bottom)";
+    // The matrix rejects most pairs, and the crossing above is the whole
+    // cost of a check, so it runs over the ones it lets through. The
+    // running count of those puts each answer back where its pair asked.
+    let gated: Vec<(String, String)> = vec![
+        ("sg_ask".to_owned(), pairs.to_owned()),
+        (
+            "sg_rejected".to_owned(),
+            format!("arrayMap(sight -> {}, sg_ask)", rejected(&a)),
+        ),
+        (
+            "sg_open".to_owned(),
+            "arrayFilter((p, r) -> r = 0, sg_ask, sg_rejected)".to_owned(),
+        ),
+        (
+            "sg_seen".to_owned(),
+            format!(
+                "arrayMap(sight -> {}, sg_open)",
+                bind::chain_in("si", &values, body)
+            ),
+        ),
+        (
+            "sg_at".to_owned(),
+            "arrayCumSum(arrayMap(r -> toUInt8(r = 0), sg_rejected))".to_owned(),
+        ),
+    ];
+    bind::chain_in(
+        "sg",
+        &gated,
+        "arrayMap((r, i) -> toUInt8(r = 0 AND sg_seen[greatest(i, 1)] = 1), \
+         sg_rejected, sg_at)",
+    )
+}
+
+/// The trivial rejection, out of the matrix the level carries: 1 where the
+/// two sectors cannot possibly be connected.
+fn rejected(a: &dyn Fn(usize) -> String) -> String {
+    let pnum = format!(
+        "toInt64(toInt64(ssec_sector[1 + {}]) * numsectors + toInt64(ssec_sector[1 + {}]))",
+        a(ask::SUBSECTOR1),
+        a(ask::SUBSECTOR2)
+    );
+    bind::chain_in(
+        "rj",
+        &[("rj_pnum".to_owned(), pnum)],
+        "toUInt8(bitAnd(reinterpretAsUInt8(substring(reject_bits, \
+         1 + intDiv(rj_pnum, 8), 1)), bitShiftLeft(1, modulo(rj_pnum, 8))) != 0)",
     )
 }
 
@@ -362,8 +400,7 @@ fn crossing(x1: &str, y1: &str, x2: &str, y2: &str) -> String {
     value(
         "cr_crosses",
         format!(
-            "toUInt8(cross.{} = 1 AND cr_ends_part = 1 AND {} != {})",
-            seg::REACHED,
+            "toUInt8(cr_ends_part = 1 AND {} != {})",
             line_side(x1, y1),
             line_side(x2, y2)
         ),
@@ -439,8 +476,7 @@ fn crossing(x1: &str, y1: &str, x2: &str, y2: &str) -> String {
 
     let body = "(cr_shut, cr_top, cr_bottom)";
     format!(
-        "arrayMap(cross -> {}, arrayZip(seg_line, seg_opentop, seg_openbottom, \
-         seg_stepped, seg_ducked, seg_twosided, si_seg_reached))",
+        "arrayMap(cross -> {}, si_segs)",
         bind::chain_in("cr", &values, body)
     )
 }
@@ -512,19 +548,41 @@ mod tests {
     #[test]
     fn the_check_appears_once_however_many_pairs_it_is_given() {
         let sql = check_sight("pending");
-        assert_eq!(sql.matches("arrayMap(sight ->").count(), 1);
         assert_eq!(sql.matches("arrayMap(cross ->").count(), 1);
         assert_eq!(sql.matches("reject_bits").count(), 1);
     }
 
-    /// The seg walk reads every array it needs through `arrayZip`, so a
-    /// lambda copies nothing per seg.
+    /// The matrix answers for every pair and the crossing only for the
+    /// ones it lets through, so the two walk different lists.
+    #[test]
+    fn the_crossing_runs_over_the_pairs_reject_lets_through() {
+        let sql = check_sight("pending");
+        assert_eq!(
+            sql.matches("arrayMap(sight ->").count(),
+            2,
+            "the matrix over every pair and the crossing over the rest"
+        );
+        assert_eq!(sql.matches("arrayFilter((p, r) -> r = 0, ").count(), 1);
+    }
+
+    /// The seg walk takes what it reads through the array it walks, so a
+    /// lambda copies nothing per seg, and it walks the segs the trace
+    /// reaches rather than every seg of the level.
     #[test]
     fn the_seg_walk_takes_its_arrays_as_parameters() {
         let sql = check_sight("pending");
-        assert!(sql.contains("arrayZip(seg_line, seg_opentop"), "{sql}");
+        assert_eq!(sql.matches("seg_facts").count(), 1, "{sql}");
+        assert_eq!(sql.matches("arrayFilter((f, ss) ->").count(), 1, "{sql}");
+        let openings = seg_openings(&Heights {
+            floorheight: "w_floor",
+            ceilingheight: "w_ceiling",
+        });
+        let (_, zip) = openings
+            .iter()
+            .find(|(name, _)| name == "seg_facts")
+            .expect("the per-tic facts");
         for array in ["seg_opentop", "seg_openbottom", "seg_stepped", "seg_ducked"] {
-            assert_eq!(sql.matches(array).count(), 1, "{array} is read once");
+            assert_eq!(zip.matches(array).count(), 1, "{array} is read once");
         }
     }
 

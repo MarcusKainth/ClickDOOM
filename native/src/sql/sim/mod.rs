@@ -261,8 +261,8 @@ fn insert_flat(db: &str, with: &[(String, String)], row: &[(&str, String)], from
 /// A binding named in another binding's text is expanded into it rather
 /// than shared, so a chain of aliases grows the query tree by the product
 /// of its branches. A subquery's column is not expanded, so the bindings
-/// are cut into stages at every point where one would read another from
-/// the same stage, and each stage is one subquery over the one below it.
+/// are cut into stages before a binding that would copy too much of what
+/// it names, and each stage is one subquery over the one below it.
 ///
 /// `row` gives one expression per state column, in any order; the insert
 /// names its columns and emits them in the contract's order, so a column
@@ -302,29 +302,35 @@ fn insert(
     )
 }
 
-/// How large a binding may grow once the bindings it names in the same
-/// stage are expanded into it. A chain that stays under this costs one
-/// subquery for the lot; one that does not is cut.
-const EXPANDED_LIMIT: usize = 3_000;
+/// How many bytes of the bindings it names a binding may copy before the
+/// stage is cut ahead of it.
+///
+/// The analyser walks what a binding copies as well as what it holds, and
+/// what it costs grows faster than the tree does, so a stage is cut on the
+/// copying rather than on the size. Below about 600 the stages the cut
+/// makes cost more than the copying they save.
+const COPY_LIMIT: usize = 800;
 
 /// The bindings cut into stages, each of which reads only what an earlier
-/// stage produced or what it can carry without growing past the limit.
+/// stage produced or what it can copy without going past the limit.
 fn stages(with: &[(String, String)]) -> Vec<Vec<(String, String)>> {
     let mut stages: Vec<Vec<(String, String)>> = Vec::new();
     let mut current: Vec<(String, String)> = Vec::new();
+    // What each binding of the stage holds once the ones it names are
+    // expanded into it, which is what naming it copies.
     let mut expanded: Vec<usize> = Vec::new();
     for (name, expr) in with {
-        let mut size = expr.len();
+        let mut copied = 0;
         for (at, (earlier, _)) in current.iter().enumerate() {
-            size += references(expr, earlier) * expanded[at];
+            copied += references(expr, earlier) * expanded[at];
         }
-        if size > EXPANDED_LIMIT && !current.is_empty() {
+        if copied > COPY_LIMIT && !current.is_empty() {
             stages.push(std::mem::take(&mut current));
             expanded.clear();
-            size = expr.len();
+            copied = 0;
         }
         current.push((name.clone(), expr.clone()));
-        expanded.push(size);
+        expanded.push(expr.len() + copied);
     }
     if !current.is_empty() {
         stages.push(current);
@@ -416,6 +422,45 @@ mod tests {
         assert_eq!(columns[1], native_state::GAME_FIELDS[0]);
         assert_eq!(&columns[columns.len() - EXTRA_FIELDS.len()..], EXTRA_FIELDS);
         assert_eq!(columns.len(), native_state::all_fields().len() + 5);
+    }
+
+    fn values(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, expr)| ((*name).to_owned(), (*expr).to_owned()))
+            .collect()
+    }
+
+    /// A binding that copies more than the limit starts a stage, and a
+    /// large one that copies nothing does not.
+    #[test]
+    fn a_stage_is_cut_on_what_a_binding_copies() {
+        let big = "x".repeat(COPY_LIMIT + 1);
+        let staged = stages(&values(&[("a", &big), ("b", "a + 1")]));
+        assert_eq!(staged.len(), 2, "b copies a");
+        let staged = stages(&values(&[("a", &big), ("b", &big)]));
+        assert_eq!(staged.len(), 1, "neither names the other");
+    }
+
+    /// Copying compounds. `b` is five characters and carries two copies
+    /// of `a`, so naming it twice copies four, and the cut counts what a
+    /// binding holds expanded rather than what its text says.
+    #[test]
+    fn what_a_binding_copies_counts_what_it_names_already_copied() {
+        let a = "x".repeat(COPY_LIMIT / 2 - 100);
+        let staged = stages(&values(&[("a", &a), ("b", "a + a"), ("c", "b + b")]));
+        assert_eq!(staged.len(), 2);
+        assert_eq!(staged[0].len(), 2, "b copies two of a and stays");
+        assert_eq!(staged[1].len(), 1, "c copies four and is cut");
+    }
+
+    /// Every binding lands in exactly one stage, in the order it was
+    /// given, so a stage cannot read one it does not have.
+    #[test]
+    fn the_stages_hold_every_binding_once_and_in_order() {
+        let with = values(&[("a", "1"), ("b", "a"), ("c", "2"), ("d", "b + c")]);
+        let staged: Vec<(String, String)> = stages(&with).concat();
+        assert_eq!(staged, with);
     }
 
     #[test]

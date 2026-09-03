@@ -1,6 +1,6 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.2.0**. The decisions behind it are in `docs/adr/`.
+**SPEC_VERSION: 0.3.0**. The decisions behind it are in `docs/adr/`.
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
@@ -63,6 +63,17 @@ change that moves no contract bumps the patch version. Either must update
   thing keeping two independent engines aligned on it.
 - Unimplemented/illegal opcode: fatal halt, reason = `ILLEGAL_INSN`, with pc
   and raw instruction word in the halt record.
+- Instruction fetch from a pc outside the text region `[text_start,
+  text_end)` (§2, §4): fatal halt, reason = `BAD_ADDR`, with the pc in the
+  halt record. The text region is the only part of RAM an engine is required
+  to be able to fetch from: the executor pre-decodes it into a table
+  (ADR-0002) and holds nothing for the rest of RAM. Unreachable from a
+  correctly-built ROM, which does not transfer control outside its own text,
+  and pinned for the same reason §1's eager misaligned-target check is: an
+  unreachable path never gets exercised by a passing test, so the written
+  agreement is the only thing keeping two independent engines aligned on it.
+  The check is on the fetch, so the halt record's pc is the unfetched
+  address itself and no instruction retires.
 - Store into the text region (§2): fatal halt, reason = `SELF_MODIFY`, with pc
   and target address in the halt record. The executor pre-decodes text into a
   table (ADR-0002) because decoding inside the fold costs 7.4× the throughput;

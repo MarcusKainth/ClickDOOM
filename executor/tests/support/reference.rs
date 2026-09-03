@@ -137,6 +137,20 @@ pub fn run(args: &Run) -> Outcome {
         if stopped {
             break;
         }
+        // The text region is the only part of RAM a fetch may come from. An
+        // empty window declares no region, which is how a caller that wants
+        // every word fetchable spells it.
+        let pc_widx = pc.wrapping_sub(args.ram_base) >> 2;
+        if args.text_end_widx != args.text_start_widx
+            && !(args.text_start_widx..args.text_end_widx).contains(&pc_widx)
+        {
+            halted = true;
+            stopped = true;
+            halt_pc = pc;
+            halt_reason = HALT_BAD_ADDR;
+            halt_extra = pc;
+            break;
+        }
         let ins = args.insns[decode_idx(pc, args.ram_base, args.insns.len())];
         let a = regs[ins.rs1 as usize];
         let b = regs[ins.rs2 as usize].wrapping_add(ins.imm);

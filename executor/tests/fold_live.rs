@@ -129,7 +129,9 @@ mod live {
     use super::seed::{self, Shape};
     use super::support::RAM_BASE;
     use super::support::fixture::Fixture;
-    use super::support::fold_case::{FoldCase, run_checked, run_checked_labelled, run_raw};
+    use super::support::fold_case::{
+        FoldCase, run_checked, run_checked_labelled, run_raw, run_raw_windowless,
+    };
     use super::support::insn::{BYTE, HALF, WORD, addi, alu, bare, branch, jal, load, store};
     use super::support::reference::{
         HALT_BAD_ADDR, HALT_CSR, HALT_EBREAK, HALT_ECALL, HALT_ILLEGAL_INSN, HALT_MISALIGNED,
@@ -363,6 +365,63 @@ mod live {
         assert_eq!((row.halted, row.halt_reason), (1, HALT_BAD_ADDR));
         assert_eq!(row.halt_extra, RAM_BASE.wrapping_sub(4));
         assert_eq!(row.x(1), 0, "the load did not retire");
+        fx.finish().await;
+    }
+
+    /// `DEC` covers the text region, and the pc index into it is clamped so
+    /// `arrayElement` stays in bounds. A pc past the region's end therefore
+    /// used to execute the table's last row at the wrong address and retire
+    /// it: a wrong answer with no error on either engine. The fetch halts
+    /// instead.
+    #[tokio::test]
+    async fn a_fetch_outside_the_text_region_halts_bad_addr() {
+        let fx = Fixture::create("fetch_outside_the_text_region").await;
+        // Eight words of text whose last row is a distinguishable `addi`,
+        // and a jump to the word after them. The clamp would run that last
+        // row, so the register it writes is what a silent clamp looks like.
+        let mut insns = vec![jal(0, RAM_BASE + 32)];
+        for n in 1..7 {
+            insns.push(addi(9, 1_000 + n));
+        }
+        insns.push(addi(5, 99));
+        let row = run_checked(
+            &fx,
+            &FoldCase {
+                insns: &insns,
+                k: Some(2),
+                ram_words: Some(16),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!((row.halted, row.halt_reason), (1, HALT_BAD_ADDR));
+        assert_eq!(row.halt_pc, RAM_BASE + 32, "the unfetched address");
+        assert_eq!(row.halt_extra, RAM_BASE + 32);
+        assert_eq!(row.retired, 1, "only the jump retired");
+        assert_eq!(row.x(5), 0, "the clamped row did not execute");
+        fx.finish().await;
+    }
+
+    /// A caller that declares no text region has nothing to be outside of,
+    /// and says so with an empty window. The riscv-tests harness folds that
+    /// way, so a fetch check that fired on an empty window would halt every
+    /// one of its 48 fixtures on the first step.
+    #[tokio::test]
+    async fn an_empty_text_window_halts_no_fetch() {
+        let fx = Fixture::create("empty_text_window_halts_no_fetch").await;
+        let insns = [addi(9, 1), addi(9, 2), addi(9, 3)];
+        let row = run_raw_windowless(
+            &fx,
+            &FoldCase {
+                insns: &insns,
+                k: Some(3),
+                ram_words: Some(16),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!((row.halted, row.retired), (0, 3));
+        assert_eq!(row.x(9), 3);
         fx.finish().await;
     }
 

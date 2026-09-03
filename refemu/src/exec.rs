@@ -236,6 +236,14 @@ impl Cpu {
     #[inline]
     pub fn step_reporting(&mut self) -> Result<(u32, Instruction), Halt> {
         let pc = self.pc;
+        // The text region is the only part of RAM a fetch may come from. A
+        // machine with no region declared has nothing to be outside of, so
+        // the riscv-tests fixtures, which declare none, fetch anywhere.
+        if let Some((start, end)) = self.memory.text_region()
+            && !(start..end).contains(&pc)
+        {
+            return Err(Halt::on_fetch(HaltReason::BadAddr, pc, pc));
+        }
         let (word, insn) = match self.cache.as_ref().and_then(|cache| cache.get(pc)) {
             Some(entry) => (entry.word, entry.insn),
             None => {
@@ -892,6 +900,39 @@ mod tests {
         assert_eq!(halt.reason, HaltReason::Misaligned);
         assert_eq!(halt.pc, RAM_BASE);
         assert_eq!(halt.addr, Some(RAM_BASE + 2));
+    }
+
+    /// The text region is the only part of RAM a fetch may come from, so a
+    /// pc past its end halts on the fetch rather than executing whatever
+    /// word happens to be at that address. No instruction retires and the
+    /// halt record's pc is the unfetched address itself.
+    #[test]
+    fn a_fetch_outside_the_text_region_is_a_bad_address() {
+        let mut cpu = Cpu::inert();
+        // Two words of text, and a jump to the word after it.
+        load(&mut cpu, &[jal(0, 8), addi(5, 0, 99)]);
+        cpu.memory.set_text_region(Some((RAM_BASE, RAM_BASE + 8)));
+        cpu.step().expect("the jump itself is inside the region");
+        assert_eq!(cpu.pc, RAM_BASE + 8);
+        let halt = cpu.step().unwrap_err();
+        assert_eq!(halt.reason, HaltReason::BadAddr);
+        assert_eq!(halt.pc, RAM_BASE + 8);
+        assert_eq!(halt.addr, Some(RAM_BASE + 8));
+        assert_eq!(halt.insn, None, "nothing was fetched");
+        assert_eq!(cpu.icount, 1, "the unfetched instruction did not retire");
+    }
+
+    /// A machine with no declared region has nothing to be outside of. The
+    /// riscv-tests fixtures run this way, and gating them on a region they
+    /// never declare would halt every one of them on its first step.
+    #[test]
+    fn a_machine_with_no_text_region_fetches_anywhere_in_ram() {
+        let mut cpu = Cpu::inert();
+        load(&mut cpu, &[jal(0, 8), addi(5, 0, 99), addi(6, 0, 7)]);
+        assert_eq!(cpu.memory.text_region(), None);
+        cpu.step().unwrap();
+        cpu.step().unwrap();
+        assert_eq!(cpu.reg(6), 7);
     }
 
     #[test]

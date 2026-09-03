@@ -177,6 +177,16 @@ fn variant() -> Variant {
 }
 
 async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> FoldRow {
+    execute_with_window(db, fx, case, p, Widx::new(p.decn)).await
+}
+
+async fn execute_with_window(
+    db: &Db,
+    fx: &Fixture,
+    case: &FoldCase<'_>,
+    p: &Prepared,
+    text_end_widx: Widx,
+) -> FoldRow {
     fx.truncate(&["decoded", "ram", "input_queue"]).await;
     fx.seed_decoded(&p.insns).await;
     fx.seed_ram(&p.ram).await;
@@ -184,7 +194,7 @@ async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> Fo
     let sql = fold::select_only_variant(
         p.k,
         Widx::new(0),
-        Widx::new(p.decn),
+        text_end_widx,
         p.decn,
         p.ram_words,
         case.hwm,
@@ -250,4 +260,11 @@ async fn checked(db: &Db, fx: &Fixture, case: &FoldCase<'_>, label: &str) -> Fol
 pub async fn run_raw(fx: &Fixture, case: &FoldCase<'_>) -> FoldRow {
     let p = prepare(case);
     execute(&fx.db, fx, case, &p).await
+}
+
+/// [`run_raw`] with an empty text window, which declares no region a fetch
+/// has to come from. The riscv-tests harness runs the fold this way.
+pub async fn run_raw_windowless(fx: &Fixture, case: &FoldCase<'_>) -> FoldRow {
+    let p = prepare(case);
+    execute_with_window(&fx.db, fx, case, &p, Widx::new(0)).await
 }

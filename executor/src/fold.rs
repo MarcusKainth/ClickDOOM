@@ -413,10 +413,31 @@ fn build_step_inner(
     let pc = "acc.1";
     let stopped = "acc.4.1";
 
-    let idx = format!(
-        "(least(bitShiftRight(toUInt32(toUInt64({pc}) - {ram_base}), 2), {}) + 1)",
-        decn - 1
-    );
+    let pc_widx = format!("bitShiftRight(toUInt32(toUInt64({pc}) - {ram_base}), 2)");
+    let idx = format!("(least({pc_widx}, {}) + 1)", decn - 1);
+
+    // `DEC` holds the text region and nothing else, and the clamp above
+    // keeps `arrayElement` in bounds rather than deciding what a pc outside
+    // that region means. This is what decides it: the fetch halts, so the
+    // clamped row never executes.
+    //
+    // An empty window declares no region to be outside of, and a caller
+    // that wants every word of RAM fetchable passes one. A window starting
+    // at 0 needs no lower test: a pc below `ram_base` wraps the unsigned
+    // subtraction to a value past the region's end.
+    let pc_out_of_text = if text_end_widx == text_start_widx {
+        None
+    } else if text_start_widx == 0 {
+        Some(format!("({pc_widx} >= {text_end_widx})"))
+    } else {
+        Some(format!(
+            "({pc_widx} < {text_start_widx} OR {pc_widx} >= {text_end_widx})"
+        ))
+    };
+    let fetch_halt_arm = match &pc_out_of_text {
+        Some(cond) => format!("{cond}, {HALT_BAD_ADDR},"),
+        None => String::new(),
+    };
 
     let dec = binder.bind(bind_dec, "d", format!("DEC[{idx}]"));
 
@@ -628,12 +649,14 @@ fn build_step_inner(
         format!("{wa} < {text_end_widx}")
     };
     // `multiIf` takes the first match, so arm order is the halt-reason
-    // precedence. Misalignment is tested before the address's region and
-    // before the access's width, so an access that is both misaligned and
-    // outside every region is `MISALIGNED`, and so is a misaligned narrow
-    // store to FRAMEBUFFER or PALETTE.
+    // precedence. The fetch is tested first, because a step whose
+    // instruction was never fetched has no opcode to classify. Misalignment
+    // is then tested before the address's region and before the access's
+    // width, so an access that is both misaligned and outside every region
+    // is `MISALIGNED`, and so is a misaligned narrow store to FRAMEBUFFER
+    // or PALETTE.
     let halt_code = format!(
-        "multiIf({is_illegal}, {HALT_ILLEGAL_INSN},\
+        "multiIf({fetch_halt_arm}{is_illegal}, {HALT_ILLEGAL_INSN},\
          {is_ecall}, {HALT_ECALL},\
          {is_ebreak}, {HALT_EBREAK},\
          {is_csr}, {HALT_CSR},\
@@ -663,6 +686,12 @@ fn build_step_inner(
     let halt_extra_calc = format!(
         "if(({hc}) = {HALT_ILLEGAL_INSN}, {raw}, if(({hc}) = {HALT_EXIT}, {rs2v}, if({jump_misaligned}, {jump_target_if_taken}, if(({hc}) IN ({HALT_BAD_ADDR}, {HALT_MISALIGNED}, {HALT_SELF_MODIFY}), {addr}, toUInt32(0)))))"
     );
+    // A fetch that never happened has no data address, so the address the
+    // record carries is the pc itself.
+    let halt_extra_calc = match &pc_out_of_text {
+        Some(cond) => format!("if({cond}, {pc}, {halt_extra_calc})"),
+        None => halt_extra_calc,
+    };
     let halt_extra_calc = if variant == Variant::MoreConstants {
         let dead: String = (0..ADDED_CONSTANTS)
             .map(|n| format!("({hc}) = {}, toUInt32(0), ", ADDED_CONSTANTS_FIRST + n))

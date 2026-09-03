@@ -5,6 +5,7 @@
 //! statements and issues them.
 
 pub mod doors;
+pub mod enemy;
 pub mod game;
 pub mod hud;
 pub mod inter;
@@ -192,6 +193,8 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(inter::constants(db));
     constants.extend(player::constants(db));
     constants.extend(pspr::constants(db));
+    constants.extend(sight::constants(db));
+    constants.extend(mobj::constants(db));
     constants
 }
 

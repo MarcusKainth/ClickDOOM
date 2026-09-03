@@ -154,6 +154,7 @@ pub async fn run(args: &Args<'_>) -> Result<CompareRecord, CompareError> {
                 batches: args.batches,
                 first_frame_max_instructions: args.first_frame_max_instructions,
                 windows: Windows {
+                    gameplay_frame: args.windows.gameplay_frame,
                     gameplay_target_icount: args.windows.gameplay_target_icount,
                 },
                 snapshot_dir: args.snapshot_dir.clone(),

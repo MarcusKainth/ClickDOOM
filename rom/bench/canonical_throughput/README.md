@@ -1,50 +1,36 @@
 # Canonical real-ROM throughput benchmark
 
-## Why this exists
-
-The human owner ruled on #130's 1.61x throughput regression (recorded in
-#147): the baseline benchmark's "1,000 instr/sec floor" was an architecture-viability
-tripwire, not a merge gate for correctness-driven cost with the
-optimisation queue unexecuted. That triggered a **time-boxed 5-day
-optimisation sprint**, after which the floor is re-evaluated for real.
-
-Every measurement this project has taken so far has been ad hoc, and every
-one has cost something: contaminated by a concurrent process, taken at a
-non-optimal K, taken against a stale ROM, taken on a synthetic fixture that
-mispredicted the real ROM's behaviour by the wrong sign. Each was caught,
-but each cost a re-run, and some cost a wrong conclusion first. **A sprint
-whose dozen experiments are each measured differently cannot be summed.**
-This is the one instrument every sprint number should come from.
+The instrument every throughput claim about the SQL CPU comes from. Numbers
+taken by different harnesses, at different K, against different ROMs cannot be
+compared with each other, so this is the one that reports them.
 
 ## What it measures
 
-Two windows, identified from the memory-function profile's exact per-symbol
-attribution against the current frozen ROM (`rom/PINNED_HASH`):
+Two windows against the frozen ROM (`rom/PINNED_HASH`), picked from the
+memory-function profile's per-symbol attribution:
 
-| window | starts at | what's happening |
+| window | starts at | what runs there |
 |---|---|---|
-| boot-phase | icount 0 | WAD load, `R_Init*`, `strncasecmp`-heavy lump lookups -- read/scan-dominated |
-| store-heavy gameplay | icount 233,932,753 | real `-timedemo demo3` playback -- `R_DrawColumn`/`R_DrawSpan` dominate, both pixel-store-bound rasterizers |
+| boot | icount 0 | WAD load, `R_Init*`, `strncasecmp`-heavy lump lookups, read and scan dominated |
+| store-heavy gameplay | icount 194,583,691 | `-timedemo demo3` playback, `R_DrawColumn` and `R_DrawSpan` dominating, both pixel-store-bound rasterizers |
 
-The gameplay window's label names the frame its snapshot header carries, and
-the boot window's names the frame the ROM reaches, so a measurement says
-which game state it covers.
+Each window's label names the frame it covers, so a measurement says which
+game state it was taken in.
 
-One blended whole-run average would hide exactly the effect `executor`
-found in #130: added correctness checks compound on memory-heavy code
-rather than diluting evenly across the instruction stream. The two windows
-are reported separately so that effect is visible instead of averaged away.
+One blended whole-run average would hide the effect the two windows exist to
+separate: a correctness check that costs more on memory-heavy code than on
+the instruction stream generally compounds in the rasterizer rather than
+diluting evenly. The two are reported separately so that shows.
 
-Each window is measured two ways, reported separately (ADR-0004's own
-convention):
+Each window is measured two ways, reported separately:
 
-- **fold-alone** -- `executor::fold::select_only`, the cost of the
-  `arrayFold` step expression itself. Its write logs are applied to
+- **fold-alone**: `executor::fold::select_only`, the cost of the `arrayFold`
+  step expression itself. Its write logs are applied to
   `ram`/`framebuffer`/`palette` between chained batches, outside the timed
   statement, so a later batch reads what an earlier one wrote.
-- **end-to-end (e2e)** -- `executor::fold::batch` plus all four of
+- **end-to-end**: `executor::fold::batch` plus all four of
   `executor::commit`'s flushes (`ram`, `console_out`, `cpu_state`,
-  `retention`), the cost a real run actually pays per batch.
+  `retention`), the cost a real run pays per batch.
 
 Both arms execute the same instruction stream from the same start, and the
 run is refused unless they end at the same `pc` and `icount`.
@@ -53,6 +39,61 @@ Alongside instructions per second, each arm reports seconds to first frame:
 the ROM's instructions to first frame, measured by `refemu` in the same run,
 divided by that arm's rate. A ROM change that retires fewer instructions for
 the same frame moves it and leaves instructions per second alone.
+
+## Where the gameplay window starts, and how long it is
+
+The window starts on the instruction after frame 200's `FRAME_COMMIT` store
+retires. `refemu run --stop-at frame:200` reports that icount, and the run is
+refused unless it is still 194,583,691:
+
+    refemu run rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+        --pinned-hash rom/PINNED_HASH --stop-at frame:200 --halt-report -
+
+Starting on a frame commit is what makes the window long. The batch execution
+contract ends a batch on a `FRAME_COMMIT` store, and `arrayFold` runs K steps
+whether or not they retire, so a batch cut by a frame commit is charged the
+full K against the fewer instructions it retired. Frame 201 commits at icount
+195,961,602, which leaves 1,377,911 instructions, or 22 whole batches at
+K = 60,000. The default four warm-up plus three timed batches per arm need
+seven. The preflight checks that count against the measured span and refuses
+the run rather than reporting a rate taken over a truncated batch.
+
+The write log has room over the same span. Counting the RAM stores in each
+60,000-instruction batch of the window with
+
+    refemu run rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
+        --pinned-hash rom/PINNED_HASH --resume <frame-200 capture> \
+        --watch-from icount:<batch start> --stop-at icount:<batch end> \
+        --watch-writes ram --write-coverage -
+
+gives 5,673 in the first batch and 12,962 in the heaviest of the 22, against
+a high-water mark of 20,000 (`CLICKDOOM_RUN_HWM`). Framebuffer and palette
+stores go to their own accumulator lanes, which the mark does not count, and
+gameplay's rasterizer stores are overwhelmingly framebuffer stores.
+[`batch-attribution.md`](../../../docs/experiments/batch-attribution.md)
+measures the same asymmetry from the other side: boot saturates the mark and
+gameplay does not.
+
+## How it reaches the gameplay window without a multi-hour run
+
+At the gameplay rate [`docs/benchmarks.md`](../../../docs/benchmarks.md)
+indexes, executing to icount 194,583,691 through the SQL CPU would cost about
+eleven hours. `refemu run --dump-state` runs the same ROM through the
+reference emulator instead, reaching it in seconds, and writes the whole
+machine out. `bench canonical` loads that capture straight into an isolated
+database's `ram`/`framebuffer`/`palette`/`batch_commit`, so the SQL CPU's
+first batch in the window starts from real mid-run state rather than a
+synthetic fixture.
+
+The capture is cached at `<snapshot-dir>/snapshot.<rom sha256
+prefix>.<target icount>.v<format version>.rsnap` and written atomically, so
+it is generated once per ROM and reused until `rom/PINNED_HASH` moves.
+`--snapshot-dir` says where; it defaults to
+`/tmp/clickdoom-canonical-throughput`.
+
+`refemu::snapshot` states what a machine capture holds: `pc`, `regs`,
+`icount`, `ram`, `framebuffer` and `palette`. Console bytes and MMIO device
+state are not captured, and throughput does not depend on them.
 
 ## Warm-up and the compilation regime
 
@@ -72,47 +113,25 @@ Every batch in the output carries `CompileFunction`,
 `CompileExpressionsMicroseconds`, its write-log length, its retired count
 and why it stopped.
 
-## How it reaches the gameplay window without a multi-hour run
+## What the run refuses to report
 
-The SQL CPU runs at roughly 1,000-2,000 instr/sec (ADR-0004). Reaching
-icount 233,932,753 by live execution would cost tens of hours -- payable
-once, not every sprint measurement. `refemu run --dump-state` runs the same ROM
-through `refemu` instead (about 170M instr/sec measured), reaching that
-icount in under two seconds, and dumps the full CPU state (`pc`, `regs`,
-`ram`). `bench canonical` loads that dump directly into an isolated
-database's `ram`/`batch_commit`, so the SQL CPU's *first* batch in the
-gameplay window starts from real, representative mid-run state -- not a
-synthetic fixture, and not a guess at what gameplay state looks like.
+K = 60,000 and HWM = 20,000 are the values `make bench-canonical-throughput`
+passes, from `CLICKDOOM_RUN_K` and `CLICKDOOM_RUN_HWM`. HWM is the
+production default, used unchanged: raising it to guarantee no truncation
+would change the write-log scan cost this benchmark measures.
 
-The snapshot is cached (`<snapshot-dir>/snapshot.<rom sha256 prefix>.<target
-icount>.v<format version>.rsnap`, atomically written) -- generated once per
-ROM, reused for every subsequent sprint measurement until `PINNED_HASH`
-changes. `--snapshot-dir` says where; it defaults to
-`/tmp/clickdoom-canonical-throughput`.
+A timed batch that retires fewer than K measures different work than a full
+one, because `arrayFold` runs K steps either way. Both contract conditions
+that can cut one short are refused rather than averaged in:
 
-See `refemu::snapshot` for exactly what is and is not captured (short
-version: `pc`/`regs`/`ram`/`icount` only -- no framebuffer/palette/console/
-MMIO state, since there's no SQL storage for those yet and this benchmark
-doesn't need them to measure throughput).
+- the write log reaching the high-water mark, which the boot window's memset
+  loop does on its first batches;
+- a `FRAME_COMMIT` store, which the gameplay window's span check exists to
+  keep outside every batch.
 
-## K, HWM, and the refuse-to-run guarantee
-
-K = 60,000 -- issue #80's analytic optimum (~59,750, flat across
-50,000-80,000 once #86's CSE bug was corrected for; see #80's final
-comment for the full cost-curve derivation). HWM = 20,000, the SPEC/
-production default, used **unchanged**, not inflated to trivially
-guarantee no write-log truncation -- raising it would change the very
-write-log scan cost this benchmark measures. If a window's real store
-density is high enough to trip HWM before K retires at these settings,
-`bench canonical` refuses to report a throughput figure computed on a
-truncated timed batch (a batch that stops early measures different work than
-a full one) -- that refusal is itself the sprint-relevant finding, not
-something to route around by quietly raising HWM. A warm-up batch that trips
-the mark only has to advance the chain, so it is reported and allowed.
-
-A batch that ends on a FRAME_COMMIT store is neither of those. The batch
-execution contract ends a batch there, so it is reported with
-`stop=frame_commit` and counted.
+A warm-up batch only has to advance the chain, so either stop is reported and
+allowed there. A halt in any batch ends the run, because a window that halts
+partway has no throughput to report.
 
 ## Provenance
 
@@ -140,8 +159,7 @@ Makefile target reads the pinned image out of `docker-compose.yml`.
 
 ## What this is not
 
-This does not run, or feed into, a real milestone/demo3 run -- it is a
-measurement instrument only, isolated to a `canonical_throughput` database
-on a container of its own, never the shared `clickdoom` database. It reports
-throughput; interpreting a sprint experiment's result against it is the
-sprint's job, not this benchmark's.
+This does not run, or feed into, a real milestone or demo3 run. It is a
+measurement instrument, isolated to a `canonical_throughput` database on a
+container of its own, never the shared `clickdoom` database. It reports
+throughput; what a result means for a change is the change's own argument.

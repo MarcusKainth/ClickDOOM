@@ -376,9 +376,8 @@ build artifacts:
   for a check whose entire purpose is catching silent corruption.
 - `size`, `sha256` — computed directly from the built `.bin`.
 - `spec_version` — the one field that isn't derived from the build; it's a
-  Makefile constant (`SPEC_VERSION`) kept in sync with `SPEC.md`'s own
-  version by hand, per `SPEC.md`'s own instruction ("must update
-  SPEC_VERSION here and the `spec_version` constants in code").
+  Makefile constant (`SPEC_VERSION`), one of the `spec_version` constants in
+  code that `SPEC.md` requires a version change to update.
 
 Verified end to end: `manifest.json` is byte-identical across a plain
 rebuild and a full cache-evicted rebuild, same as `doom-rv32im.bin`

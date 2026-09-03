@@ -39,10 +39,9 @@ MANIFEST := $(BUILD)/manifest.json
 # The second ELF check-elf-reproducible links, compared against $(ELF).
 REPRO_ELF := $(BUILD)/repro/doom-rv32im.elf
 
-# Kept in sync with SPEC.md's own SPEC_VERSION by hand (SPEC.md: "must
-# update SPEC_VERSION here and the spec_version constants in code") --
-# this is rom's copy of that constant, issue #10.
-SPEC_VERSION := 0.1.0
+# rom's copy of SPEC.md's SPEC_VERSION, which manifest.json carries. SPEC.md
+# says a change to it updates the constants in code, and this is one of them.
+SPEC_VERSION := 0.1.1
 
 # The real DOOM engine (issue #7), vendored pristine in #41. Excludes:
 # other platforms' doomgeneric_*.c ports (this ROM's own hooks are
@@ -213,10 +212,9 @@ $(BIN): toolchain-image $(PATCHED_VENDOR)/.stamp src/crt0.S src/syscalls.c src/m
 	  sh -c '$(call link_elf,$(ELF)) && \
 	         riscv-none-elf-objcopy -O binary --gap-fill=0x00 $(ELF) $(BIN)'
 
-# manifest.json (SPEC §4): emitted from the built ELF/binary, never
-# hand-written -- see toolchain/gen_manifest.sh for why entry/load_addr/
-# text_start/text_end all come from readelf/nm rather than being
-# transcribed constants. Issue #10.
+# manifest.json, emitted from the built ELF and flat binary rather than
+# hand-written. toolchain/gen_manifest.sh says why entry, load_addr,
+# text_start and text_end all come from readelf and nm.
 $(MANIFEST): $(BIN) toolchain/gen_manifest.sh
 	$(TOOLCHAIN_RUN) \
 	  sh toolchain/gen_manifest.sh $(ELF) $(BIN) $(MANIFEST) $(SPEC_VERSION)

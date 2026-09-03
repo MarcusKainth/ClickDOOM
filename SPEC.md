@@ -1,12 +1,13 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.1.0** — ratified at the end of Phase 0 (see `docs/adr/`).
+**SPEC_VERSION: 0.1.1**. The decisions behind it are in `docs/adr/`.
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
 issue, a PR titled `spec: ...` (or `spec!: ...` if breaking), and approval from
-the human owner (see CODEOWNERS). Breaking changes bump the minor version and
-must update `SPEC_VERSION` here **and** the `spec_version` constants in code.
+the human owner (see CODEOWNERS). Breaking changes bump the minor version; a
+change that moves no contract bumps the patch version. Either must update
+`SPEC_VERSION` here **and** the `spec_version` constants in code.
 
 ---
 

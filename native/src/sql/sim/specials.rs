@@ -376,9 +376,24 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         "plane_alive",
         format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
     );
+    // The clip is the body of a fold over the sectors that moved, which
+    // holds one entry or none. A thinker that is on the list and moves
+    // nothing leaves every height where it found it, and the fold's
+    // starting value is exactly that, so a tic where a plat counts its
+    // wait down or a door counts its stay down pays nothing for the clip.
+    // The walk starts from `clip_act`, because a lambda body that reads
+    // neither of its parameters is evaluated outside the lambda.
     value(
         "plane_clip",
-        plane::change_sector("plane_moving", "sec_blockbox", &things, &world),
+        format!(
+            "arrayFold((clip_at, clip_act) -> {}, \
+             arrayFilter(a -> notEmpty(a), [plane_moving]), \
+             (CAST([], 'Array(UInt8)'), {}, {}, {}, toUInt8(0)))",
+            plane::change_sector("clip_act", "sec_blockbox", &things, &world),
+            s("m_z"),
+            s("m_floorz"),
+            s("m_ceilingz"),
+        ),
     );
     // Each thinker reads the answer for its own sector.
     value(
@@ -693,8 +708,20 @@ mod tests {
     fn the_pass_is_one_fold_over_the_slots_it_runs_for() {
         let sql = pass();
         assert_eq!(sql.matches("arrayFold((plane_at, plane_act) ->").count(), 1);
-        assert_eq!(sql.matches("arrayFilter(a -> notEmpty(a), [").count(), 1);
         assert!(sql.contains(&format!("IN ({}, {}, ", kind::DOOR, kind::PLAT)));
+    }
+
+    /// A thinker that is on the list and moves nothing leaves every height
+    /// where it found it, so the clip runs for a tic that moves a sector
+    /// rather than for every tic that carries a plane thinker.
+    #[test]
+    fn the_clip_is_one_fold_over_the_sectors_that_moved() {
+        let sql = pass();
+        assert_eq!(sql.matches("arrayFold((clip_at, clip_act) ->").count(), 1);
+        assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
+        // One list holds the slots the pass runs for and one the sectors
+        // they move, and each is what its fold walks.
+        assert_eq!(sql.matches("arrayFilter(a -> notEmpty(a), [").count(), 2);
     }
 
     /// A lambda body that reads neither of its parameters is evaluated

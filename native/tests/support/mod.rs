@@ -21,6 +21,7 @@ pub fn doom1() -> Vec<u8> {
 #[cfg(feature = "clickhouse-tests")]
 pub mod patch;
 
+pub mod damage;
 pub mod lights;
 pub mod mobj;
 pub mod noise;

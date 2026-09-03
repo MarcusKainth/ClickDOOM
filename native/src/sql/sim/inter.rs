@@ -4,6 +4,11 @@
 //! either takes the thing or leaves it lying there. A move can touch
 //! several things, so the switch is folded over what the move touched and
 //! appears once.
+//!
+//! `P_DamageMobj` and `P_KillMobj` are here too: what a shot or a monster's
+//! own attack does to what it reaches.
+
+use crate::sql::{bind, fixed};
 
 /// `p_inter.c`
 const BONUSADD: i64 = 6;
@@ -771,5 +776,548 @@ mod tests {
             });
             assert_eq!(depth, 0);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Damage
+// ---------------------------------------------------------------------------
+
+/// `p_mobj.h`
+const MF_SHOOTABLE: i64 = 4;
+const MF_JUSTHIT: i64 = 64;
+const MF_NOGRAVITY: i64 = 512;
+const MF_DROPOFF: i64 = 0x400;
+const MF_NOCLIP: i64 = 0x1000;
+const MF_FLOAT: i64 = 0x4000;
+const MF_CORPSE: i64 = 0x10_0000;
+const MF_COUNTKILL: i64 = 0x40_0000;
+const MF_SKULLFLY: i64 = 0x100_0000;
+/// `p_local.h`: how long a thing chases what hit it before it looks
+/// elsewhere.
+const BASETHRESHOLD: i64 = 100;
+/// `m_fixed.h`
+const FRACUNIT: i64 = 1 << 16;
+/// `tables.h`
+const ANG180: i64 = 0x8000_0000;
+const ANGLE_WRAP: i64 = 1 << 32;
+const ANGLETOFINESHIFT: u32 = 19;
+/// `p_inter.c`: how far below the thing that hit it a target has to stand
+/// to be knocked over, and the most damage that can do it.
+const FALL_HEIGHT: i64 = 64 * FRACUNIT;
+const FALL_DAMAGE: i64 = 40;
+
+/// Where each field of a damage ask sits in its tuple.
+pub mod hurting {
+    /// The mobj slot taking the damage.
+    pub const TARGET: usize = 1;
+    /// The slot that dealt it, 0 for none. A hitscan's source and its
+    /// inflictor are the same thing.
+    pub const SOURCE: usize = 2;
+    pub const DAMAGE: usize = 3;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 4;
+}
+
+/// Where each field of a damage answer sits in its tuple.
+pub mod hurt {
+    pub const HEALTH: usize = 1;
+    pub const FLAGS: usize = 2;
+    pub const STATE: usize = 3;
+    pub const TICS: usize = 4;
+    pub const MOMX: usize = 5;
+    pub const MOMY: usize = 6;
+    pub const MOMZ: usize = 7;
+    pub const HEIGHT: usize = 8;
+    pub const REACTIONTIME: usize = 9;
+    pub const TARGET: usize = 10;
+    pub const THRESHOLD: usize = 11;
+    /// 1 where the thing died.
+    pub const KILLED: usize = 12;
+    /// 1 where the death adds to the kill count.
+    pub const COUNTED: usize = 13;
+    /// The thing type the death drops, -1 for none.
+    pub const DROP: usize = 14;
+    /// How many numbers the call drew.
+    pub const DRAWS: usize = 15;
+    /// 1 where the call reached a path this does not write.
+    pub const STUCK: usize = 16;
+}
+
+/// The arrays a damage call reads.
+pub struct Hurting<'a> {
+    pub m_x: &'a str,
+    pub m_y: &'a str,
+    pub m_z: &'a str,
+    pub m_momx: &'a str,
+    pub m_momy: &'a str,
+    pub m_momz: &'a str,
+    pub m_reactiontime: &'a str,
+    pub m_type: &'a str,
+    pub m_state: &'a str,
+    pub m_tics: &'a str,
+    pub m_flags: &'a str,
+    pub m_health: &'a str,
+    pub m_height: &'a str,
+    pub m_target: &'a str,
+    pub m_threshold: &'a str,
+    pub m_player: &'a str,
+    pub prndindex: &'a str,
+    /// The weapon in the player's hands, which is what decides whether a
+    /// hit pushes its target.
+    pub readyweapon: &'a str,
+}
+
+/// The engine tables a damage call reads that no other stage does.
+pub fn damage_constants(db: &str) -> Vec<(String, String)> {
+    let kind = |name: &str| {
+        format!("assumeNotNull((SELECT toInt32(id) FROM {db}.mobjtype WHERE name = '{name}'))")
+    };
+    let info = |column: &str| super::table_column(db, "mobjinfo", column);
+    let mut constants = vec![
+        ("mobj_mass".to_owned(), info("mass")),
+        ("mobj_painchance".to_owned(), info("painchance")),
+        ("mobj_painstate".to_owned(), info("painstate")),
+        ("mobj_deathstate".to_owned(), info("deathstate")),
+        ("mobj_xdeathstate".to_owned(), info("xdeathstate")),
+    ];
+    for name in ["A_Pain", "A_Scream"] {
+        constants.push((
+            name.to_lowercase(),
+            format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = '{name}'))"),
+        ));
+    }
+    for name in [
+        "MT_SKULL",
+        "MT_VILE",
+        "MT_POSSESSED",
+        "MT_WOLFSS",
+        "MT_SHOTGUY",
+        "MT_CHAINGUY",
+        "MT_CLIP",
+        "MT_SHOTGUN",
+        "MT_CHAINGUN",
+    ] {
+        constants.push((name.to_lowercase(), kind(name)));
+    }
+    constants
+}
+
+/// `P_DamageMobj` over every ask in `asks`, as a [`hurt`] tuple each.
+///
+/// A call draws once, for the pain chance where the thing lives and for the
+/// wait on its death frame where it does not, and once more where the hit
+/// may knock it over. Both are decided before either number is read, so a
+/// caller making several calls knows the offset each one's draws sit at.
+///
+/// A player target leaves the call stuck rather than guessed: the armour,
+/// the damage tint and the weapon it drops are the player's own columns.
+pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
+    let (values, body) = damaged(world);
+    format!(
+        "arrayMap(dm_ask -> {}, {asks})",
+        bind::chain_in("dma", &values, &body)
+    )
+}
+
+/// What one call works out, as the values a body reads and the [`hurt`]
+/// tuple it answers with.
+fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("dm_ask.{field}");
+    let at = |array: &str| format!("{array}[dm_target]");
+    let from = |array: &str| format!("{array}[dm_source]");
+    let info = |table: &str| format!("{table}[1 + dm_type]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("dm_target", format!("toUInt32({})", a(hurting::TARGET)));
+    value("dm_source", format!("toUInt32({})", a(hurting::SOURCE)));
+    value("dm_damage", format!("toInt32({})", a(hurting::DAMAGE)));
+    value("dm_type", format!("toInt32({})", at(world.m_type)));
+    value("dm_flags", format!("toInt32({})", at(world.m_flags)));
+    value("dm_health", format!("toInt32({})", at(world.m_health)));
+    // The two early returns: a thing that cannot be shot, and one already
+    // dead, take nothing and draw nothing.
+    value(
+        "dm_lands",
+        format!("toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0)"),
+    );
+    // A lost soul charging stops dead where it is hit, and the push below
+    // then reads the momentum it stopped at.
+    value(
+        "dm_flying",
+        format!("toUInt8(dm_lands = 1 AND bitAnd(dm_flags, {MF_SKULLFLY}) != 0)"),
+    );
+    value(
+        "dm_momx_held",
+        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momx)),
+    );
+    value(
+        "dm_momy_held",
+        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momy)),
+    );
+    // The push. A hitscan's inflictor is its source, so a call with none
+    // pushes nothing, and a chainsaw holds its target in reach.
+    value(
+        "dm_pushes",
+        format!(
+            "toUInt8(dm_lands = 1 AND dm_source != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
+             AND ({} = -1 OR {} != {WP_CHAINSAW}))",
+            from(world.m_player),
+            world.readyweapon,
+        ),
+    );
+    value(
+        "dm_thrust",
+        format!(
+            "toInt32(intDiv(dm_damage * {} * 100, {}))",
+            FRACUNIT >> 3,
+            info("mobj_mass")
+        ),
+    );
+    value(
+        "dm_angle",
+        fixed::point_to_angle(
+            &format!(
+                "toInt32(toInt64({}) - toInt64({}))",
+                at(world.m_x),
+                from(world.m_x)
+            ),
+            &format!(
+                "toInt32(toInt64({}) - toInt64({}))",
+                at(world.m_y),
+                from(world.m_y)
+            ),
+            "tantoangle",
+        ),
+    );
+    let draw = |nth: &str| {
+        format!(
+            "toInt64(rnd[1 + bitAnd(toUInt32({}) + toUInt32({}) + {nth}, 255)])",
+            world.prndindex,
+            a(hurting::BASE),
+        )
+    };
+    // Falling forwards is the one draw a call makes before the damage
+    // lands, and whether it is made is decided without reading it.
+    value(
+        "dm_may_fall",
+        format!(
+            "toUInt8(dm_pushes = 1 AND dm_damage < {FALL_DAMAGE} AND dm_damage > dm_health \
+             AND toInt64({}) - toInt64({}) > {FALL_HEIGHT})",
+            at(world.m_z),
+            from(world.m_z),
+        ),
+    );
+    value(
+        "dm_falls",
+        format!("toUInt8(dm_may_fall = 1 AND bitAnd({}, 1) != 0)", draw("1")),
+    );
+    value(
+        "dm_fine",
+        format!(
+            "toUInt32(bitShiftRight(bitAnd(toUInt64(dm_angle) + if(dm_falls = 1, {ANG180}, 0), \
+             {}), {ANGLETOFINESHIFT}))",
+            ANGLE_WRAP - 1
+        ),
+    );
+    value(
+        "dm_push",
+        "toInt32(if(dm_falls = 1, dm_thrust * 4, dm_thrust))".to_owned(),
+    );
+    let along = |wave: String, held: &str| {
+        format!(
+            "toInt32(toInt64({held}) + if(dm_pushes = 1, toInt64({}), 0))",
+            fixed::fixed_mul("dm_push", &wave)
+        )
+    };
+    value(
+        "dm_momx",
+        along(super::maputl::finecosine("dm_fine"), "dm_momx_held"),
+    );
+    value(
+        "dm_momy",
+        along(super::maputl::finesine("dm_fine"), "dm_momy_held"),
+    );
+    // The damage, and the death it may cause.
+    value("dm_left", "toInt32(dm_health - dm_damage)".to_owned());
+    value(
+        "dm_killed",
+        "toUInt8(dm_lands = 1 AND dm_left <= 0)".to_owned(),
+    );
+    // The second draw sits behind the fall's, where one was made.
+    let second = format!(
+        "toInt64(rnd[1 + bitAnd(toUInt32({}) + toUInt32({}) + 1 + toUInt32(dm_may_fall), 255)])",
+        world.prndindex,
+        a(hurting::BASE),
+    );
+    // `P_KillMobj`: what a corpse carries, how far it falls and the frame
+    // it dies in.
+    value(
+        "dm_corpse_flags",
+        format!(
+            "toInt32(bitOr(bitAnd(dm_flags, if(dm_type != mt_skull, {}, {})), {}))",
+            !(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY | MF_NOGRAVITY),
+            !(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY),
+            MF_CORPSE | MF_DROPOFF,
+        ),
+    );
+    value(
+        "dm_death_state",
+        format!(
+            "toInt32(if(dm_left < -{} AND {} != 0, {}, {}))",
+            info("mobj_spawnhealth"),
+            info("mobj_xdeathstate"),
+            info("mobj_xdeathstate"),
+            info("mobj_deathstate"),
+        ),
+    );
+    value(
+        "dm_drop",
+        "toInt32(multiIf(dm_type = mt_possessed OR dm_type = mt_wolfss, mt_clip, \
+         dm_type = mt_shotguy, mt_shotgun, dm_type = mt_chainguy, mt_chaingun, -1))"
+            .to_owned(),
+    );
+    // The pain frame, which the second draw decides for a thing that
+    // lives.
+    value(
+        "dm_pained",
+        format!(
+            "toUInt8(dm_lands = 1 AND dm_killed = 0 AND {second} < {} AND dm_flying = 0)",
+            info("mobj_painchance")
+        ),
+    );
+    // The chase after whatever hit it. An archvile's target is never taken
+    // off it, and one is never chased.
+    value(
+        "dm_chases",
+        format!(
+            "toUInt8(dm_lands = 1 AND dm_killed = 0 \
+             AND ({} = 0 OR dm_type = mt_vile) \
+             AND dm_source != 0 AND dm_source != dm_target AND {} != mt_vile)",
+            at(world.m_threshold),
+            from(world.m_type),
+        ),
+    );
+    // The chase reads the frame the thing stands in after the pain frame
+    // has been entered, so a thing that was in its spawn frame and is
+    // pained does not go on to its see frame.
+    value(
+        "dm_after_pain",
+        format!(
+            "toInt32(if(dm_pained = 1, {}, {}))",
+            info("mobj_painstate"),
+            at(world.m_state),
+        ),
+    );
+    value(
+        "dm_wakes",
+        format!(
+            "toUInt8(dm_chases = 1 AND dm_after_pain = {} AND {} != 0)",
+            info("mobj_spawnstate"),
+            info("mobj_seestate"),
+        ),
+    );
+    // The engine sets the pain frame and then the see frame, so a thing
+    // that does both ends in the see frame.
+    value(
+        "dm_state",
+        format!(
+            "toInt32(multiIf(dm_lands = 0, {held}, dm_killed = 1, dm_death_state, \
+             dm_wakes = 1, {}, dm_pained = 1, {}, {held}))",
+            info("mobj_seestate"),
+            info("mobj_painstate"),
+            held = at(world.m_state),
+        ),
+    );
+    // A frame the routine enters brings its own wait, whether or not it is
+    // the frame the thing already stood in.
+    value(
+        "dm_moves",
+        "toUInt8(dm_killed = 1 OR dm_wakes = 1 OR dm_pained = 1)".to_owned(),
+    );
+    value(
+        "dm_tics",
+        format!(
+            "toInt32(multiIf(dm_moves = 0, {held}, \
+             dm_killed = 1, greatest(state_tics[1 + dm_death_state] - bitAnd({second}, 3), 1), \
+             state_tics[1 + dm_state]))",
+            held = at(world.m_tics),
+        ),
+    );
+    // A player target leaves the call stuck: the armour it wears, the tint
+    // it takes and the weapon it drops are the player's own columns.
+    // `P_SetMobjState` runs the routine the frame it enters carries.
+    // `A_Pain` and `A_Scream` only make a noise; any other leaves the call
+    // stuck rather than guessed, which is what an `A_Chase` on a see frame
+    // and an `A_Explode` on a barrel's death frame do.
+    value(
+        "dm_routine",
+        "toInt32(if(dm_moves = 1, state_action[1 + dm_state], 0))".to_owned(),
+    );
+    value(
+        "dm_stuck",
+        format!(
+            "toUInt8(dm_lands = 1 AND ({} != -1 \
+             OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))",
+            at(world.m_player)
+        ),
+    );
+    let members = [
+        "toInt32(if(dm_lands = 1, dm_left, dm_health))".to_owned(),
+        format!(
+            "toInt32(multiIf(dm_killed = 1, dm_corpse_flags, \
+             dm_pained = 1, bitOr(dm_flags, {MF_JUSTHIT}), dm_flags))"
+        ),
+        "toInt32(dm_state)".to_owned(),
+        "toInt32(dm_tics)".to_owned(),
+        "toInt32(dm_momx)".to_owned(),
+        "toInt32(dm_momy)".to_owned(),
+        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momz)),
+        format!(
+            "toInt32(if(dm_killed = 1, bitShiftRight({}, 2), {held}))",
+            at(world.m_height),
+            held = at(world.m_height),
+        ),
+        format!(
+            "toInt32(if(dm_lands = 1 AND dm_killed = 0, 0, {}))",
+            at(world.m_reactiontime)
+        ),
+        format!(
+            "toUInt32(if(dm_chases = 1, dm_source, {}))",
+            at(world.m_target)
+        ),
+        format!(
+            "toInt32(if(dm_chases = 1, {BASETHRESHOLD}, {}))",
+            at(world.m_threshold)
+        ),
+        "toUInt8(dm_killed)".to_owned(),
+        format!("toUInt8(dm_killed = 1 AND bitAnd(dm_flags, {MF_COUNTKILL}) != 0)"),
+        "toInt32(if(dm_killed = 1, dm_drop, -1))".to_owned(),
+        "toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))".to_owned(),
+        "toUInt8(dm_stuck)".to_owned(),
+    ];
+    (values, format!("({})", members.join(", ")))
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    fn world() -> Hurting<'static> {
+        Hurting {
+            m_x: "m_x",
+            m_y: "m_y",
+            m_z: "m_z",
+            m_momx: "m_momx",
+            m_momy: "m_momy",
+            m_momz: "m_momz",
+            m_reactiontime: "m_reactiontime",
+            m_type: "m_type",
+            m_state: "m_state",
+            m_tics: "m_tics",
+            m_flags: "m_flags",
+            m_health: "m_health",
+            m_height: "m_height",
+            m_target: "m_target",
+            m_threshold: "m_threshold",
+            m_player: "m_player",
+            prndindex: "prndindex",
+            readyweapon: "readyweapon",
+        }
+    }
+
+    /// A call draws once where it lands and once more where the hit may
+    /// knock its target over, and nothing where it does not land. Every
+    /// draw after it in the tic sits behind that count.
+    #[test]
+    fn a_call_draws_by_where_it_lands_and_whether_it_may_fell() {
+        let (_, body) = damaged(&world());
+        assert!(
+            body.contains("toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))"),
+            "{body}"
+        );
+    }
+
+    /// A player target leaves the call stuck rather than guessed, because
+    /// the armour, the tint and the dropped weapon are the player's own
+    /// columns.
+    #[test]
+    fn a_player_target_leaves_the_call_stuck() {
+        let (values, _) = damaged(&world());
+        let stuck = values
+            .iter()
+            .find(|(name, _)| name == "dm_stuck")
+            .expect("the call names what leaves it stuck");
+        assert!(stuck.1.contains("m_player[dm_target] != -1"), "{stuck:?}");
+    }
+
+    /// The routine reads no thing type it names by hand out of the
+    /// generator: every one comes from `mobjtype` inside the statement.
+    #[test]
+    fn every_thing_type_it_names_comes_from_the_table() {
+        let names: Vec<String> = damage_constants("nat")
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name.starts_with("mt_"))
+            .collect();
+        assert!(names.len() >= 9, "{names:?}");
+        let sql = damage_mobj("asks", &world());
+        for name in names {
+            assert!(sql.contains(&name), "{name}");
+        }
+    }
+
+    /// The frames a call enters carry five routines between them across
+    /// the whole of `mobjinfo`, and the two this runs are the two that only
+    /// make a noise. The rest leave the call stuck, so this records what
+    /// the allow-list has to cover and fails if a table change adds to it.
+    #[test]
+    fn the_routines_a_call_can_meet_are_the_ones_it_answers_for() {
+        let states = crate::tables::table("states").unwrap();
+        let action = states.ints("action").unwrap();
+        let names = crate::tables::table("action_functions").unwrap();
+        let named = |id: i64| {
+            let ids = names.ints("id").unwrap();
+            let at = ids.iter().position(|held| *held == id).expect("a routine");
+            names.texts("name").unwrap()[at]
+        };
+        let info = crate::tables::table("mobjinfo").unwrap();
+        let mut met: Vec<&str> = Vec::new();
+        for column in ["painstate", "deathstate", "xdeathstate", "seestate"] {
+            for state in info.ints(column).unwrap() {
+                let routine = action[state as usize];
+                if state != 0 && routine != 0 && !met.contains(&named(routine)) {
+                    met.push(named(routine));
+                }
+            }
+        }
+        met.sort_unstable();
+        assert_eq!(
+            met,
+            [
+                "A_BrainAwake",
+                "A_BrainPain",
+                "A_BrainScream",
+                "A_Chase",
+                "A_Explode",
+                "A_Hoof",
+                "A_Metal",
+                "A_Pain",
+                "A_Scream",
+                "A_VileChase",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_damage_expression_balances_its_parentheses() {
+        let sql = damage_mobj("asks", &world());
+        let depth = sql.chars().fold(0i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "{sql}");
     }
 }

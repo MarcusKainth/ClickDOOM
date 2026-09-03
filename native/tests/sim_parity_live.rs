@@ -1,8 +1,8 @@
 //! The tic transform against the reference emulator, on a real server.
 //!
-//! Four things are checked. Every field the committed probe fixture
-//! covers has to agree with the engine, apart from a named set the
-//! simulation does not compute. Then the player walks into the wall demo3
+//! Every field the committed probe fixture covers has to agree with the
+//! engine, apart from a named set the simulation does not compute. Then
+//! the player walks into the wall demo3
 //! puts in front of it, and the position and momentum `P_SlideMove` leaves
 //! are checked against the engine's own. Then the weapon sprite walks up
 //! the screen, bobs, and is swapped for the shotgun the player picks up,
@@ -10,7 +10,9 @@
 //! their states, `A_Look` takes the player as the first monster's target on
 //! the tic the engine does, `A_Chase` walks it towards the player from the
 //! tic after, and its missile check draws on the tic the engine's own
-//! random-call log records.
+//! random-call log records. Then the player fires: the mobj enters its
+//! attack frames, the weapon sprite the shotgun's, and the sectors the
+//! noise reaches hold the player at the count the engine leaves them on.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -87,12 +89,73 @@ const FIRST_CROWDED: u32 = 82;
 /// is gametic 125.
 const MISSILE_DRAW: u32 = 125;
 
+/// The tic `A_WeaponReady` reaches `P_FireWeapon`: the player's mobj goes
+/// into its attack frames, the weapon sprite into the shotgun's, and the
+/// noise goes out.
+const FIRST_SHOT: u32 = 140;
+
+/// The tic the shotgun's own frames reach `A_FireShotgun`, which this
+/// does not run.
+const FIRST_SHOT_FRAME: u32 = 143;
+
+/// One tic of the shot, read out of the reference emulator's demo3 trace:
+/// the weapon sprite, the player's mobj and its wait, whether the attack
+/// button is marked down, and how many sectors the alert leaves at each
+/// count.
+struct Shot {
+    tic: u32,
+    psp_state: i32,
+    pl_state: i32,
+    pl_tics: i32,
+    attackdown: u8,
+    near: u64,
+    far: u64,
+    unreached: u64,
+}
+
+/// Gametic 139 is the last tic the weapon is ready and nothing has heard
+/// anything, 140 the shot, and 142 the alert still standing while the
+/// shotgun's own frames run.
+const SHOT: [Shot; 3] = [
+    Shot {
+        tic: 139,
+        psp_state: 18,
+        pl_state: 152,
+        pl_tics: 1,
+        attackdown: 0,
+        near: 0,
+        far: 0,
+        unreached: 170,
+    },
+    Shot {
+        tic: FIRST_SHOT,
+        psp_state: 21,
+        pl_state: 154,
+        pl_tics: 11,
+        attackdown: 1,
+        near: 53,
+        far: 5,
+        unreached: 112,
+    },
+    Shot {
+        tic: 142,
+        psp_state: 21,
+        pl_state: 154,
+        pl_tics: 9,
+        attackdown: 1,
+        near: 53,
+        far: 5,
+        unreached: 112,
+    },
+];
+
 /// `gametic, prndindex` read out of the reference emulator's demo3 trace.
 ///
 /// The index holds still on a tic that draws nothing and moves by one for
-/// each draw. Gametic 77 is the first tic a monster acts, and 125 the
-/// first tic the missile check draws.
-const RANDOM: [(u32, u8); 9] = [
+/// each draw. Gametic 77 is the first tic a monster acts, 125 the first
+/// tic the missile check draws, and 140 to 142 are the monsters the shot's
+/// own noise wakes.
+const RANDOM: [(u32, u8); 12] = [
     (2, 209),
     (40, 226),
     (61, 233),
@@ -102,6 +165,9 @@ const RANDOM: [(u32, u8); 9] = [
     (124, 121),
     (MISSILE_DRAW, 126),
     (139, 170),
+    (FIRST_SHOT, 178),
+    (141, 189),
+    (142, 194),
 ];
 
 /// `gametic, m_movedir, m_movecount, m_reactiontime, m_angle, m_x, m_y`
@@ -191,6 +257,12 @@ struct Walked {
     state118: i32,
     target118: u32,
     lastlook34: i32,
+    pl_state: i32,
+    pl_tics: i32,
+    heard_near: u64,
+    heard_far: u64,
+    heard_none: u64,
+    heard_of: u64,
     psp_state: Vec<i32>,
     psp_sx: Vec<i32>,
     psp_sy: Vec<i32>,
@@ -217,6 +289,11 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              m_state[25] AS state25, m_frame[25] AS frame25, \
              m_state[118] AS state118, m_target[118] AS target118, \
              m_lastlook[34] AS lastlook34, \
+             m_state[p_mo] AS pl_state, m_tics[p_mo] AS pl_tics, \
+             toUInt64(countEqual(sec_soundtraversed, 1)) AS heard_near, \
+             toUInt64(countEqual(sec_soundtraversed, 2)) AS heard_far, \
+             toUInt64(countEqual(sec_soundtraversed, 0)) AS heard_none, \
+             toUInt64(countEqual(sec_soundtarget, p_mo)) AS heard_of, \
              psp_state, psp_sx, psp_sy, \
              p_readyweapon AS readyweapon, p_pendingweapon AS pendingweapon, \
              p_attackdown AS attackdown, prndindex, \
@@ -344,6 +421,43 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the things at gametic {tic}"
         );
     }
+    for shot in SHOT {
+        let row = at(shot.tic);
+        assert_eq!(
+            (
+                row.psp_state[0],
+                row.pl_state,
+                row.pl_tics,
+                row.attackdown,
+                row.heard_near,
+                row.heard_far,
+                row.heard_none
+            ),
+            (
+                shot.psp_state,
+                shot.pl_state,
+                shot.pl_tics,
+                shot.attackdown,
+                shot.near,
+                shot.far,
+                shot.unreached
+            ),
+            "the shot at gametic {}",
+            shot.tic
+        );
+        assert_eq!(
+            row.heard_of,
+            shot.near + shot.far,
+            "every sector the alert reached holds the player at gametic {}",
+            shot.tic
+        );
+    }
+    assert_eq!(
+        at(FIRST_SHOT_FRAME).unresolved,
+        1,
+        "the tic the shotgun's frames reach A_FireShotgun says it could not be produced"
+    );
+
     for (tic, prndindex) in RANDOM {
         assert_eq!(
             at(tic).prndindex,

@@ -49,18 +49,35 @@ const SEE_SOUNDS: [&str; 5] = [
     "sfx_bgsit2",
 ];
 
-/// What stops the load: a sound `A_Look` switches on that `sfxenum` does
-/// not carry. The draw for it would go missing and every random number
-/// after it would be the wrong one.
+/// The thing types `P_CheckMissileRange` switches on, as the names
+/// `info.h` gives them. `MT_VILE` and `MT_UNDEAD` decide whether the
+/// routine reaches its draw; the rest only shorten the distance.
+const MISSILE_TYPES: [&str; 5] = ["MT_VILE", "MT_UNDEAD", "MT_CYBORG", "MT_SPIDER", "MT_SKULL"];
+
+/// What stops the load: a name a routine switches on that the table it
+/// reads does not carry. A draw left out moves every random number after
+/// it and nothing else would say so.
 pub fn guards(db: &str) -> Vec<Statement> {
-    let names: Vec<String> = SEE_SOUNDS.iter().map(|name| format!("'{name}'")).collect();
-    vec![Statement::sql(format!(
-        "SELECT throwIf(count() != {}, 'A_Look: a sound it switches on is missing')\n\
-         FROM {db}.sfxenum\n\
-         WHERE name IN ({})",
-        SEE_SOUNDS.len(),
-        names.join(", ")
-    ))]
+    let missing = |what: &str, table: &str, names: &[&str]| {
+        let quoted: Vec<String> = names.iter().map(|name| format!("'{name}'")).collect();
+        Statement::sql(format!(
+            "SELECT throwIf(count() != {}, '{what}')\nFROM {db}.{table}\nWHERE name IN ({})",
+            names.len(),
+            quoted.join(", ")
+        ))
+    };
+    vec![
+        missing(
+            "A_Look: a sound it switches on is missing",
+            "sfxenum",
+            &SEE_SOUNDS,
+        ),
+        missing(
+            "P_CheckMissileRange: a thing type it switches on is missing",
+            "mobjtype",
+            &MISSILE_TYPES,
+        ),
+    ]
 }
 
 /// The constants `A_Look` and `A_Chase` read.
@@ -89,6 +106,12 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         "a_chase".to_owned(),
         format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = 'A_Chase'))"),
     ));
+    for name in MISSILE_TYPES {
+        constants.push((
+            name.to_lowercase(),
+            format!("toInt32(assumeNotNull((SELECT id FROM {db}.mobjtype WHERE name = '{name}')))"),
+        ));
+    }
     constants
 }
 
@@ -173,6 +196,14 @@ mod shape {
     /// Whether the direct route was tried, which it is even where it
     /// fails.
     pub const DIRECTTRIED: usize = 16;
+    /// Whether `P_CheckMissileRange` reaches its draw for the distance.
+    pub const MISSILEDRAW: usize = 17;
+    /// The distance that draw is compared against, clamped the way the
+    /// routine clamps it.
+    pub const MISSILEDIST: usize = 18;
+    /// Whether the missile check answers yes without drawing, which is
+    /// the target having just hit the thing.
+    pub const MISSILEHIT: usize = 19;
 }
 
 /// Where each field of one mover's answer sits.
@@ -221,6 +252,9 @@ pub struct Chasing<'a> {
     pub m_floorz: &'a str,
     pub m_ceilingz: &'a str,
     pub m_subsector: &'a str,
+    /// Whether the thing can see the target it holds, by slot, from the
+    /// one sight call the tic makes.
+    pub sees_target: &'a str,
     pub prndindex: &'a str,
 }
 
@@ -493,27 +527,89 @@ fn shape(state: &Chasing<'_>) -> String {
     );
     value("cs_turnaround", format!("toUInt8({})", walks("cs_turn")));
     value("cs_sound", format!("toUInt8({} != 0)", kind("activesound")));
-    // A missile check that gets past the reaction time reads the line of
-    // sight and draws for the distance, and neither is written.
-    // `P_CheckMeleeRange` measures first and only looks when the target
-    // is close enough, so a distant target costs no line of sight.
+    value("cs_sight", format!("toUInt8({})", at(state.sees_target)));
+    value(
+        "cs_distance",
+        format!(
+            "toInt64({})",
+            fixed::aprox_distance("toInt32(cs_deltax)", "toInt32(cs_deltay)")
+        ),
+    );
+    // `P_CheckMeleeRange` measures first and only looks when the target is
+    // close enough, so a distant target costs no line of sight. A melee
+    // attack itself is not written.
     value(
         "cs_melee",
         format!(
-            "toUInt8({} != 0 AND toInt64({}) < {} + toInt64({}[cs_target]))",
+            "toUInt8({} != 0 AND cs_distance < {} + toInt64({}[cs_target]) AND cs_sight = 1)",
             kind("meleestate"),
-            fixed::aprox_distance("toInt32(cs_deltax)", "toInt32(cs_deltay)"),
             MELEERANGE - (20 << 16),
             state.m_radius,
         ),
     );
+    // `P_CheckMissileRange`. The engine measures from the actor to the
+    // target the other way round from the melee test, and takes the same
+    // answer, because the distance is an absolute one.
     value(
-        "cs_missile",
+        "cs_missile_asked",
         format!(
-            "toUInt8({} != 0 AND NOT (skill < {SK_NIGHTMARE} AND {} != 0) \
-             AND (bitAnd(cs_flags, {MF_JUSTHIT}) != 0 OR cs_reactiontime = 0))",
+            "toUInt8(cs_melee = 0 AND {} != 0 AND NOT (skill < {SK_NIGHTMARE} AND {} != 0))",
             kind("missilestate"),
             at(state.m_movecount)
+        ),
+    );
+    value(
+        "cs_missile_far",
+        format!(
+            "toInt64(bitShiftRight(cs_distance - {} - if({} = 0, {}, 0), 16))",
+            64 << 16,
+            kind("meleestate"),
+            128 << 16,
+        ),
+    );
+    // An archvile gives up beyond its own range and a revenant inside
+    // its own, both before the draw, so what a thing is decides whether
+    // the draw happens at all.
+    value(
+        "cs_missile_ranged",
+        format!(
+            "toUInt8(NOT ({t} = mt_vile AND cs_missile_far > {}) \
+             AND NOT ({t} = mt_undead AND cs_missile_far < 196))",
+            14 * 64,
+            t = at(state.m_type),
+        ),
+    );
+    // A revenant halves what is left of its own range, and a cyberdemon,
+    // a spider mastermind and a lost soul halve theirs. Then the whole is
+    // capped, and a cyberdemon's again.
+    value(
+        "cs_missile_halved",
+        format!(
+            "toInt64(least(if({t} = mt_undead OR {t} = mt_cyborg OR {t} = mt_spider \
+             OR {t} = mt_skull, bitShiftRight(cs_missile_far, 1), cs_missile_far), 200))",
+            t = at(state.m_type),
+        ),
+    );
+    value(
+        "cs_missile_dist",
+        format!(
+            "toInt64(if({t} = mt_cyborg AND cs_missile_halved > 160, 160, cs_missile_halved))",
+            t = at(state.m_type),
+        ),
+    );
+    value(
+        "cs_missile_draw",
+        format!(
+            "toUInt8(cs_missile_asked = 1 AND cs_sight = 1 AND bitAnd(cs_flags, {MF_JUSTHIT}) = 0 \
+             AND cs_reactiontime = 0 AND cs_missile_ranged = 1)"
+        ),
+    );
+    // The target having just hit the thing is the one way the check
+    // answers yes without reading a number.
+    value(
+        "cs_missile_hit",
+        format!(
+            "toUInt8(cs_missile_asked = 1 AND cs_sight = 1 AND bitAnd(cs_flags, {MF_JUSTHIT}) != 0)"
         ),
     );
     value(
@@ -524,8 +620,7 @@ fn shape(state: &Chasing<'_>) -> String {
              OR bitAnd(toInt64({}[cs_target]), {MF_SHOOTABLE}) = 0 \
              OR bitAnd(cs_flags, {MF_JUSTATTACKED}) != 0 \
              OR bitAnd(cs_flags, {MF_FLOAT}) != 0 \
-             OR cs_melee = 1 \
-             OR cs_missile = 1)",
+             OR cs_melee = 1)",
             format_args!("{}[k]", state.entries),
             state.m_flags,
         ),
@@ -550,13 +645,17 @@ fn shape(state: &Chasing<'_>) -> String {
         "toInt64(cs_deltay)".to_owned(),
         "toInt64(cs_count)".to_owned(),
         "toUInt8(cs_directtried)".to_owned(),
+        "toUInt8(cs_missile_draw)".to_owned(),
+        "toInt64(cs_missile_dist)".to_owned(),
+        "toUInt8(cs_missile_hit)".to_owned(),
     ];
     bind::chain_in("cs", &values, &format!("({})", members.join(", ")))
 }
 
 /// How many random numbers one mover draws.
 ///
-/// `P_NewChaseDir` draws once for the swap unless the direct route
+/// `P_CheckMissileRange` draws once for the distance where it gets that
+/// far. `P_NewChaseDir` draws once for the swap unless the direct route
 /// carried it, once more for the direction the search runs in, and once
 /// for the move count whenever a direction works. Which of the two axes
 /// the swap puts first changes the order the search runs in and not
@@ -564,7 +663,8 @@ fn shape(state: &Chasing<'_>) -> String {
 /// number.
 fn draws(field: &dyn Fn(usize) -> String) -> String {
     format!(
-        "toUInt32(multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {})",
+        "toUInt32({} + multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {})",
+        field(shape::MISSILEDRAW),
         field(shape::NEWCHASE),
         field(shape::DIRECT),
         field(shape::FIRST),
@@ -591,12 +691,27 @@ fn chased(state: &Chasing<'_>) -> String {
             state.prndindex
         )
     };
-    value("cc_swap_draw", draw("0"));
-    value("cc_search_draw", draw("1"));
+    // The missile check draws before the walk does, so the walk's own
+    // draws sit behind it.
+    value("cc_missile_draw", draw("0"));
+    value("cc_walk_at", format!("toUInt32(sh.{})", shape::MISSILEDRAW));
+    value("cc_swap_draw", draw("cc_walk_at"));
+    value("cc_search_draw", draw("cc_walk_at + 1"));
     value("cc_draws", draws(&sh));
     value(
         "cc_count_draw",
         draw(&format!("cc_draws - toUInt32(sh.{}) - 1", shape::SOUND)),
+    );
+    // `P_CheckMissileRange` answers no when the number it drew is under
+    // the distance, and the attack it starts is not written.
+    value(
+        "cc_attacked",
+        format!(
+            "toUInt8(sh.{} = 1 OR (sh.{} = 1 AND cc_missile_draw >= sh.{}))",
+            shape::MISSILEHIT,
+            shape::MISSILEDRAW,
+            shape::MISSILEDIST,
+        ),
     );
     value(
         "cc_swap",
@@ -782,7 +897,10 @@ fn chased(state: &Chasing<'_>) -> String {
             at(state.m_subsector)
         ),
         "toUInt32(cc_draws)".to_owned(),
-        format!("toUInt8({} = 1 OR cc_special = 1)", sh(shape::STUCK)),
+        format!(
+            "toUInt8({} = 1 OR cc_special = 1 OR cc_attacked = 1)",
+            sh(shape::STUCK)
+        ),
     ];
     bind::chain_in("cc", &values, &format!("({})", members.join(", ")))
 }
@@ -834,6 +952,7 @@ mod tests {
             m_floorz: "w_floorz",
             m_ceilingz: "w_ceilingz",
             m_subsector: "w_subsector",
+            sees_target: "w_sees_target",
             prndindex: "w_prndindex",
         }
     }

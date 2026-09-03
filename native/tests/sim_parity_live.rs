@@ -8,8 +8,9 @@
 //! the screen, bobs, and is swapped for the shotgun the player picks up,
 //! against the engine's own positions. Then the things on the list cycle
 //! their states, `A_Look` takes the player as the first monster's target on
-//! the tic the engine does, and `A_Chase` walks it towards the player from
-//! the tic after.
+//! the tic the engine does, `A_Chase` walks it towards the player from the
+//! tic after, and its missile check draws on the tic the engine's own
+//! random-call log records.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -81,12 +82,17 @@ const FIRST_CHASE: u32 = 77;
 /// this runs them together, so the tic says it could not be produced.
 const FIRST_CROWDED: u32 = 82;
 
+/// The tic the reference run's random-call log records
+/// `P_CheckMissileRange`'s draw for the distance on. The row it produces
+/// is gametic 125.
+const MISSILE_DRAW: u32 = 125;
+
 /// `gametic, prndindex` read out of the reference emulator's demo3 trace.
 ///
 /// The index holds still on a tic that draws nothing and moves by one for
-/// each draw. Gametic 77 is the first tic the two part: the engine draws
-/// three times there and this simulation once.
-const RANDOM: [(u32, u8); 7] = [
+/// each draw. Gametic 77 is the first tic a monster acts, and 125 the
+/// first tic the missile check draws.
+const RANDOM: [(u32, u8); 9] = [
     (2, 209),
     (40, 226),
     (61, 233),
@@ -94,17 +100,22 @@ const RANDOM: [(u32, u8); 7] = [
     (77, 244),
     (110, 83),
     (124, 121),
+    (MISSILE_DRAW, 126),
+    (139, 170),
 ];
 
 /// `gametic, m_movedir, m_movecount, m_reactiontime, m_angle, m_x, m_y`
 /// for that monster, read out of the reference emulator's demo3 trace.
 /// Gametic 76 is the last tic it stands still, 77 the tic it wakes, turns
-/// a step towards the way it is about to walk and takes its first, and 80
-/// the next tic its state cycle reaches `A_Chase`.
-const CHASE: [(u32, i32, i32, i32, u32, i32, i32); 3] = [
+/// a step towards the way it is about to walk and takes its first, 80 the
+/// next tic its state cycle reaches `A_Chase`, 125 the tic its missile
+/// check draws, and 139 the last tic before the player shoots.
+const CHASE: [(u32, i32, i32, i32, u32, i32, i32); 5] = [
     (76, 0, 0, 8, 536870912, 0, -12582912),
     (FIRST_CHASE, 1, 15, 7, 0, 376000, -12206912),
     (80, 1, 14, 6, 536870912, 752000, -11830912),
+    (MISSILE_DRAW, 1, 11, 0, 536870912, 6392000, -6190912),
+    (139, 1, 7, 0, 536870912, 7896000, -4686912),
 ];
 
 /// `gametic, m_state[118], m_target[118]` around that monster, and the

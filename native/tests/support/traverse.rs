@@ -12,12 +12,12 @@ const MAPBLOCKSIZE: i64 = 1 << MAPBLOCKSHIFT;
 /// `p_maputl.c`: how many blocks a trace walks before it gives up.
 const BLOCKS: usize = 64;
 
-fn fixed_mul(a: i64, b: i64) -> i64 {
+pub fn fixed_mul(a: i64, b: i64) -> i64 {
     ((a as i32 as i64 * b as i32 as i64) >> FRACBITS) as i32 as i64
 }
 
 /// `FixedDiv`, with the saturation the engine's own has.
-fn fixed_div(a: i64, b: i64) -> i64 {
+pub fn fixed_div(a: i64, b: i64) -> i64 {
     let (a, b) = (a as i32, b as i32);
     if (a.unsigned_abs() >> 14) >= b.unsigned_abs() {
         return if (a ^ b) < 0 { i32::MIN } else { i32::MAX } as i64;

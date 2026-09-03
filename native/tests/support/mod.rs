@@ -27,6 +27,7 @@ pub mod plat;
 #[cfg(feature = "clickhouse-tests")]
 pub mod probe;
 pub mod seed;
+pub mod shoot;
 pub mod sight;
 pub mod spawn;
 pub mod ticcmd;

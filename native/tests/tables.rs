@@ -142,6 +142,25 @@ fn every_sound_a_thing_names_has_a_row() {
     }
 }
 
+/// `mobjinfo` is indexed by `mobjtype_t`, so every thing on a map has a
+/// row here, and `P_CheckMissileRange` names five of them.
+#[test]
+fn every_thing_kind_has_a_row_and_the_named_ones_are_in_it() {
+    let types = tables::table("mobjtype").unwrap();
+    let things = tables::table("mobjinfo").unwrap();
+    assert_eq!(types.rows.len(), things.rows.len());
+    let names = types.texts("name").unwrap();
+    assert_eq!(names.first(), Some(&"MT_PLAYER"));
+    assert_eq!(
+        types.ints("id").unwrap(),
+        (0..types.rows.len() as i64).collect::<Vec<i64>>()
+    );
+    assert!(names.iter().all(|n| n.starts_with("MT_")));
+    for named in ["MT_VILE", "MT_UNDEAD", "MT_CYBORG", "MT_SPIDER", "MT_SKULL"] {
+        assert_eq!(names.iter().filter(|n| **n == named).count(), 1, "{named}");
+    }
+}
+
 /// `finesine` is a 16.16 sine over `FINEANGLES` = 8,192 steps, so a
 /// quarter turn is index 2,048. `m_fixed.h` puts `FRACUNIT` at 65,536 and
 /// the table peaks one below it.

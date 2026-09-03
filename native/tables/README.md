@@ -19,6 +19,7 @@ the source does not produce fails the suite.
 | `mobjinfo.tsv` | `mobjinfo` | `info.c` |
 | `sprnames.tsv` | `sprnames` | `info.c` |
 | `sfxenum.tsv` | `sfxenum_t` | `sounds.h` |
+| `mobjtype.tsv` | `mobjtype_t` | `info.h` |
 | `weaponinfo.tsv` | `weaponinfo` | `d_items.c` |
 | `animdefs.tsv` | `animdefs` | `p_spec.c` |
 | `switchlist.tsv` | `alphSwitchList` | `p_switch.c` |
@@ -36,9 +37,10 @@ the source does not produce fails the suite.
 | `messages.tsv` | every string the header defines | `d_englsh.h` |
 
 The `id` column is the C array index, so a value that names another table's
-entry is that table's `id`. `sfxenum` is an enumerator list rather than an
-array, and its `id` is the value the compiler gives each name, which is what
-`mobjinfo`'s five sound fields hold. `gammatable` is two-dimensional and
+entry is that table's `id`. `sfxenum` and `mobjtype` are enumerator lists
+rather than arrays, and an `id` is the value the compiler gives each name:
+what `mobjinfo`'s five sound fields hold, and what `mobjinfo` is indexed by.
+`gammatable` is two-dimensional and
 keys on `(level, id)`. `messages` is not an array at all and keys on the
 name the header defines each string under.
 

@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS {{DB}}.sfxenum
 )
 ENGINE = MergeTree ORDER BY id;
 
+-- `mobjtype_t`, which is what `mobjinfo` is indexed by and what a routine
+-- switching on a thing's kind names. `NUMMOBJTYPES` closes the enumerator
+-- list and is not a type, so it is not a row.
+CREATE TABLE IF NOT EXISTS {{DB}}.mobjtype
+(
+    id    UInt32,
+    name  String
+)
+ENGINE = MergeTree ORDER BY id;
+
 CREATE TABLE IF NOT EXISTS {{DB}}.weaponinfo
 (
     id          UInt32,

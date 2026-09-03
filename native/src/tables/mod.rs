@@ -50,12 +50,13 @@ macro_rules! embedded {
 }
 
 /// Every table, in the order `generate` produces them.
-pub const TABLES: [Embedded; 20] = embedded![
+pub const TABLES: [Embedded; 21] = embedded![
     "states",
     "action_functions",
     "mobjinfo",
     "sprnames",
     "sfxenum",
+    "mobjtype",
     "weaponinfo",
     "animdefs",
     "switchlist",

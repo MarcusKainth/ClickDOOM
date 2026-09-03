@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.action_functions
 CREATE TABLE IF NOT EXISTS clickdoom_native.mobjinfo
 CREATE TABLE IF NOT EXISTS clickdoom_native.sprnames
 CREATE TABLE IF NOT EXISTS clickdoom_native.sfxenum
+CREATE TABLE IF NOT EXISTS clickdoom_native.mobjtype
 CREATE TABLE IF NOT EXISTS clickdoom_native.weaponinfo
 CREATE TABLE IF NOT EXISTS clickdoom_native.animdefs
 CREATE TABLE IF NOT EXISTS clickdoom_native.switchlist
@@ -89,6 +90,7 @@ INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]
 INSERT INTO clickdoom_native.mobjinfo FORMAT TSVWithNames  [10484 bytes]
 INSERT INTO clickdoom_native.sprnames FORMAT TSVWithNames  [1140 bytes]
 INSERT INTO clickdoom_native.sfxenum FORMAT TSVWithNames  [1496 bytes]
+INSERT INTO clickdoom_native.mobjtype FORMAT TSVWithNames  [1825 bytes]
 INSERT INTO clickdoom_native.weaponinfo FORMAT TSVWithNames  [222 bytes]
 INSERT INTO clickdoom_native.animdefs FORMAT TSVWithNames  [547 bytes]
 INSERT INTO clickdoom_native.switchlist FORMAT TSVWithNames  [884 bytes]

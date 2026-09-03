@@ -44,6 +44,9 @@ pub mod ask {
     pub const HEIGHT: usize = 5;
     pub const ANGLE: usize = 6;
     pub const RANGE: usize = 7;
+    /// The slope the shot leaves at. Only a shot's own ask carries it; an
+    /// aim works one out.
+    pub const SLOPE: usize = 8;
 }
 
 /// Where each field of an aim answer sits in its tuple.
@@ -53,6 +56,20 @@ pub mod answer {
     pub const TARGET: usize = 2;
 }
 
+/// Where each field of a shot's answer sits in its tuple.
+pub mod hit {
+    /// 0 the shot reached nothing it may spawn on, 1 a line, 2 a thing.
+    pub const KIND: usize = 1;
+    /// The line, or the mobj slot when [`KIND`] is 2.
+    pub const ID: usize = 2;
+    pub const X: usize = 3;
+    pub const Y: usize = 4;
+    pub const Z: usize = 5;
+    /// The lines carrying a special the shot crossed, in the order it
+    /// crossed them.
+    pub const SPECHIT: usize = 6;
+}
+
 /// Where each field of the aim traverser's accumulator sits.
 mod held {
     pub const TOPSLOPE: usize = 1;
@@ -60,6 +77,12 @@ mod held {
     pub const SLOPE: usize = 3;
     pub const TARGET: usize = 4;
     pub const STOPPED: usize = 5;
+}
+
+/// Where the shot traverser's accumulator carries whether the walk has
+/// stopped. Everything before it is the answer, in [`hit`]'s order.
+mod reached {
+    pub const STOPPED: usize = 7;
 }
 
 /// One aim, as the tuple [`aim_line_attack`] reads.
@@ -78,8 +101,44 @@ pub fn asking(
     )
 }
 
-/// The arrays a trace reads: where every mobj stands, and how high each
-/// sector is at this point in the tic.
+/// One shot, as the tuple [`line_attack`] reads. The slope is what
+/// [`bullet_slope`] worked out.
+#[allow(clippy::too_many_arguments)]
+pub fn shooting(
+    shooter: &str,
+    x: &str,
+    y: &str,
+    z: &str,
+    height: &str,
+    angle: &str,
+    range: &str,
+    slope: &str,
+) -> String {
+    format!(
+        "(toUInt32({shooter}), toInt32({x}), toInt32({y}), toInt32({z}), \
+         toInt32({height}), toUInt32({angle}), toInt32({range}), toInt32({slope}))"
+    )
+}
+
+/// The engine tables a shot reads that no other stage does: each sector's
+/// ceiling flat, and the sky's own flat number.
+pub fn constants(db: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            "sec_ceilingpic".to_owned(),
+            super::table_column(db, "lv_sectors_static", "ceilingpic"),
+        ),
+        (
+            "skyflatnum".to_owned(),
+            format!(
+                "assumeNotNull((SELECT toInt32(id) FROM {db}.flats WHERE upper(name) = 'F_SKY1'))"
+            ),
+        ),
+    ]
+}
+
+/// The arrays a trace reads: where every mobj stands, how high each sector
+/// is and what special each line carries at this point in the tic.
 pub struct Targets<'a> {
     pub m_x: &'a str,
     pub m_y: &'a str,
@@ -92,6 +151,7 @@ pub struct Targets<'a> {
     pub alive: &'a str,
     pub floorheight: &'a str,
     pub ceilingheight: &'a str,
+    pub line_special: &'a str,
 }
 
 impl Targets<'_> {
@@ -116,6 +176,20 @@ impl Targets<'_> {
 /// list out.
 pub fn aim_line_attack(asks: &str, world: &Targets<'_>) -> String {
     over_traces(asks, world, &aim_traverse(&|field| ask_of(field), world))
+}
+
+/// `P_LineAttack` over every ask in `asks`, as what the shot reached.
+///
+/// The answer is `(kind, id, x, y, z, spechit)`: kind 1 where the shot
+/// ended on a line and 2 where it ended on a thing, with the point the
+/// puff or the blood goes at, and the special lines it crossed on the way.
+/// A shot that reached nothing, and one that ended on a line showing the
+/// sky, answer kind 0 and spawn nothing.
+///
+/// `asks` is named twice, so a caller binds it rather than writing the
+/// list out.
+pub fn line_attack(asks: &str, world: &Targets<'_>) -> String {
+    over_traces(asks, world, &shoot_traverse(&ask_of, world))
 }
 
 /// The ask each traverser reads, as the lambda parameter [`over_traces`]
@@ -242,6 +316,202 @@ fn shoot_z(ask: &dyn Fn(usize) -> String) -> String {
         ask(ask::HEIGHT),
         8 * FRACUNIT
     )
+}
+
+/// `PTR_ShootTraverse` over `am_hits`, the intercepts of one trace.
+///
+/// The shot crosses a two-sided line while the slope it left at still fits
+/// through the opening, and ends on the first line or thing that stops it.
+fn shoot_traverse(ask: &dyn Fn(usize) -> String, world: &Targets<'_>) -> String {
+    let at = |field: usize| format!("am_at.{field}");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+    let slope = ask(ask::SLOPE);
+
+    value("sh_id", format!("toInt32(am_in.{})", intercept::ID));
+    value(
+        "sh_dist",
+        fixed::fixed_mul(&ask(ask::RANGE), &format!("am_in.{}", intercept::FRAC)),
+    );
+    value(
+        "sh_open",
+        maputl::opening("sh_id", world.floorheight, world.ceilingheight),
+    );
+    value(
+        "sh_backless",
+        "toUInt8(line_back[1 + sh_id] = -1)".to_owned(),
+    );
+    let steps = |height: &str| {
+        format!(
+            "toUInt8(sh_backless = 1 OR {height}[1 + line_front[1 + sh_id]] \
+             != {height}[1 + line_back[1 + sh_id]])"
+        )
+    };
+    value("sh_floor_steps", steps(world.floorheight));
+    value("sh_ceiling_steps", steps(world.ceilingheight));
+    let window = |edge: usize| {
+        fixed::fixed_div(
+            &format!("toInt32(toInt64(sh_open.{edge}) - toInt64(sh_shootz))"),
+            "sh_dist",
+        )
+    };
+    // A line stops the shot where it is not two-sided, or where the slope
+    // passes outside the opening on a side whose own height steps.
+    value(
+        "sh_line_stops",
+        format!(
+            "toUInt8(bitAnd(line_flags[1 + sh_id], {ML_TWOSIDED}) = 0 \
+             OR (sh_floor_steps = 1 AND {} > {slope}) \
+             OR (sh_ceiling_steps = 1 AND {} < {slope}))",
+            window(2),
+            window(1),
+        ),
+    );
+    // A thing stops the shot where the slope passes between its own top and
+    // bottom.
+    let field = |array: &str| format!("{array}[sh_id]");
+    let slope_to = |height: String| {
+        fixed::fixed_div(
+            &format!("toInt32({height} - toInt64(sh_shootz))"),
+            "sh_dist",
+        )
+    };
+    value(
+        "sh_thing_stops",
+        format!(
+            "toUInt8(sh_id != {shooter} AND bitAnd({flags}, {MF_SHOOTABLE}) != 0 \
+             AND {top} >= {slope} AND {bottom} <= {slope})",
+            shooter = ask(ask::SHOOTER),
+            flags = field(world.m_flags),
+            top = slope_to(format!(
+                "toInt64({}) + toInt64({})",
+                field(world.m_z),
+                field(world.m_height)
+            )),
+            bottom = slope_to(format!("toInt64({})", field(world.m_z))),
+        ),
+    );
+    // What is spawned sits a little short of what stopped the shot: four
+    // units of the range for a line and ten for a thing.
+    value(
+        "sh_frac",
+        format!(
+            "toInt32(toInt64(am_in.{frac}) - toInt64(if(am_in.{is_line} = 1, {}, {})))",
+            fixed::fixed_div(&(4 * FRACUNIT).to_string(), &ask(ask::RANGE)),
+            fixed::fixed_div(&(10 * FRACUNIT).to_string(), &ask(ask::RANGE)),
+            frac = intercept::FRAC,
+            is_line = intercept::IS_LINE,
+        ),
+    );
+    let along = |start: &str, end: &str| {
+        format!(
+            "toInt32(toInt64({start}) + toInt64({}))",
+            fixed::fixed_mul(
+                &format!("toInt32(toInt64({end}) - toInt64({start}))"),
+                "sh_frac"
+            )
+        )
+    };
+    value("sh_x", along("sh_tx", "sh_x2"));
+    value("sh_y", along("sh_ty", "sh_y2"));
+    value(
+        "sh_z",
+        format!(
+            "toInt32(toInt64(sh_shootz) + toInt64({}))",
+            fixed::fixed_mul(&slope, &fixed::fixed_mul("sh_frac", &ask(ask::RANGE)))
+        ),
+    );
+    // The sky is not shot at. A line whose front ceiling shows it stops the
+    // shot and spawns nothing, either because the point is above that
+    // ceiling or because the sector behind shows the sky too.
+    value(
+        "sh_sky",
+        format!(
+            "toUInt8(sec_ceilingpic[1 + line_front[1 + sh_id]] = skyflatnum \
+             AND (sh_z > {ceiling}[1 + line_front[1 + sh_id]] \
+             OR (sh_backless = 0 \
+             AND sec_ceilingpic[1 + line_back[1 + sh_id]] = skyflatnum)))",
+            ceiling = world.ceilingheight,
+        ),
+    );
+    // `P_ShootSpecialLine` runs for every line the shot crosses, the one it
+    // ends on included.
+    value(
+        "sh_spechit",
+        format!(
+            "if(am_in.{is_line} = 1 AND {special}[1 + sh_id] != 0, \
+             arrayPushBack({held}, sh_id), {held})",
+            is_line = intercept::IS_LINE,
+            special = world.line_special,
+            held = at(hit::SPECHIT),
+        ),
+    );
+
+    let carrying = |kind: &str, id: &str, x: &str, y: &str, z: &str, stopped: u8| {
+        format!(
+            "(toUInt8({kind}), toInt32({id}), toInt32({x}), toInt32({y}), \
+             toInt32({z}), sh_spechit, toUInt8({stopped}))"
+        )
+    };
+    let carries_on = carrying(
+        &at(hit::KIND),
+        &at(hit::ID),
+        &at(hit::X),
+        &at(hit::Y),
+        &at(hit::Z),
+        0,
+    );
+    let stops_on_sky = carrying(
+        &at(hit::KIND),
+        &at(hit::ID),
+        &at(hit::X),
+        &at(hit::Y),
+        &at(hit::Z),
+        1,
+    );
+    let ends_on_line = carrying("1", "sh_id", "sh_x", "sh_y", "sh_z", 1);
+    let ends_on_thing = carrying("2", "sh_id", "sh_x", "sh_y", "sh_z", 1);
+    let body = format!(
+        "multiIf({stopped} = 1, am_at, \
+         am_in.{is_line} = 1, multiIf(sh_line_stops = 0, {carries_on}, \
+         sh_sky = 1, {stops_on_sky}, {ends_on_line}), \
+         sh_thing_stops = 1, {ends_on_thing}, {carries_on})",
+        stopped = at(reached::STOPPED),
+        is_line = intercept::IS_LINE,
+    );
+    let ran = format!(
+        "arrayFold((am_at, am_in) -> {}, am_hits, \
+         (toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+         CAST([], 'Array(Int32)'), toUInt8(0)))",
+        bind::chain_in("sha", &values, &body),
+    );
+    let answer = bind::chain_in(
+        "shv",
+        &[("sh_ran".to_owned(), ran)],
+        &format!(
+            "(sh_ran.{}, sh_ran.{}, sh_ran.{}, sh_ran.{}, sh_ran.{}, sh_ran.{})",
+            hit::KIND,
+            hit::ID,
+            hit::X,
+            hit::Y,
+            hit::Z,
+            hit::SPECHIT,
+        ),
+    );
+    // The trace's own start and end and the height the shot leaves from
+    // belong to the ask rather than to the intercept, so they sit outside
+    // the fold.
+    let mut trace = ends(ask);
+    trace.push((
+        "sh_tx".to_owned(),
+        maputl::nudged(&ask(ask::X), "bmap_orgx"),
+    ));
+    trace.push((
+        "sh_ty".to_owned(),
+        maputl::nudged(&ask(ask::Y), "bmap_orgy"),
+    ));
+    trace.push(("sh_shootz".to_owned(), shoot_z(ask)));
+    bind::chain_in("sho", &trace, &answer)
 }
 
 /// `PTR_AimTraverse` over `am_hits`, the intercepts of one trace.
@@ -418,26 +688,43 @@ mod tests {
             alive: "alive",
             floorheight: "floorheight",
             ceilingheight: "ceilingheight",
+            line_special: "line_special",
         }
     }
 
-    /// The traverser walks what one trace crossed, so a trace that crossed
+    /// A traverser walks what one trace crossed, so a trace that crossed
     /// nothing runs no step and a tic that asks for no trace runs no fold.
     #[test]
-    fn the_traverser_is_one_fold_over_the_intercepts() {
-        let sql = aim_line_attack("asks", &world());
-        assert_eq!(sql.matches("arrayFold((am_at, am_in)").count(), 1);
-        assert_eq!(sql.matches("arrayMap((am_ask, am_hits)").count(), 1);
+    fn each_traverser_is_one_fold_over_the_intercepts() {
+        for sql in [
+            aim_line_attack("asks", &world()),
+            line_attack("asks", &world()),
+        ] {
+            assert_eq!(sql.matches("arrayFold((am_at, am_in)").count(), 1);
+            assert_eq!(sql.matches("arrayMap((am_ask, am_hits)").count(), 1);
+        }
     }
 
     /// A fold body that reads neither of its parameters is evaluated
     /// outside the fold whatever the fold does.
     #[test]
-    fn the_fold_body_reads_the_intercept_it_is_given() {
-        let sql = aim_line_attack("asks", &world());
-        let (_, body) = sql.split_once("arrayFold((am_at, am_in) -> ").unwrap();
-        let (body, _) = body.split_once(", am_hits,").unwrap();
-        assert!(body.contains("am_in."), "{body}");
+    fn each_fold_body_reads_the_intercept_it_is_given() {
+        for sql in [
+            aim_line_attack("asks", &world()),
+            line_attack("asks", &world()),
+        ] {
+            let (_, body) = sql.split_once("arrayFold((am_at, am_in) -> ").unwrap();
+            let (body, _) = body.split_once(", am_hits,").unwrap();
+            assert!(body.contains("am_in."), "{body}");
+        }
+    }
+
+    /// The shot reads the slope it was given rather than working one out.
+    #[test]
+    fn the_shot_reads_the_slope_it_was_asked_with() {
+        let sql = line_attack("asks", &world());
+        assert!(sql.contains(&format!("am_ask.{}", ask::SLOPE)), "{sql}");
+        assert!(!aim_line_attack("asks", &world()).contains(&format!("am_ask.{}", ask::SLOPE)));
     }
 
     /// `P_BulletSlope` asks three angles and one aim.
@@ -458,8 +745,10 @@ mod tests {
     fn every_expression_balances_its_parentheses() {
         for sql in [
             aim_line_attack("asks", &world()),
+            line_attack("asks", &world()),
             bullet_slope("shooters", &world()),
             asking("s", "x", "y", "z", "h", "a", "r"),
+            shooting("s", "x", "y", "z", "h", "a", "r", "sl"),
         ] {
             let depth = sql.chars().fold(0i32, |d, c| match c {
                 '(' => d + 1,

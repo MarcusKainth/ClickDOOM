@@ -6,7 +6,7 @@
 
 #[cfg(feature = "clickhouse-tests")]
 use super::db::Fixture;
-use super::traverse::{Map, Thing, fixed_div, fixed_mul};
+use super::traverse::{Map, Thing, fixed_div, fixed_mul, nudge};
 #[cfg(feature = "clickhouse-tests")]
 use clickhouse::Row;
 #[cfg(feature = "clickhouse-tests")]
@@ -38,6 +38,9 @@ pub struct Level {
     pub line_front: Vec<i64>,
     pub line_back: Vec<i64>,
     pub line_side1: Vec<i64>,
+    pub line_special: Vec<i64>,
+    pub ceilingpic: Vec<i64>,
+    pub skyflatnum: i64,
     pub floorheight: Vec<i64>,
     pub ceilingheight: Vec<i64>,
     /// One per mobj slot, in the same order as `map.things`.
@@ -57,6 +60,21 @@ pub struct Ask {
     pub height: i64,
     pub angle: u32,
     pub range: i64,
+    /// The slope a shot leaves at. An aim works its own out and ignores
+    /// this.
+    pub slope: i64,
+}
+
+/// What a shot reached, as `PTR_ShootTraverse` left it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Shot {
+    /// 0 nothing to spawn on, 1 a line, 2 a thing.
+    pub kind: u8,
+    pub id: i64,
+    pub x: i64,
+    pub y: i64,
+    pub z: i64,
+    pub spechit: Vec<i64>,
 }
 
 fn wrap32(v: i64) -> i64 {
@@ -153,6 +171,107 @@ impl Level {
         (0, 0)
     }
 
+    /// `P_LineAttack`: what the shot ends on, and where the puff or the
+    /// blood goes.
+    pub fn shoot(&self, ask: &Ask) -> Shot {
+        let fine = i64::from(ask.angle >> ANGLETOFINESHIFT);
+        let reach = ask.range >> FRACBITS;
+        let x2 = wrap32(ask.x + wrap32(reach * self.finecosine(fine)));
+        let y2 = wrap32(ask.y + wrap32(reach * self.finesine(fine)));
+        let shootz = wrap32(ask.z + (ask.height >> 1) + 8 * FRACUNIT);
+        let (tx, ty) = (nudge(ask.x, self.map.orgx), nudge(ask.y, self.map.orgy));
+        let (tdx, tdy) = (wrap32(x2 - tx), wrap32(y2 - ty));
+        let spot = |frac: i64| {
+            (
+                wrap32(tx + fixed_mul(tdx, frac)),
+                wrap32(ty + fixed_mul(tdy, frac)),
+                wrap32(shootz + fixed_mul(ask.slope, fixed_mul(frac, ask.range))),
+            )
+        };
+        let mut spechit = Vec::new();
+        for (id, frac, is_line) in self.map.traverse(ask.x, ask.y, x2, y2) {
+            let dist = fixed_mul(ask.range, frac);
+            if is_line == 1 {
+                let line = id as usize;
+                if self.line_special[line] != 0 {
+                    spechit.push(i64::from(id));
+                }
+                if !self.line_stops(line, shootz, dist, ask.slope) {
+                    continue;
+                }
+                let (x, y, z) = spot(wrap32(frac - fixed_div(4 * FRACUNIT, ask.range)));
+                let front = self.line_front[line] as usize;
+                let back = self.line_back[line];
+                if self.ceilingpic[front] == self.skyflatnum
+                    && (z > self.ceilingheight[front]
+                        || (back != -1 && self.ceilingpic[back as usize] == self.skyflatnum))
+                {
+                    return Shot {
+                        kind: 0,
+                        id: 0,
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                        spechit,
+                    };
+                }
+                return Shot {
+                    kind: 1,
+                    id: i64::from(id),
+                    x,
+                    y,
+                    z,
+                    spechit,
+                };
+            }
+            let slot = id as usize - 1;
+            if i64::from(id) == ask.shooter || self.m_flags[slot] & MF_SHOOTABLE == 0 {
+                continue;
+            }
+            let top = fixed_div(wrap32(self.m_z[slot] + self.m_height[slot] - shootz), dist);
+            if top < ask.slope {
+                continue;
+            }
+            let bottom = fixed_div(wrap32(self.m_z[slot] - shootz), dist);
+            if bottom > ask.slope {
+                continue;
+            }
+            let (x, y, z) = spot(wrap32(frac - fixed_div(10 * FRACUNIT, ask.range)));
+            return Shot {
+                kind: 2,
+                id: i64::from(id),
+                x,
+                y,
+                z,
+                spechit,
+            };
+        }
+        Shot {
+            kind: 0,
+            id: 0,
+            x: 0,
+            y: 0,
+            z: 0,
+            spechit,
+        }
+    }
+
+    /// Whether a line the shot crosses stops it.
+    fn line_stops(&self, line: usize, shootz: i64, dist: i64, slope: i64) -> bool {
+        if self.line_flags[line] & ML_TWOSIDED == 0 {
+            return true;
+        }
+        let (opentop, openbottom) = self.opening(line);
+        let backless = self.line_back[line] == -1;
+        let (front, back) = (self.line_front[line], self.line_back[line]);
+        let steps =
+            |of: &[i64]| backless || self.side_height(of, front) != self.side_height(of, back);
+        if steps(&self.floorheight) && fixed_div(openbottom - shootz, dist) > slope {
+            return true;
+        }
+        steps(&self.ceilingheight) && fixed_div(opentop - shootz, dist) < slope
+    }
+
     /// `P_BulletSlope`: straight ahead, then a swing each way.
     pub fn bullet_slope(&self, ask: &Ask) -> (i64, i64) {
         let turned = |by: u32| Ask {
@@ -206,6 +325,7 @@ struct Line {
 struct Sector {
     floorheight: i32,
     ceilingheight: i32,
+    ceilingpic: i16,
 }
 
 #[cfg(feature = "clickhouse-tests")]
@@ -218,12 +338,19 @@ struct Mobjs {
     m_height: Vec<i32>,
     m_flags: Vec<i32>,
     m_linkseq: Vec<u32>,
+    line_special: Vec<i16>,
 }
 
 #[cfg(feature = "clickhouse-tests")]
 #[derive(Row, Deserialize)]
 struct Wave {
     value: i32,
+}
+
+#[cfg(feature = "clickhouse-tests")]
+#[derive(Row, Deserialize)]
+struct Sky {
+    flatnum: i32,
 }
 
 /// The level and the mobjs the first state row leaves on it.
@@ -250,13 +377,19 @@ pub async fn read_level(fixture: &Fixture) -> Level {
         .await;
     let sectors: Vec<Sector> = fixture
         .rows(&format!(
-            "SELECT floorheight, ceilingheight FROM {db}.lv_sectors_static ORDER BY id"
+            "SELECT floorheight, ceilingheight, ceilingpic \
+             FROM {db}.lv_sectors_static ORDER BY id"
         ))
         .await;
     let mobjs: Mobjs = fixture
         .scalar(&format!(
-            "SELECT m_x, m_y, m_z, m_radius, m_height, m_flags, m_linkseq \
+            "SELECT m_x, m_y, m_z, m_radius, m_height, m_flags, m_linkseq, line_special \
              FROM {db}.native_state WHERE tic = 0"
+        ))
+        .await;
+    let sky: Sky = fixture
+        .scalar(&format!(
+            "SELECT toInt32(id) AS flatnum FROM {db}.flats WHERE upper(name) = 'F_SKY1'"
         ))
         .await;
     let waves: Vec<Wave> = fixture
@@ -297,6 +430,9 @@ pub async fn read_level(fixture: &Fixture) -> Level {
         line_front: lines.iter().map(|l| i64::from(l.sector0)).collect(),
         line_back: lines.iter().map(|l| i64::from(l.sector1)).collect(),
         line_side1: lines.iter().map(|l| i64::from(l.side1)).collect(),
+        line_special: mobjs.line_special.iter().map(|v| i64::from(*v)).collect(),
+        ceilingpic: sectors.iter().map(|s| i64::from(s.ceilingpic)).collect(),
+        skyflatnum: i64::from(sky.flatnum),
         floorheight: sectors.iter().map(|s| i64::from(s.floorheight)).collect(),
         ceilingheight: sectors.iter().map(|s| i64::from(s.ceilingheight)).collect(),
         m_z: mobjs.m_z.iter().map(|v| i64::from(*v)).collect(),
@@ -319,6 +455,8 @@ pub struct Arrays {
     pub floorheight: String,
     pub ceilingheight: String,
     pub line_flags: String,
+    pub line_special: String,
+    pub ceilingpic: String,
 }
 
 fn literal(of: &[i64]) -> String {
@@ -345,6 +483,8 @@ impl Level {
             floorheight: literal(&self.floorheight),
             ceilingheight: literal(&self.ceilingheight),
             line_flags: literal(&self.line_flags),
+            line_special: literal(&self.line_special),
+            ceilingpic: literal(&self.ceilingpic),
         }
     }
 }

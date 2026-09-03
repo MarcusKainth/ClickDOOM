@@ -66,6 +66,12 @@ fn intercept(
     fixed_div(num, den)
 }
 
+/// Where a trace really starts: `P_PathTraverse` moves a start that sits
+/// exactly on a block edge one unit off it.
+pub fn nudge(coord: i64, origin: i64) -> i64 {
+    coord + i64::from((coord - origin) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT
+}
+
 /// The level a trace walks over.
 pub struct Map {
     pub orgx: i64,
@@ -100,8 +106,8 @@ impl Map {
     /// What the trace crosses, nearest first: the id, the fraction, and 1
     /// for a line and 0 for a mobj slot.
     pub fn traverse(&self, x1: i64, y1: i64, x2: i64, y2: i64) -> Vec<(i32, i64, u8)> {
-        let x1 = x1 + i64::from((x1 - self.orgx) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
-        let y1 = y1 + i64::from((y1 - self.orgy) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
+        let x1 = nudge(x1, self.orgx);
+        let y1 = nudge(y1, self.orgy);
         let (tdx, tdy) = (x2 - x1, y2 - y1);
         let (rx1, ry1) = (x1 - self.orgx, y1 - self.orgy);
         let (rx2, ry2) = (x2 - self.orgx, y2 - self.orgy);
@@ -226,8 +232,8 @@ impl Map {
     /// the walk gives the thing the fraction it gave the line and the two
     /// tie.
     pub fn crossings(&self, x1: i64, y1: i64, x2: i64, y2: i64) -> Vec<(i64, i64)> {
-        let nx = x1 + i64::from((x1 - self.orgx) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
-        let ny = y1 + i64::from((y1 - self.orgy) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
+        let nx = nudge(x1, self.orgx);
+        let ny = nudge(y1, self.orgy);
         self.traverse(x1, y1, x2, y2)
             .into_iter()
             .filter(|hit| hit.2 == 1)

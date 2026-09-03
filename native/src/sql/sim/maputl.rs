@@ -274,6 +274,18 @@ pub fn tracing(x1: &str, y1: &str, x2: &str, y2: &str) -> String {
     format!("(toInt64({x1}), toInt64({y1}), toInt64({x2}), toInt64({y2}))")
 }
 
+/// Where a trace really starts.
+///
+/// `P_PathTraverse` moves a start that sits exactly on a block edge one
+/// unit off it, so the walk does not have to decide which side it is on,
+/// and the divline it hands a traverser starts there.
+pub fn nudged(coord: &str, origin: &str) -> String {
+    format!(
+        "toInt64({coord} + if(bitAnd({coord} - {origin}, {}) = 0, {FRACUNIT}, 0))",
+        MAPBLOCKSIZE - 1
+    )
+}
+
 /// `P_PathTraverse` over an array of traces, with `PT_ADDLINES` always and
 /// `PT_ADDTHINGS` when `things` is given.
 ///
@@ -294,26 +306,8 @@ pub fn path_traverse(traces: &str, things: Option<&Things<'_>>) -> String {
     let mut values: Vec<(String, String)> = Vec::new();
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
-    // A trace that starts exactly on a block edge is nudged off it, so
-    // the walk does not have to decide which side it is on.
-    value(
-        "pt_x1",
-        format!(
-            "toInt64({} + if(bitAnd({} - bmap_orgx, {}) = 0, {FRACUNIT}, 0))",
-            t(trace::X1),
-            t(trace::X1),
-            MAPBLOCKSIZE - 1
-        ),
-    );
-    value(
-        "pt_y1",
-        format!(
-            "toInt64({} + if(bitAnd({} - bmap_orgy, {}) = 0, {FRACUNIT}, 0))",
-            t(trace::Y1),
-            t(trace::Y1),
-            MAPBLOCKSIZE - 1
-        ),
-    );
+    value("pt_x1", nudged(&t(trace::X1), "bmap_orgx"));
+    value("pt_y1", nudged(&t(trace::Y1), "bmap_orgy"));
     value("pt_dx", format!("toInt64({} - pt_x1)", t(trace::X2)));
     value("pt_dy", format!("toInt64({} - pt_y1)", t(trace::Y2)));
     // The walk is in block coordinates from the blockmap's own origin.

@@ -53,8 +53,10 @@ const THINKER_COLUMNS: [&str; 23] = [
 /// appends.
 ///
 /// Only the doors are here. A press that reaches any other special leaves
-/// the tic unresolved, which is what `mv_useline` already does.
-pub fn use_special_line(state: &State) -> Vec<(String, String)> {
+/// the tic unresolved, which is what `mv_useline` already does. `also` is
+/// the caller's own answer to whether the tic finished, which this is the
+/// last stage of `P_PlayerThink` to be able to name.
+pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let line = "mv_useline";
     let opening = Opening {
@@ -167,7 +169,7 @@ pub fn use_special_line(state: &State) -> Vec<(String, String)> {
         (
             "now_unresolved".to_owned(),
             format!(
-                "toUInt8(mv_unfinished = 1 OR pl_action_needed = 1 \
+                "toUInt8({also} = 1 OR mv_unfinished = 1 OR pl_action_needed = 1 \
                  OR ({line} >= 0 AND use_handles = 0) OR use_opened.{} = 1)",
                 doors::opened::UNRESOLVED
             ),

@@ -57,7 +57,7 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
         .rows(&format!(
             "SELECT tic, leveltime, rndindex, st_clock, st_randomnumber, st_faceindex, \
              st_facecount, st_priority, st_lastattackdown, st_oldhealth, st_lastcalc, \
-             st_calc_oldhealth, menu_skullanim, menu_whichskull, p_cmd_forwardmove, \
+             st_calc_oldhealth, p_attackdown, menu_skullanim, menu_whichskull, p_cmd_forwardmove, \
              p_cmd_sidemove, p_cmd_angleturn, p_cmd_buttons, demo_end, \
              texturetranslation, flattranslation, side_textureoffset \
              FROM {db}.native_state ORDER BY tic"
@@ -151,6 +151,7 @@ struct Tic {
     st_oldhealth: i32,
     st_lastcalc: i32,
     st_calc_oldhealth: i32,
+    p_attackdown: u8,
     menu_skullanim: i32,
     menu_whichskull: i32,
     p_cmd_forwardmove: i8,
@@ -232,11 +233,12 @@ fn the_commands_are_the_demo_lump(rows: &[Tic], wad: &Wad<'_>) {
 ///
 /// Nothing in this run hurts the player or gives them a weapon, so the
 /// ladder settles on the rapid-fire rung and the straight face, which are
-/// the two the run exercises.
+/// the two the run exercises. `A_WeaponReady` clears the player's
+/// `attackdown` once the weapon is up, and the rung follows it.
 fn the_face_follows_the_status_bar_s_ladder(rows: &[Tic]) {
     let mut face = ticker::Face::default();
     for row in rows.iter().skip(1) {
-        face.update(row.st_randomnumber);
+        face.update(row.st_randomnumber, row.p_attackdown != 0);
         assert_eq!(
             row.st_faceindex, face.faceindex,
             "faceindex at tic {}",

@@ -1,10 +1,12 @@
 //! The tic transform against the reference emulator, on a real server.
 //!
-//! Two things are checked. Every field the committed probe fixture covers
-//! has to agree with the engine, apart from a named set the simulation
-//! does not compute. Then the player walks into the wall demo3 puts
-//! in front of it, and the position and momentum `P_SlideMove` leaves are
-//! checked against the engine's own.
+//! Three things are checked. Every field the committed probe fixture
+//! covers has to agree with the engine, apart from a named set the
+//! simulation does not compute. Then the player walks into the wall demo3
+//! puts in front of it, and the position and momentum `P_SlideMove` leaves
+//! are checked against the engine's own. Then the weapon sprite walks up
+//! the screen, bobs, and is swapped for the shotgun the player picks up,
+//! against the engine's own positions.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -33,12 +35,11 @@ fn fixture_tsv() -> String {
 
 /// Fields the simulation does not compute, with the group they sit in.
 ///
-/// Each one waits on a thinker: the mobj state cycle behind `m_state`,
-/// `A_Look` behind `m_lastlook`, and `P_MovePsprites` behind `psp_sy`.
-/// A field that starts differing and is not named here fails the test, and
-/// so does one named here that agrees, so the list cannot outlive what it
-/// excuses.
-const OPEN: [&str; 5] = ["m_frame", "m_tics", "m_state", "m_lastlook", "psp_sy"];
+/// Each one waits on a thinker: the mobj state cycle behind `m_state` and
+/// `A_Look` behind `m_lastlook`. A field that starts differing and is not
+/// named here fails the test, and so does one named here that agrees, so
+/// the list cannot outlive what it excuses.
+const OPEN: [&str; 4] = ["m_frame", "m_tics", "m_state", "m_lastlook"];
 
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
 /// the way, the tics after it are the slide along that wall, the door the
@@ -67,6 +68,28 @@ const DOOR: [(u32, usize, i32, u32, i16); 6] = [
 /// A tic the use key goes down on and the press reaches nothing special.
 /// The engine plays a sound and moves on, and so does the simulation.
 const USE_INTO_NOTHING: u32 = 42;
+
+/// The tic demo3 first presses the attack button on. `A_WeaponReady`
+/// reaches `P_FireWeapon` there, which is not written, so the tic and
+/// every one after it says it could not be produced.
+const FIRST_SHOT: u32 = 140;
+
+/// `gametic, psp_state, psp_sx, psp_sy, p_readyweapon, p_pendingweapon,
+/// p_attackdown` for the weapon sprite, read out of the reference
+/// emulator's demo3 trace. Gametic 2 and 14 are `A_Raise` walking the
+/// pistol up the screen, 15 the first tic `A_WeaponReady` bobs it, 47 the
+/// shotgun pickup asking for a weapon, 48 `A_Lower` starting to put the
+/// pistol away, 63 `P_BringUpWeapon` bringing the shotgun up, and 139 the
+/// last tic before the first shot.
+const WEAPON: [(u32, i32, i32, i32, i32, i32, u8); 7] = [
+    (2, 12, 0, 7208960, 1, 10, 1),
+    (14, 12, 0, 2490368, 1, 10, 1),
+    (15, 10, 98903, 2265249, 1, 10, 0),
+    (47, 10, 23335, 2309743, 1, 2, 0),
+    (48, 11, 23335, 2702959, 1, 2, 0),
+    (63, 20, 23335, 7995392, 2, 10, 0),
+    (139, 18, 602121, 2900895, 2, 10, 0),
+];
 
 /// `gametic, m_x, m_y, m_momx, m_momy` for the player, read out of the
 /// reference emulator's demo3 trace. Gametic 31 is the last free move, 32
@@ -107,6 +130,12 @@ struct Walked {
     ceiling: i32,
     specialdata: u32,
     special: i16,
+    psp_state: Vec<i32>,
+    psp_sx: Vec<i32>,
+    psp_sy: Vec<i32>,
+    readyweapon: i32,
+    pendingweapon: i32,
+    attackdown: u8,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -116,7 +145,10 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              m_momx[p_mo] AS momx, m_momy[p_mo] AS momy, \
              unresolved, toUInt8(p_cmd_buttons) AS buttons, \
              toUInt64(length(s_kind)) AS thinkers, sec_ceilingheight[63] AS ceiling, \
-             sec_specialdata[63] AS specialdata, line_special[951] AS special \
+             sec_specialdata[63] AS specialdata, line_special[951] AS special, \
+             psp_state, psp_sx, psp_sy, \
+             p_readyweapon AS readyweapon, p_pendingweapon AS pendingweapon, \
+             p_attackdown AS attackdown \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -179,16 +211,20 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
-    // The run reaches past the door and every tic of it completes. The
-    // first the simulation cannot finish is gametic 380, a use press that
-    // reaches a switch, which is past the end of this run.
-    for row in &walk {
+    // The run reaches past the door, and every tic up to the first shot
+    // completes.
+    for row in walk.iter().filter(|row| row.tic < FIRST_SHOT) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
             row.tic
         );
     }
+    assert_eq!(
+        at(FIRST_SHOT).unresolved,
+        1,
+        "the tic the weapon fires on says it could not be produced"
+    );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");
     assert_eq!(
@@ -210,6 +246,33 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             (at.x, at.y, at.momx, at.momy),
             (x, y, momx, momy),
             "gametic {tic}"
+        );
+    }
+
+    for (tic, state, sx, sy, ready, pending, attackdown) in WEAPON {
+        let row = at(tic);
+        assert_eq!(
+            (
+                row.psp_state[0],
+                row.psp_sx[0],
+                row.psp_sy[0],
+                row.readyweapon,
+                row.pendingweapon,
+                row.attackdown
+            ),
+            (state, sx, sy, ready, pending, attackdown),
+            "the weapon sprite at gametic {tic}"
+        );
+    }
+    // `P_MovePsprites` ends by putting the flash sprite where the weapon
+    // sprite is, whatever state either is in. The level's own row is
+    // before the first `P_PlayerThink`, so it is not one of them.
+    for row in walk.iter().filter(|row| row.tic > 0) {
+        assert_eq!(
+            (row.psp_sx[0], row.psp_sy[0]),
+            (row.psp_sx[1], row.psp_sy[1]),
+            "the flash sprite follows the weapon at gametic {}",
+            row.tic
         );
     }
 }

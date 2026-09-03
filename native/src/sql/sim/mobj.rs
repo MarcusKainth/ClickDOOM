@@ -700,21 +700,24 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
     };
     value(
         "sl_hits",
-        maputl::path_traverse(&format!(
-            "multiIf({slide}, [{}, {}, {}], {use}, [{}], \
+        maputl::path_traverse(
+            &format!(
+                "multiIf({slide}, [{}, {}, {}], {use}, [{}], \
              CAST([], 'Array(Tuple(Int64, Int64, Int64, Int64))'))",
-            trace("sl_leadx", "sl_leady"),
-            trace("sl_trailx", "sl_leady"),
-            trace("sl_leadx", "sl_traily"),
-            maputl::tracing(
-                &held(moving::X),
-                &held(moving::Y),
-                &reach(maputl::finecosine("sl_fine"), moving::X),
-                &reach(maputl::finesine("sl_fine"), moving::Y),
+                trace("sl_leadx", "sl_leady"),
+                trace("sl_trailx", "sl_leady"),
+                trace("sl_leadx", "sl_traily"),
+                maputl::tracing(
+                    &held(moving::X),
+                    &held(moving::Y),
+                    &reach(maputl::finecosine("sl_fine"), moving::X),
+                    &reach(maputl::finesine("sl_fine"), moving::Y),
+                ),
+                slide = at(phase::SLIDE),
+                r#use = at(phase::USE),
             ),
-            slide = at(phase::SLIDE),
-            r#use = at(phase::USE),
-        )),
+            None,
+        ),
     );
     value(
         "sl_blocking",
@@ -727,7 +730,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         "sl_nearest",
         format!(
             "arrayFirst(h -> 1, arrayPushBack(arraySort(h -> h.2, sl_blocking), \
-             (toInt32(-1), toInt32({}))))",
+             (toInt32(-1), toInt32({}), toUInt8(1))))",
             FRACUNIT + 1
         ),
     );
@@ -1035,7 +1038,7 @@ fn blocking(
     held: &dyn Fn(usize) -> String,
     is_use: &str,
 ) -> String {
-    let line = format!("h.{}", maputl::intercept::LINE);
+    let line = format!("h.{}", maputl::intercept::ID);
     // The opening is read four times, so it is bound once inside the
     // lambda rather than written out at each of them.
     let stops = bind::chain(
@@ -1066,7 +1069,7 @@ fn blocking(
     format!(
         "arrayFilter(h -> h.2 <= {FRACUNIT}, arrayMap(hits -> \
          arrayFirst(h -> 1, arrayPushBack(arrayFilter(h -> {stops}, hits), \
-         (toInt32(-1), toInt32({})))), sl_hits))",
+         (toInt32(-1), toInt32({}), toUInt8(1)))), sl_hits))",
         FRACUNIT + 1
     )
 }

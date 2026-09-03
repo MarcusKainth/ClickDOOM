@@ -7,9 +7,8 @@
 use clickdoom_native::tables;
 
 /// What the player carries through a run that neither hurts them nor gives
-/// them anything: the face reads these and nothing moves them.
+/// them anything: the face reads it and nothing moves it.
 pub const PLAYER_HEALTH: i32 = 100;
-const PLAYER_ATTACKDOWN: bool = true;
 
 /// `st_stuff.c`
 const NUMPAINFACES: i32 = 5;
@@ -62,20 +61,27 @@ impl Face {
     }
 
     /// One tic of `ST_updateFaceWidget`, for a player nothing has hurt.
-    pub fn update(&mut self, randomnumber: i32) {
+    ///
+    /// `attackdown` is the player's own, which `A_WeaponReady` clears on
+    /// the first tic the weapon is up and the attack button is not down.
+    pub fn update(&mut self, randomnumber: i32, attackdown: bool) {
         // The dead, evil grin, attacked and hurt rungs need a health of
         // zero, a pickup or damage, and this run has none of them.
-        if self.priority < 6 && PLAYER_ATTACKDOWN {
-            if self.lastattackdown == -1 {
-                self.lastattackdown = RAMPAGEDELAY;
-            } else {
-                self.lastattackdown -= 1;
-                if self.lastattackdown == 0 {
-                    self.priority = 5;
-                    self.faceindex = self.pain_offset() + RAMPAGEOFFSET;
-                    self.facecount = 1;
-                    self.lastattackdown = 1;
+        if self.priority < 6 {
+            if attackdown {
+                if self.lastattackdown == -1 {
+                    self.lastattackdown = RAMPAGEDELAY;
+                } else {
+                    self.lastattackdown -= 1;
+                    if self.lastattackdown == 0 {
+                        self.priority = 5;
+                        self.faceindex = self.pain_offset() + RAMPAGEOFFSET;
+                        self.facecount = 1;
+                        self.lastattackdown = 1;
+                    }
                 }
+            } else {
+                self.lastattackdown = -1;
             }
         }
         if self.facecount == 0 {

@@ -9,7 +9,7 @@ use crate::sql::fixed;
 
 use super::map::World;
 use super::mobj::{self, Mover, Pickups};
-use super::{State, inter, maputl};
+use super::{State, inter, maputl, pspr};
 
 /// `p_local.h`
 const VIEWHEIGHT: i64 = 41 << 16;
@@ -53,6 +53,10 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             format!("assumeNotNull((SELECT seestate FROM {db}.mobjinfo WHERE id = 0))"),
         ),
         (
+            "s_play_atk1".to_owned(),
+            format!("assumeNotNull((SELECT missilestate FROM {db}.mobjinfo WHERE id = 0))"),
+        ),
+        (
             "skill".to_owned(),
             format!("toInt32(assumeNotNull((SELECT skill FROM {db}.demo_header)))"),
         ),
@@ -66,6 +70,13 @@ pub fn think(state: &State) -> Vec<(String, String)> {
     bindings.extend(calc_height(state));
     bindings.extend(special_sector(state));
     bindings.extend(weapon_and_use(state));
+    bindings.extend(pspr::move_psprites(
+        state,
+        "now_p_bob",
+        "pl_buttons",
+        "pl_pendingweapon",
+        "pl_state_moved",
+    ));
     bindings.extend(powers(state));
     bindings.extend(mobj_thinker(state));
     bindings.extend(writeback(state));
@@ -411,7 +422,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         cards: &state.get("p_cards"),
         powers: "pl_powers",
         weaponowned: &state.get("p_weaponowned"),
-        pendingweapon: "pl_pendingweapon",
+        pendingweapon: "psp_pendingweapon",
         message: &state.get("p_message"),
         itemcount: &state.get("p_itemcount"),
         bonuscount: "pl_bonuscount_down",
@@ -457,7 +468,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
     let mut bindings = vec![
         (
             "pk_readyweapon".to_owned(),
-            format!("toInt64({})", state.get("p_readyweapon")),
+            "toInt64(now_p_readyweapon)".to_owned(),
         ),
         ("pk0".to_owned(), inter::start(&player)),
         (
@@ -540,7 +551,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
                 .to_owned(),
         ),
     ]);
-    bindings.extend(super::specials::use_special_line(state));
+    bindings.extend(super::specials::use_special_line(state, "psp_unresolved"));
     bindings
 }
 

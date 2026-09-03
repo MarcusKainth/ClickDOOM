@@ -15,6 +15,7 @@ pub mod mobj;
 pub mod plane;
 pub mod plats;
 pub mod player;
+pub mod pspr;
 pub mod setup;
 pub mod spec;
 pub mod specials;
@@ -189,6 +190,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(plane::constants(db));
     constants.extend(inter::constants(db));
     constants.extend(player::constants(db));
+    constants.extend(pspr::constants(db));
     constants
 }
 

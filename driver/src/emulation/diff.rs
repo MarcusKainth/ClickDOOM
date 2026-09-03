@@ -29,6 +29,7 @@ use std::process::Command;
 use clickdoom_executor::commit;
 use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
 use clickdoom_executor::fold::{self, BatchArgs};
+use clickdoom_executor::word::WordAddr;
 use clickdoom_spec::{CHECKPOINT_INTERVAL, Manifest, RAM_BASE, RAM_HASH_INTERVAL, sha256_hex};
 use refemu::cli::report::RunReport;
 
@@ -57,6 +58,8 @@ pub enum DiffError {
     },
     #[error(transparent)]
     Manifest(#[from] clickdoom_spec::manifest::ManifestError),
+    #[error(transparent)]
+    Rebase(#[from] clickdoom_executor::word::BelowBase),
     #[error("running {0}: {1}")]
     Spawn(String, std::io::Error),
     #[error("{0} exited with {1}, refemu's own image or file arguments are likely wrong")]
@@ -309,12 +312,12 @@ async fn run_inner(
     let text_start = manifest.text_start.unwrap_or(RAM_BASE);
     let text_end = manifest.text_end.unwrap_or(RAM_BASE);
     let load_addr = manifest.load_addr.unwrap_or(RAM_BASE);
-    let text_start_word = text_start / 4;
-    let text_end_word = text_end / 4;
-    let ram_base_word = load_addr / 4;
-    let text_start_widx = text_start_word - ram_base_word;
-    let text_end_widx = text_end_word - ram_base_word;
-    let decn = text_end_word - text_start_word;
+    let text_start_word = WordAddr::of_byte(text_start);
+    let text_end_word = WordAddr::of_byte(text_end);
+    let ram_base_word = WordAddr::of_byte(load_addr);
+    let text_start_widx = text_start_word.widx_from(ram_base_word)?;
+    let text_end_widx = text_end_word.widx_from(ram_base_word)?;
+    let decn = text_end_word.get() - text_start_word.get();
     let ram_words = RAM_WORDS_DEFAULT;
 
     eprintln!(
@@ -327,8 +330,8 @@ async fn run_inner(
         &args.database,
         args.bin,
         args.manifest_path,
-        text_start_word,
-        text_end_word,
+        text_start_word.get(),
+        text_end_word.get(),
     )
     .await?;
     let db = db_at(conn, &args.database);

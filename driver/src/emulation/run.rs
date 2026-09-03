@@ -34,6 +34,7 @@ use std::time::Duration; // purity-ok: the progress line's reporting interval, o
 use clickdoom_executor::commit;
 use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
 use clickdoom_executor::fold::{self, BatchArgs};
+use clickdoom_executor::word::WordAddr;
 use clickdoom_spec::{CHECKPOINT_INTERVAL, Manifest, RAM_BASE, RAM_HASH_INTERVAL};
 
 use crate::checkpoint::{batch_checkpoints_sql, checkpoint_sql, reg_checkpoint_sql};
@@ -56,6 +57,8 @@ pub enum RunError {
     Bootstrap(#[from] crate::emulation::bootstrap::SeedError),
     #[error(transparent)]
     Manifest(#[from] clickdoom_spec::manifest::ManifestError),
+    #[error(transparent)]
+    Rebase(#[from] clickdoom_executor::word::BelowBase),
     #[error(transparent)]
     Db(#[from] Error),
     #[error("reading {path}: {source}")]
@@ -252,12 +255,12 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     let text_start = manifest.text_start.unwrap_or(RAM_BASE);
     let text_end = manifest.text_end.unwrap_or(RAM_BASE);
     let load_addr = manifest.load_addr.unwrap_or(RAM_BASE);
-    let text_start_word = text_start / 4;
-    let text_end_word = text_end / 4;
-    let ram_base_word = load_addr / 4;
-    let text_start_widx = text_start_word - ram_base_word;
-    let text_end_widx = text_end_word - ram_base_word;
-    let decn = text_end_word - text_start_word;
+    let text_start_word = WordAddr::of_byte(text_start);
+    let text_end_word = WordAddr::of_byte(text_end);
+    let ram_base_word = WordAddr::of_byte(load_addr);
+    let text_start_widx = text_start_word.widx_from(ram_base_word)?;
+    let text_end_widx = text_end_word.widx_from(ram_base_word)?;
+    let decn = text_end_word.get() - text_start_word.get();
     let ram_words = RAM_WORDS_DEFAULT;
 
     let interrupted = Arc::new(AtomicBool::new(false));

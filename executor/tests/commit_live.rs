@@ -48,6 +48,7 @@ mod live {
     };
     use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
     use clickdoom_executor::fold::{self, BatchArgs};
+    use clickdoom_executor::word::Widx;
     use clickdoom_spec::{FRAMEBUFFER_BASE, PALETTE_BASE};
     use clickhouse::Row;
     use serde::Deserialize;
@@ -73,8 +74,8 @@ mod live {
     async fn run_batch(fx: &Fixture, k: u32, decn: u32, ram_words: u32) {
         let sql = fold::batch(
             k,
-            0,
-            decn,
+            Widx::new(0),
+            Widx::new(decn),
             decn,
             ram_words,
             HWM,

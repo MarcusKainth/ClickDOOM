@@ -23,6 +23,7 @@ use clickdoom_driver::emulation::decode;
 use clickdoom_driver::emulation::fold_result::FoldResult;
 use clickdoom_executor::config::{HALT_ECALL, WRITE_LOG_HIGH_WATER_MARK_DEFAULT};
 use clickdoom_executor::fold::{SelectOnlyArgs, select_only};
+use clickdoom_executor::word::Widx;
 use clickdoom_spec::RAM_BASE;
 
 use super::harness::{self, CheckError, WordRow};
@@ -141,8 +142,8 @@ pub async fn check(db: &Db, database: &str) -> Result<String, CheckError> {
     // compiled-expression cache carry across fixtures.
     let fold = select_only(
         MAX_INSTRUCTIONS,
-        0,
-        0,
+        Widx::new(0),
+        Widx::new(0),
         RAM_WORDS,
         RAM_WORDS,
         WRITE_LOG_HIGH_WATER_MARK_DEFAULT,

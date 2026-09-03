@@ -519,6 +519,7 @@ async fn cmd_diff(cmd: &DiffCmd) -> Result<Exit, Failure> {
                 | DiffError::NoTraceLine(..)
                 | DiffError::Db(_)
                 | DiffError::Bootstrap(_)
+                | DiffError::Rebase(_)
                 | DiffError::Provision(_) => failed(err.to_string()),
             }
         })?;
@@ -552,6 +553,7 @@ async fn cmd_preflight(cmd: &PreflightCmd) -> Result<Exit, Failure> {
         .map_err(|err| match err {
             preflight::GateError::Db(_)
             | preflight::GateError::Read { .. }
+            | preflight::GateError::Rebase(_)
             | preflight::GateError::Manifest(_) => failed(err.to_string()),
             preflight::GateError::Decoded(_)
             | preflight::GateError::Ram(_)

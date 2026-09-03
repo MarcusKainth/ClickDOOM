@@ -9,3 +9,4 @@
 pub mod commit;
 pub mod config;
 pub mod fold;
+pub mod word;

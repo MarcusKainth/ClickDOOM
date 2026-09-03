@@ -8,6 +8,8 @@ use clickdoom_spec::{
     PALETTE_SIZE, RAM_BASE,
 };
 
+use crate::word::Widx;
+
 use crate::config::{
     HALT_BAD_ADDR, HALT_CSR, HALT_EBREAK, HALT_ECALL, HALT_EXIT, HALT_ILLEGAL_INSN,
     HALT_MISALIGNED, HALT_NONE, HALT_REASON_NAMES, HALT_SELF_MODIFY, OP_CSR, OP_EBREAK, OP_ECALL,
@@ -257,8 +259,8 @@ pub const CHECKPOINT_REGS: u32 = 31;
 /// compiled-expression cache key, so the lambda's text would differ every
 /// batch and the JIT would never compile.
 pub fn build_step(
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     ram_base: u32,
@@ -281,8 +283,8 @@ pub fn build_step(
 /// the same accumulator; [`Variant`] says what each one moves.
 #[allow(clippy::too_many_arguments)]
 pub fn build_step_variant(
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     ram_base: u32,
@@ -310,8 +312,8 @@ pub fn build_step_variant(
 /// form splits them over.
 #[allow(clippy::too_many_arguments)]
 pub fn build_step_flat(
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     ram_base: u32,
@@ -339,8 +341,8 @@ pub fn build_step_flat(
 /// the arm's binding count gives the step's whole per-scope cost.
 #[allow(clippy::too_many_arguments)]
 pub fn build_step_peeled(
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     ram_base: u32,
@@ -364,8 +366,8 @@ pub fn build_step_peeled(
 
 #[allow(clippy::too_many_arguments)]
 fn build_step_inner(
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     ram_base: u32,
@@ -374,9 +376,13 @@ fn build_step_inner(
     variant: Variant,
     emit: Emit,
 ) -> String {
+    let text_start_widx = text_start_widx.get();
+    let text_end_widx = text_end_widx.get();
     assert!(
         text_start_widx <= text_end_widx && text_end_widx <= ram_words,
-        "text_start_widx={text_start_widx}/text_end_widx={text_end_widx} must be RAM_BASE-relative word indices with text_start_widx <= text_end_widx <= ram_words={ram_words}"
+        "text_start_widx={text_start_widx}/text_end_widx={text_end_widx} are not inside a \
+         {ram_words}-word region. A bound larger than the region is an absolute word address \
+         that was never rebased against the image's own base word"
     );
     assert!(
         ipms != 0,
@@ -857,8 +863,8 @@ impl Default for BatchArgs<'_> {
 /// absence from `batch` is the guard.
 pub fn select_only(
     k: u32,
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     hwm: u32,
@@ -880,8 +886,8 @@ pub fn select_only(
 #[allow(clippy::too_many_arguments)]
 pub fn select_only_variant(
     k: u32,
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     hwm: u32,
@@ -962,8 +968,8 @@ pub fn halt_reason_transform(halt_code_expr: &str) -> String {
 /// happened more than once.
 pub fn batch(
     k: u32,
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     hwm: u32,
@@ -985,8 +991,8 @@ pub fn batch(
 #[allow(clippy::too_many_arguments)]
 pub fn batch_variant(
     k: u32,
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     hwm: u32,

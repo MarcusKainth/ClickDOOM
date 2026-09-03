@@ -1,6 +1,8 @@
 //! Byte-for-byte comparison of `commit`'s generated SQL text against a
 //! committed reference for the same inputs.
 
+use clickdoom_executor::word::WordAddr;
+
 use clickdoom_executor::commit::{
     console_out_flush_sql, cpu_state_flush_sql, fbpal_flush_sql, ram_flush_sql, retention_sql,
 };
@@ -110,4 +112,27 @@ fn every_statement_names_the_batch_it_was_given() {
             "{name} still derives a batch id of its own"
         );
     }
+}
+
+/// The write-log carries `wl_addr` relative to the image's base and `ram`
+/// is keyed absolutely, so the flush has to put the base back on. Without
+/// it every store lands about 536 million words below the image, where it
+/// sorts ahead of every real row instead of replacing one: no error, and a
+/// later load reads the value the ROM was built with.
+#[test]
+fn the_ram_flush_rebases_the_write_log_onto_rams_own_key() {
+    let base = WordAddr::ram_base().get();
+    let sql = ram_flush_sql("clickdoom", BATCH);
+    assert_eq!(base, 536_870_912);
+    assert!(
+        sql.contains(&format!("SELECT {base} + t.1,")),
+        "the flush writes a RAM_BASE-relative index into ram.word_addr:\n{sql}"
+    );
+    // The framebuffer and palette logs are already in their own regions'
+    // domains, so the same addition there would move every pixel.
+    let fbpal = fbpal_flush_sql("clickdoom", BATCH);
+    assert!(
+        !fbpal.contains(&base.to_string()),
+        "the fb/palette flush rebased an address that was already region-relative:\n{fbpal}"
+    );
 }

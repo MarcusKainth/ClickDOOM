@@ -19,6 +19,7 @@
 use std::path::Path;
 
 use clickdoom_executor::fold::{SelectOnlyArgs, select_only};
+use clickdoom_executor::word::{Widx, WordAddr};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
 
 use crate::client::{ConnArgs, Db, Error};
@@ -49,6 +50,8 @@ pub enum GateError {
     },
     #[error(transparent)]
     Manifest(#[from] clickdoom_spec::manifest::ManifestError),
+    #[error(transparent)]
+    Rebase(#[from] clickdoom_executor::word::BelowBase),
     #[error(transparent)]
     Db(#[from] Error),
 }
@@ -176,8 +179,8 @@ pub async fn check(
     }
     // RAM-relative, not absolute: build_step() compares text_start_widx/
     // text_end_widx directly against WA, which is always RAM_BASE-relative.
-    let text_start_widx = text_start_word - ram_base_word;
-    let text_end_widx = text_end_word - ram_base_word;
+    let text_start_widx = WordAddr::new(text_start_word).widx_from(WordAddr::new(ram_base_word))?;
+    let text_end_widx = WordAddr::new(text_end_word).widx_from(WordAddr::new(ram_base_word))?;
     let smoke_args = SelectOnlyArgs {
         pc0: Some(RAM_BASE),
         db: &smoke_db,
@@ -213,9 +216,10 @@ pub async fn check(
     // arm is wired correctly or silently dead. A synthetic self-modifying
     // store, seeded into its own tiny throwaway database, proves the
     // mechanism itself fires end to end.
-    if text_start_widx != 0 {
+    if text_start_widx != Widx::new(0) {
         return Err(GateError::Smoke(format!(
-            "text_start_widx={text_start_widx}, expected 0: the SELF_MODIFY synthetic check targets word 0 relative to RAM_BASE and needs text_start_widx=0 for that to land inside the text window."
+            "text_start_widx={}, expected 0: the SELF_MODIFY synthetic check targets word 0 relative to RAM_BASE and needs text_start_widx=0 for that to land inside the text window.",
+            text_start_widx.get()
         )));
     }
     let selfmod_db = format!("clickdoom_preflight_selfmod_{}", std::process::id());
@@ -260,7 +264,15 @@ pub async fn check(
         db: &selfmod_db,
         ..Default::default()
     };
-    let selfmod_sql = select_only(1, 0, sm_decn, sm_decn, sm_ram_words, hwm, &selfmod_args);
+    let selfmod_sql = select_only(
+        1,
+        Widx::new(0),
+        Widx::new(sm_decn),
+        sm_decn,
+        sm_ram_words,
+        hwm,
+        &selfmod_args,
+    );
     let selfmod: FoldResult = db.fetch_one(&selfmod_sql).await?;
     let selfmod_result = if selfmod.halted != 1
         || selfmod.halt_reason != clickdoom_executor::config::HALT_SELF_MODIFY

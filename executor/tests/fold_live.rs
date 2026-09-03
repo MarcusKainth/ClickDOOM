@@ -19,11 +19,19 @@
 mod support;
 
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
+use clickdoom_executor::word::Widx;
 use support::seed::{self, Shape};
 
 /// The production shape the `wl0` text assertions are taken against:
 /// K, text window, decode table size, RAM words, high-water mark.
-const PROD: (u32, u32, u32, u32, u32, u32) = (60_000, 0, 98_824, 98_824, 6_291_456, 20_000);
+const PROD: (u32, Widx, Widx, u32, u32, u32) = (
+    60_000,
+    Widx::new(0),
+    Widx::new(98_824),
+    98_824,
+    6_291_456,
+    20_000,
+);
 
 fn prod_select_only(wl0: &str) -> String {
     let (k, text_start, text_end, decn, ram_words, hwm) = PROD;

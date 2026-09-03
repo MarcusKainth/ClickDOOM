@@ -13,6 +13,7 @@
 //! runs.
 
 use clickdoom_executor::fold::{self, SelectOnlyArgs, Variant};
+use clickdoom_executor::word::Widx;
 use clickhouse::Row;
 use serde::Deserialize;
 
@@ -182,8 +183,8 @@ async fn execute(db: &Db, fx: &Fixture, case: &FoldCase<'_>, p: &Prepared) -> Fo
     fx.seed_input_queue(case.keyq_events).await;
     let sql = fold::select_only_variant(
         p.k,
-        0,
-        p.decn,
+        Widx::new(0),
+        Widx::new(p.decn),
         p.decn,
         p.ram_words,
         case.hwm,

@@ -90,12 +90,16 @@ async fn truncate_fixture_tables(db: &Db) {
     }
 }
 
+/// The batch [`insert_batch_commit_row`] writes, which every readout here
+/// then names.
+const BATCH_ID: u64 = 1;
+
 async fn insert_batch_commit_row(db: &Db, database: &str, icount: u64, frame_no: u32) {
     db.run(&format!(
         "INSERT INTO {database}.batch_commit \
          (batch_id, icount, pc, regs, halted, halt_reason, exit_code, keyq_pos, has_frame, frame_no, \
           wl_addr, wl_val, wl_icount, console_bytes) \
-         VALUES (1, {icount}, 0, [], 0, '', 0, 0, 1, {frame_no}, [], [], [], [])"
+         VALUES ({BATCH_ID}, {icount}, 0, [], 0, '', 0, 0, 1, {frame_no}, [], [], [], [])"
     ))
     .await
     .unwrap();
@@ -234,7 +238,9 @@ async fn run_sparse_case(conn: &ConnArgs, testdb: &str, which: &str, written: u3
     db.run(&format!("TRUNCATE TABLE {testdb}.frames_out"))
         .await
         .unwrap();
-    db.run(&render::frame_readout_sql(testdb)).await.unwrap();
+    db.run(&render::frame_readout_sql(testdb, BATCH_ID))
+        .await
+        .unwrap();
     let new_fbhash = read_fbhash(&db, testdb).await;
     assert_eq!(
         new_fbhash, expected_fbhash,
@@ -334,7 +340,9 @@ async fn render_sql_matches_the_bytes_it_claims_to_produce() {
         .unwrap();
     insert_batch_commit_row(&db, &testdb, frame.retired_icount, frame.frame_no).await;
 
-    db.run(&render::frame_readout_sql(&testdb)).await.unwrap();
+    db.run(&render::frame_readout_sql(&testdb, BATCH_ID))
+        .await
+        .unwrap();
     let rows: u64 = db
         .fetch_one(&format!("SELECT count() FROM {testdb}.frames_out"))
         .await

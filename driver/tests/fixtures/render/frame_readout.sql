@@ -3,7 +3,6 @@ SELECT frame_no, icount, unhex(arrayStringConcat(arrayMap(w -> hex(reinterpretAs
 FROM (
     SELECT frame_no, icount
     FROM db1.batch_commit
-    WHERE has_frame = 1
-    ORDER BY batch_id DESC
-    LIMIT 1
+    WHERE batch_id = 7 AND has_frame = 1
+      AND frame_no NOT IN (SELECT frame_no FROM db1.frames_out)
 )

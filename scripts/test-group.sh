@@ -13,7 +13,8 @@
 #   native-sim-b   the other native simulation suites
 #   native-rest    the native crate's loader, renderer and table suites
 #   driver-native  the driver's native_* suites: load, render, demo, play,
-#                  diff, session, stream and connections
+#                  diff, session and stream; the connection suite runs in
+#                  `emulator`, where nothing runs beside it
 #
 # Every group but `emulator` needs a reachable ClickHouse
 # (CLICKHOUSE_HOST/CLICKHOUSE_HTTP_PORT/CLICKHOUSE_PASSWORD); `emulator`
@@ -30,9 +31,10 @@ case "$group" in
     emulator)
         # One test at a time: the SQL CPU's suite and the executor's share
         # the server's compiled-expression cache, which a second run beside
-        # them would warm or cool.
+        # them would warm or cool, and the connection suite counts the
+        # server's connections, which a neighbour's session would move.
         run $live --test-threads 1 \
-            -E 'not package(clickdoom-native) and not binary(/^native_/)'
+            -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live))'
         run --release --workspace --features refemu/rom-tests \
             -E 'binary(reference_trace) | binary(demo3_parity) | binary(rom_symbols) | binary(probe_fixture)'
         ;;
@@ -50,7 +52,7 @@ case "$group" in
         ;;
     driver-native)
         run $live --test-threads 2 \
-            -E 'package(clickdoom-driver) and binary(/^native_/)'
+            -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)
         echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-rest|driver-native" >&2

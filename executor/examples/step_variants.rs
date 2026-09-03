@@ -28,8 +28,9 @@ use clickdoom_executor::fold::{
     BatchArgs, FLAT_COLUMNS, SelectOnlyArgs, Variant, batch_variant, build_step_flat,
     build_step_peeled, build_step_variant, decode_with, select_only_variant,
 };
+use clickdoom_executor::word::Widx;
 
-const TEXT_START_WIDX: u32 = 0;
+const TEXT_START_WIDX: Widx = Widx::new(0);
 const TEXT_WORDS: u32 = 524_288;
 const RAM_WORDS: u32 = 6_291_456;
 const HWM: u32 = 20_000;
@@ -65,7 +66,7 @@ fn main() {
         "batch" => batch_variant(
             k,
             TEXT_START_WIDX,
-            TEXT_WORDS,
+            Widx::new(TEXT_WORDS),
             TEXT_WORDS,
             RAM_WORDS,
             HWM,
@@ -75,7 +76,7 @@ fn main() {
         "select" => select_only_variant(
             k,
             TEXT_START_WIDX,
-            TEXT_WORDS,
+            Widx::new(TEXT_WORDS),
             TEXT_WORDS,
             RAM_WORDS,
             HWM,
@@ -90,7 +91,7 @@ fn main() {
             let step = match kind {
                 "explain" => build_step_variant(
                     TEXT_START_WIDX,
-                    TEXT_WORDS,
+                    Widx::new(TEXT_WORDS),
                     TEXT_WORDS,
                     RAM_WORDS,
                     clickdoom_spec::RAM_BASE,
@@ -100,7 +101,7 @@ fn main() {
                 ),
                 "explain-flat" => build_step_flat(
                     TEXT_START_WIDX,
-                    TEXT_WORDS,
+                    Widx::new(TEXT_WORDS),
                     TEXT_WORDS,
                     RAM_WORDS,
                     clickdoom_spec::RAM_BASE,
@@ -110,7 +111,7 @@ fn main() {
                 ),
                 _ => build_step_peeled(
                     TEXT_START_WIDX,
-                    TEXT_WORDS,
+                    Widx::new(TEXT_WORDS),
                     TEXT_WORDS,
                     RAM_WORDS,
                     clickdoom_spec::RAM_BASE,

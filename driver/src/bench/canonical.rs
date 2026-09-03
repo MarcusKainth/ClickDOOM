@@ -28,6 +28,7 @@ use std::time::Instant; // purity-ok: timing the benchmark harness itself, never
 use clickdoom_executor::commit;
 use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_EXIT, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
+use clickdoom_executor::word::{Widx, WordAddr};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
 use refemu::cli::report::{FrameCommitJson, RunReport};
 use refemu::snapshot::{Kind, Snapshot};
@@ -47,6 +48,8 @@ const ARM_DATABASE: &str = "canonical_throughput";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalError {
+    #[error(transparent)]
+    Rebase(#[from] clickdoom_executor::word::BelowBase),
     #[error(
         "{window} {mode} timed batch {batch}: the write log reached the high-water mark ({hwm}) after {retired} of K={k} instructions. A truncated batch measures different work than a full one. That the mark binds on this window's real store density is itself a finding: report it, don't paper over it by lowering K or raising HWM without saying so."
     )]
@@ -477,8 +480,8 @@ pub(crate) async fn create_and_load_database(
 struct Shape<'a> {
     k: u32,
     hwm: u32,
-    text_start_widx: u32,
-    text_end_widx: u32,
+    text_start_widx: Widx,
+    text_end_widx: Widx,
     decn: u32,
     ram_words: u32,
     database: &'a str,
@@ -1211,12 +1214,12 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
     let text_start = manifest.text_start.unwrap_or(RAM_BASE);
     let text_end = manifest.text_end.unwrap_or(RAM_BASE);
     let load_addr = manifest.load_addr.unwrap_or(RAM_BASE);
-    let text_start_word = text_start / 4;
-    let text_end_word = text_end / 4;
-    let ram_base_word = load_addr / 4;
-    let text_start_widx = text_start_word - ram_base_word;
-    let text_end_widx = text_end_word - ram_base_word;
-    let decn = text_end_word - text_start_word;
+    let text_start_word = WordAddr::of_byte(text_start);
+    let text_end_word = WordAddr::of_byte(text_end);
+    let ram_base_word = WordAddr::of_byte(load_addr);
+    let text_start_widx = text_start_word.widx_from(ram_base_word)?;
+    let text_end_widx = text_end_word.widx_from(ram_base_word)?;
+    let decn = text_end_word.get() - text_start_word.get();
     let ram_words = RAM_WORDS_DEFAULT;
 
     let git_sha = String::from_utf8(
@@ -1352,8 +1355,8 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
                 window,
                 mode,
                 run_id,
-                text_start_word,
-                text_end_word,
+                text_start_word.get(),
+                text_end_word.get(),
                 Shape {
                     k: args.k,
                     hwm: args.hwm,

@@ -17,6 +17,7 @@ use clickdoom_executor::config::{
     HALT_NONE, HALT_REASON_NAMES, OP_LOAD, OP_STORE, WRITE_LOG_HIGH_WATER_MARK_DEFAULT,
 };
 use clickdoom_executor::fold::{SelectOnlyArgs, select_only};
+use clickdoom_executor::word::Widx;
 use clickdoom_spec::RAM_BASE;
 use clickhouse::Row;
 use serde::Deserialize;
@@ -336,8 +337,8 @@ fn vector_query(index: usize, vector: &ExecVector, database: &str, decn: u32) ->
     };
     let fold = select_only(
         1,
-        0,
-        0,
+        Widx::new(0),
+        Widx::new(0),
         decn,
         RAM_WORDS,
         WRITE_LOG_HIGH_WATER_MARK_DEFAULT,

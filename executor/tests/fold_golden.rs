@@ -3,8 +3,9 @@
 
 use clickdoom_executor::config::{K_DEFAULT, LOG_QUERIES_CUT_TO_LENGTH};
 use clickdoom_executor::fold::{
-    BatchArgs, SelectOnlyArgs, batch, halt_reason_transform, select_only,
+    self, BatchArgs, SelectOnlyArgs, batch, halt_reason_transform, select_only,
 };
+use clickdoom_executor::word::{Widx, WordAddr};
 
 macro_rules! fixture {
     ($name:literal) => {
@@ -47,8 +48,8 @@ fn select_only_prod_k1_matches_python_output() {
     let args = SelectOnlyArgs::default();
     let actual = select_only(
         1,
-        0,
-        TEXT_WORDS_DEFAULT,
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
         TEXT_WORDS_DEFAULT,
         RAM_WORDS_DEFAULT,
         HWM_DEFAULT,
@@ -64,7 +65,7 @@ fn select_only_prod_k1_matches_python_output() {
 #[test]
 fn select_only_small_k2_matches_python_output() {
     let args = SelectOnlyArgs::default();
-    let actual = select_only(2, 0, 8, 8, 8, 10_000, &args);
+    let actual = select_only(2, Widx::new(0), Widx::new(8), 8, 8, 10_000, &args);
     assert_matches_fixture(
         &actual,
         fixture!("select_only_small_k2"),
@@ -86,8 +87,8 @@ fn select_only_overrides_matches_python_output() {
     };
     let actual = select_only(
         4096,
-        0,
-        TEXT_WORDS_DEFAULT,
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
         TEXT_WORDS_DEFAULT,
         RAM_WORDS_DEFAULT,
         15_000,
@@ -108,8 +109,8 @@ fn batch_prod_matches_python_output() {
     };
     let actual = batch(
         60_000,
-        0,
-        TEXT_WORDS_DEFAULT,
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
         TEXT_WORDS_DEFAULT,
         RAM_WORDS_DEFAULT,
         HWM_DEFAULT,
@@ -135,8 +136,8 @@ fn the_batch_statement_fits_in_the_query_log() {
     };
     let sql = batch(
         K_DEFAULT,
-        0,
-        TEXT_WORDS_DEFAULT,
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
         TEXT_WORDS_DEFAULT,
         RAM_WORDS_DEFAULT,
         HWM_DEFAULT,
@@ -160,8 +161,8 @@ fn the_batch_statement_fits_in_the_query_log() {
     // reading and a sweep would otherwise look like the risk.
     let wide_k = batch(
         1_000_000,
-        0,
-        TEXT_WORDS_DEFAULT,
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
         TEXT_WORDS_DEFAULT,
         RAM_WORDS_DEFAULT,
         HWM_DEFAULT,
@@ -180,5 +181,55 @@ fn halt_reason_transform_matches_python_output() {
         &halt_reason_transform("r.4.3"),
         fixture!("halt_reason_transform"),
         "halt_reason_transform",
+    );
+}
+
+/// The bound `preflight`'s gate 4 once passed absolutely: a text region's
+/// end as a `ram` word address, where the fold wants it relative to the
+/// image's base. It is larger than every index the region has, so the
+/// `SELF_MODIFY` comparison against it was algebraically incapable of being
+/// true and the gate reported a pass it could not have failed.
+#[test]
+#[should_panic(expected = "never rebased")]
+fn an_absolute_text_bound_is_refused_rather_than_compared_against() {
+    let absolute_end = clickdoom_spec::RAM_BASE / 4 + 98_953;
+    fold::build_step(
+        Widx::new(clickdoom_spec::RAM_BASE / 4),
+        Widx::new(absolute_end),
+        98_953,
+        RAM_WORDS_DEFAULT,
+        clickdoom_spec::RAM_BASE,
+        HWM_DEFAULT,
+        clickdoom_spec::IPMS_DEFAULT,
+    );
+}
+
+/// The fold captures `ram` as one positionally indexed array and subscripts
+/// it with an index relative to the image's base, while `ram`'s own rows
+/// are keyed absolutely. The two sides have to move by the same base: the
+/// step subtracts it from the pc and the flush adds it back to a write-log
+/// entry, and a mismatch is a load reading the wrong word rather than an
+/// error.
+#[test]
+fn the_step_subtracts_the_base_the_flush_adds_back() {
+    let step = fold::build_step(
+        Widx::new(0),
+        Widx::new(TEXT_WORDS_DEFAULT),
+        TEXT_WORDS_DEFAULT,
+        RAM_WORDS_DEFAULT,
+        clickdoom_spec::RAM_BASE,
+        HWM_DEFAULT,
+        clickdoom_spec::IPMS_DEFAULT,
+    );
+    let flush = clickdoom_executor::commit::ram_flush_sql("clickdoom", 1);
+    let base = WordAddr::ram_base();
+    assert_eq!(base.get(), clickdoom_spec::RAM_BASE / 4);
+    assert!(
+        step.contains(&format!("- {}", clickdoom_spec::RAM_BASE)),
+        "the step no longer rebases the pc onto the captured array"
+    );
+    assert!(
+        flush.contains(&format!("{} + t.1", base.get())),
+        "the flush no longer rebases a write-log entry onto ram's own key"
     );
 }

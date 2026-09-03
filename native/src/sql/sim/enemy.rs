@@ -1,12 +1,39 @@
-//! What a monster does before it has a target, from `p_enemy.c`.
+//! What a monster does about the player, from `p_enemy.c`.
+//!
+//! `A_Look` waits for the player to come into view and `A_Chase` walks
+//! towards the one it found. Both run inside `P_SetMobjState`, so a thing
+//! that wakes runs its first chase on the same tic.
 
-use crate::sql::{Statement, fixed};
+use crate::sql::sim::map::{self, World, answer};
+use crate::sql::{Statement, bind, fixed};
 
 /// `p_local.h`: how close is close enough to react to something behind.
 const MELEERANGE: i64 = 64 << 16;
 /// `tables.h`
 const ANG90: i64 = 0x4000_0000;
 const ANG270: i64 = 0xC000_0000;
+/// `tables.h`: an eighth of a turn, which is the step a chase turns by,
+/// and the shift that turns a direction into an angle.
+const ANG45: i64 = 0x2000_0000;
+const DIRSHIFT: u32 = 29;
+/// `p_enemy.c`: the four directions `P_NewChaseDir` picks an axis from,
+/// and the ninth that a thing which cannot move takes. `dirtype_t`
+/// declares the eight in turn from east, going anticlockwise.
+const DI_EAST: i64 = 0;
+const DI_NORTH: i64 = 2;
+const DI_WEST: i64 = 4;
+const DI_SOUTH: i64 = 6;
+const DI_NODIR: i64 = 8;
+/// `p_enemy.c`: how far off an axis the target has to be for the chase to
+/// take that axis.
+const CHASE_SLOP: i64 = 10 << 16;
+/// `d_mode.h`: the skill a monster stops waiting out its move count on.
+const SK_NIGHTMARE: i64 = 4;
+/// `p_mobj.h`
+const MF_SHOOTABLE: i64 = 4;
+const MF_JUSTHIT: i64 = 64;
+const MF_JUSTATTACKED: i64 = 128;
+const MF_FLOAT: i64 = 0x4000;
 
 /// The sounds `A_Look`'s switch picks between with a draw, as the names
 /// `sounds.h` gives them.
@@ -36,16 +63,33 @@ pub fn guards(db: &str) -> Vec<Statement> {
     ))]
 }
 
-/// The constants `A_Look`'s sound switch reads.
+/// The constants `A_Look` and `A_Chase` read.
 pub fn constants(db: &str) -> Vec<(String, String)> {
     let names: Vec<String> = SEE_SOUNDS.iter().map(|name| format!("'{name}'")).collect();
-    vec![(
+    let mut constants = vec![(
         "a_look_sounds".to_owned(),
         format!(
             "(SELECT groupArray(toInt32(id)) FROM {db}.sfxenum WHERE name IN ({}))",
             names.join(", ")
         ),
-    )]
+    )];
+    for table in ["opposite", "diags", "xspeed", "yspeed"] {
+        constants.push((
+            format!("dir_{table}"),
+            super::table_column(db, table, "value"),
+        ));
+    }
+    for column in ["speed", "meleestate", "missilestate", "activesound"] {
+        constants.push((
+            format!("mobj_{column}"),
+            super::table_column(db, "mobjinfo", column),
+        ));
+    }
+    constants.push((
+        "a_chase".to_owned(),
+        format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = 'A_Chase'))"),
+    ));
+    constants
 }
 
 /// Whether `A_Look` draws a random number for the sound a thing makes on
@@ -99,6 +143,650 @@ pub fn look_for_players(
 /// player is in the game, so it always stops on that one.
 pub const LASTLOOK: i64 = 0;
 
+/// Where each part of one mover's shape sits. The shape is what the walk
+/// answers decide on their own, before any random number is read.
+mod shape {
+    /// Whether `P_NewChaseDir` runs at all.
+    pub const NEWCHASE: usize = 1;
+    /// Whether the direct route to the target is taken.
+    pub const DIRECT: usize = 2;
+    /// Whether one of the two axes or the old direction is walkable.
+    pub const FIRST: usize = 3;
+    /// Whether the search over the eight directions finds one.
+    pub const LOOP: usize = 4;
+    /// Whether the way back is walkable.
+    pub const TURNAROUND: usize = 5;
+    /// Whether the thing has an active sound, which is one draw a tic.
+    pub const SOUND: usize = 6;
+    /// Whether the tic could not be produced for this thing.
+    pub const STUCK: usize = 7;
+    pub const MOVEDIR: usize = 8;
+    pub const TURN: usize = 9;
+    /// The two axis directions, with the way back already cleared.
+    pub const E1: usize = 10;
+    pub const E2: usize = 11;
+    pub const DIAG: usize = 12;
+    pub const DELTAX: usize = 13;
+    pub const DELTAY: usize = 14;
+    /// The move count `A_Chase` decremented, which the walk starts from.
+    pub const COUNT: usize = 15;
+    /// Whether the direct route was tried, which it is even where it
+    /// fails.
+    pub const DIRECTTRIED: usize = 16;
+}
+
+/// Where each field of one mover's answer sits.
+pub mod chased {
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const Z: usize = 3;
+    pub const ANGLE: usize = 4;
+    pub const MOVEDIR: usize = 5;
+    pub const MOVECOUNT: usize = 6;
+    pub const REACTIONTIME: usize = 7;
+    pub const THRESHOLD: usize = 8;
+    pub const FLOORZ: usize = 9;
+    pub const CEILINGZ: usize = 10;
+    pub const SUBSECTOR: usize = 11;
+    /// How many random numbers the thing drew.
+    pub const DRAWS: usize = 12;
+    pub const STUCK: usize = 13;
+}
+
+/// The state a chase reads, as the names the tic binds the arrays under.
+pub struct Chasing<'a> {
+    /// The slots whose state cycle entered a state carrying `A_Chase`,
+    /// in list order.
+    pub movers: &'a str,
+    /// How many entries of the cycle carried `A_Chase`, by slot. A thing
+    /// that reached two of them in one tic is one this does not run.
+    pub entries: &'a str,
+    /// How many draws `A_Look` made, by slot. A thing that wakes shouts
+    /// before it chases, so its own look draw is behind it.
+    pub shouts: &'a str,
+    pub m_x: &'a str,
+    pub m_y: &'a str,
+    pub m_z: &'a str,
+    pub m_angle: &'a str,
+    pub m_radius: &'a str,
+    pub m_height: &'a str,
+    pub m_flags: &'a str,
+    pub m_type: &'a str,
+    pub m_health: &'a str,
+    pub m_target: &'a str,
+    pub m_movedir: &'a str,
+    pub m_movecount: &'a str,
+    pub m_reactiontime: &'a str,
+    pub m_threshold: &'a str,
+    pub m_floorz: &'a str,
+    pub m_ceilingz: &'a str,
+    pub m_subsector: &'a str,
+    pub prndindex: &'a str,
+}
+
+/// How many directions a thing can walk in, which is how many moves the
+/// walk asks about for each mover.
+const DIRECTIONS: i64 = 8;
+
+/// Where the fold holds the movers and their answers.
+mod ran {
+    pub const MOVERS: usize = 1;
+    pub const CHASED: usize = 2;
+}
+
+/// `A_Chase` over every thing whose cycle entered a state carrying it.
+///
+/// `P_Move` and every `P_TryWalk` inside `P_NewChaseDir` ask the same
+/// question of the same position, because the search stops at the first
+/// direction that works and nothing moves until one does. So one call of
+/// the move test answers for all eight directions of every mover, and what
+/// is left is which of them the engine would have reached first.
+///
+/// The whole of it is the body of a fold over a list of one entry or none,
+/// so a tic with nothing to chase does not pay for the move test. The body
+/// reads the fold's own parameter, without which it would be evaluated
+/// outside the fold anyway.
+///
+/// Two of the engine's own branches are never reached and are not
+/// written. `netgame` is false, so the chase does not look for a new
+/// target when the one it has is out of sight, and `fastparm` is false,
+/// so the skill alone decides whether a thing waits its move count out.
+///
+/// Everything this cannot answer for leaves the tic unresolved: a thing
+/// with no target or one that cannot be shot, a thing that just attacked,
+/// a melee attack, a missile check that needs a draw, a floating thing, a
+/// move that crosses a special line, and two movers close enough to see
+/// each other, which the engine runs one after the other.
+pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
+    let at = |array: &str, slot: &str| format!("{array}[{slot}]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("cf_movers", format!("cw_at.{}", ran::MOVERS));
+    // Every direction of every mover, asked once. The engine walks them
+    // one after another and stops at the first that works, and none of
+    // them moves anything until it does, so they all start from where the
+    // thing stands.
+    let step = |axis: &str| {
+        format!(
+            "toInt64(mobj_speed[1 + {}]) * toInt64(dir_{axis}[1 + cf_dir])",
+            at(state.m_type, "cf_k")
+        )
+    };
+    value(
+        "cf_asks",
+        format!(
+            "arrayFlatten(arrayMap(cf_k -> arrayMap(cf_dir -> {}, range({DIRECTIONS})), \
+             cf_movers))",
+            map::asking(
+                "cf_k",
+                &format!("toInt64({}) + {}", at(state.m_x, "cf_k"), step("xspeed")),
+                &format!("toInt64({}) + {}", at(state.m_y, "cf_k"), step("yspeed")),
+                &at(state.m_radius, "cf_k"),
+                &at(state.m_height, "cf_k"),
+                &at(state.m_z, "cf_k"),
+                &at(state.m_flags, "cf_k"),
+                "0",
+            ),
+        ),
+    );
+    value("cf_answers", map::try_moves("cf_asks", world));
+    // One mover's eight answers, so the passes below read their own and
+    // copy nothing per direction.
+    value(
+        "cf_walks",
+        format!(
+            "arrayMap(i -> arraySlice(cf_answers, 1 + (i - 1) * {DIRECTIONS}, {DIRECTIONS}), \
+             arrayEnumerate(cf_movers))"
+        ),
+    );
+    value(
+        "cf_shape",
+        format!(
+            "arrayMap((k, w) -> ({}), cf_movers, cf_walks)",
+            shape(state)
+        ),
+    );
+    // A draw the tic has already made stands ahead of this thing's own:
+    // every look the list made up to and including this slot, and every
+    // chase before it.
+    value(
+        "cf_draws",
+        format!(
+            "arrayMap(sh -> {}, cf_shape)",
+            draws(&|f| format!("sh.{f}"))
+        ),
+    );
+    value(
+        "cf_base",
+        format!(
+            "arrayMap((k, c, d) -> toUInt32(arrayCumSum({})[k] + c - d), cf_movers, \
+             arrayCumSum(cf_draws), cf_draws)",
+            state.shouts
+        ),
+    );
+    value(
+        "cf_chased",
+        format!(
+            "arrayMap((k, w, sh, base) -> ({}), cf_movers, cf_walks, cf_shape, cf_base)",
+            chased(state)
+        ),
+    );
+
+    let body = "(cf_movers, cf_chased)";
+    let start = format!(
+        "({}, CAST([], 'Array(Tuple({}))'))",
+        state.movers,
+        CHASED_TYPES.join(", ")
+    );
+    vec![
+        (
+            "cw".to_owned(),
+            format!(
+                "arrayFold((cw_at, cw_step) -> {}, range(least(length({}), 1)), {start})",
+                bind::chain_in("cf", &values, body),
+                state.movers
+            ),
+        ),
+        ("cw_chased".to_owned(), format!("cw.{}", ran::CHASED)),
+        // Two movers the engine runs one after the other cannot both read
+        // the world as it stood, so a tic holding a pair close enough to
+        // change what the other is told is one this does not run. It asks
+        // the move test nothing, so it stays outside the fold.
+        (
+            "cw_crowded".to_owned(),
+            format!(
+                "toUInt8(arrayExists((a, i) -> arrayExists(b -> {}, \
+                 arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
+                crowded(state),
+                movers = state.movers
+            ),
+        ),
+    ]
+}
+
+/// The type of one mover's answer, in the order [`chased`] names it. The
+/// fold starts from an empty list of them, and a list has to carry its
+/// type.
+const CHASED_TYPES: [&str; 13] = [
+    "Int32", "Int32", "Int32", "UInt32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
+    "Int32", "UInt32", "UInt8",
+];
+
+/// Whether one mover's move changes what another is told.
+///
+/// A thing reaches another's move test through `PIT_CheckThing`, which
+/// stops at things closer than the two radii, and a monster picks nothing
+/// up, so what it is told depends on nothing further off than that plus
+/// what either of them can walk in a tic.
+fn crowded(state: &Chasing<'_>) -> String {
+    let axis = |array: &str| {
+        format!(
+            "abs(toInt64({array}[a]) - toInt64({array}[b])) < \
+             toInt64({r}[a]) + toInt64({r}[b]) \
+             + bitShiftLeft(toInt64(mobj_speed[1 + {t}[a]]) + toInt64(mobj_speed[1 + {t}[b]]), 16)",
+            r = state.m_radius,
+            t = state.m_type,
+        )
+    };
+    format!("toUInt8({} AND {})", axis(state.m_x), axis(state.m_y))
+}
+
+/// What one mover's eight answers and its own state decide before any
+/// random number is read, in the order [`shape`](shape) names them.
+///
+/// `k` is the slot, `w` its eight answers.
+fn shape(state: &Chasing<'_>) -> String {
+    let at = |array: &str| format!("{array}[k]");
+    let target = format!("{}[k]", state.m_target);
+    let walks = |dir: &str| format!("({dir} != {DI_NODIR} AND w[1 + {dir}].{} = 1)", answer::OK);
+    let kind = |column: &str| format!("mobj_{column}[1 + {}]", at(state.m_type));
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("cs_target", format!("toUInt32({target})"));
+    value("cs_flags", format!("toInt64({})", at(state.m_flags)));
+    value(
+        "cs_reactiontime",
+        format!(
+            "toInt32(if({rt} != 0, {rt} - 1, {rt}))",
+            rt = at(state.m_reactiontime)
+        ),
+    );
+    value("cs_movedir", format!("toInt64({})", at(state.m_movedir)));
+    value(
+        "cs_turn",
+        "toInt64(dir_opposite[1 + cs_movedir])".to_owned(),
+    );
+    value(
+        "cs_deltax",
+        format!(
+            "toInt64({}[cs_target]) - toInt64({})",
+            state.m_x,
+            at(state.m_x)
+        ),
+    );
+    value(
+        "cs_deltay",
+        format!(
+            "toInt64({}[cs_target]) - toInt64({})",
+            state.m_y,
+            at(state.m_y)
+        ),
+    );
+    value(
+        "cs_d1",
+        format!(
+            "toInt64(multiIf(cs_deltax > {CHASE_SLOP}, {DI_EAST}, \
+             cs_deltax < -{CHASE_SLOP}, {DI_WEST}, {DI_NODIR}))"
+        ),
+    );
+    value(
+        "cs_d2",
+        format!(
+            "toInt64(multiIf(cs_deltay < -{CHASE_SLOP}, {DI_SOUTH}, \
+             cs_deltay > {CHASE_SLOP}, {DI_NORTH}, {DI_NODIR}))"
+        ),
+    );
+    value(
+        "cs_diag",
+        "toInt64(dir_diags[1 + if(cs_deltay < 0, 2, 0) + if(cs_deltax > 0, 1, 0)])".to_owned(),
+    );
+    value("cs_e1", "toInt64(if(cs_d1 = cs_turn, 8, cs_d1))".to_owned());
+    value("cs_e2", "toInt64(if(cs_d2 = cs_turn, 8, cs_d2))".to_owned());
+    value(
+        "cs_count",
+        format!("toInt64({}) - 1", at(state.m_movecount)),
+    );
+    // `A_Chase`'s own `P_Move` runs only while the move count has not run
+    // out, and `P_NewChaseDir` runs when it has or when that move fails.
+    value(
+        "cs_newchase",
+        format!("toUInt8(NOT (cs_count >= 0 AND {}))", walks("cs_movedir")),
+    );
+    value(
+        "cs_directtried",
+        format!(
+            "toUInt8(cs_newchase = 1 AND cs_d1 != {DI_NODIR} AND cs_d2 != {DI_NODIR} \
+             AND cs_diag != cs_turn)"
+        ),
+    );
+    value(
+        "cs_direct",
+        format!("toUInt8(cs_directtried = 1 AND {})", walks("cs_diag")),
+    );
+    value(
+        "cs_first",
+        format!(
+            "toUInt8({} OR {} OR {})",
+            walks("cs_e1"),
+            walks("cs_e2"),
+            walks("cs_movedir")
+        ),
+    );
+    value(
+        "cs_loop",
+        format!(
+            "toUInt8(arrayExists(d -> d != cs_turn AND w[1 + d].{} = 1, range({DIRECTIONS})))",
+            answer::OK
+        ),
+    );
+    value("cs_turnaround", format!("toUInt8({})", walks("cs_turn")));
+    value("cs_sound", format!("toUInt8({} != 0)", kind("activesound")));
+    // A missile check that gets past the reaction time reads the line of
+    // sight and draws for the distance, and neither is written.
+    // `P_CheckMeleeRange` measures first and only looks when the target
+    // is close enough, so a distant target costs no line of sight.
+    value(
+        "cs_melee",
+        format!(
+            "toUInt8({} != 0 AND toInt64({}) < {} + toInt64({}[cs_target]))",
+            kind("meleestate"),
+            fixed::aprox_distance("toInt32(cs_deltax)", "toInt32(cs_deltay)"),
+            MELEERANGE - (20 << 16),
+            state.m_radius,
+        ),
+    );
+    value(
+        "cs_missile",
+        format!(
+            "toUInt8({} != 0 AND NOT (skill < {SK_NIGHTMARE} AND {} != 0) \
+             AND (bitAnd(cs_flags, {MF_JUSTHIT}) != 0 OR cs_reactiontime = 0))",
+            kind("missilestate"),
+            at(state.m_movecount)
+        ),
+    );
+    value(
+        "cs_stuck",
+        format!(
+            "toUInt8({} != 1 \
+             OR cs_target = 0 \
+             OR bitAnd(toInt64({}[cs_target]), {MF_SHOOTABLE}) = 0 \
+             OR bitAnd(cs_flags, {MF_JUSTATTACKED}) != 0 \
+             OR bitAnd(cs_flags, {MF_FLOAT}) != 0 \
+             OR cs_melee = 1 \
+             OR cs_missile = 1)",
+            format_args!("{}[k]", state.entries),
+            state.m_flags,
+        ),
+    );
+
+    let members = [
+        "toUInt8(cs_newchase)".to_owned(),
+        "toUInt8(cs_direct)".to_owned(),
+        "toUInt8(cs_newchase = 1 AND cs_direct = 0 AND cs_first = 1)".to_owned(),
+        "toUInt8(cs_newchase = 1 AND cs_direct = 0 AND cs_first = 0 AND cs_loop = 1)".to_owned(),
+        "toUInt8(cs_newchase = 1 AND cs_direct = 0 AND cs_first = 0 AND cs_loop = 0 \
+         AND cs_turnaround = 1)"
+            .to_owned(),
+        "toUInt8(cs_sound)".to_owned(),
+        "toUInt8(cs_stuck)".to_owned(),
+        "toInt64(cs_movedir)".to_owned(),
+        "toInt64(cs_turn)".to_owned(),
+        "toInt64(cs_e1)".to_owned(),
+        "toInt64(cs_e2)".to_owned(),
+        "toInt64(cs_diag)".to_owned(),
+        "toInt64(cs_deltax)".to_owned(),
+        "toInt64(cs_deltay)".to_owned(),
+        "toInt64(cs_count)".to_owned(),
+        "toUInt8(cs_directtried)".to_owned(),
+    ];
+    bind::chain_in("cs", &values, &format!("({})", members.join(", ")))
+}
+
+/// How many random numbers one mover draws.
+///
+/// `P_NewChaseDir` draws once for the swap unless the direct route
+/// carried it, once more for the direction the search runs in, and once
+/// for the move count whenever a direction works. Which of the two axes
+/// the swap puts first changes the order the search runs in and not
+/// whether one of them works, so the count does not depend on either
+/// number.
+fn draws(field: &dyn Fn(usize) -> String) -> String {
+    format!(
+        "toUInt32(multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {})",
+        field(shape::NEWCHASE),
+        field(shape::DIRECT),
+        field(shape::FIRST),
+        field(shape::LOOP),
+        field(shape::TURNAROUND),
+        field(shape::SOUND),
+    )
+}
+
+/// What one mover's chase leaves behind, in the order [`chased`] names it.
+///
+/// `k` is the slot, `w` its eight answers, `sh` its shape and `base` how
+/// many numbers the tic drew before it.
+fn chased(state: &Chasing<'_>) -> String {
+    let at = |array: &str| format!("{array}[k]");
+    let sh = |field: usize| format!("sh.{field}");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    // `P_Random` reads the table at the index it has just moved on to.
+    let draw = |nth: &str| {
+        format!(
+            "toInt64(rnd[1 + bitAnd(toUInt32({}) + base + {nth} + 1, 255)])",
+            state.prndindex
+        )
+    };
+    value("cc_swap_draw", draw("0"));
+    value("cc_search_draw", draw("1"));
+    value("cc_draws", draws(&sh));
+    value(
+        "cc_count_draw",
+        draw(&format!("cc_draws - toUInt32(sh.{}) - 1", shape::SOUND)),
+    );
+    value(
+        "cc_swap",
+        format!(
+            "toUInt8(cc_swap_draw > 200 OR abs({}) > abs({}))",
+            sh(shape::DELTAY),
+            sh(shape::DELTAX)
+        ),
+    );
+    value(
+        "cc_order",
+        format!(
+            "arrayConcat([if(cc_swap = 1, {e2}, {e1}), if(cc_swap = 1, {e1}, {e2}), {dir}], \
+             arrayFilter(d -> d != {turn}, if(bitAnd(cc_search_draw, 1) != 0, \
+             range({DIRECTIONS}), arrayReverse(range({DIRECTIONS})))), [{turn}])",
+            e1 = sh(shape::E1),
+            e2 = sh(shape::E2),
+            dir = sh(shape::MOVEDIR),
+            turn = sh(shape::TURN),
+        ),
+    );
+    value(
+        "cc_won",
+        format!(
+            "toInt64(arrayFirstIndex(d -> d != {DI_NODIR} AND w[1 + d].{} = 1, cc_order))",
+            answer::OK
+        ),
+    );
+    // Which direction the thing walked, and 8 for one that did not move.
+    value(
+        "cc_dir",
+        format!(
+            "toInt64(multiIf({} = 0, {dir}, {} = 1, {diag}, cc_won = 0, {DI_NODIR}, \
+             cc_order[cc_won]))",
+            sh(shape::NEWCHASE),
+            sh(shape::DIRECT),
+            dir = sh(shape::MOVEDIR),
+            diag = sh(shape::DIAG),
+        ),
+    );
+    value(
+        "cc_moved",
+        format!(
+            "toUInt8(multiIf({} = 0, 1, {} = 1, 1, cc_won != 0))",
+            sh(shape::NEWCHASE),
+            sh(shape::DIRECT)
+        ),
+    );
+    value(
+        "cc_answer",
+        "w[1 + if(cc_moved = 1, cc_dir, toInt64(0))]".to_owned(),
+    );
+    // The directions the engine reached, which is the move count's own
+    // move, the direct route, and the search up to the one that worked.
+    value(
+        "cc_tried",
+        format!(
+            "arrayConcat(if({count} >= 0, [{dir}], CAST([], 'Array(Int64)')), \
+             if({newchase} = 0, CAST([], 'Array(Int64)'), \
+             arrayConcat(if({tried} = 1, [{diag}], CAST([], 'Array(Int64)')), \
+             arraySlice(cc_order, 1, if(cc_won > 0, cc_won, toInt64(length(cc_order)))))))",
+            count = sh(shape::COUNT),
+            dir = sh(shape::MOVEDIR),
+            newchase = sh(shape::NEWCHASE),
+            tried = sh(shape::DIRECTTRIED),
+            diag = sh(shape::DIAG),
+        ),
+    );
+    // A move that crosses a special line runs it, and a blocked one that
+    // reached one opens it. Neither is written.
+    value(
+        "cc_special",
+        format!(
+            "toUInt8(arrayExists(d -> d != {DI_NODIR} AND notEmpty(w[1 + d].{}), cc_tried))",
+            answer::SPECHIT
+        ),
+    );
+    // The direction the walk ends on. `P_NewChaseDir` leaves `DI_NODIR`
+    // where nothing worked, and `A_Chase`'s own move leaves what it had.
+    value(
+        "cc_movedir",
+        format!(
+            "toInt64(if({} = 0, {}, cc_dir))",
+            sh(shape::NEWCHASE),
+            sh(shape::MOVEDIR)
+        ),
+    );
+    value(
+        "cc_movecount",
+        format!(
+            "toInt64(multiIf({} = 0, {count}, cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
+            sh(shape::NEWCHASE),
+            count = sh(shape::COUNT),
+        ),
+    );
+    value(
+        "cc_reactiontime",
+        format!(
+            "toInt32(if({rt} != 0, {rt} - 1, {rt}))",
+            rt = at(state.m_reactiontime)
+        ),
+    );
+    value(
+        "cc_threshold",
+        format!(
+            "toInt32(multiIf({held} = 0, {held}, {} = 0 OR {}[{}[k]] <= 0, 0, {held} - 1))",
+            format_args!("{}[k]", state.m_target),
+            state.m_health,
+            state.m_target,
+            held = at(state.m_threshold),
+        ),
+    );
+    // The turn towards the direction the thing is already walking in.
+    value(
+        "cc_facing",
+        format!(
+            "toInt64(bitAnd(toInt64({}), {}))",
+            at(state.m_angle),
+            7 * ANG45
+        ),
+    );
+    value(
+        "cc_delta",
+        format!(
+            "toInt64(bitAnd(cc_facing - bitShiftLeft({}, {DIRSHIFT}) + 4294967296, 4294967295))",
+            sh(shape::MOVEDIR)
+        ),
+    );
+    value(
+        "cc_turned",
+        format!(
+            "toUInt32(bitAnd(cc_facing + multiIf(cc_delta = 0, 0, \
+             cc_delta < 2147483648, -{ANG45}, {ANG45}) + 4294967296, 4294967295))"
+        ),
+    );
+    value(
+        "cc_angle",
+        format!(
+            "toUInt32(if({} < {DI_NODIR}, cc_turned, {}))",
+            sh(shape::MOVEDIR),
+            at(state.m_angle)
+        ),
+    );
+
+    let members = [
+        format!(
+            "toInt32(if(cc_moved = 1, toInt64({}) + toInt64(mobj_speed[1 + {}]) \
+             * toInt64(dir_xspeed[1 + cc_dir]), toInt64({})))",
+            at(state.m_x),
+            at(state.m_type),
+            at(state.m_x)
+        ),
+        format!(
+            "toInt32(if(cc_moved = 1, toInt64({}) + toInt64(mobj_speed[1 + {}]) \
+             * toInt64(dir_yspeed[1 + cc_dir]), toInt64({})))",
+            at(state.m_y),
+            at(state.m_type),
+            at(state.m_y)
+        ),
+        format!(
+            "toInt32(if(cc_moved = 1, cc_answer.{}, toInt64({})))",
+            answer::FLOORZ,
+            at(state.m_z)
+        ),
+        "toUInt32(cc_angle)".to_owned(),
+        "toInt32(cc_movedir)".to_owned(),
+        "toInt32(cc_movecount)".to_owned(),
+        "toInt32(cc_reactiontime)".to_owned(),
+        "toInt32(cc_threshold)".to_owned(),
+        format!(
+            "toInt32(if(cc_moved = 1, cc_answer.{}, toInt64({})))",
+            answer::FLOORZ,
+            at(state.m_floorz)
+        ),
+        format!(
+            "toInt32(if(cc_moved = 1, cc_answer.{}, toInt64({})))",
+            answer::CEILINGZ,
+            at(state.m_ceilingz)
+        ),
+        format!(
+            "toInt32(if(cc_moved = 1, cc_answer.{}, toInt64({})))",
+            answer::SUBSECTOR,
+            at(state.m_subsector)
+        ),
+        "toUInt32(cc_draws)".to_owned(),
+        format!("toUInt8({} = 1 OR cc_special = 1)", sh(shape::STUCK)),
+    ];
+    bind::chain_in("cc", &values, &format!("({})", members.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +809,104 @@ mod tests {
         assert!(guard.contains("count() != 5"), "{guard}");
         for sound in SEE_SOUNDS {
             assert!(guard.contains(sound), "{guard}");
+        }
+    }
+
+    fn chasing() -> Chasing<'static> {
+        Chasing {
+            movers: "mt_movers",
+            entries: "mt_entries",
+            shouts: "mt_shouts",
+            m_x: "w_x",
+            m_y: "w_y",
+            m_z: "w_z",
+            m_angle: "w_angle",
+            m_radius: "w_radius",
+            m_height: "w_height",
+            m_flags: "w_flags",
+            m_type: "w_type",
+            m_health: "w_health",
+            m_target: "w_target",
+            m_movedir: "w_movedir",
+            m_movecount: "w_movecount",
+            m_reactiontime: "w_reactiontime",
+            m_threshold: "w_threshold",
+            m_floorz: "w_floorz",
+            m_ceilingz: "w_ceilingz",
+            m_subsector: "w_subsector",
+            prndindex: "w_prndindex",
+        }
+    }
+
+    fn world() -> World<'static> {
+        World {
+            m_x: "w_x",
+            m_y: "w_y",
+            m_radius: "w_radius",
+            m_flags: "w_flags",
+            m_linkseq: "w_linkseq",
+            alive: "w_alive",
+            floorheight: "w_floor",
+            ceilingheight: "w_ceiling",
+            line_special: "w_special",
+        }
+    }
+
+    /// The whole of the chase is the body of a fold over a list of one
+    /// entry or none, and the body reads the fold's own parameter. A body
+    /// that read neither parameter would be evaluated outside the fold
+    /// whatever the fold did, and the move test would cost every tic.
+    #[test]
+    fn the_chase_is_one_fold_over_a_list_of_one_entry_or_none() {
+        let bindings = chase(&chasing(), &world());
+        let (_, fold) = bindings
+            .iter()
+            .find(|(name, _)| name == "cw")
+            .expect("the fold");
+        assert!(fold.starts_with("arrayFold((cw_at, cw_step) ->"), "{fold}");
+        assert!(
+            fold.contains("range(least(length(mt_movers), 1))"),
+            "{fold}"
+        );
+        assert!(
+            fold.contains(&format!("cw_at.{}", ran::MOVERS)),
+            "the body reads the fold's parameter"
+        );
+        assert_eq!(fold.matches("arrayMap(mv ->").count(), 1, "one move test");
+        assert!(
+            fold.contains("arrayMap(cf_dir -> (toUInt32(cf_k)"),
+            "eight asks a mover"
+        );
+    }
+
+    /// How many numbers a thing draws is a function of the walk's answers
+    /// alone. `P_NewChaseDir`'s two draws decide the order the axes and
+    /// the search run in, and neither decides whether one of them works.
+    #[test]
+    fn the_draw_count_does_not_read_a_drawn_number() {
+        let count = draws(&|field| format!("sh.{field}"));
+        assert!(!count.contains("rnd"), "{count}");
+        for member in [
+            shape::NEWCHASE,
+            shape::DIRECT,
+            shape::FIRST,
+            shape::LOOP,
+            shape::TURNAROUND,
+            shape::SOUND,
+        ] {
+            assert!(count.contains(&format!("sh.{member}")), "{count}");
+        }
+    }
+
+    #[test]
+    fn the_chase_balances_its_parentheses() {
+        for (name, expr) in chase(&chasing(), &world()) {
+            let depth = expr.chars().fold(0i32, |d, c| match c {
+                '(' => d + 1,
+                ')' => d - 1,
+                _ => d,
+            });
+            assert_eq!(depth, 0, "{name}");
         }
     }
 }

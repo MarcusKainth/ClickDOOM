@@ -192,12 +192,13 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!("arrayMap(a -> ({}), mt_one)", entry_two()),
     );
 
-    // What the pass leaves in the row.
+    // What the state cycle leaves. The chase below reads the target and
+    // the threshold it left and writes the threshold again.
     let read = |member: usize, cast: &str| format!("arrayMap(a -> {cast}(a.{member}), mt_two)");
     bind("now_m_state", read(cycled::STATE, "toInt32"));
     bind("now_m_tics", read(cycled::TICS, "toInt32"));
     bind("now_m_target", read(cycled::TARGET, "toUInt32"));
-    bind("now_m_threshold", read(cycled::THRESHOLD, "toInt32"));
+    bind("mt_threshold", read(cycled::THRESHOLD, "toInt32"));
     bind("now_m_lastlook", read(cycled::LASTLOOK, "toInt32"));
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         bind(
@@ -222,19 +223,153 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             s("m_type")
         ),
     );
+
+    // `A_Chase` runs inside the `P_SetMobjState` that entered the state
+    // carrying it, so a thing that wakes chases on the same tic.
+    bind(
+        "mt_entries",
+        format!(
+            "arrayMap(a -> toUInt8(if(a.{moved} = 1 \
+             AND state_action[1 + a.{state}] = a_chase, 1, 0) \
+             + if(a.{pending} != -1 AND state_action[1 + a.{pending}] = a_chase, 1, 0)), mt_one)",
+            moved = cycled::MOVED,
+            state = cycled::STATE,
+            pending = cycled::PENDING,
+        ),
+    );
+    bind(
+        "mt_movers",
+        "arrayFilter((k, e) -> e > 0, mt_slots, mt_entries)".to_owned(),
+    );
+    bind(
+        "mt_alive",
+        format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
+    );
+    let world = World {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_radius: &s("m_radius"),
+        m_flags: &s("m_flags"),
+        m_linkseq: &s("m_linkseq"),
+        alive: "mt_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    let chasing = enemy::Chasing {
+        movers: "mt_movers",
+        entries: "mt_entries",
+        shouts: "mt_shouts",
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_z: &s("m_z"),
+        m_angle: &s("m_angle"),
+        m_radius: &s("m_radius"),
+        m_height: &s("m_height"),
+        m_flags: &s("m_flags"),
+        m_type: &s("m_type"),
+        m_health: &s("m_health"),
+        m_target: "now_m_target",
+        m_movedir: &s("m_movedir"),
+        m_movecount: &s("m_movecount"),
+        m_reactiontime: &s("m_reactiontime"),
+        m_threshold: "mt_threshold",
+        m_floorz: &s("m_floorz"),
+        m_ceilingz: &s("m_ceilingz"),
+        m_subsector: &s("m_subsector"),
+        prndindex: &s("prndindex"),
+    };
+    for (name, expr) in enemy::chase(&chasing, &world) {
+        bind(&name, expr);
+    }
+    // What the chase left, put back where the mover stands, as one value
+    // per slot. A slot no mover holds keeps what the cycle left it, so the
+    // answers below read this and not the movers' own list.
+    // Every column the chase writes, in the order its answer names them,
+    // and where a slot no mover holds takes its value from.
+    let held: [(&str, usize, &str, String); 11] = [
+        ("m_x", enemy::chased::X, "toInt32", s("m_x")),
+        ("m_y", enemy::chased::Y, "toInt32", s("m_y")),
+        ("m_z", enemy::chased::Z, "toInt32", s("m_z")),
+        ("m_angle", enemy::chased::ANGLE, "toUInt32", s("m_angle")),
+        (
+            "m_movedir",
+            enemy::chased::MOVEDIR,
+            "toInt32",
+            s("m_movedir"),
+        ),
+        (
+            "m_movecount",
+            enemy::chased::MOVECOUNT,
+            "toInt32",
+            s("m_movecount"),
+        ),
+        (
+            "m_reactiontime",
+            enemy::chased::REACTIONTIME,
+            "toInt32",
+            s("m_reactiontime"),
+        ),
+        (
+            "m_threshold",
+            enemy::chased::THRESHOLD,
+            "toInt32",
+            "mt_threshold".to_owned(),
+        ),
+        ("m_floorz", enemy::chased::FLOORZ, "toInt32", s("m_floorz")),
+        (
+            "m_ceilingz",
+            enemy::chased::CEILINGZ,
+            "toInt32",
+            s("m_ceilingz"),
+        ),
+        (
+            "m_subsector",
+            enemy::chased::SUBSECTOR,
+            "toInt32",
+            s("m_subsector"),
+        ),
+    ];
+    let mut standing: Vec<String> = vec![String::new(); enemy::chased::STUCK];
+    for (_, member, cast, array) in &held {
+        standing[member - 1] = format!("{cast}({array}[k])");
+    }
+    standing[enemy::chased::DRAWS - 1] = "toUInt32(0)".to_owned();
+    standing[enemy::chased::STUCK - 1] = "toUInt8(0)".to_owned();
+    // What the chase left, put back where the mover stands, as one value
+    // per slot. A slot no mover holds keeps what the cycle left it.
+    bind(
+        "cw_slot",
+        format!(
+            "arrayMap(k -> if(indexOf(mt_movers, k) = 0, ({}), \
+             cw_chased[indexOf(mt_movers, k)]), arrayEnumerate({}))",
+            standing.join(", "),
+            s("m_x")
+        ),
+    );
+    for (column, member, cast, _) in &held {
+        bind(
+            &format!("now_{column}"),
+            format!("arrayMap(c -> {cast}(c.{member}), cw_slot)"),
+        );
+    }
     bind(
         "now_prndindex",
         format!(
-            "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_shouts), 255))",
-            s("prndindex")
+            "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_shouts) \
+             + arraySum(arrayMap(c -> c.{}, cw_chased)), 255))",
+            s("prndindex"),
+            enemy::chased::DRAWS
         ),
     );
     bind(
         "now_unresolved",
         format!(
-            "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two))",
+            "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
+             OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1)",
             s("unresolved"),
-            cycled::STUCK
+            cycled::STUCK,
+            enemy::chased::STUCK
         ),
     );
     bindings
@@ -262,7 +397,8 @@ fn entry_one(slot: &str) -> String {
         ),
         format!(
             "toUInt8(multiIf(k = {slot}, 0, still = 0, 1, c = 0, 0, n = 0, 1, h = 1, 1, \
-             state_action[1 + n] != 0 AND state_action[1 + n] != a_look, 1, 0))"
+             state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
+             AND state_action[1 + n] != a_chase, 1, 0))"
         ),
         format!("toUInt8({enters})"),
     ];
@@ -288,7 +424,9 @@ fn entry_two() -> String {
         "toInt32(-1)".to_owned(),
         format!(
             "toUInt8({} = 1 OR ({enters} AND ({entering} = 0 \
-             OR state_action[1 + {entering}] != 0 OR state_tics[1 + {entering}] = 0)))",
+             OR (state_action[1 + {entering}] != 0 \
+             AND state_action[1 + {entering}] != a_chase) \
+             OR state_tics[1 + {entering}] = 0)))",
             held(cycled::STUCK)
         ),
         format!("toUInt8({enters} OR a.{} = 1)", cycled::MOVED),
@@ -1113,9 +1251,14 @@ mod tests {
         let shouts = named("mt_shouts");
         assert!(shouts.contains("l = 1 AND w = 1 AND"), "{shouts}");
         assert_eq!(shouts.matches("a_look_sounds").count(), 1, "{shouts}");
-        assert_eq!(
-            named("now_prndindex"),
-            "toUInt8(bitAnd(toUInt32(prev_prndindex) + arraySum(mt_shouts), 255))"
+        let index = named("now_prndindex");
+        assert!(
+            index.starts_with("toUInt8(bitAnd(toUInt32(prev_prndindex) + arraySum(mt_shouts)"),
+            "{index}"
+        );
+        assert!(
+            index.contains(&format!("c.{}, cw_chased", enemy::chased::DRAWS)),
+            "the chase's own draws are counted too: {index}"
         );
     }
 

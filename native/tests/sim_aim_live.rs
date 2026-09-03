@@ -179,6 +179,7 @@ fn asks(level: &Level) -> Vec<Ask> {
             height: level.m_height[slot],
             angle,
             range: MISSILERANGE,
+            slope: 0,
         };
         let mut near: Vec<usize> = (0..things.len()).filter(|to| *to != slot).collect();
         near.sort_by_key(|to| (things[*to].x - from.x).abs() + (things[*to].y - from.y).abs());
@@ -228,6 +229,7 @@ async fn ask_server(
         alive: &arrays.alive,
         floorheight: &arrays.floorheight,
         ceilingheight: &arrays.ceilingheight,
+        line_special: &arrays.line_special,
     };
     let list = format!(
         "[{}]",

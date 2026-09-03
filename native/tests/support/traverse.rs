@@ -1,4 +1,4 @@
-//! `P_PathTraverse` with `PT_ADDLINES`, read a second time.
+//! `P_PathTraverse` read a second time.
 //!
 //! This is an oracle and nothing else. Native mode walks the blockmap in
 //! SQL; this follows `p_maputl.c` instead, so the two agreeing means
@@ -80,11 +80,26 @@ pub struct Map {
     pub v2y: Vec<i64>,
     pub dx: Vec<i64>,
     pub dy: Vec<i64>,
+    /// The mobjs the walk adds, by slot. Empty for a lines-only walk.
+    pub things: Vec<Thing>,
+}
+
+/// One mobj, as `PIT_AddThingIntercepts` reads it.
+#[derive(Clone)]
+pub struct Thing {
+    pub x: i64,
+    pub y: i64,
+    pub radius: i64,
+    /// When it was linked into its block. The engine puts each thing at
+    /// the head of the list, so the largest comes first.
+    pub linkseq: i64,
+    pub alive: bool,
 }
 
 impl Map {
-    /// The lines the trace crosses, nearest first, with their fractions.
-    pub fn traverse(&self, x1: i64, y1: i64, x2: i64, y2: i64) -> Vec<(i32, i64)> {
+    /// What the trace crosses, nearest first: the id, the fraction, and 1
+    /// for a line and 0 for a mobj slot.
+    pub fn traverse(&self, x1: i64, y1: i64, x2: i64, y2: i64) -> Vec<(i32, i64, u8)> {
         let x1 = x1 + i64::from((x1 - self.orgx) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
         let y1 = y1 + i64::from((y1 - self.orgy) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
         let (tdx, tdy) = (x2 - x1, y2 - y1);
@@ -114,14 +129,22 @@ impl Map {
         let mut xintercept = (rx1 >> MAPBTOFRAC) + fixed_mul(partial(mapystep, ry1), xstep);
 
         let (mut mapx, mut mapy) = (xt1, yt1);
-        let mut walked: Vec<i32> = Vec::new();
+        let mut walked: Vec<(i32, u8)> = Vec::new();
+        let mut seen: Vec<i32> = Vec::new();
         for _ in 0..BLOCKS {
             if mapx >= 0 && mapx < self.cols && mapy >= 0 && mapy < self.rows {
-                for line in &self.blocks[(mapy * self.cols + mapx) as usize] {
-                    if !walked.contains(line) {
-                        walked.push(*line);
+                let cell = mapy * self.cols + mapx;
+                for line in &self.blocks[cell as usize] {
+                    if !seen.contains(line) {
+                        walked.push((*line, 1));
+                        seen.push(*line);
                     }
                 }
+                let mut here: Vec<usize> = (0..self.things.len())
+                    .filter(|slot| self.things[*slot].alive && self.cell_of(*slot) == cell)
+                    .collect();
+                here.sort_by_key(|slot| -self.things[*slot].linkseq);
+                walked.extend(here.into_iter().map(|slot| (slot as i32 + 1, 0)));
             }
             if mapx == xt2 && mapy == yt2 {
                 break;
@@ -137,9 +160,15 @@ impl Map {
 
         let far = 16 * FRACUNIT;
         let long = tdx > far || tdy > far || tdx < -far || tdy < -far;
-        let mut hits: Vec<(i32, i64)> = Vec::new();
-        for line in walked {
-            let at = line as usize;
+        let mut hits: Vec<(i32, i64, u8)> = Vec::new();
+        for (id, is_line) in walked {
+            if is_line == 0 {
+                if let Some(frac) = self.thing_frac(id as usize - 1, x1, y1, tdx, tdy) {
+                    hits.push((id, frac, 0));
+                }
+                continue;
+            }
+            let at = id as usize;
             let (s1, s2) = if long {
                 (
                     side(self.v1x[at], self.v1y[at], x1, y1, tdx, tdy, 8),
@@ -183,11 +212,66 @@ impl Map {
             if !(0..=FRACUNIT).contains(&frac) {
                 continue;
             }
-            hits.push((line, frac));
+            hits.push((id, frac, 1));
         }
         // `P_TraverseIntercepts` takes the nearest each time, and a strict
         // comparison leaves an equal fraction where the walk put it.
-        hits.sort_by_key(|(_, frac)| *frac);
+        hits.sort_by_key(|(_, frac, _)| *frac);
         hits
+    }
+
+    /// Where on the map each of a lines-only walk's intercepts sits.
+    ///
+    /// A thing centred on one of these has a box diagonal through it, so
+    /// the walk gives the thing the fraction it gave the line and the two
+    /// tie.
+    pub fn crossings(&self, x1: i64, y1: i64, x2: i64, y2: i64) -> Vec<(i64, i64)> {
+        let nx = x1 + i64::from((x1 - self.orgx) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
+        let ny = y1 + i64::from((y1 - self.orgy) & (MAPBLOCKSIZE - 1) == 0) * FRACUNIT;
+        self.traverse(x1, y1, x2, y2)
+            .into_iter()
+            .filter(|hit| hit.2 == 1)
+            .map(|(_, frac, _)| (nx + fixed_mul(x2 - nx, frac), ny + fixed_mul(y2 - ny, frac)))
+            .collect()
+    }
+
+    /// The blockmap cell a mobj is filed under.
+    fn cell_of(&self, slot: usize) -> i64 {
+        let thing = &self.things[slot];
+        ((thing.y - self.orgy) >> MAPBLOCKSHIFT) * self.cols
+            + ((thing.x - self.orgx) >> MAPBLOCKSHIFT)
+    }
+
+    /// `PIT_AddThingIntercepts`, and the walk's own range test.
+    fn thing_frac(&self, slot: usize, x1: i64, y1: i64, tdx: i64, tdy: i64) -> Option<i64> {
+        let thing = &self.things[slot];
+        let positive = ((tdx as i32) ^ (tdy as i32)) > 0;
+        let bx1 = (thing.x - thing.radius) as i32 as i64;
+        let bx2 = (thing.x + thing.radius) as i32 as i64;
+        let (by1, by2) = if positive {
+            (
+                (thing.y + thing.radius) as i32 as i64,
+                (thing.y - thing.radius) as i32 as i64,
+            )
+        } else {
+            (
+                (thing.y - thing.radius) as i32 as i64,
+                (thing.y + thing.radius) as i32 as i64,
+            )
+        };
+        if side(bx1, by1, x1, y1, tdx, tdy, 8) == side(bx2, by2, x1, y1, tdx, tdy, 8) {
+            return None;
+        }
+        let frac = intercept(
+            x1,
+            y1,
+            tdx,
+            tdy,
+            bx1,
+            by1,
+            (bx2 - bx1) as i32 as i64,
+            (by2 - by1) as i32 as i64,
+        );
+        (0..=FRACUNIT).contains(&frac).then_some(frac)
     }
 }

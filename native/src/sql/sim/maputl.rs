@@ -253,8 +253,20 @@ pub mod trace {
 
 /// Where each field of an intercept sits in its tuple.
 pub mod intercept {
-    pub const LINE: usize = 1;
+    /// The line, or the mobj slot when [`IS_LINE`] is 0.
+    pub const ID: usize = 1;
     pub const FRAC: usize = 2;
+    pub const IS_LINE: usize = 3;
+}
+
+/// The mobj arrays `PIT_AddThingIntercepts` reads.
+pub struct Things<'a> {
+    pub m_x: &'a str,
+    pub m_y: &'a str,
+    pub m_radius: &'a str,
+    pub m_linkseq: &'a str,
+    /// One per mobj slot: 1 while it is still on the list.
+    pub alive: &'a str,
 }
 
 /// One trace, as the tuple [`path_traverse`] reads.
@@ -262,18 +274,22 @@ pub fn tracing(x1: &str, y1: &str, x2: &str, y2: &str) -> String {
     format!("(toInt64({x1}), toInt64({y1}), toInt64({x2}), toInt64({y2}))")
 }
 
-/// `P_PathTraverse` with `PT_ADDLINES`, over an array of traces.
+/// `P_PathTraverse` over an array of traces, with `PT_ADDLINES` always and
+/// `PT_ADDTHINGS` when `things` is given.
 ///
-/// Each answer is the lines the trace crosses, in the order
-/// `P_TraverseIntercepts` hands them to a traverser: nearest first, and
-/// among equal fractions the one the block walk found first. A line past
-/// the end of the trace is left out, which is what the walk's own
-/// `maxfrac` does.
+/// Each answer is what the trace crosses, in the order
+/// `P_TraverseIntercepts` hands it to a traverser: nearest first, and among
+/// equal fractions the one the block walk found first. An intercept past
+/// the end of the trace is left out, which is what the walk's own `maxfrac`
+/// does.
 ///
-/// `PT_ADDTHINGS` is not here. No caller in this simulation asks for
-/// things yet, and no caller anywhere in the engine asks for the early
-/// out.
-pub fn path_traverse(traces: &str) -> String {
+/// The walk visits a block's lines and then its things, so an intercept's
+/// place among equal fractions depends on which block it was found in.
+/// That is why the two lists are built per block and concatenated rather
+/// than gathered separately.
+///
+/// `PT_EARLYOUT` is not here. No caller in the engine asks for it.
+pub fn path_traverse(traces: &str, things: Option<&Things<'_>>) -> String {
     let t = |field: usize| format!("tr.{field}");
     let mut values: Vec<(String, String)> = Vec::new();
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
@@ -383,10 +399,21 @@ pub fn path_traverse(traces: &str) -> String {
              CAST([], 'Array(Int64)'))).6)"
         ),
     );
+    // What the two iterators reach, as `(id, is_line)` in the order they
+    // reach it.
+    if let Some(things) = things {
+        value("pt_near", near(things));
+    }
+    value("pt_at", walked(things));
     // `PIT_AddLineIntercepts`: a line is crossed when its ends fall on
     // opposite sides of the trace. A short trace compares the trace's own
     // ends against the line instead, which is what the engine does to
     // keep the two routines' precision apart.
+    // A walked entry is `(id, is_line)`, which the answer keeps with the
+    // fraction between them.
+    let id = "at.1";
+    let is_line = "at.2";
+    let line = |name: &str| format!("{name}[1 + {id}]");
     let side_of_trace = |x: &str, y: &str| {
         super::super::fixed::point_on_side(x, y, "pt_x1", "pt_y1", "pt_dx", "pt_dy", 8)
     };
@@ -394,10 +421,10 @@ pub fn path_traverse(traces: &str) -> String {
         super::super::fixed::point_on_line_side(
             x,
             y,
-            "line_v1x[1 + l]",
-            "line_v1y[1 + l]",
-            "line_dx[1 + l]",
-            "line_dy[1 + l]",
+            &line("line_v1x"),
+            &line("line_v1y"),
+            &line("line_dx"),
+            &line("line_dy"),
         )
     };
     let long = format!(
@@ -408,29 +435,34 @@ pub fn path_traverse(traces: &str) -> String {
         "if({long}, \
          {} != {}, \
          {} != {})",
-        side_of_trace("line_v1x[1 + l]", "line_v1y[1 + l]"),
-        side_of_trace("line_v2x[1 + l]", "line_v2y[1 + l]"),
+        side_of_trace(&line("line_v1x"), &line("line_v1y")),
+        side_of_trace(&line("line_v2x"), &line("line_v2y")),
         side_of_line("toInt32(pt_x1)", "toInt32(pt_y1)"),
         side_of_line("toInt32(pt_x1 + pt_dx)", "toInt32(pt_y1 + pt_dy)"),
     );
-    let frac = super::super::fixed::intercept_vector(
-        "toInt32(pt_x1)",
-        "toInt32(pt_y1)",
-        "toInt32(pt_dx)",
-        "toInt32(pt_dy)",
-        "line_v1x[1 + l]",
-        "line_v1y[1 + l]",
-        "line_dx[1 + l]",
-        "line_dy[1 + l]",
+    let line_frac = format!(
+        "if({crossed}, {}, -1)",
+        super::super::fixed::intercept_vector(
+            "toInt32(pt_x1)",
+            "toInt32(pt_y1)",
+            "toInt32(pt_dx)",
+            "toInt32(pt_dy)",
+            &line("line_v1x"),
+            &line("line_v1y"),
+            &line("line_dx"),
+            &line("line_dy"),
+        )
     );
+    let hit = match things {
+        Some(things) => format!("if({is_line} = 1, {line_frac}, {})", thing_frac(id, things)),
+        None => line_frac,
+    };
     value(
         "pt_hits",
         format!(
-            "arrayFilter(h -> h.{} >= 0 AND h.{} <= {FRACUNIT}, \
-             arrayMap(l -> (toInt32(l), toInt32(if({crossed}, {frac}, -1))), {}))",
-            intercept::FRAC,
-            intercept::FRAC,
-            lines_in("pt_cells")
+            "arrayFilter(h -> h.{frac} >= 0 AND h.{frac} <= {FRACUNIT}, \
+             arrayMap(at -> ({id}, toInt32({hit}), {is_line}), pt_at))",
+            frac = intercept::FRAC,
         ),
     );
     // `P_TraverseIntercepts` takes the nearest each time, and a strict
@@ -444,6 +476,106 @@ pub fn path_traverse(traces: &str) -> String {
         "arrayMap(tr -> {}, {traces})",
         crate::sql::bind::chain(&values, &body)
     )
+}
+
+/// What the block walk reaches over `pt_cells`, as `(id, is_line)` in the
+/// order it reaches it.
+///
+/// `P_BlockLinesIterator` skips a line it has already reached this call,
+/// which is `validcount`, so a lines-only walk is the distinct lines in
+/// first-occurrence order. A walk that adds things has to keep the blocks
+/// apart, because a block's things go in behind its lines, so it carries
+/// the lines it has already reached from block to block.
+fn walked(things: Option<&Things<'_>>) -> String {
+    let Some(things) = things else {
+        return format!(
+            "arrayMap(l -> (toInt32(l), toUInt8(1)), {})",
+            lines_in("pt_cells")
+        );
+    };
+    // `P_BlockThingsIterator` walks the block's list, which
+    // `P_SetThingPosition` puts each thing at the head of, so the one
+    // linked last comes first.
+    let in_block = format!(
+        "arrayMap(k -> (toInt32(k), toUInt8(0)), \
+         arraySort(k -> -toInt64({}[k]), arrayFilter(k -> {} = c, pt_near)))",
+        things.m_linkseq,
+        cell_of("k", things),
+    );
+    format!(
+        "arrayFold((wk, c) -> (\
+         arrayConcat(wk.1, \
+         arrayMap(l -> (toInt32(l), toUInt8(1)), \
+         arrayFilter(l -> NOT has(wk.2, l), arrayDistinct(bmap_lines[1 + c]))), \
+         {in_block}), \
+         arrayConcat(wk.2, bmap_lines[1 + c])), \
+         pt_cells, \
+         (CAST([], 'Array(Tuple(Int32, UInt8))'), CAST([], 'Array(UInt16)'))).1"
+    )
+}
+
+/// The blockmap cell a mobj is filed under.
+fn cell_of(slot: &str, things: &Things<'_>) -> String {
+    format!(
+        "(bitShiftRight(toInt64({}[{slot}]) - bmap_orgy, {MAPBLOCKSHIFT}) * bmap_cols + \
+         bitShiftRight(toInt64({}[{slot}]) - bmap_orgx, {MAPBLOCKSHIFT}))",
+        things.m_y, things.m_x,
+    )
+}
+
+/// Every mobj the walk could reach, filtered once for the trace rather
+/// than once per block, so the list each block sorts is short.
+fn near(things: &Things<'_>) -> String {
+    format!(
+        "arrayFilter(k -> {alive}[k] = 1 AND has(pt_cells, {}), arrayEnumerate({alive}))",
+        cell_of("k", things),
+        alive = things.alive,
+    )
+}
+
+/// `PIT_AddThingIntercepts`: where the trace crosses the thing's box, or
+/// -1 where it does not cross it or crosses it behind the source.
+///
+/// The box is one diagonal, and which diagonal depends on which way the
+/// trace runs, so the near corner is the one the trace meets first.
+fn thing_frac(slot: &str, things: &Things<'_>) -> String {
+    let at = |array: &str| format!("toInt64({array}[{slot}])");
+    let (x, y, radius) = (at(things.m_x), at(things.m_y), at(things.m_radius));
+    let side = |x: &str, y: &str| {
+        super::super::fixed::point_on_side(x, y, "pt_x1", "pt_y1", "pt_dx", "pt_dy", 8)
+    };
+    let values = vec![
+        (
+            "th_positive".to_owned(),
+            "toUInt8(bitXor(toInt32(pt_dx), toInt32(pt_dy)) > 0)".to_owned(),
+        ),
+        ("th_x1".to_owned(), format!("toInt32({x} - {radius})")),
+        (
+            "th_y1".to_owned(),
+            format!("toInt32(if(th_positive = 1, {y} + {radius}, {y} - {radius}))"),
+        ),
+        ("th_x2".to_owned(), format!("toInt32({x} + {radius})")),
+        (
+            "th_y2".to_owned(),
+            format!("toInt32(if(th_positive = 1, {y} - {radius}, {y} + {radius}))"),
+        ),
+    ];
+    let body = format!(
+        "if({} = {}, -1, {})",
+        side("th_x1", "th_y1"),
+        side("th_x2", "th_y2"),
+        super::super::fixed::intercept_vector(
+            "toInt32(pt_x1)",
+            "toInt32(pt_y1)",
+            "toInt32(pt_dx)",
+            "toInt32(pt_dy)",
+            "th_x1",
+            "th_y1",
+            "toInt32(toInt64(th_x2) - toInt64(th_x1))",
+            "toInt32(toInt64(th_y2) - toInt64(th_y1))",
+        )
+    );
+    crate::sql::bind::chain_in("th", &values, &body)
 }
 
 #[cfg(test)]
@@ -483,6 +615,35 @@ mod tests {
         );
     }
 
+    fn mobjs() -> Things<'static> {
+        Things {
+            m_x: "w_x",
+            m_y: "w_y",
+            m_radius: "w_radius",
+            m_linkseq: "w_linkseq",
+            alive: "w_alive",
+        }
+    }
+
+    /// A block's things go in behind its own lines, so the two lists are
+    /// concatenated per block rather than gathered separately.
+    #[test]
+    fn a_block_s_lines_go_in_ahead_of_its_things() {
+        let sql = walked(Some(&mobjs()));
+        let lines = sql.find("toUInt8(1)").expect("the lines");
+        let things = sql.find("arraySort(k ->").expect("the things");
+        assert!(lines < things, "{sql}");
+    }
+
+    /// A lines-only walk needs no interleaving, so it stays the one pass
+    /// over the blocks that `P_BlockLinesIterator` is.
+    #[test]
+    fn a_lines_only_walk_holds_no_fold_over_the_blocks() {
+        let sql = walked(None);
+        assert!(sql.contains(&lines_in("pt_cells")), "{sql}");
+        assert!(!sql.contains("arrayFold"), "{sql}");
+    }
+
     #[test]
     fn every_builder_balances_its_parentheses() {
         let mut texts = vec![
@@ -492,6 +653,8 @@ mod tests {
             opening("ld", "fh", "ch"),
             finecosine("a"),
             finesine("a"),
+            path_traverse("traces", None),
+            path_traverse("traces", Some(&mobjs())),
         ];
         texts.extend(constants("nat").into_iter().map(|(_, expr)| expr));
         for text in texts {

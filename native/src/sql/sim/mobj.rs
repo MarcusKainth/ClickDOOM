@@ -2,6 +2,7 @@
 
 use super::map::{self, World, answer};
 use super::{State, enemy, inter, maputl, sight};
+use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
 
@@ -14,6 +15,19 @@ const FRICTION: i64 = 0xe800;
 /// `p_local.h`
 const GRAVITY: i64 = 1 << 16;
 const VIEWHEIGHT: i64 = 41 << 16;
+
+/// `p_mobj.h`: the z a spawn asks for when it wants the floor or the
+/// ceiling it lands in.
+const ONFLOORZ: i64 = i32::MIN as i64;
+const ONCEILINGZ: i64 = i32::MAX as i64;
+/// `d_player.h`
+const MAXPLAYERS: i64 = 4;
+/// `doomdef.h`: the one skill that leaves a spawned thing no reaction
+/// time.
+const SK_NIGHTMARE: i64 = 4;
+/// `p_local.h`: how far a punch reaches, which is the range a puff sparks
+/// on the wall at.
+const MELEERANGE: i64 = 64 << 16;
 
 /// `p_mobj.h`
 const MF_SHOOTABLE: i64 = 4;
@@ -50,7 +64,75 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             "a_look".to_owned(),
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = 'A_Look'))"),
         ),
+        (
+            "mobj_spawnstate".to_owned(),
+            super::table_column(db, "mobjinfo", "spawnstate"),
+        ),
+        (
+            "mobj_spawnhealth".to_owned(),
+            super::table_column(db, "mobjinfo", "spawnhealth"),
+        ),
+        (
+            "mobj_reactiontime".to_owned(),
+            super::table_column(db, "mobjinfo", "reactiontime"),
+        ),
+        (
+            "mobj_radius".to_owned(),
+            super::table_column(db, "mobjinfo", "radius"),
+        ),
+        (
+            "mobj_height".to_owned(),
+            super::table_column(db, "mobjinfo", "height"),
+        ),
+        (
+            "mobj_flags".to_owned(),
+            super::table_column(db, "mobjinfo", "flags"),
+        ),
+        ("mt_puff".to_owned(), thing_type(db, "MT_PUFF")),
+        ("mt_blood".to_owned(), thing_type(db, "MT_BLOOD")),
+        // The engine names the frames a puff and a blood spot are put into
+        // by hand. No table holds them, so they are read off the spawn
+        // state's own chain, which `guards` pins the length of.
+        ("s_puff3".to_owned(), along_chain(db, "MT_PUFF", 2)),
+        ("s_blood2".to_owned(), along_chain(db, "MT_BLOOD", 1)),
+        ("s_blood3".to_owned(), along_chain(db, "MT_BLOOD", 2)),
     ]
+}
+
+/// One thing type by the name `mobjtype` holds for it.
+fn thing_type(db: &str, name: &str) -> String {
+    format!("assumeNotNull((SELECT toInt32(id) FROM {db}.mobjtype WHERE name = '{name}'))")
+}
+
+/// The state `hops` along the chain from `kind`'s own spawn state.
+fn along_chain(db: &str, kind: &str, hops: usize) -> String {
+    let mut sql = format!(
+        "(SELECT spawnstate FROM {db}.mobjinfo WHERE id = {})",
+        thing_type(db, kind)
+    );
+    for _ in 0..hops {
+        sql = format!("(SELECT nextstate FROM {db}.states WHERE id = {sql})");
+    }
+    format!("assumeNotNull(toInt32({sql}))")
+}
+
+/// What stops the load: a puff or a blood spot whose state chain is not
+/// the length the engine's own frame names assume.
+///
+/// `P_SpawnPuff` puts a puff into its third frame and `P_SpawnBlood` puts
+/// a blood spot into its second or its third, and nothing else names them.
+pub fn guards(db: &str) -> Vec<Statement> {
+    let ends_at = |kind: &str, hops: usize| along_chain(db, kind, hops);
+    [("MT_PUFF", 4), ("MT_BLOOD", 3)]
+        .into_iter()
+        .map(|(kind, length)| {
+            Statement::sql(format!(
+                "SELECT throwIf({} != 0 OR {} = 0, \n                     '{kind}: the spawn state chain is not {length} states long')",
+                ends_at(kind, length),
+                ends_at(kind, length - 1),
+            ))
+        })
+        .collect()
 }
 
 /// `P_MobjThinker` over every thing on the list but the player's, whose
@@ -1466,5 +1548,431 @@ mod tests {
             _ => d,
         });
         assert_eq!(depth, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spawning
+// ---------------------------------------------------------------------------
+
+/// Where each field of a spawn ask sits in its tuple.
+pub mod spawning {
+    pub const TYPE: usize = 1;
+    pub const X: usize = 2;
+    pub const Y: usize = 3;
+    /// The height to spawn at, or `ONFLOORZ` or `ONCEILINGZ`.
+    pub const Z: usize = 4;
+    /// How many numbers the tic drew before this spawn's own.
+    pub const BASE: usize = 5;
+}
+
+/// Where each field of a debris ask sits in its tuple.
+///
+/// `PTR_ShootTraverse` picks the blood for a thing it can draw blood from
+/// and the puff for a wall and for a thing carrying `MF_NOBLOOD`, so which
+/// of the two this is comes in with the ask.
+pub mod bleeding {
+    /// 1 for a blood spot, 0 for a puff.
+    pub const BLOOD: usize = 1;
+    pub const X: usize = 2;
+    pub const Y: usize = 3;
+    pub const Z: usize = 4;
+    /// What the shot did, which picks a blood spot's own frame.
+    pub const DAMAGE: usize = 5;
+    /// How far the attack reached. A puff sparks rather than smokes where
+    /// that is a punch's reach.
+    pub const RANGE: usize = 6;
+    /// How many numbers the tic drew before this spawn's own.
+    pub const BASE: usize = 7;
+}
+
+/// Where each field of a spawned thing sits in its tuple.
+///
+/// Everything else a new thing carries is a function of its type and its
+/// state, which [`born_column`] reads out of the engine's own tables.
+pub mod born {
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const Z: usize = 3;
+    pub const TYPE: usize = 4;
+    pub const STATE: usize = 5;
+    pub const TICS: usize = 6;
+    pub const FLOORZ: usize = 7;
+    pub const CEILINGZ: usize = 8;
+    pub const SUBSECTOR: usize = 9;
+    pub const LASTLOOK: usize = 10;
+    pub const REACTIONTIME: usize = 11;
+    pub const MOMZ: usize = 12;
+    /// How many numbers the spawn drew.
+    pub const DRAWS: usize = 13;
+}
+
+/// What a spawn reads: how high each sector stands at this point in the
+/// tic, and where the tic's own random index had got to.
+pub struct Spawning<'a> {
+    pub floorheight: &'a str,
+    pub ceilingheight: &'a str,
+    pub prndindex: &'a str,
+    /// `gameskill`, which decides whether a thing spawns with a reaction
+    /// time.
+    pub skill: &'a str,
+}
+
+/// `P_SpawnMobj` over every ask in `asks`, as a [`born`] tuple each.
+///
+/// One draw apiece, for `lastlook`. `P_SetThingPosition` puts the thing in
+/// the subsector its point falls in, and the floor and the ceiling it
+/// stands between are that subsector's sector's.
+pub fn spawn_mobj(asks: &str, world: &Spawning<'_>) -> String {
+    let a = |field: usize| format!("sp_ask.{field}");
+    let values = spawned(
+        &a(spawning::TYPE),
+        &a(spawning::X),
+        &a(spawning::Y),
+        &a(spawning::Z),
+        &a(spawning::BASE),
+        world,
+    );
+    let body = born_tuple("sp_state", "sp_tics", "toInt32(0)", "toUInt32(1)");
+    format!(
+        "arrayMap(sp_ask -> {}, {asks})",
+        bind::chain_in("spa", &values, &body)
+    )
+}
+
+/// `P_SpawnPuff` and `P_SpawnBlood` over every ask in `asks`, as a
+/// [`born`] tuple each.
+///
+/// Four draws apiece: two that jitter the height, `P_SpawnMobj`'s own, and
+/// one that shortens the wait. `P_SetMobjState` then writes the frame's own
+/// wait back over the shortened one wherever the damage or the range moves
+/// the thing to another frame.
+pub fn spawn_debris(asks: &str, world: &Spawning<'_>) -> String {
+    let (values, body) = debris_values(world);
+    format!(
+        "arrayMap(sp_ask -> {}, {asks})",
+        bind::chain_in("spa", &values, &body)
+    )
+}
+
+/// What one debris ask works out, as the values a body reads and the
+/// [`born`] tuple it answers with.
+fn debris_values(world: &Spawning<'_>) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("sp_ask.{field}");
+    let draw = |nth: &str| {
+        format!(
+            "toInt64(rnd[1 + bitAnd(toUInt32({}) + toUInt32({}) + {nth}, 255)])",
+            world.prndindex,
+            a(bleeding::BASE),
+        )
+    };
+    let mut values: Vec<(String, String)> = Vec::new();
+    values.push((
+        "sp_kind".to_owned(),
+        format!("toInt32(if({} = 1, mt_blood, mt_puff))", a(bleeding::BLOOD)),
+    ));
+    // `z += ((P_Random() - P_Random()) << 10)`, in the engine's order.
+    values.push((
+        "sp_z".to_owned(),
+        format!(
+            "toInt32(toInt64({}) + bitShiftLeft({} - {}, 10))",
+            a(bleeding::Z),
+            draw("1"),
+            draw("2"),
+        ),
+    ));
+    values.extend(spawned(
+        "sp_kind",
+        &a(bleeding::X),
+        &a(bleeding::Y),
+        "sp_z",
+        &format!("toUInt32({}) + 2", a(bleeding::BASE)),
+        world,
+    ));
+    // The wait the fourth draw shortens, held at one.
+    values.push((
+        "sp_short".to_owned(),
+        format!("toInt32(greatest(sp_tics - bitAnd({}, 3), 1))", draw("4")),
+    ));
+    // `P_SetMobjState` writes the frame it moves to and that frame's own
+    // wait, so a spot that moves keeps none of the shortened wait.
+    values.push((
+        "sp_moved".to_owned(),
+        format!(
+            "toInt32(multiIf({blood} = 0 AND {range} = {MELEERANGE}, s_puff3, \
+             {blood} = 0, sp_state, \
+             {damage} <= 12 AND {damage} >= 9, s_blood2, \
+             {damage} < 9, s_blood3, sp_state))",
+            blood = a(bleeding::BLOOD),
+            range = a(bleeding::RANGE),
+            damage = a(bleeding::DAMAGE),
+        ),
+    ));
+    let body = born_tuple(
+        "sp_moved",
+        "toInt32(if(sp_moved = sp_state, sp_short, state_tics[1 + sp_moved]))",
+        &format!(
+            "toInt32(if({} = 1, {}, {}))",
+            a(bleeding::BLOOD),
+            2 << 16,
+            1 << 16
+        ),
+        "toUInt32(4)",
+    );
+    (values, body)
+}
+
+/// What `P_SpawnMobj` works out for one ask, as the values a body reads.
+///
+/// `base` is how many numbers the tic drew before this spawn's own, so the
+/// draw for `lastlook` is the one after it.
+fn spawned(
+    kind: &str,
+    x: &str,
+    y: &str,
+    z: &str,
+    base: &str,
+    world: &Spawning<'_>,
+) -> Vec<(String, String)> {
+    let info = |table: &str| format!("{table}[1 + sp_type]");
+    vec![
+        ("sp_type".to_owned(), format!("toInt32({kind})")),
+        ("sp_x".to_owned(), format!("toInt32({x})")),
+        ("sp_y".to_owned(), format!("toInt32({y})")),
+        ("sp_asked_z".to_owned(), format!("toInt32({z})")),
+        ("sp_state".to_owned(), info("mobj_spawnstate")),
+        (
+            "sp_tics".to_owned(),
+            "toInt32(state_tics[1 + sp_state])".to_owned(),
+        ),
+        (
+            "sp_lastlook".to_owned(),
+            format!(
+                "toInt32(rnd[1 + bitAnd(toUInt32({}) + toUInt32({base}) + 1, 255)] % {MAXPLAYERS})",
+                world.prndindex
+            ),
+        ),
+        (
+            "sp_reactiontime".to_owned(),
+            format!(
+                "toInt32(if({} != {SK_NIGHTMARE}, {}, 0))",
+                world.skill,
+                info("mobj_reactiontime")
+            ),
+        ),
+        ("sp_subsector".to_owned(), map::subsector("sp_x", "sp_y")),
+        (
+            "sp_sector".to_owned(),
+            "toInt32(ssec_sector[1 + sp_subsector])".to_owned(),
+        ),
+        (
+            "sp_floorz".to_owned(),
+            format!("toInt32({}[1 + sp_sector])", world.floorheight),
+        ),
+        (
+            "sp_ceilingz".to_owned(),
+            format!("toInt32({}[1 + sp_sector])", world.ceilingheight),
+        ),
+        (
+            "sp_z_now".to_owned(),
+            format!(
+                "toInt32(multiIf(sp_asked_z = {ONFLOORZ}, sp_floorz, \
+                 sp_asked_z = {ONCEILINGZ}, sp_ceilingz - {}, sp_asked_z))",
+                info("mobj_height")
+            ),
+        ),
+    ]
+}
+
+/// A [`born`] tuple, from the values [`spawned`] bound.
+fn born_tuple(state: &str, tics: &str, momz: &str, draws: &str) -> String {
+    format!(
+        "(sp_x, sp_y, sp_z_now, sp_type, toInt32({state}), toInt32({tics}), \
+         sp_floorz, sp_ceilingz, sp_subsector, sp_lastlook, sp_reactiontime, \
+         toInt32({momz}), toUInt32({draws}))"
+    )
+}
+
+/// The columns a caller hands out rather than reads off a spawn: the
+/// identity a thinker takes when it is added, and the order its sector
+/// lists it in.
+///
+/// `P_AddThinker` and `P_SetThingPosition` give each new thing the next of
+/// each, so only a caller holding the list can say what they are.
+pub const ASSIGNED_COLUMNS: [&str; 2] = ["m_id", "m_linkseq"];
+
+/// What one state column of a newly spawned thing holds, read out of the
+/// tables from its [`born`] tuple. `spawn` names one such tuple.
+///
+/// Every column a spawn leaves at zero answers `toInt32(0)`, because
+/// `P_SpawnMobj` clears the whole structure before it fills any of it in.
+/// [`ASSIGNED_COLUMNS`] answer `None`, so a caller that walks the columns
+/// has to say what it puts in them rather than being handed a zero.
+pub fn born_column(column: &str, spawn: &str) -> Option<String> {
+    let at = |field: usize| format!("{spawn}.{field}");
+    let info = |table: &str| format!("{table}[1 + {}]", at(born::TYPE));
+    let state = |table: &str| format!("{table}[1 + {}]", at(born::STATE));
+    if ASSIGNED_COLUMNS.contains(&column) {
+        return None;
+    }
+    Some(match column {
+        "m_x" => at(born::X),
+        "m_y" => at(born::Y),
+        "m_z" => at(born::Z),
+        "m_type" => at(born::TYPE),
+        "m_state" => at(born::STATE),
+        "m_tics" => at(born::TICS),
+        "m_floorz" => at(born::FLOORZ),
+        "m_ceilingz" => at(born::CEILINGZ),
+        "m_subsector" => at(born::SUBSECTOR),
+        "m_lastlook" => at(born::LASTLOOK),
+        "m_reactiontime" => at(born::REACTIONTIME),
+        "m_momz" => at(born::MOMZ),
+        "m_sprite" => state("state_sprite"),
+        "m_frame" => state("state_frame"),
+        "m_radius" => info("mobj_radius"),
+        "m_height" => info("mobj_height"),
+        "m_flags" => info("mobj_flags"),
+        "m_health" => info("mobj_spawnhealth"),
+        _ => "toInt32(0)".to_owned(),
+    })
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+    use crate::tables;
+
+    fn world() -> Spawning<'static> {
+        Spawning {
+            floorheight: "floorheight",
+            ceilingheight: "ceilingheight",
+            prndindex: "prndindex",
+            skill: "skill",
+        }
+    }
+
+    /// `mobjinfo`'s own numbers for a name the engine's enum carries.
+    fn info(kind: &str, column: &str) -> i64 {
+        let types = tables::table("mobjtype").unwrap();
+        let at = types
+            .texts("name")
+            .unwrap()
+            .iter()
+            .position(|held| *held == kind)
+            .expect("the enum carries the name");
+        let id = types.ints("id").unwrap()[at];
+        tables::table("mobjinfo").unwrap().ints(column).unwrap()[id as usize]
+    }
+
+    /// `P_SpawnPuff` and `P_SpawnBlood` hold the shortened wait at one, and
+    /// nothing reaches that: the draw takes at most three tics off, and
+    /// both frames wait longer than three. The line stays because it is the
+    /// engine's; this fails if a frame's own wait ever drops to it.
+    #[test]
+    fn the_shortened_wait_cannot_run_below_one() {
+        let tics = tables::table("states").unwrap().ints("tics").unwrap();
+        for kind in ["MT_PUFF", "MT_BLOOD"] {
+            let state = info(kind, "spawnstate");
+            assert!(
+                tics[state as usize] > 3,
+                "{kind} spawns in a frame waiting {} tics",
+                tics[state as usize]
+            );
+        }
+    }
+
+    /// `P_SetMobjState` runs on into the next frame while the one it
+    /// entered waits no tics. Every frame the two chains hold waits, so the
+    /// spawn enters one frame and stops, and the generator writes no
+    /// cascade. This fails if a frame's own wait ever reaches zero.
+    #[test]
+    fn no_frame_a_spawn_is_put_into_runs_straight_on() {
+        let states = tables::table("states").unwrap();
+        let tics = states.ints("tics").unwrap();
+        let nextstate = states.ints("nextstate").unwrap();
+        for (kind, length) in [("MT_PUFF", 4), ("MT_BLOOD", 3)] {
+            let mut state = info(kind, "spawnstate");
+            for hop in 0..length {
+                assert!(
+                    tics[state as usize] > 0,
+                    "{kind} frame {hop} waits {} tics",
+                    tics[state as usize]
+                );
+                state = nextstate[state as usize];
+            }
+            assert_eq!(state, 0, "{kind}: the chain ends where the load says");
+        }
+    }
+
+    /// A spawn draws once and a puff or a blood spot four times, which is
+    /// what every draw after them in the tic sits behind.
+    #[test]
+    fn a_spawn_draws_once_and_a_debris_four_times() {
+        assert!(spawn_mobj("asks", &world()).contains("toUInt32(1))"));
+        assert!(spawn_debris("asks", &world()).contains("toUInt32(4))"));
+    }
+
+    /// Every column a spawn leaves at zero reads as zero, because
+    /// `P_SpawnMobj` clears the structure before it fills any of it in.
+    #[test]
+    fn a_column_a_spawn_does_not_set_is_zero() {
+        for column in ["m_angle", "m_momx", "m_momy", "m_target", "m_movedir"] {
+            assert_eq!(
+                born_column(column, "b").as_deref(),
+                Some("toInt32(0)"),
+                "{column}"
+            );
+        }
+        assert_eq!(born_column("m_x", "b").as_deref(), Some("b.1"));
+    }
+
+    /// The identity a thinker takes and the order its sector lists it in
+    /// are the caller's, so a caller walking the columns cannot be handed a
+    /// zero for either. A puff and a blood spot carry `MF_NOBLOCKMAP` and
+    /// are still in their sector's list, newest first, which is what a
+    /// later `P_ChangeSector` and the noise walk read.
+    #[test]
+    fn the_columns_a_caller_assigns_answer_nothing() {
+        for column in ASSIGNED_COLUMNS {
+            assert_eq!(born_column(column, "b"), None, "{column}");
+        }
+        for column in super::super::state_columns() {
+            if column.starts_with("m_") && !ASSIGNED_COLUMNS.contains(&column) {
+                assert!(born_column(column, "b").is_some(), "{column}");
+            }
+        }
+    }
+
+    /// `z += ((P_Random() - P_Random()) << 10)` leaves the operand order to
+    /// the compiler. The pinned ELF saves the first call's answer and
+    /// subtracts the second from it, so the earlier draw is the left
+    /// operand.
+    #[test]
+    fn the_height_jitter_subtracts_the_later_draw_from_the_earlier() {
+        let (values, _) = debris_values(&world());
+        let jitter = values
+            .iter()
+            .find(|(name, _)| name == "sp_z")
+            .map(|(_, expr)| expr.clone())
+            .expect("the debris names the height it jitters");
+        let offsets: Vec<&str> = jitter
+            .match_indices("bitAnd(")
+            .filter_map(|(at, _)| jitter[at..].split(", 255)").next())
+            .filter_map(|held| held.rsplit("+ ").next())
+            .collect();
+        assert_eq!(offsets, ["1", "2"], "{jitter}");
+    }
+
+    #[test]
+    fn every_spawn_expression_balances_its_parentheses() {
+        for sql in [spawn_mobj("asks", &world()), spawn_debris("asks", &world())] {
+            let depth = sql.chars().fold(0i32, |d, c| match c {
+                '(' => d + 1,
+                ')' => d - 1,
+                _ => d,
+            });
+            assert_eq!(depth, 0, "{sql}");
+        }
     }
 }

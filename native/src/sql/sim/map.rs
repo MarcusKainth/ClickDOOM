@@ -254,7 +254,7 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
 }
 
 /// `R_PointInSubsector` at a point.
-fn subsector(x: &str, y: &str) -> String {
+pub fn subsector(x: &str, y: &str) -> String {
     let nodes = bsp::Nodes {
         x: "node_x",
         y: "node_y",

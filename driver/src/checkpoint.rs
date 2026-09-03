@@ -92,6 +92,30 @@ pub fn checkpoint_sql(db: &str) -> String {
     )
 }
 
+/// Every register checkpoint one batch recorded, one SPEC checkpoint line
+/// per row, in icount order.
+///
+/// The fold appends `(icount, pc, regs)` at each `CHECKPOINT_INTERVAL`
+/// boundary it crosses and commits them with the batch. The hash is taken
+/// here rather than inside the fold: it would otherwise be computed on
+/// every step, since the fold disables short-circuit evaluation.
+pub fn batch_checkpoints_sql(db: &str, batch_id: u64) -> String {
+    let regs = clickdoom_executor::fold::CHECKPOINT_REGS;
+    let reghash_expr = reg_hash("pc", "regs");
+    let line = format_checkpoint("icount", "pc", "reghash", None);
+    format!(
+        "SELECT {line}\nFROM (\n    \
+         SELECT cp_icount[n] AS icount, cp_pc[n] AS pc,\n           \
+         arraySlice(cp_regs, (n - 1) * {regs} + 1, {regs}) AS regs,\n           \
+         {reghash_expr} AS reghash\n    \
+         FROM (\n        \
+         SELECT cp_icount, cp_pc, cp_regs, arrayJoin(arrayEnumerate(cp_icount)) AS n\n        \
+         FROM {db}.batch_commit\n        \
+         WHERE batch_id = {batch_id}\n    \
+         )\n)\nORDER BY icount"
+    )
+}
+
 /// The latest `cpu_state` row's cheap register-only checkpoint line
 /// (icount/pc/reghash), for the `CHECKPOINT_INTERVAL` cadence.
 pub fn reg_checkpoint_sql(db: &str) -> String {

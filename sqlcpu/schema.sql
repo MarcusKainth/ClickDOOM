@@ -73,6 +73,14 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 --                  ordering rule.
 --   console_bytes  PUTCHAR bytes emitted this batch, flushed into
 --                  console_out in (batch_id, array position) order.
+--   cp_icount/cp_pc/cp_regs  SPEC §7's register checkpoints, one entry per
+--                  CHECKPOINT_INTERVAL boundary a retiring instruction of
+--                  this batch landed on. The checkpoint cadence is 256x
+--                  finer than a batch and arrayFold exposes no intermediate
+--                  accumulator, so the state at a boundary is observable
+--                  only if the step retiring it records it. cp_regs is
+--                  flat: 31 words (x1..x31) per entry, in cp_icount's own
+--                  order.
 --
 -- Bounded by retention on batch_id LAG, never wall-clock time (ADR-0003's
 -- rejected-TTL writeup: a wall-clock TTL loses the last committed batch's
@@ -138,7 +146,12 @@ CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
     pal_wl_addr  Array(UInt32),
     pal_wl_val   Array(UInt32),
     pal_wl_icount Array(UInt64),
-    console_bytes Array(UInt8)
+    console_bytes Array(UInt8),
+    -- SPEC §7's CHECKPOINT_INTERVAL cadence, recorded inside the fold --
+    -- see the column note above.
+    cp_icount    Array(UInt64),
+    cp_pc        Array(UInt32),
+    cp_regs      Array(UInt32)
 )
 ENGINE = MergeTree
 ORDER BY batch_id

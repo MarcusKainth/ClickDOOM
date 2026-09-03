@@ -466,6 +466,10 @@ async fn cmd_run(cmd: &RunCmd) -> Result<Exit, Failure> {
     eprintln!("final_batch_id\t{}", outcome.final_batch_id);
     eprintln!("final_icount\t{}", outcome.final_icount);
     eprintln!("frames_observed\t{}", outcome.frames_observed);
+    eprintln!(
+        "reg_checkpoints_compared\t{}",
+        outcome.reg_checkpoints_compared
+    );
     match outcome.stop {
         crate::emulation::run::Stop::Interrupted => eprintln!("stop\tinterrupted"),
         crate::emulation::run::Stop::ReachedTarget => eprintln!("stop\treached_target"),

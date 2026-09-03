@@ -18,6 +18,13 @@
 //! `RAM_HASH_INTERVAL` boundary rather than almost always missing it: SPEC's
 //! checkpoint intervals don't divide evenly into any fixed K, and a check
 //! nothing ever lands on is indistinguishable from one that passes.
+//!
+//! The register cadence is 256x finer than that and a batch cannot land on
+//! every one of its boundaries, so the fold records `(icount, pc, regs)` at
+//! each boundary it crosses and commits them with the batch. Both cadences
+//! are compared against the reference trace after every batch, and the run
+//! stops on the first line that differs. A register checkpoint carries no
+//! `ramhash`, so it catches register and control-flow divergence only.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,9 +34,9 @@ use std::time::Duration; // purity-ok: the progress line's reporting interval, o
 use clickdoom_executor::commit;
 use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
 use clickdoom_executor::fold::{self, BatchArgs};
-use clickdoom_spec::{Manifest, RAM_BASE, RAM_HASH_INTERVAL};
+use clickdoom_spec::{CHECKPOINT_INTERVAL, Manifest, RAM_BASE, RAM_HASH_INTERVAL};
 
-use crate::checkpoint::checkpoint_sql;
+use crate::checkpoint::{batch_checkpoints_sql, checkpoint_sql, reg_checkpoint_sql};
 use crate::client::{ConnArgs, Error};
 use crate::emulation::preflight;
 use crate::emulation::rom::RAM_WORDS_DEFAULT;
@@ -61,18 +68,27 @@ pub enum RunError {
     Frame(#[from] crate::frames::Error),
     #[error("no reference trace line for icount={0} in {1}: trace/run icount cadence disagree")]
     NoTraceLine(u64, std::path::PathBuf),
-    #[error(
-        "checkpoint mismatch at icount={icount}: expected (icount/pc/reghash/ramhash/fbhash) {expected}, actual {actual}"
-    )]
+    #[error("checkpoint mismatch at icount={icount}: expected (trace) {expected}, actual {actual}")]
     CheckpointMismatch {
         icount: u64,
         expected: String,
         actual: String,
     },
+    #[error("checkpoint line {0:?} does not start with an icount")]
+    MalformedCheckpoint(String),
     #[error(
         "expected to have committed batch_id={expected}, but batch_commit's latest is {found}: another runner is writing to this database, and flushing now would derive its batch instead of this one"
     )]
     BatchIdMoved { expected: u64, found: u64 },
+    #[error(
+        "compared {compared} of {expected} register checkpoints in (icount {from}, {to}] -- a loop that silently skips boundaries is indistinguishable from one that compared them all unless this fires"
+    )]
+    CheckpointCountShortfall {
+        compared: u64,
+        expected: u64,
+        from: u64,
+        to: u64,
+    },
     #[error("fatal halt ({reason}) at icount={icount}, short of target icount={target}")]
     FatalHalt {
         reason: String,
@@ -104,6 +120,9 @@ pub struct Outcome {
     pub final_batch_id: u64,
     pub final_icount: u64,
     pub frames_observed: u32,
+    /// Register checkpoints compared against the reference trace, over the
+    /// icount range this process covered rather than the whole run's.
+    pub reg_checkpoints_compared: u64,
 }
 
 /// Reads `[icount, pc_hex, reghash_hex, ramhash_hex, fbhash_hex]` from a
@@ -134,6 +153,44 @@ async fn flush(db: &crate::client::Db, database: &str, batch_id: u64) -> Result<
     db.run(&commit::cpu_state_flush_sql(database, batch_id))
         .await?;
     Ok(())
+}
+
+/// A trace line's first three fields, which is the whole line at the
+/// register cadence and its register prefix at a `RAM_HASH_INTERVAL` one.
+fn register_fields(line: &str) -> String {
+    line.split('\t').take(3).collect::<Vec<_>>().join("\t")
+}
+
+/// Compares every register checkpoint `batch_id` recorded against the
+/// reference trace, in icount order, and returns how many it compared.
+/// Stops at the first line that differs.
+async fn compare_batch_checkpoints(
+    db: &crate::client::Db,
+    database: &str,
+    batch_id: u64,
+    trace_path: &Path,
+) -> Result<u64, RunError> {
+    let actual_lines: Vec<String> = db
+        .fetch_all(&batch_checkpoints_sql(database, batch_id))
+        .await?;
+    let mut compared = 0u64;
+    for actual in actual_lines {
+        let icount: u64 = actual
+            .split('\t')
+            .next()
+            .and_then(|field| field.parse().ok())
+            .ok_or_else(|| RunError::MalformedCheckpoint(actual.clone()))?;
+        let expected = register_fields(&trace_line_for(trace_path, icount)?);
+        if actual != expected {
+            return Err(RunError::CheckpointMismatch {
+                icount,
+                expected,
+                actual,
+            });
+        }
+        compared += 1;
+    }
+    Ok(compared)
 }
 
 /// Runs the batch loop until the target icount, `--stop-at-frame`, a fatal
@@ -192,6 +249,7 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     let mut reached_target = false;
     let mut frames_observed = 0u32;
     let mut batches_run = 0u64;
+    let mut reg_checkpoints_compared = 0u64;
     let ram_hash_interval = RAM_HASH_INTERVAL;
     // Counted from the resume point, so the reported rates are this
     // process's and not the whole run's history.
@@ -277,9 +335,26 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             eprintln!("{line}");
         }
 
-        if icount.is_multiple_of(ram_hash_interval) && icount > 0 {
-            let actual: String = db.fetch_one(&checkpoint_sql(&conn.database)).await?;
-            let expected = trace_line_for(args.trace_path, icount)?;
+        reg_checkpoints_compared +=
+            compare_batch_checkpoints(&db, &conn.database, batch_id, args.trace_path).await?;
+
+        // A boundary landing on this batch's own last retired instruction
+        // has no following step to record it inside the fold, so it is read
+        // from the committed row instead. At a RAM_HASH_INTERVAL boundary
+        // that row also carries `ramhash` and `fbhash`.
+        if icount.is_multiple_of(CHECKPOINT_INTERVAL) && icount > 0 {
+            let at_ram_hash = icount.is_multiple_of(ram_hash_interval);
+            let actual: String = if at_ram_hash {
+                db.fetch_one(&checkpoint_sql(&conn.database)).await?
+            } else {
+                db.fetch_one(&reg_checkpoint_sql(&conn.database)).await?
+            };
+            let line = trace_line_for(args.trace_path, icount)?;
+            let expected = if at_ram_hash {
+                line
+            } else {
+                register_fields(&line)
+            };
             if actual != expected {
                 return Err(RunError::CheckpointMismatch {
                     icount,
@@ -287,6 +362,7 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
                     actual,
                 });
             }
+            reg_checkpoints_compared += 1;
             eprintln!("# checkpoint OK at icount={icount}");
         }
 
@@ -322,6 +398,23 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
         stats.finish(progress(icount, batches_run, frames_observed))
     );
 
+    // Every boundary between where this process resumed and where it
+    // stopped had to produce exactly one comparison. Without this, a fold
+    // that recorded nothing reads as a clean run.
+    let reg_checkpoints_expected =
+        icount / CHECKPOINT_INTERVAL - resume_icount / CHECKPOINT_INTERVAL;
+    if reg_checkpoints_compared != reg_checkpoints_expected {
+        return Err(RunError::CheckpointCountShortfall {
+            compared: reg_checkpoints_compared,
+            expected: reg_checkpoints_expected,
+            from: resume_icount,
+            to: icount,
+        });
+    }
+    eprintln!(
+        "# compared {reg_checkpoints_compared} register checkpoints in (icount {resume_icount}, {icount}]"
+    );
+
     let stop = if interrupted.load(Ordering::SeqCst) {
         eprintln!(
             "# stopped: interrupted, current batch's flush already committed -- safe to resume"
@@ -353,5 +446,6 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
         final_batch_id: batch_id,
         final_icount: icount,
         frames_observed,
+        reg_checkpoints_compared,
     })
 }

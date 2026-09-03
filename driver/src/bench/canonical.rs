@@ -622,10 +622,11 @@ async fn commit_fold_batch(
         pal_wl_icount: result.pal_wl_icount,
         console_bytes: result.console_bytes,
     };
+    let batch_id = row.batch_id;
     db.insert_all("batch_commit", std::iter::once(row)).await?;
-    db.run(&commit::ram_flush_sql(database)).await?;
+    db.run(&commit::ram_flush_sql(database, batch_id)).await?;
     // fbpal_flush_sql returns two statements (framebuffer, then palette).
-    for statement in split_statements(&commit::fbpal_flush_sql(database)) {
+    for statement in split_statements(&commit::fbpal_flush_sql(database, batch_id)) {
         db.run(statement).await?;
     }
     Ok(())
@@ -647,6 +648,11 @@ async fn run_e2e_batch(db: &Db, shape: &Shape<'_>, tag: &Tag<'_>) -> Result<Batc
         ))
         .await?
     };
+    let prev_batch_id: u64 = db
+        .fetch_one(&format!(
+            "SELECT max(batch_id) FROM {database}.batch_commit"
+        ))
+        .await?;
     let batch_args = BatchArgs {
         db: database,
         ..Default::default()
@@ -660,12 +666,16 @@ async fn run_e2e_batch(db: &Db, shape: &Shape<'_>, tag: &Tag<'_>) -> Result<Batc
         shape.hwm,
         &batch_args,
     );
+    // The fold numbers its row from the previous one, so this arm's own
+    // batch is known before the statements are built and every flush can
+    // name it. The arms run one at a time against a private container.
+    let this_batch = prev_batch_id + 1;
     let statements = [
         batch_sql,
-        commit::ram_flush_sql(database),
-        commit::console_out_flush_sql(database),
-        commit::cpu_state_flush_sql(database),
-        commit::retention_sql(database, BATCH_COMMIT_RETENTION_N),
+        commit::ram_flush_sql(database, this_batch),
+        commit::console_out_flush_sql(database, this_batch),
+        commit::cpu_state_flush_sql(database, this_batch),
+        commit::retention_sql(database, this_batch, BATCH_COMMIT_RETENTION_N),
     ];
     let query_ids: Vec<String> = (0..statements.len()).map(|n| tag.statement(n)).collect();
     let t0 = Instant::now(); // purity-ok: timing this batch for the report, not used in any query

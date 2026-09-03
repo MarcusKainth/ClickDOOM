@@ -35,7 +35,7 @@ use clickdoom_executor::config::BATCH_COMMIT_RETENTION_N;
 /// is only real once it is shown carrying what it exists for.
 #[test]
 fn retention_sql_carries_the_async_setting() {
-    let sql = retention_sql("clickdoom", BATCH_COMMIT_RETENTION_N);
+    let sql = retention_sql("clickdoom", 1, BATCH_COMMIT_RETENTION_N);
     assert!(sql.contains("lightweight_deletes_sync = 0"), "{sql}");
 }
 
@@ -86,17 +86,36 @@ mod live {
         fx.db.run(&sql).await.unwrap();
     }
 
-    /// Every flush, in the order the driver runs them. `fbpal_flush_sql`
-    /// returns two statements in one string, and the HTTP interface takes
-    /// one statement per request.
-    async fn flush_all(fx: &Fixture) {
+    /// Every flush, in the order the driver runs them, for `batch_id`.
+    /// `fbpal_flush_sql` returns two statements in one string, and the HTTP
+    /// interface takes one statement per request.
+    async fn flush_batch(fx: &Fixture, batch_id: u64) {
         let db = &fx.database;
-        fx.db.run(&ram_flush_sql(db)).await.unwrap();
-        for statement in split_statements(&fbpal_flush_sql(db)) {
+        fx.db.run(&ram_flush_sql(db, batch_id)).await.unwrap();
+        for statement in split_statements(&fbpal_flush_sql(db, batch_id)) {
             fx.db.run(statement).await.unwrap();
         }
-        fx.db.run(&console_out_flush_sql(db)).await.unwrap();
-        fx.db.run(&cpu_state_flush_sql(db)).await.unwrap();
+        fx.db
+            .run(&console_out_flush_sql(db, batch_id))
+            .await
+            .unwrap();
+        fx.db.run(&cpu_state_flush_sql(db, batch_id)).await.unwrap();
+    }
+
+    /// [`flush_batch`] for the batch this fixture committed last. A test
+    /// here is the only writer, so that is the batch it just ran.
+    async fn flush_all(fx: &Fixture) {
+        flush_batch(fx, latest_batch_id(fx).await).await;
+    }
+
+    async fn latest_batch_id(fx: &Fixture) -> u64 {
+        fx.db
+            .fetch_one(&format!(
+                "SELECT max(batch_id) FROM {}.batch_commit",
+                fx.database
+            ))
+            .await
+            .unwrap()
     }
 
     async fn ram_value_version(fx: &Fixture, word_addr: u32) -> (u32, u64) {
@@ -443,6 +462,48 @@ mod live {
     }
 
     #[tokio::test]
+    async fn a_flush_derives_the_batch_it_names_not_the_latest() {
+        let fx = Fixture::create("flush_derives_the_batch_it_names").await;
+        // Two runners against one database: A commits batch 1, B commits
+        // batch 2, and A then flushes. A flush that read `max(batch_id)`
+        // would derive B's batch and drop A's write-log with no error
+        // anywhere, so batch 1's store would never reach `ram`.
+        let (decn, ram_words) = (1, 9);
+        let addr = RAM_BASE + decn * 4;
+        let word_addr = RAM_BASE_WORD + decn;
+        seed_decoded_and_ram(&fx, &[store(1, addr, WORD)], ram_words).await;
+
+        let mut regs = [0u32; 31];
+        regs[0] = 0xAAAA_AAAA;
+        fx.seed_batch_commit(0, RAM_BASE, &regs, 0).await;
+        run_batch(&fx, 1, decn, ram_words).await;
+        // The second batch chains off the first, so it stores the same
+        // value at the same address. Its write-log entry carries icount 2
+        // where the first carries 1, which is what tells the two apart in
+        // `ram.version`.
+        run_batch(&fx, 1, decn, ram_words).await;
+        assert_eq!(latest_batch_id(&fx).await, 2, "two batches are committed");
+
+        flush_batch(&fx, 1).await;
+        let (value, version) = ram_value_version(&fx, word_addr).await;
+        assert_eq!(
+            (value, version),
+            (0xAAAA_AAAA, 1),
+            "the flush derived a batch other than the one it was given"
+        );
+        let flushed: u64 = fx
+            .db
+            .fetch_one(&format!(
+                "SELECT count() FROM {}.cpu_state FINAL",
+                fx.database
+            ))
+            .await
+            .unwrap();
+        assert_eq!(flushed, 1, "only the named batch reached cpu_state");
+        fx.finish().await;
+    }
+
+    #[tokio::test]
     async fn retention_delete_does_not_underflow_early_in_a_run() {
         let fx = Fixture::create("retention_does_not_underflow").await;
         // On the first batches of a run, `max(batch_id) - N` computed in
@@ -452,7 +513,7 @@ mod live {
         let before = batch_commit_count(&fx).await;
         assert_eq!(before, 1);
         fx.db
-            .run(&retention_sql(&fx.database, BATCH_COMMIT_RETENTION_N))
+            .run(&retention_sql(&fx.database, 0, BATCH_COMMIT_RETENTION_N))
             .await
             .unwrap();
         wait_for_mutations(&fx, "batch_commit").await;

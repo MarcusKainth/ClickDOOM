@@ -300,6 +300,10 @@ impl Session {
     }
 
     /// Reads one frame if the renderer has written it, in one query.
+    ///
+    /// The read is retried on a fresh connection when the pooled one it
+    /// went out on had been closed by the server, which
+    /// [`Db::fetch_one_reconnecting`] decides.
     pub async fn poll_frame(&self, frame: u32) -> Result<Option<Frame>, SessionError> {
         let table = format!("{}.{FRAMES_TABLE}", self.database);
         let sql = format!(
@@ -313,7 +317,7 @@ impl Session {
         );
         let row = self
             .db
-            .fetch_one::<FrameRow>(&sql)
+            .fetch_one_reconnecting::<FrameRow>(&sql)
             .await
             .map_err(|source| self.read_error(FRAMES_TABLE, source))?;
         Ok(row.fb_hash.map(|fb_hash| Frame {
@@ -413,10 +417,12 @@ impl Session {
     /// The highest tic `native_state` holds, 0 when it holds none. The
     /// query reads the key column alone, so it does not touch the state
     /// rows themselves.
+    ///
+    /// Retried the same way [`Session::poll_frame`] is.
     async fn committed_tic(&self) -> Result<u32, SessionError> {
         let sql = format!("SELECT max(tic) FROM {}.{STATE_TABLE}", self.database);
         self.db
-            .fetch_one::<u32>(&sql)
+            .fetch_one_reconnecting::<u32>(&sql)
             .await
             .map_err(|source| self.read_error(STATE_TABLE, source))
     }

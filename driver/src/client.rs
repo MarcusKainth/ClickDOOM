@@ -77,6 +77,24 @@ impl ConnArgs {
 #[error(transparent)]
 pub struct Error(#[from] clickhouse::error::Error);
 
+impl Error {
+    /// Whether the connection this request went out on was closed under it.
+    ///
+    /// The client holds a pool of connections and the server closes one of
+    /// its own accord once its keep-alive limits are reached, so a request
+    /// can be handed to a connection that is already gone. A connection
+    /// that could not be opened at all is not one of these: there the
+    /// server is unreachable rather than the connection stale.
+    pub fn on_a_closed_connection(&self) -> bool {
+        let clickhouse::error::Error::Network(source) = &self.0 else {
+            return false;
+        };
+        source
+            .downcast_ref::<hyper_util::client::legacy::Error>()
+            .is_some_and(|network| !network.is_connect())
+    }
+}
+
 /// One ClickHouse connection, reused for every statement issued through it.
 pub struct Db {
     client: Client,
@@ -126,6 +144,25 @@ impl Db {
         T: clickhouse::RowOwned + clickhouse::RowRead,
     {
         first_row(self.client.query(sql)).await
+    }
+
+    /// Runs a read and fetches a single row, going out once more on a
+    /// fresh connection when the connection the first attempt used was
+    /// closed under it.
+    ///
+    /// One further attempt, for that reason alone: every other failure is
+    /// reported as it stands. `sql` has to be a read, because it can run
+    /// twice.
+    pub async fn fetch_one_reconnecting<T>(&self, sql: &str) -> Result<T, Error>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead,
+    {
+        match first_row(self.client.query(sql)).await {
+            // The failed attempt takes the dead connection out of the
+            // pool, so this one goes out on a connection of its own.
+            Err(error) if error.on_a_closed_connection() => first_row(self.client.query(sql)).await,
+            outcome => outcome,
+        }
     }
 
     /// Runs a statement and fetches a single row under `query_id`. Same
@@ -198,4 +235,151 @@ where
         .ok_or(clickhouse::error::Error::RowNotFound)?;
     while cursor.next().await?.is_some() {}
     Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration; // purity-ok: a bound on what a test waits for, never a value a statement reads
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    /// One `UInt32` column named `v`, in the format the client's cursor
+    /// reads: the column count, the name, the type, then the value.
+    fn one_row(value: u32) -> Vec<u8> {
+        let mut body = vec![1, 1, b'v', 6];
+        body.extend_from_slice(b"UInt32");
+        body.extend_from_slice(&value.to_le_bytes());
+        body
+    }
+
+    fn response(status: &str, body: &[u8], headers: &str) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: {}\r\n{headers}\r\n",
+            body.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A server that answers each connection the way `answers` says, in
+    /// order, and hangs up where the answer is `None`. Reports how many
+    /// connections it took.
+    fn serve(answers: Vec<Option<Vec<u8>>>) -> (u16, Arc<AtomicUsize>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a local port");
+        let port = listener.local_addr().expect("the bound address").port();
+        listener.set_nonblocking(true).expect("a pollable listener");
+        let taken = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&taken);
+        tokio::spawn(async move {
+            let listener = TcpListener::from_std(listener).expect("a tokio listener");
+            for answer in answers {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut seen = [0u8; 4096];
+                let _ = socket.read(&mut seen).await;
+                if let Some(answer) = answer {
+                    let _ = socket.write_all(&answer).await;
+                    let _ = socket.flush().await;
+                }
+                // Dropping the socket is the server closing the
+                // connection, answered or not.
+            }
+        });
+        (port, taken)
+    }
+
+    fn conn(port: u16) -> ConnArgs {
+        ConnArgs {
+            host: "127.0.0.1".to_owned(),
+            port,
+            user: "default".to_owned(),
+            database: "default".to_owned(),
+            password: Some(String::new()),
+        }
+    }
+
+    /// Waits for the server to have taken `want` connections, so a count
+    /// read too early cannot pass for a retry that did not happen.
+    async fn settled(taken: &AtomicUsize, want: usize) -> usize {
+        for _ in 0..200 {
+            if taken.load(Ordering::SeqCst) >= want {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        taken.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn a_read_on_a_closed_connection_goes_out_again() {
+        let (port, taken) = serve(vec![None, Some(response("200 OK", &one_row(42), ""))]);
+        let value: u32 = conn(port)
+            .connect_uncompressed()
+            .fetch_one_reconnecting("SELECT 42")
+            .await
+            .expect("the second connection answers");
+        assert_eq!(value, 42);
+        assert_eq!(settled(&taken, 2).await, 2, "the read did not go out again");
+    }
+
+    #[tokio::test]
+    async fn a_read_that_fails_for_another_reason_does_not() {
+        let exception = b"Code: 60. DB::Exception: Unknown table. (UNKNOWN_TABLE)";
+        let (port, taken) = serve(vec![
+            Some(response(
+                "500 Internal Server Error",
+                exception,
+                "X-ClickHouse-Exception-Code: 60\r\n",
+            )),
+            Some(response("200 OK", &one_row(42), "")),
+        ]);
+        let error = conn(port)
+            .connect_uncompressed()
+            .fetch_one_reconnecting::<u32>("SELECT 42")
+            .await
+            .expect_err("the server refused the statement");
+        assert!(error.to_string().contains("UNKNOWN_TABLE"), "{error}");
+        assert_eq!(
+            settled(&taken, 2).await,
+            1,
+            "the server's own exception must not be asked again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_closed_connection_is_reported() {
+        let (port, taken) = serve(vec![None, None, Some(response("200 OK", &one_row(42), ""))]);
+        let error = conn(port)
+            .connect_uncompressed()
+            .fetch_one_reconnecting::<u32>("SELECT 42")
+            .await
+            .expect_err("both connections were closed under the read");
+        assert!(error.on_a_closed_connection(), "{error}");
+        assert_eq!(settled(&taken, 3).await, 2, "the read is asked again once");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_is_not_there_is_not_a_closed_connection() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a local port");
+        let port = listener.local_addr().expect("the bound address").port();
+        drop(listener);
+        let error = conn(port)
+            .connect_uncompressed()
+            .fetch_one::<u32>("SELECT 42")
+            .await
+            .expect_err("nothing is listening there");
+        assert!(
+            !error.on_a_closed_connection(),
+            "an unreachable server is not a stale connection: {error}"
+        );
+    }
 }

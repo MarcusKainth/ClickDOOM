@@ -32,11 +32,15 @@ group="${1-}"
 # needs.
 archive="${NEXTEST_ARCHIVE_DIR-}"
 if [ -n "$archive" ]; then
+    # Extracted over the workspace rather than into a temporary directory:
+    # a test that runs the driver binary reaches it by the path compiled in
+    # at build time, which is the workspace's own target directory.
+    extract=(--workspace-remap . --extract-to . --extract-overwrite)
     run() {
-        cargo nextest run --archive-file "$archive/tests.tar.zst" --workspace-remap . "$@"
+        cargo nextest run --archive-file "$archive/tests.tar.zst" "${extract[@]}" "$@"
     }
     run_rom() {
-        cargo nextest run --archive-file "$archive/rom-suites.tar.zst" --workspace-remap . "$@"
+        cargo nextest run --archive-file "$archive/rom-suites.tar.zst" "${extract[@]}" "$@"
     }
     live=""
 else

@@ -25,6 +25,15 @@ const FINEANGLES_HALF: i64 = 4095;
 const BT_ATTACK: i64 = 1;
 /// `doomdef.h`: `wp_nochange`.
 const WP_NOCHANGE: i64 = 10;
+/// `doomdef.h`: the two weapons that do not fire again while the button is
+/// held, and the one whose shot costs two rounds.
+const WP_MISSILE: i64 = 4;
+const WP_BFG: i64 = 6;
+const WP_SUPERSHOTGUN: i64 = 8;
+/// `doomdef.h`: `am_noammo`, which a weapon that needs none carries.
+const AM_NOAMMO: i64 = 5;
+/// `p_pspr.c`: what one shot of the BFG costs.
+const BFGCELLS: i64 = 40;
 /// `d_player.h`: `PST_DEAD`.
 const PST_DEAD: i64 = 2;
 /// `p_pspr.h`: the weapon sprite, one-based for the arrays that hold both.
@@ -55,6 +64,12 @@ mod held {
     /// The state each sprite is about to enter, or -1 for none.
     pub const PENDING: usize = 8;
     pub const UNRESOLVED: usize = 9;
+    /// Whether an entry ran `A_WeaponReady`, which takes the player's mobj
+    /// out of its attack frames.
+    pub const READIED: usize = 10;
+    /// Whether an entry fired, which puts it back into them and sends the
+    /// noise out.
+    pub const FIRED: usize = 11;
 }
 
 /// The constants the sprites read: the weapon table and the action
@@ -68,6 +83,8 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         ("weapon_upstate".to_owned(), weapon("upstate")),
         ("weapon_downstate".to_owned(), weapon("downstate")),
         ("weapon_readystate".to_owned(), weapon("readystate")),
+        ("weapon_atkstate".to_owned(), weapon("atkstate")),
+        ("weapon_ammo".to_owned(), weapon("ammo")),
         ("a_weaponready".to_owned(), action("A_WeaponReady")),
         ("a_lower".to_owned(), action("A_Lower")),
         ("a_raise".to_owned(), action("A_Raise")),
@@ -80,13 +97,13 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
 /// `bob` is `player->bob` as `P_CalcHeight` left it, `buttons` the tic
 /// command's, and `pendingweapon` the weapon the command asked for. The
 /// stage names `now_p_readyweapon` and `psp_pendingweapon`, which the
-/// pickups after it read.
+/// pickups after it read, and `psp_readied` and `psp_fired`, which are
+/// what `A_WeaponReady` and `P_FireWeapon` do to the player's own mobj.
 pub fn move_psprites(
     state: &State,
     bob: &str,
     buttons: &str,
     pendingweapon: &str,
-    mobj_state: &str,
 ) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let w = |field: usize| format!("psp_at.{field}");
@@ -188,11 +205,41 @@ pub fn move_psprites(
         ),
     );
     value(
+        "psp_attack_held",
+        format!("toUInt8(bitAnd(toInt64({buttons}), {BT_ATTACK}) != 0)"),
+    );
+    // The launcher and the BFG want the button let go of between shots.
+    value(
         "psp_ready_fires",
         format!(
             "toUInt8(psp_action = a_weaponready AND psp_ready_changes = 0 \
-             AND bitAnd(toInt64({buttons}), {BT_ATTACK}) != 0)"
+             AND psp_attack_held = 1 \
+             AND ({down} = 0 OR ({r} != {WP_MISSILE} AND {r} != {WP_BFG})))",
+            down = w(held::ATTACKDOWN),
+            r = w(held::READYWEAPON)
         ),
+    );
+    // `P_CheckAmmo`. A weapon with nothing left picks another one, which
+    // this does not write.
+    value(
+        "psp_shot_costs",
+        format!(
+            "toInt32(multiIf({r} = {WP_BFG}, {BFGCELLS}, {r} = {WP_SUPERSHOTGUN}, 2, 1))",
+            r = w(held::READYWEAPON)
+        ),
+    );
+    value(
+        "psp_has_ammo",
+        format!(
+            "toUInt8(weapon_ammo[1 + {r}] = {AM_NOAMMO} \
+             OR {ammo}[1 + weapon_ammo[1 + {r}]] >= psp_shot_costs)",
+            r = w(held::READYWEAPON),
+            ammo = s("p_ammo")
+        ),
+    );
+    value(
+        "psp_fires",
+        "toUInt8(psp_ready_fires = 1 AND psp_has_ammo = 1)".to_owned(),
     );
     value(
         "psp_lower_finishes",
@@ -233,6 +280,7 @@ pub fn move_psprites(
              psp_raise_finishes = 1, weapon_readystate[1 + {r}], \
              psp_ready_changes = 1, weapon_downstate[1 + {r}], \
              psp_lower_finishes = 1, weapon_upstate[1 + psp_brought_up], \
+             psp_fires = 1, weapon_atkstate[1 + {r}], \
              {NO_STATE}))",
             r = w(held::READYWEAPON)
         ),
@@ -245,10 +293,7 @@ pub fn move_psprites(
             "toUInt8(psp_enters = 1 AND (\
              (psp_action != 0 AND psp_action != a_weaponready \
              AND psp_action != a_lower AND psp_action != a_raise) \
-             OR psp_ready_fires = 1 \
-             OR (psp_action = a_weaponready \
-             AND ({mobj_state} = s_play_atk1 \
-             OR {mobj_state} = state_nextstate[1 + s_play_atk1])) \
+             OR (psp_ready_fires = 1 AND psp_has_ammo = 0) \
              OR (psp_action = a_lower AND psp_lowered >= {WEAPONBOTTOM} \
              AND ({} = {PST_DEAD} OR {} = 0))))",
             s("p_playerstate"),
@@ -275,9 +320,11 @@ pub fn move_psprites(
         "toInt32(if(psp_lower_finishes = 1, {WP_NOCHANGE}, {}))",
         w(held::PENDINGWEAPON)
     );
+    // `A_WeaponReady` marks the button down before it fires, and lets it up
+    // only where it is up. A held launcher leaves it as it stands.
     let attackdown_now = format!(
         "toUInt8(multiIf(psp_ready_fires = 1, 1, \
-         psp_action = a_weaponready AND psp_ready_changes = 0, 0, {}))",
+         psp_action = a_weaponready AND psp_ready_changes = 0 AND psp_attack_held = 0, 0, {}))",
         w(held::ATTACKDOWN)
     );
     // The cycle carries on while the routine redirected or the state it
@@ -288,6 +335,11 @@ pub fn move_psprites(
          psp_tics_entered = 0, state_nextstate[1 + psp_entering], {NO_STATE}))"
     );
     let unresolved_now = format!("toUInt8({} = 1 OR psp_stuck = 1)", w(held::UNRESOLVED));
+    let readied_now = format!(
+        "toUInt8({} = 1 OR psp_action = a_weaponready)",
+        w(held::READIED)
+    );
+    let fired_now = format!("toUInt8({} = 1 OR psp_fires = 1)", w(held::FIRED));
     let members = [
         put(w(held::STATE), &state_now),
         put(w(held::TICS), &tics_now),
@@ -298,6 +350,8 @@ pub fn move_psprites(
         attackdown_now,
         put(w(held::PENDING), &pending_now),
         unresolved_now,
+        readied_now,
+        fired_now,
     ];
     let body = format!("if(psp_runs = 0, psp_at, ({}))", members.join(", "));
 
@@ -311,7 +365,7 @@ pub fn move_psprites(
     );
     let start = format!(
         "({}, {dropped}, {}, {}, toInt32({}), toInt32({pendingweapon}), toUInt8({}), \
-         CAST([{NO_STATE}, {NO_STATE}], 'Array(Int32)'), toUInt8(0))",
+         CAST([{NO_STATE}, {NO_STATE}], 'Array(Int32)'), toUInt8(0), toUInt8(0), toUInt8(0))",
         s("psp_state"),
         s("psp_sx"),
         s("psp_sy"),
@@ -375,6 +429,14 @@ pub fn move_psprites(
                 p = held(held::PENDING)
             ),
         ),
+        (
+            "psp_readied".to_owned(),
+            format!("toUInt8({})", held(held::READIED)),
+        ),
+        (
+            "psp_fired".to_owned(),
+            format!("toUInt8({})", held(held::FIRED)),
+        ),
     ]
 }
 
@@ -389,7 +451,6 @@ mod tests {
             "now_p_bob",
             "pl_buttons",
             "pl_pendingweapon",
-            "pl_state_moved",
         )
     }
 

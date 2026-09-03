@@ -43,6 +43,7 @@ pub mod unimplemented {
 pub fn load_statements(db: &str) -> Vec<Statement> {
     let mut statements = spec::guards(db);
     statements.extend(enemy::guards(db));
+    statements.extend(player::guards(db));
     statements.extend(noise::guards(db));
     statements.extend(setup::statements(db));
     statements

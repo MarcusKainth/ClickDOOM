@@ -5,11 +5,11 @@
 //! `P_CalcHeight` sits between the two, which is why the bob a frame draws
 //! comes from the momentum before friction rather than after it.
 
-use crate::sql::fixed;
+use crate::sql::{Statement, bind, fixed};
 
 use super::map::World;
 use super::mobj::{self, Mover, Pickups};
-use super::{State, inter, maputl, pspr};
+use super::{State, inter, maputl, noise, pspr};
 
 /// `p_local.h`
 const VIEWHEIGHT: i64 = 41 << 16;
@@ -56,11 +56,34 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             "s_play_atk1".to_owned(),
             format!("assumeNotNull((SELECT missilestate FROM {db}.mobjinfo WHERE id = 0))"),
         ),
+        // The second attack frame is not named by any table. It is the one
+        // state that runs back into the first, and `guards` stops the load
+        // unless exactly one does.
+        (
+            "s_play_atk2".to_owned(),
+            format!(
+                "assumeNotNull((SELECT id FROM {db}.states WHERE nextstate = \
+                 (SELECT missilestate FROM {db}.mobjinfo WHERE id = 0) LIMIT 1))"
+            ),
+        ),
         (
             "skill".to_owned(),
             format!("toInt32(assumeNotNull((SELECT h.skill FROM {db}.demo_header AS h)))"),
         ),
     ]
+}
+
+/// What stops the load: the engine's second player attack frame not being
+/// the one state that runs back into the first.
+///
+/// `A_WeaponReady` compares the player's mobj against both frames, and no
+/// table names the second.
+pub fn guards(db: &str) -> Vec<Statement> {
+    vec![Statement::sql(format!(
+        "SELECT throwIf(count() != 1, 'A_WeaponReady: the second attack frame is not one state')\n\
+         FROM {db}.states\n\
+         WHERE nextstate = (SELECT missilestate FROM {db}.mobjinfo WHERE id = 0)"
+    ))]
 }
 
 /// `P_PlayerThink` and the mobj thinker that follows it.
@@ -75,8 +98,8 @@ pub fn think(state: &State) -> Vec<(String, String)> {
         "now_p_bob",
         "pl_buttons",
         "pl_pendingweapon",
-        "pl_state_moved",
     ));
+    bindings.extend(fire_weapon(state));
     bindings.extend(powers(state));
     bindings.extend(mobj_thinker(state));
     bindings.extend(writeback(state));
@@ -350,6 +373,69 @@ fn weapon_and_use(state: &State) -> Vec<(String, String)> {
     ]
 }
 
+/// What `A_WeaponReady` and `P_FireWeapon` leave behind: the player's mobj
+/// in or out of its attack frames, and the sectors the shot was heard in.
+///
+/// `A_WeaponReady` puts the mobj back into `S_PLAY` where it stands in
+/// either attack frame, and `P_FireWeapon` puts it into the first of them,
+/// so a tic that fires from an attack frame sets the state twice and the
+/// wait comes from the frame it ends on.
+///
+/// The alert is the body of a fold over a list of one entry or none, so a
+/// tic that does not fire pays for the list and not the flood.
+fn fire_weapon(state: &State) -> Vec<(String, String)> {
+    let target = state.get("sec_soundtarget");
+    let traversed = state.get("sec_soundtraversed");
+    // The sector the shot was fired in travels as the fold's own element,
+    // so the flood reads a lambda parameter. An expression that reads
+    // neither is evaluated once for the row whatever the fold does.
+    let flood = noise::alert(
+        "nz_shot",
+        &state.get("sec_floorheight"),
+        &state.get("sec_ceilingheight"),
+    );
+    // A sector the flood does not reach keeps the target and the count it
+    // held, which is what `validcount` does for the walk.
+    let body = bind::chain_in(
+        "nza",
+        &[("nz_reached".to_owned(), flood)],
+        "(arrayMap((r, t) -> toUInt32(if(r != 0, pl_slot, t)), nz_reached, nz_at.1), \
+         arrayMap((r, v) -> toInt32(if(r != 0, r, v)), nz_reached, nz_at.2))",
+    );
+    vec![
+        (
+            "pl_state_set".to_owned(),
+            "toUInt8(psp_fired = 1 OR (psp_readied = 1 \
+             AND (pl_state_moved = s_play_atk1 OR pl_state_moved = s_play_atk2)))"
+                .to_owned(),
+        ),
+        (
+            "pl_state_fired".to_owned(),
+            "toInt32(multiIf(psp_fired = 1, s_play_atk1, pl_state_set = 1, s_play, \
+             pl_state_moved))"
+                .to_owned(),
+        ),
+        (
+            "pl_tics_fired".to_owned(),
+            "toInt32(if(pl_state_set = 1, state_tics[1 + pl_state_fired], pl_tics_moved))"
+                .to_owned(),
+        ),
+        (
+            "nz_alerted".to_owned(),
+            format!(
+                "arrayFold((nz_at, nz_shot) -> {body}, \
+                 arraySlice([toInt32(ssec_sector[1 + pl_subsector])], 1, toUInt8(psp_fired)), \
+                 (arrayMap(v -> toUInt32(v), {target}), arrayMap(v -> toInt32(v), {traversed})))"
+            ),
+        ),
+        ("nz_soundtarget".to_owned(), "nz_alerted.1".to_owned()),
+        (
+            "now_sec_soundtraversed".to_owned(),
+            "nz_alerted.2".to_owned(),
+        ),
+    ]
+}
+
 /// The counters a tic runs down, and the colormap they pick.
 fn powers(state: &State) -> Vec<(String, String)> {
     let powers = state.get("p_powers");
@@ -515,17 +601,17 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         (
             "mv_walked_out".to_owned(),
             "toUInt8(mv_stopped_walking = 1 AND mv_stops = 1 AND mv_airborne = 0 \
-             AND toInt64(pl_state_moved) - toInt64(s_play_run1) >= 0 \
-             AND toInt64(pl_state_moved) - toInt64(s_play_run1) < 4)"
+             AND toInt64(pl_state_fired) - toInt64(s_play_run1) >= 0 \
+             AND toInt64(pl_state_fired) - toInt64(s_play_run1) < 4)"
                 .to_owned(),
         ),
         (
             "mv_state_stopped".to_owned(),
-            "toInt32(if(mv_walked_out = 1, s_play, pl_state_moved))".to_owned(),
+            "toInt32(if(mv_walked_out = 1, s_play, pl_state_fired))".to_owned(),
         ),
         (
             "mv_tics_stopped".to_owned(),
-            "toInt32(if(mv_walked_out = 1, state_tics[1 + s_play], pl_tics_moved))".to_owned(),
+            "toInt32(if(mv_walked_out = 1, state_tics[1 + s_play], pl_tics_fired))".to_owned(),
         ),
         (
             "mv_cycles".to_owned(),
@@ -622,7 +708,7 @@ fn writeback(state: &State) -> Vec<(String, String)> {
     }
     bindings.push((
         "now_sec_soundtarget".to_owned(),
-        renumbered(&state.get("sec_soundtarget")),
+        renumbered("nz_soundtarget"),
     ));
     bindings.extend([
         (

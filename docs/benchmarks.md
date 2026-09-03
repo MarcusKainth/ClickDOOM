@@ -15,11 +15,17 @@ to record alongside a number.
 ## The live instrument
 
 `clickdoom emulation bench canonical`, or `make bench-canonical-throughput`,
-measures real-ROM throughput on a boot window and a store-heavy gameplay
-window, fold-alone and end to end, reported separately. A throughput claim
-should come from it. It is an instrument rather than an experiment, so it has
-no record here; `rom/bench/canonical_throughput/README.md` describes what it
-measures and how it reaches the gameplay window without a multi-hour run.
+measures real-ROM throughput on a boot window starting at icount 0 and a
+store-heavy gameplay window starting on demo3's frame 200, fold-alone and end
+to end, reported separately. A throughput claim should come from it. It
+refuses to report a rate taken over a batch that retired fewer than K
+instructions, so a number it prints is comparable to the last one it printed
+at the same K.
+
+It is an instrument rather than an experiment, so it has no record here.
+[`rom/bench/canonical_throughput/README.md`](../rom/bench/canonical_throughput/README.md)
+owns where each window starts, why the gameplay one starts there, and how it
+is reached without a multi-hour run.
 
 ## Throughput and the batch loop
 

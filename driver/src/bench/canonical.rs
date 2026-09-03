@@ -29,7 +29,7 @@ use clickdoom_executor::commit;
 use clickdoom_executor::config::{BATCH_COMMIT_RETENTION_N, HALT_EXIT, HALT_REASON_NAMES};
 use clickdoom_executor::fold::{self, BatchArgs, SelectOnlyArgs};
 use clickdoom_spec::{Manifest, RAM_BASE, sha256_hex};
-use refemu::cli::report::RunReport;
+use refemu::cli::report::{FrameCommitJson, RunReport};
 use refemu::snapshot::{Kind, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,16 @@ pub enum CanonicalError {
         retired: u64,
         k: u32,
         hwm: u32,
+    },
+    #[error(
+        "{window} {mode} timed batch {batch}: a FRAME_COMMIT store ended it after {retired} of K={k} instructions. `arrayFold` runs K steps whichever way a batch ends, so a short batch is charged the full K and its rate is not comparable to a full batch's. The window is meant to start far enough after a frame commit that the next one falls outside every batch, so this means the ROM's per-frame cost moved."
+    )]
+    FrameCommitBound {
+        window: String,
+        mode: &'static str,
+        batch: u32,
+        retired: u64,
+        k: u32,
     },
     #[error(
         "{window} {mode} batch {batch}: retired {retired}, not K={k}. It did not halt, it committed no frame, and its write log holds {write_log_len} of HWM={hwm}. Nothing else ends a batch early, so either the batch execution contract moved or this is reading the wrong columns."
@@ -140,6 +150,34 @@ pub enum CanonicalError {
         "{0} announced no frame within {1} instructions. --first-frame-max-instructions bounds how far it looks; raise it, or the ROM no longer reaches a frame."
     )]
     NoFrameInBudget(String, u64),
+    #[error(
+        "{refemu} stopped before frame {frame}: it announced {announced} frames within {max_instructions} instructions. Either the ROM's per-frame cost grew past that budget or it no longer reaches the frame."
+    )]
+    FrameNotReached {
+        refemu: String,
+        frame: u64,
+        announced: u64,
+        max_instructions: u64,
+    },
+    #[error(
+        "the gameplay window starts where frame {frame} retires, at icount {expected}, and the pinned ROM retires it at {measured}. Re-derive with `refemu run --stop-at frame:{frame}` and move the constant."
+    )]
+    GameplayFrameMoved {
+        frame: u64,
+        expected: u64,
+        measured: u64,
+    },
+    #[error(
+        "the gameplay window holds {span} instructions before frame {next_frame} commits, and {batches} chained batches of K={k} need {needed}. A batch the batch execution contract ends on a frame commit retires fewer than K while the fold still runs K steps, so its rate is not comparable. {fits} batches of this K fit; lower K or the batch count, or start the window at a frame with more room after it."
+    )]
+    GameplayWindowTooShort {
+        next_frame: u64,
+        span: u64,
+        batches: u32,
+        k: u32,
+        needed: u64,
+        fits: u64,
+    },
     #[error("starting a container from {0}: {1}")]
     DockerStart(String, Box<super::docker::DockerError>),
     #[error("snapshot is a {0:?} capture, not a whole machine")]
@@ -299,18 +337,78 @@ pub struct Report {
     pub windows: Vec<WindowResult>,
 }
 
+/// The frame the gameplay window starts on. `-timedemo demo3` is well into
+/// playback by here, and a window that starts where a frame commits has a
+/// whole frame of instructions before the next one ends a batch.
+const GAMEPLAY_FRAME: u64 = 200;
+
+/// The icount just after frame [`GAMEPLAY_FRAME`]'s FRAME_COMMIT store
+/// retires on the pinned ROM, which `refemu run --stop-at frame:200`
+/// reports and [`check_gameplay_window`] checks against on every run.
+const GAMEPLAY_TARGET_ICOUNT: u64 = 194_583_691;
+
+/// How far `refemu` looks for the two frames that bound the gameplay
+/// window. Twice the window's own start, so a ROM that costs twice as much
+/// per frame still reaches them and one that never does still stops.
+const GAMEPLAY_FRAME_MAX_INSTRUCTIONS: u64 = 2 * GAMEPLAY_TARGET_ICOUNT;
+
 /// Where the gameplay window starts.
 pub struct Windows {
-    /// The icount the cached snapshot captures.
+    /// The frame the window starts on.
+    pub gameplay_frame: u64,
+    /// The icount just after that frame's FRAME_COMMIT store retires, which
+    /// is the icount the cached snapshot captures.
     pub gameplay_target_icount: u64,
 }
 
 impl Default for Windows {
     fn default() -> Self {
         Windows {
-            gameplay_target_icount: 233_932_753,
+            gameplay_frame: GAMEPLAY_FRAME,
+            gameplay_target_icount: GAMEPLAY_TARGET_ICOUNT,
         }
     }
+}
+
+/// Checks the gameplay window against the pinned ROM's own frame commits.
+/// `start` is the commit the window starts on and `next` the one after it.
+///
+/// A run is refused unless the window still starts where the constant says
+/// and every batch an arm runs finishes before `next` commits. The batch
+/// execution contract ends a batch on a FRAME_COMMIT store, and `arrayFold`
+/// runs K steps whether or not they retire, so a batch cut by a frame
+/// commit is charged the full K against what it retired.
+fn check_gameplay_window(
+    windows: &Windows,
+    start: &FrameCommitJson,
+    next: &FrameCommitJson,
+    batches: u32,
+    k: u32,
+) -> Result<(), CanonicalError> {
+    if start.retired_icount != windows.gameplay_target_icount {
+        return Err(CanonicalError::GameplayFrameMoved {
+            frame: windows.gameplay_frame,
+            expected: windows.gameplay_target_icount,
+            measured: start.retired_icount,
+        });
+    }
+    // A batch ends on the store that commits the frame, so the chain has to
+    // stop at or before the count that store retires from.
+    let span = next
+        .commit_icount
+        .saturating_sub(windows.gameplay_target_icount);
+    let needed = u64::from(batches) * u64::from(k);
+    if needed > span {
+        return Err(CanonicalError::GameplayWindowTooShort {
+            next_frame: next.index,
+            span,
+            batches,
+            k,
+            needed,
+            fits: span / u64::from(k),
+        });
+    }
+    Ok(())
 }
 
 pub struct Args<'a> {
@@ -693,18 +791,33 @@ async fn run_arm(
                 reason: outcome.halt_reason,
             });
         }
-        // A warm-up batch only has to advance the chain, so the mark
-        // binding on it is reported and allowed. A timed one measures
-        // different work than a full batch, so it is refused.
-        if timed && stop == Stop::HighWaterMark {
-            return Err(CanonicalError::HighWaterMarkBound {
-                window: window.to_string(),
-                mode,
-                batch: index,
-                retired: outcome.retired,
-                k: shape.k,
-                hwm: shape.hwm,
-            });
+        // A warm-up batch only has to advance the chain, so an early stop
+        // on it is reported and allowed. A timed one that retires fewer
+        // than K measures different work than a full batch, whichever of
+        // the two contract conditions cut it short, so it is refused.
+        if timed {
+            match stop {
+                Stop::HighWaterMark => {
+                    return Err(CanonicalError::HighWaterMarkBound {
+                        window: window.to_string(),
+                        mode,
+                        batch: index,
+                        retired: outcome.retired,
+                        k: shape.k,
+                        hwm: shape.hwm,
+                    });
+                }
+                Stop::FrameCommit => {
+                    return Err(CanonicalError::FrameCommitBound {
+                        window: window.to_string(),
+                        mode,
+                        batch: index,
+                        retired: outcome.retired,
+                        k: shape.k,
+                    });
+                }
+                Stop::FullK | Stop::Halt => {}
+            }
         }
         eprintln!(
             "#   {} batch {index}: {:.2}s retired={} wl={} stop={}",
@@ -932,15 +1045,18 @@ async fn seed_snapshot(db: &Db, snapshot: &Snapshot) -> Result<(), CanonicalErro
     Ok(())
 }
 
-/// Runs `refemu run --stop-at frame:0 --halt-report -` to measure what the
-/// ROM costs to produce a frame. `refemu` writes the report as JSON on
-/// stdout and its own human summary on stderr.
-fn measure_first_frame(
+/// Runs `refemu run --stop-at frame:N --halt-report -` and returns the
+/// commit it stopped on. `refemu` writes the report as JSON on stdout and
+/// its own human summary on stderr. `max_instructions` bounds how far it
+/// looks, so a ROM that never announces the frame ends the run rather than
+/// running to exhaustion.
+fn measure_frame(
     refemu_bin: &Path,
     bin: &Path,
     manifest_path: &Path,
+    frame: u64,
     max_instructions: u64,
-) -> Result<FirstFrame, CanonicalError> {
+) -> Result<FrameCommitJson, CanonicalError> {
     let output = std::process::Command::new(refemu_bin)
         .arg("run")
         .arg(bin)
@@ -949,7 +1065,7 @@ fn measure_first_frame(
         .arg("--pinned-hash")
         .arg("rom/PINNED_HASH")
         .arg("--stop-at")
-        .arg("frame:0")
+        .arg(format!("frame:{frame}"))
         .arg("--max-instructions")
         .arg(max_instructions.to_string())
         .arg("--halt-report")
@@ -964,9 +1080,28 @@ fn measure_first_frame(
     }
     let report: RunReport = serde_json::from_slice(&output.stdout)
         .map_err(|e| CanonicalError::RefemuReport(refemu_bin.display().to_string(), e))?;
-    let commit = report.first_frame_commit.ok_or_else(|| {
+    let commit = report.last_frame_commit.ok_or_else(|| {
         CanonicalError::NoFrameInBudget(refemu_bin.display().to_string(), max_instructions)
     })?;
+    if commit.index != frame {
+        return Err(CanonicalError::FrameNotReached {
+            refemu: refemu_bin.display().to_string(),
+            frame,
+            announced: report.frame_commit_count,
+            max_instructions,
+        });
+    }
+    Ok(commit)
+}
+
+/// What the ROM costs to produce its first frame.
+fn measure_first_frame(
+    refemu_bin: &Path,
+    bin: &Path,
+    manifest_path: &Path,
+    max_instructions: u64,
+) -> Result<FirstFrame, CanonicalError> {
+    let commit = measure_frame(refemu_bin, bin, manifest_path, 0, max_instructions)?;
     Ok(FirstFrame {
         instructions: commit.retired_icount,
         frame_no: commit.frame_no,
@@ -1088,6 +1223,36 @@ pub async fn run(args: &Args<'_>) -> Result<Report, CanonicalError> {
     eprintln!(
         "# ROM: first frame (frame_no {}) at icount {}",
         first_frame.frame_no, first_frame.instructions
+    );
+
+    let gameplay_frame = args.windows.gameplay_frame;
+    let start_commit = measure_frame(
+        &args.refemu_bin,
+        args.bin,
+        args.manifest_path,
+        gameplay_frame,
+        GAMEPLAY_FRAME_MAX_INSTRUCTIONS,
+    )?;
+    let next_commit = measure_frame(
+        &args.refemu_bin,
+        args.bin,
+        args.manifest_path,
+        gameplay_frame + 1,
+        GAMEPLAY_FRAME_MAX_INSTRUCTIONS,
+    )?;
+    check_gameplay_window(
+        &args.windows,
+        &start_commit,
+        &next_commit,
+        args.warmup + args.batches,
+        args.k,
+    )?;
+    eprintln!(
+        "# ROM: frame {gameplay_frame} retires at icount {}, frame {} commits at {}, so the gameplay window holds {} instructions",
+        start_commit.retired_icount,
+        next_commit.index,
+        next_commit.commit_icount,
+        next_commit.commit_icount - start_commit.retired_icount
     );
 
     eprintln!(
@@ -1329,8 +1494,8 @@ mod tests {
 
     #[test]
     fn a_short_batch_that_committed_a_frame_is_a_frame_commit() {
-        // The case #241 reports: 10,942 retired, halted=0, and far too few
-        // stores for the high-water mark to be the cause.
+        // A short batch with far too few stores for the high-water mark to
+        // be the cause.
         assert_eq!(
             classify(&outcome(10_942, 0, 1, 42), 60_000, 20_000),
             Some(Stop::FrameCommit)
@@ -1400,5 +1565,86 @@ mod tests {
             matches!(err, CanonicalError::CompiledWhileTimed { batch: 2, .. }),
             "{err}"
         );
+    }
+
+    fn commit(index: u64, commit_icount: u64) -> FrameCommitJson {
+        FrameCommitJson {
+            index,
+            frame_no: index as u32,
+            commit_icount,
+            retired_icount: commit_icount + 1,
+        }
+    }
+
+    /// What `refemu run --stop-at frame:200` and `frame:201` report against
+    /// the pinned ROM.
+    fn pinned_frames() -> (FrameCommitJson, FrameCommitJson) {
+        (commit(200, 194_583_690), commit(201, 195_961_602))
+    }
+
+    #[test]
+    fn the_pinned_rom_starts_the_window_where_the_constant_says() {
+        let (start, next) = pinned_frames();
+        assert_eq!(start.retired_icount, GAMEPLAY_TARGET_ICOUNT);
+        assert!(
+            check_gameplay_window(&Windows::default(), &start, &next, 7, 60_000).is_ok(),
+            "the default warm-up and timed batches have to fit"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_moved_is_refused_with_the_measured_icount() {
+        let (mut start, next) = pinned_frames();
+        start.commit_icount += 1;
+        start.retired_icount += 1;
+        let err = check_gameplay_window(&Windows::default(), &start, &next, 7, 60_000)
+            .expect_err("must refuse");
+        assert!(
+            matches!(
+                err,
+                CanonicalError::GameplayFrameMoved {
+                    frame: 200,
+                    expected: GAMEPLAY_TARGET_ICOUNT,
+                    measured,
+                } if measured == GAMEPLAY_TARGET_ICOUNT + 1
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_chain_longer_than_the_window_is_refused_and_names_what_fits() {
+        let (start, next) = pinned_frames();
+        // 1,377,911 instructions separate the two commits, so 23 batches of
+        // K = 60,000 do not fit and 22 do.
+        let err = check_gameplay_window(&Windows::default(), &start, &next, 23, 60_000)
+            .expect_err("must refuse");
+        assert!(
+            matches!(
+                err,
+                CanonicalError::GameplayWindowTooShort {
+                    next_frame: 201,
+                    fits: 22,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert!(check_gameplay_window(&Windows::default(), &start, &next, 22, 60_000).is_ok());
+    }
+
+    #[test]
+    fn a_batch_ending_on_the_last_instruction_before_a_commit_fits() {
+        // The frame-committing store retires from `commit_icount`, so a
+        // chain that ends exactly there is whole and one instruction more
+        // is not.
+        let start = commit(200, 1_000_000);
+        let next = commit(201, 1_060_001);
+        let windows = Windows {
+            gameplay_frame: 200,
+            gameplay_target_icount: start.retired_icount,
+        };
+        assert!(check_gameplay_window(&windows, &start, &next, 1, 60_000).is_ok());
+        assert!(check_gameplay_window(&windows, &start, &next, 1, 60_001).is_err());
     }
 }

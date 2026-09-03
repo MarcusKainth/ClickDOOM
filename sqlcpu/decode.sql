@@ -82,7 +82,7 @@ WITH fields AS
     WHERE word_addr >= {text_start_word:UInt32} AND word_addr < {text_end_word:UInt32}
 )
 SELECT
-    '0.1.1' AS spec_version,
+    '0.1.2' AS spec_version,
     word_addr,
     multiIf(
         op = 55, 0,                              -- lui  -> add arm, rs1=rs2=0, imm=uimm

@@ -31,4 +31,4 @@ pub use map::{
 };
 
 /// The `spec_version` every artifact and table carries.
-pub const SPEC_VERSION: &str = "0.1.1";
+pub const SPEC_VERSION: &str = "0.1.2";

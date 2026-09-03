@@ -1,6 +1,6 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.1.1**. The decisions behind it are in `docs/adr/`.
+**SPEC_VERSION: 0.1.2**. The decisions behind it are in `docs/adr/`.
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
@@ -266,7 +266,16 @@ shape. All tables carry `spec_version String`.
   FRAMEBUFFER/PALETTE write-log — same shape as `wl_*` above, one triple of
   arrays per region, recovery-needed to re-derive `framebuffer`/`palette`
   below the same way `wl_*` re-derives `ram`; #130/#160), `console_bytes
-  Array(UInt8)`. Bounded by
+  Array(UInt8)`, and `cp_icount Array(UInt64)`, `cp_pc Array(UInt32)`,
+  `cp_regs Array(UInt32)` (§7's `CHECKPOINT_INTERVAL` checkpoints, one
+  entry per boundary a retiring instruction of this batch landed on.
+  `cp_regs` is flat, 31 words (x1..x31) per entry, in `cp_icount`'s own
+  order. The checkpoint cadence is finer than a batch and `arrayFold`
+  exposes no intermediate accumulator, so a boundary's state is observable
+  only if the fold records it; a boundary landing on the batch's own last
+  retired instruction is the committed `cpu_state` row instead. Unlike the
+  write-logs these are not recovery data: they are read once, after the
+  batch, and go with the row when retention drops it). Bounded by
   retention on **batch_id lag, not wall-clock time**: only the most recent N
   rows are kept (N = 16, `executor/config`), older ones dropped **whole** by
   a fixed statement (partition-drop, or a delete keyed on `batch_id <

@@ -41,6 +41,10 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             super::table_column(db, "mobjinfo", "seestate"),
         ),
         (
+            "mobj_seesound".to_owned(),
+            super::table_column(db, "mobjinfo", "seesound"),
+        ),
+        (
             "a_look".to_owned(),
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = 'A_Look'))"),
         ),
@@ -206,6 +210,25 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             ),
         );
     }
+    // A thing that takes the player as its target plays the sound it makes
+    // on seeing one, and two arms of that switch draw. Nothing reads the
+    // number, so what the pass carries out of it is how many were drawn.
+    bind(
+        "mt_shouts",
+        format!(
+            "arrayMap((l, w, ty) -> toUInt8(l = 1 AND w = 1 AND {} = 1), \
+             mt_looks, mt_wakes, {})",
+            enemy::see_sound_draws("mobj_seesound[1 + ty]"),
+            s("m_type")
+        ),
+    );
+    bind(
+        "now_prndindex",
+        format!(
+            "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_shouts), 255))",
+            s("prndindex")
+        ),
+    );
     bind(
         "now_unresolved",
         format!(
@@ -1073,6 +1096,27 @@ mod tests {
             start: "pk0",
             alive: "alive0",
         }
+    }
+
+    /// Only a look that takes the player as a target reaches the sound
+    /// switch, so a thing that looks and sees nothing draws nothing.
+    #[test]
+    fn the_pass_draws_once_for_each_thing_that_wakes_and_shouts() {
+        let bindings = thinkers(&State::default());
+        let named = |name: &str| {
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("{name} is bound"))
+        };
+        let shouts = named("mt_shouts");
+        assert!(shouts.contains("l = 1 AND w = 1 AND"), "{shouts}");
+        assert_eq!(shouts.matches("a_look_sounds").count(), 1, "{shouts}");
+        assert_eq!(
+            named("now_prndindex"),
+            "toUInt8(bitAnd(toUInt32(prev_prndindex) + arraySum(mt_shouts), 255))"
+        );
     }
 
     #[test]

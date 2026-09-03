@@ -41,6 +41,7 @@ pub mod unimplemented {
 /// the engine's own setup stops on, and the row it leaves behind.
 pub fn load_statements(db: &str) -> Vec<Statement> {
     let mut statements = spec::guards(db);
+    statements.extend(enemy::guards(db));
     statements.extend(setup::statements(db));
     statements
 }
@@ -194,6 +195,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(player::constants(db));
     constants.extend(pspr::constants(db));
     constants.extend(sight::constants(db));
+    constants.extend(enemy::constants(db));
     constants.extend(mobj::constants(db));
     constants
 }

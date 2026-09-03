@@ -19,6 +19,7 @@ pub mod plats;
 pub mod player;
 pub mod pspr;
 pub mod setup;
+pub mod shoot;
 pub mod sight;
 pub mod spec;
 pub mod specials;

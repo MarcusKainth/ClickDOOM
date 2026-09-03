@@ -51,3 +51,4 @@
 1050	2138723	31	0	1	2	0	4204	0	0	0	0	0	0	0	0	0	branch funct3=2 reserved -> illegal (tgt still computed, inert)
 1051	2134371	21	0	1	2	0	4206	0	0	0	0	0	0	0	1	1	bne +2 (misaligned target -- tgt_mis regression case)
 1052	2097647	26	3	0	0	0	4210	0	0	0	0	0	0	0	0	1	jal x3,+2 (misaligned target -- tgt_mis regression case)
+1053	805356275	31	5	1	0	0	0	0	0	0	0	0	0	0	0	0	system funct3=4 reserved by Zicsr -> illegal, not CSR

@@ -187,23 +187,23 @@ pub fn box_on_line_side(bbox: &str, line: &str) -> String {
         field("line_slopetype"),
         field("line_slopetype")
     );
+    // The case picks the pair, and the pair is named once. Reading a
+    // corner out of each case on its own writes every case a second time,
+    // and the two that call `P_PointOnLineSide` are the largest expression
+    // the clip holds.
+    let corners = format!(
+        "multiIf({slope} = {ST_HORIZONTAL}, {horizontal}, \
+         {slope} = {ST_VERTICAL}, {vertical}, \
+         {slope} = {ST_POSITIVE}, {positive}, {negative}) AS box_corners",
+        slope = field("line_slopetype")
+    );
     // The two corners land on the same side or they do not, and the flip
     // does not change whether they agree, so it is applied once at the end
     // rather than to each corner.
-    let corner = |which: usize| {
-        let (h, v, p, n) = (&horizontal, &vertical, &positive, &negative);
-        format!(
-            "toInt16(multiIf({slope} = {ST_HORIZONTAL}, ({h}).{which}, \
-             {slope} = {ST_VERTICAL}, ({v}).{which}, \
-             {slope} = {ST_POSITIVE}, ({p}).{which}, ({n}).{which}))",
-            slope = field("line_slopetype")
-        )
-    };
     format!(
-        "toInt32(multiIf(({} + {}) AS box_sides = 0, toInt16(bitXor(0, {flip})), \
-         box_sides = 2, toInt16(bitXor(1, {flip})), toInt16(-1)))",
-        corner(1),
-        corner(2)
+        "toInt32(multiIf((toInt16(({corners}).1) + toInt16(box_corners.2)) AS box_sides = 0, \
+         toInt16(bitXor(0, {flip})), \
+         box_sides = 2, toInt16(bitXor(1, {flip})), toInt16(-1)))"
     )
 }
 

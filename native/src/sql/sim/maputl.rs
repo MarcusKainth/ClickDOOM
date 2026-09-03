@@ -170,15 +170,20 @@ pub fn box_on_line_side(bbox: &str, line: &str) -> String {
         at(BOX_RIGHT),
         at(BOX_LEFT)
     );
-    let positive = format!(
+    // The two sloping cases take the top corner and then the bottom one
+    // and differ only in which side of the box each takes its `x` from, so
+    // they are one pair. That halves the calls to `P_PointOnLineSide`,
+    // which is the largest expression this holds.
+    let corner_x = |positive: String, negative: String| {
+        format!(
+            "if({} = {ST_POSITIVE}, {positive}, {negative})",
+            field("line_slopetype")
+        )
+    };
+    let sloping = format!(
         "({}, {})",
-        side(at(BOX_LEFT), at(BOX_TOP)),
-        side(at(BOX_RIGHT), at(BOX_BOTTOM))
-    );
-    let negative = format!(
-        "({}, {})",
-        side(at(BOX_RIGHT), at(BOX_TOP)),
-        side(at(BOX_LEFT), at(BOX_BOTTOM))
+        side(corner_x(at(BOX_LEFT), at(BOX_RIGHT)), at(BOX_TOP)),
+        side(corner_x(at(BOX_RIGHT), at(BOX_LEFT)), at(BOX_BOTTOM))
     );
     // A horizontal line running left and a vertical line running down have
     // their sides the other way round.
@@ -188,13 +193,10 @@ pub fn box_on_line_side(bbox: &str, line: &str) -> String {
         field("line_slopetype")
     );
     // The case picks the pair, and the pair is named once. Reading a
-    // corner out of each case on its own writes every case a second time,
-    // and the two that call `P_PointOnLineSide` are the largest expression
-    // the clip holds.
+    // corner out of each case on its own writes every case a second time.
     let corners = format!(
         "multiIf({slope} = {ST_HORIZONTAL}, {horizontal}, \
-         {slope} = {ST_VERTICAL}, {vertical}, \
-         {slope} = {ST_POSITIVE}, {positive}, {negative}) AS box_corners",
+         {slope} = {ST_VERTICAL}, {vertical}, {sloping}) AS box_corners",
         slope = field("line_slopetype")
     );
     // The two corners land on the same side or they do not, and the flip
@@ -460,6 +462,25 @@ mod tests {
     #[test]
     fn a_line_seen_twice_is_walked_once() {
         assert!(lines_in("cells").starts_with("arrayDistinct("));
+    }
+
+    /// The box test asks `P_PointOnLineSide` about two corners, not four.
+    /// The engine's two sloping cases each evaluate it twice, and they
+    /// take the same two corners with the x coordinates swapped.
+    #[test]
+    fn the_box_test_holds_two_point_tests() {
+        let sql = box_on_line_side("bbox", "ld");
+        // `P_PointOnLineSide` opens on the vertical line it answers for
+        // without dividing, so the count of that test is the count of it.
+        assert_eq!(sql.matches("line_dx[1 + ld] = 0").count(), 2, "{sql}");
+        // The case picks the pair rather than the pair being written per
+        // case, so the switch names the two cases that need no point test
+        // and falls through for the two that do.
+        assert_eq!(sql.matches("multiIf(line_slopetype").count(), 1, "{sql}");
+        assert!(
+            !sql.contains(&format!("line_slopetype[1 + ld] = {ST_POSITIVE}, (")),
+            "{sql}"
+        );
     }
 
     #[test]

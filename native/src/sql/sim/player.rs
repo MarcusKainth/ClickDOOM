@@ -610,11 +610,20 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         } else {
             state.get(column)
         };
+        let held = if MOBJ_POINTERS.contains(&column) {
+            renumbered(&held)
+        } else {
+            held
+        };
         bindings.push((
             format!("now_{column}"),
             format!("arrayFilter((v, a) -> a = 1, {held}, pk_alive)"),
         ));
     }
+    bindings.push((
+        "now_sec_soundtarget".to_owned(),
+        renumbered(&state.get("sec_soundtarget")),
+    ));
     bindings.extend([
         (
             "now_m_id".to_owned(),
@@ -642,8 +651,29 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         ("now_p_message".to_owned(), "toUInt64(pk.11)".to_owned()),
         ("now_p_itemcount".to_owned(), "toInt32(pk.12)".to_owned()),
         ("now_p_bonuscount".to_owned(), "toInt32(pk.13)".to_owned()),
+        (
+            "now_p_attacker".to_owned(),
+            renumbered_slot(&state.get("p_attacker")),
+        ),
     ]);
     bindings
+}
+
+/// The mobj array columns that hold a slot rather than a value of their
+/// own. `sec_soundtarget` and `p_attacker` hold one too and are written
+/// beside them.
+const MOBJ_POINTERS: [&str; 2] = ["m_target", "m_tracer"];
+
+/// One slot the compaction moved, as the slot it moved to. A pointer at
+/// the thing that was taken becomes 0, which is what the contract says
+/// none means.
+fn renumbered_slot(slot: &str) -> String {
+    format!("toUInt32(if({slot} = 0, 0, pk_slot[{slot}]))")
+}
+
+/// Every slot in an array of them, renumbered the same way.
+fn renumbered(slots: &str) -> String {
+    format!("arrayMap(t -> {}, {slots})", renumbered_slot("t"))
 }
 
 #[cfg(test)]

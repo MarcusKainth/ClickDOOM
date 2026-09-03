@@ -112,7 +112,9 @@ fn wl0_never_reaches_the_lambda() {
 mod live {
     use std::collections::BTreeSet;
 
-    use clickdoom_executor::config::{HALT_EXIT, HALT_REASON_NAMES, OP_ILLEGAL, RAM_WORDS_DEFAULT};
+    use clickdoom_executor::config::{
+        HALT_EXIT, HALT_REASON_NAMES, LOG_QUERIES_CUT_TO_LENGTH, OP_ILLEGAL, RAM_WORDS_DEFAULT,
+    };
     use clickdoom_executor::fold;
     use clickdoom_spec::{FRAMEBUFFER_BASE, FRAMEBUFFER_SIZE, MMIO_BASE, PALETTE_BASE, mmio};
 
@@ -978,5 +980,28 @@ mod live {
         .await;
         assert_eq!(row.x(3), 4 * 7, "the seeded write-log shadowed a real read");
         fx.finish().await;
+    }
+
+    /// The cap the batch statement's length is asserted against in
+    /// `fold_golden.rs` is the server's own default, and a server profile or
+    /// a version bump could move it. Read it back rather than assume it: a
+    /// lowered cap would truncate the statement in `system.query_log` with
+    /// nothing to say so, and the length assertion would keep passing
+    /// against a number the server no longer uses.
+    #[tokio::test]
+    async fn the_server_agrees_on_the_query_log_cap() {
+        let db = super::support::db::Conn::from_env().open("default");
+        let value: u64 = db
+            .fetch_one(
+                "SELECT toUInt64(value) FROM system.settings \
+                 WHERE name = 'log_queries_cut_to_length'",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            value, LOG_QUERIES_CUT_TO_LENGTH as u64,
+            "the server's log_queries_cut_to_length is not the value \
+             clickdoom_executor::config pins"
+        );
     }
 }

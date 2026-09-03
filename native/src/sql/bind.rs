@@ -7,6 +7,14 @@
 //! binds what the levels after it read into a tuple, and they read it back
 //! by position.
 //!
+//! The levels are a pipeline. Each one maps the level below it to a wider
+//! tuple and the body maps the last, so a level's own expressions read the
+//! level below through its lambda's parameter and sit one lambda deep
+//! whatever the chain's length. A map's array argument is outside its
+//! lambda, which is what keeps the levels beside each other rather than
+//! inside each other, and what a node costs to analyse and to run grows
+//! with the lambda depth it sits at.
+//!
 //! [`chain`] takes values in dependency order and returns one expression.
 
 /// The lambda parameter each level binds its values into.
@@ -24,8 +32,8 @@ fn level_name(prefix: &str, at: usize) -> String {
 /// A value may name the ones before it. Two things keep the chain cheap.
 /// A value named once is written into the one place that reads it, so it
 /// costs no level. The rest sit at the shallowest level their own
-/// dependencies allow, because a level's tuple is expanded into every
-/// level above it and depth multiplies.
+/// dependencies allow, because a level's tuple is copied into every level
+/// above it.
 pub fn chain(values: &[(String, String)], body: &str) -> String {
     chain_in("b", values, body)
 }
@@ -51,15 +59,21 @@ pub fn chain_in(prefix: &str, values: &[(String, String)], body: &str) -> String
         carried.extend(level.iter().map(|(name, _)| name.clone()));
         members.push(tuple);
     }
-    let mut sql = resolve(prefix, &body, &carried, levels.len());
-    for at in (0..levels.len()).rev() {
+    // The first level's tuple names nothing bound, so it is the literal
+    // the pipeline starts from; every level after it maps the one below.
+    let mut sql = format!("[tuple({})]", members[0].join(", "));
+    for (at, member) in members.iter().enumerate().skip(1) {
         sql = format!(
-            "arrayMap({} -> {sql}, [tuple({})])[1]",
-            level_name(prefix, at),
-            members[at].join(", ")
+            "arrayMap({} -> tuple({}), {sql})",
+            level_name(prefix, at - 1),
+            member.join(", ")
         );
     }
-    sql
+    format!(
+        "arrayMap({} -> {}, {sql})[1]",
+        level_name(prefix, levels.len() - 1),
+        resolve(prefix, &body, &carried, levels.len())
+    )
 }
 
 /// A value nothing reads twice is written into the place that reads it.
@@ -232,6 +246,35 @@ mod tests {
         assert!(
             outer.starts_with("arrayMap(b0 -> b0.1 + b0.1, [tuple(arrayMap(pa0"),
             "{outer}"
+        );
+    }
+
+    /// Each level maps the one below it, so the second level's tuple and
+    /// the body sit in a lambda of their own rather than inside the first
+    /// level's.
+    #[test]
+    fn a_level_sits_beside_the_one_below_it_rather_than_inside_it() {
+        let sql = chain(&values(&[("a", "x + 1"), ("b", "a * a")]), "a + b + b");
+        assert_eq!(
+            sql,
+            "arrayMap(b1 -> b1.1 + b1.2 + b1.2, \
+             arrayMap(b0 -> tuple(b0.1, b0.1 * b0.1), [tuple(x + 1)]))[1]"
+        );
+    }
+
+    /// A chain of any length keeps its levels beside each other, so the
+    /// third level's tuple is no deeper than the second's.
+    #[test]
+    fn a_longer_chain_does_not_put_its_levels_deeper() {
+        let sql = chain(
+            &values(&[("a", "x + 1"), ("b", "a * a"), ("c", "b + 1")]),
+            "a + b + c + c",
+        );
+        assert_eq!(
+            sql,
+            "arrayMap(b2 -> b2.1 + b2.2 + b2.3 + b2.3, \
+             arrayMap(b1 -> tuple(b1.1, b1.2, b1.2 + 1), \
+             arrayMap(b0 -> tuple(b0.1, b0.1 * b0.1), [tuple(x + 1)])))[1]"
         );
     }
 

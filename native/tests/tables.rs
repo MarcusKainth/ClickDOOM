@@ -117,6 +117,31 @@ fn every_sprite_number_names_a_sprite() {
     );
 }
 
+/// `A_Look` switches on the sound a thing makes when it sees the player,
+/// and every sound a thing names has to be one this table numbers.
+#[test]
+fn every_sound_a_thing_names_has_a_row() {
+    let sounds = tables::table("sfxenum").unwrap();
+    assert_eq!(sounds.rows.len(), 109);
+    let names = sounds.texts("name").unwrap();
+    assert_eq!(names.first(), Some(&"sfx_None"));
+    assert_eq!(sounds.ints("id").unwrap(), (0..109).collect::<Vec<i64>>());
+    assert!(names.iter().all(|n| n.starts_with("sfx_")));
+    let count = sounds.rows.len() as i64;
+    let things = tables::table("mobjinfo").unwrap();
+    for column in [
+        "seesound",
+        "attacksound",
+        "painsound",
+        "deathsound",
+        "activesound",
+    ] {
+        for sound in things.ints(column).unwrap() {
+            assert!((0..count).contains(&sound), "{column} {sound} has no row");
+        }
+    }
+}
+
 /// `finesine` is a 16.16 sine over `FINEANGLES` = 8,192 steps, so a
 /// quarter turn is index 2,048. `m_fixed.h` puts `FRACUNIT` at 65,536 and
 /// the table peaks one below it.

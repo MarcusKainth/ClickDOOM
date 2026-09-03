@@ -187,7 +187,7 @@ impl<'a> Symbols<'a> {
 }
 
 /// Walks to the next `,` or `}` outside brackets or parentheses.
-fn skip_to_separator(toks: &[Tok<'_>], mut at: usize) -> usize {
+pub fn skip_to_separator(toks: &[Tok<'_>], mut at: usize) -> usize {
     let mut depth = 0i32;
     while let Some(tok) = toks.get(at) {
         match tok.token {

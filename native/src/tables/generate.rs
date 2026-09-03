@@ -11,7 +11,7 @@ use std::path::Path;
 use crate::csource::error::CError;
 use crate::csource::init::{Array, Ctx, Node, check_struct, find_array};
 use crate::csource::lex::{Tok, Token, lex};
-use crate::csource::symbols::Symbols;
+use crate::csource::symbols::{Symbols, skip_to_separator};
 
 /// The headers and sources every table is read from. Symbols are taken
 /// from all of them at once, so a table may name a constant any of them
@@ -90,6 +90,7 @@ pub fn generate(dir: &Path) -> Result<Vec<Table>, CError> {
     tables.push(action_functions(&actions));
     tables.push(reader.mobjinfo()?);
     tables.push(reader.sprnames()?);
+    tables.push(reader.sfxenum()?);
     tables.push(reader.weaponinfo()?);
     tables.push(reader.animdefs()?);
     tables.push(reader.switch_list()?);
@@ -196,6 +197,11 @@ const WEAPON_FIELDS: [&str; 6] = [
 
 /// The `animdef_t` fields.
 const ANIM_FIELDS: [&str; 4] = ["istexture", "endname", "startname", "speed"];
+
+/// Where the sound numbers are declared, and the enumerator that closes
+/// the list.
+const SFX_FILE: &str = "sounds.h";
+const SFX_COUNT: &str = "NUMSFX";
 
 /// The `switchlist_t` fields.
 const SWITCH_FIELDS: [&str; 3] = ["name1", "name2", "episode"];
@@ -368,6 +374,47 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// `sfxenum_t`, the sound numbers `mobjinfo`'s five sound fields hold.
+    ///
+    /// The list ends with `NUMSFX`, which is how many sounds there are
+    /// rather than a sound of its own, so it bounds the table instead of
+    /// filling a row in it.
+    fn sfxenum(&self) -> Result<Table, CError> {
+        let members = enum_members(SFX_FILE, self.toks(SFX_FILE), "sfxenum_t")?;
+        let Some((count, sounds)) = members.split_last() else {
+            return Err(CError::NoEnum {
+                file: SFX_FILE.to_owned(),
+                name: "sfxenum_t".to_owned(),
+            });
+        };
+        let value = |(name, line): &(String, u32)| {
+            self.symbols.get(name).ok_or_else(|| CError::UnknownSymbol {
+                file: SFX_FILE.to_owned(),
+                line: *line,
+                name: name.clone(),
+            })
+        };
+        let declared = value(count)?;
+        if count.0 != SFX_COUNT || declared != sounds.len() as i64 {
+            return Err(CError::TooManyEntries {
+                file: SFX_FILE.to_owned(),
+                name: "sfxenum_t".to_owned(),
+                declared,
+                actual: sounds.len(),
+            });
+        }
+        let mut rows = Vec::with_capacity(sounds.len());
+        for sound in sounds {
+            rows.push(vec![value(sound)?.to_string(), sound.0.clone()]);
+        }
+        Ok(Table {
+            name: "sfxenum",
+            source: SFX_FILE,
+            columns: vec!["id", "name"],
+            rows,
+        })
+    }
+
     /// `animdefs[]`, including the `istexture = -1` terminator, so the
     /// table is the array the engine reads.
     fn animdefs(&self) -> Result<Table, CError> {
@@ -530,6 +577,51 @@ impl<'a> Reader<'a> {
             rows,
         })
     }
+}
+
+/// The enumerators of `enum { ... } tag;` in `toks`, in declaration order,
+/// each with the line it sits on.
+///
+/// The value of one is whatever [`Symbols`] resolved it to, so an
+/// enumerator with an explicit value is skipped over here and read there.
+fn enum_members(file: &str, toks: &[Tok<'_>], tag: &str) -> Result<Vec<(String, u32)>, CError> {
+    let ident = |at: usize| match toks.get(at).map(|t| &t.token) {
+        Some(Token::Ident(name)) => Some(*name),
+        _ => None,
+    };
+    let punct = |at: usize, text: &str| matches!(toks.get(at).map(|t| &t.token), Some(Token::Punct(p)) if *p == text);
+    let mut at = 0;
+    while at < toks.len() {
+        if ident(at) != Some("enum") {
+            at += 1;
+            continue;
+        }
+        at += 1;
+        // An optional tag sits between `enum` and the brace.
+        if ident(at).is_some() {
+            at += 1;
+        }
+        if !punct(at, "{") {
+            continue;
+        }
+        at += 1;
+        let mut members = Vec::new();
+        while let Some(name) = ident(at) {
+            members.push((name.to_owned(), toks[at].line));
+            at = skip_to_separator(toks, at + 1);
+            if punct(at, ",") {
+                at += 1;
+            }
+        }
+        // The tag a `typedef` gives the list follows its closing brace.
+        if punct(at, "}") && ident(at + 1) == Some(tag) {
+            return Ok(members);
+        }
+    }
+    Err(CError::NoEnum {
+        file: file.to_owned(),
+        name: tag.to_owned(),
+    })
 }
 
 /// The action functions `states` names, numbered from 1. Zero is `NULL`,

@@ -102,6 +102,15 @@ CREATE TABLE IF NOT EXISTS {{DB}}.sprnames
 )
 ENGINE = MergeTree ORDER BY id;
 
+-- `sfxenum_t`, which is what `mobjinfo`'s five sound fields hold. `NUMSFX`
+-- closes the enumerator list and is not a sound, so it is not a row.
+CREATE TABLE IF NOT EXISTS {{DB}}.sfxenum
+(
+    id    UInt32,
+    name  String
+)
+ENGINE = MergeTree ORDER BY id;
+
 CREATE TABLE IF NOT EXISTS {{DB}}.weaponinfo
 (
     id          UInt32,

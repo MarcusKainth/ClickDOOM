@@ -110,31 +110,65 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
          mt_cycles, mt_next)"
             .to_owned(),
     );
-    // The sight checks the looks need, batched into one call of the
-    // primitive. A tic where nothing looks passes an empty list.
+    // The sight checks a tic needs, batched into one call of the
+    // primitive. A tic that asks nothing passes an empty list.
+    //
+    // A look asks about the player. A chase asks about the target the
+    // thing already holds, and a thing whose look wakes it takes the
+    // player as its target, so the pair a woken thing needs is the one
+    // its look already asked. Both lists come out of the tic-start
+    // snapshot: a state cycle enters at most one routine, so a thing that
+    // looks does not chase in the same entry, and only a look moves a
+    // target.
     bind(
         "mt_lookers",
         "arrayFilter((k, l) -> l = 1, mt_slots, mt_looks)".to_owned(),
     );
     bind(
+        "mt_chasers",
+        format!(
+            "arrayFilter((k, c, n, t) -> c = 1 AND n != 0 \
+             AND state_action[1 + n] = a_chase AND t != 0, mt_slots, mt_cycles, mt_next, {})",
+            s("m_target")
+        ),
+    );
+    let pairs = |slot: &str, other: &dyn Fn(&str) -> String| {
+        sight::asking(
+            &format!("{}[{slot}]", s("m_subsector")),
+            &format!("{}[{slot}]", s("m_x")),
+            &format!("{}[{slot}]", s("m_y")),
+            &format!("{}[{slot}]", s("m_z")),
+            &format!("{}[{slot}]", s("m_height")),
+            &other("m_subsector"),
+            &other("m_x"),
+            &other("m_y"),
+            &other("m_z"),
+            &other("m_height"),
+        )
+    };
+    let target = |column: &str| format!("{}[{}[k]]", s(column), s("m_target"));
+    bind(
         "mt_pairs",
         format!(
-            "arrayMap(k -> {}, mt_lookers)",
-            sight::asking(
-                &format!("{}[k]", s("m_subsector")),
-                &format!("{}[k]", s("m_x")),
-                &format!("{}[k]", s("m_y")),
-                &format!("{}[k]", s("m_z")),
-                &format!("{}[k]", s("m_height")),
-                &player("m_subsector"),
-                &player("m_x"),
-                &player("m_y"),
-                &player("m_z"),
-                &player("m_height"),
-            )
+            "arrayConcat(arrayMap(k -> {}, mt_lookers), arrayMap(k -> {}, mt_chasers))",
+            pairs("k", &player),
+            pairs("k", &target),
         ),
     );
     bind("mt_seen", sight::check_sight("mt_pairs"));
+    // The chasers' answers, which the lookers' come before. A slot in
+    // neither list indexes at 0 and reads the default, which is the
+    // answer a thing that asked nothing gets.
+    bind(
+        "mt_chase_seen",
+        "arraySlice(mt_seen, 1 + length(mt_lookers), length(mt_chasers))".to_owned(),
+    );
+    bind(
+        "mt_sees_target",
+        "arrayMap((k, l) -> toUInt8(if(l = 1, mt_seen[indexOf(mt_lookers, k)], \
+         mt_chase_seen[indexOf(mt_chasers, k)])), mt_slots, mt_looks)"
+            .to_owned(),
+    );
     // `A_Look` reads the sector's sound target before it looks for the
     // player, and this does not run that half.
     bind(
@@ -277,6 +311,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_floorz: &s("m_floorz"),
         m_ceilingz: &s("m_ceilingz"),
         m_subsector: &s("m_subsector"),
+        sees_target: "mt_sees_target",
         prndindex: &s("prndindex"),
     };
     for (name, expr) in enemy::chase(&chasing, &world) {

@@ -103,15 +103,44 @@ jobs:
           name: refemu
           path: target/release/refemu
 
-  test:
-    # Every suite, in the groups scripts/test-group.sh names, one runner per
-    # group with its own ClickHouse. Throwaway databases only; never
-    # `clickdoom`. `make test` runs the same suites in one pass locally.
-    needs: [build-rom, build-refemu]
+  build-tests:
+    # Every test binary, compiled once into two nextest archives: the
+    # workspace with the live suites, and the reference emulator's release
+    # ROM suites. The test jobs run from the archives and compile nothing.
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-nextest@0.9.140
+      - name: Archive the suites
+        run: |
+          mkdir -p target/nextest
+          cargo nextest archive --locked --workspace --features clickhouse-tests \
+              --archive-file target/nextest/tests.tar.zst
+          cargo nextest archive --locked --release -p refemu --features rom-tests \
+              --archive-file target/nextest/rom-suites.tar.zst
+      - name: Upload the archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-archives
+          path: target/nextest/*.tar.zst
+
+  test:
+    # Every suite, in the groups scripts/test-group.sh names, one runner per
+    # group with its own ClickHouse, run from the archives build-tests made.
+    # Throwaway databases only; never `clickdoom`. `make test` runs the same
+    # suites in one pass locally.
+    needs: [build-tests, build-rom, build-refemu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -121,15 +150,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # One cache per group: the groups build different test binaries.
-          key: test-${{ matrix.group }}
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest@0.9.140
       - name: Start the pinned ClickHouse
         run: make up
+      - name: Download the test archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: test-archives
+          path: target/nextest
       - name: Download ROM artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -146,6 +176,7 @@ jobs:
           CLICKHOUSE_HTTP_PORT: "8123"
           CLICKHOUSE_PASSWORD: clickdoom
           GROUP: ${{ matrix.group }}
+          NEXTEST_ARCHIVE_DIR: target/nextest
         run: |
           chmod +x target/release/refemu
           scripts/test-group.sh "$GROUP"

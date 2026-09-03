@@ -168,6 +168,40 @@ Nothing benchmarks automatically. A shared runner cannot give the timing a
 quiet machine gives, and a gate that fails for reasons unrelated to the change
 is worse than no gate.
 
+### The machine lock
+
+A timing is only as good as the machine it was taken on, so one holder at a
+time announces that the machine is theirs.
+
+    make machine-lock                                 # who holds it
+    ./scripts/machine-lock.sh acquire <holder> <why>  # take it
+    ./scripts/machine-lock.sh release <holder>        # give it back
+    ./scripts/machine-lock.sh break                   # clear a dead holder
+
+The lock is one file, at
+`$(git rev-parse --path-format=absolute --git-common-dir)/machine-lock`.
+Every worktree of this checkout resolves that to the same path and the same
+inode, so a holder in one worktree is visible from all of them. The file
+carries the holder's name, when they took it, the host, the process id, the
+worktree they took it from, and why.
+
+`acquire` creates the file under `set -C`, which is one atomic open: of two
+callers racing, one wins and the other is told who holds it and exits
+non-zero. It does not wait. `release` refuses unless the `holder:` line
+matches the name given, so only the holder gives it back. A lock left behind
+by a run that died is cleared with `break`, which prints what it removed.
+
+`make bench-canonical-throughput` holds the lock for the length of its run and
+releases it whether the run succeeds, fails or is interrupted.
+`MACHINE_LOCK_HOLDER` is the name it takes the lock under and defaults to
+`$USER`; set it to a name whoever reads the lock can reach. Take the lock by
+hand for anything else that needs the machine to itself, a long run against
+the shared ClickHouse container included: two runners against one database
+lose each other's flushes.
+
+The file is not in git, and it is per checkout rather than per machine, so a
+second clone of this repository has a lock of its own.
+
 ## Reference traces
 
 `refemu/reference_traces/` holds the committed SPEC-format traces, named after

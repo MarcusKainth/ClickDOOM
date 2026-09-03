@@ -30,13 +30,15 @@
 -- produces the string, decode only needs to tell the four cases apart):
 --   28  opcode 0x73 (SYSTEM), funct3 = 0, imm[11:0] = 0   -- ecall
 --   29  opcode 0x73 (SYSTEM), funct3 = 0, imm[11:0] = 1   -- ebreak
---   30  opcode 0x73 (SYSTEM), funct3 != 0                 -- any CSR instruction
+--   30  opcode 0x73 (SYSTEM), funct3 in {1,2,3,5,6,7}     -- the six CSR
+--       instructions, which are the whole of the vocabulary SPEC §1 names
 --   31  anything else unrecognized: bad opcode, reserved funct3/funct7,
 --       opcode 0x73 with funct3 = 0 and imm[11:0] not in {0, 1} (a
 --       privileged instruction like MRET — out of scope, single
---       machine-mode program, never legitimately in the ROM), or a 16-bit
---       compressed encoding (bits[1:0] != 11 never matches any named
---       opcode below, so it falls through here too)
+--       machine-mode program, never legitimately in the ROM), opcode 0x73
+--       with funct3 = 4, which Zicsr reserves and which is therefore not
+--       one of the six, or a 16-bit compressed encoding (bits[1:0] != 11
+--       never matches any named opcode below, so it falls through here too)
 -- FENCE / FENCE.I (opcode 0x0F) is not a sentinel: RV32IM here is a single
 -- in-order hart with no atomics, so FENCE has nothing to order and decodes
 -- as a true no-op — the `add` arm (id 0) with rd forced to 0. Agreed with
@@ -131,7 +133,7 @@ SELECT
         op = 51, 31,
         op = 115 AND f3 = 0 AND sysimm = 0, 28,  -- ecall
         op = 115 AND f3 = 0 AND sysimm = 1, 29,  -- ebreak
-        op = 115 AND f3 != 0, 30,                -- csrrw/csrrs/csrrc/csrrwi/csrrsi/csrrci
+        op = 115 AND f3 IN (1, 2, 3, 5, 6, 7), 30,  -- csrrw/csrrs/csrrc/csrrwi/csrrsi/csrrci
         31                                        -- unimplemented/illegal opcode (SPEC §1),
                                                    -- including op=115 with f3=0 and sysimm not in {0,1}
     ) AS id,

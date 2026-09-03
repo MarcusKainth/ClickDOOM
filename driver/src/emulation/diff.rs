@@ -333,7 +333,8 @@ async fn run_inner(
     .await?;
     let db = db_at(conn, &args.database);
     crate::emulation::bootstrap::seed(&db, &crate::emulation::bootstrap::RESET_REGS).await?;
-    db.run(&commit::cpu_state_flush_sql(&args.database)).await?;
+    db.run(&commit::cpu_state_flush_sql(&args.database, 0))
+        .await?;
     let clickhouse_version: String = db.fetch_one("SELECT version()").await?;
     eprintln!("  provisioned: decoded rows={decn}, ClickHouse {clickhouse_version}");
 
@@ -384,22 +385,28 @@ async fn run_inner(
             &batch_args,
         );
         db.run(&batch_sql).await?;
-        db.run(&commit::ram_flush_sql(&args.database)).await?;
+        // The database is this run's own, provisioned fresh above, so the
+        // batch the fold numbered is this loop's own count.
+        batches_run += 1;
+        let batch_id = u64::from(batches_run);
+        db.run(&commit::ram_flush_sql(&args.database, batch_id))
+            .await?;
         // fbpal_flush_sql returns two statements (framebuffer, then
         // palette) in one string; the HTTP interface takes one statement
         // per request.
-        for statement in split_statements(&commit::fbpal_flush_sql(&args.database)) {
+        for statement in split_statements(&commit::fbpal_flush_sql(&args.database, batch_id)) {
             db.run(statement).await?;
         }
-        db.run(&commit::console_out_flush_sql(&args.database))
+        db.run(&commit::console_out_flush_sql(&args.database, batch_id))
             .await?;
-        db.run(&commit::cpu_state_flush_sql(&args.database)).await?;
+        db.run(&commit::cpu_state_flush_sql(&args.database, batch_id))
+            .await?;
         db.run(&commit::retention_sql(
             &args.database,
+            batch_id,
             BATCH_COMMIT_RETENTION_N,
         ))
         .await?;
-        batches_run += 1;
 
         // Never trust step_k as what actually retired: a batch can stop
         // early on halt, FRAME_COMMIT, or the write-log high-water mark.

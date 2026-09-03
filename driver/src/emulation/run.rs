@@ -1,11 +1,17 @@
 //! The resumable batch-loop runner for a multi-hour run against the real
 //! ROM, through every `FRAME_COMMIT` to a target icount in one invocation.
 //!
-//! Resumable with no snapshot file of its own: every `commit` flush is
-//! idempotent, keyed on the latest `batch_id`, so "resume" is just the
-//! `SELECT max(batch_id), max(icount) FROM cpu_state FINAL` progress query,
-//! read once at startup. Loops [`clickdoom_executor::fold::batch`] then the
-//! `commit` flushes, called exactly as those modules define them.
+//! Resumable with no snapshot file of its own: `batch_commit`'s latest row
+//! says where the run has got to, and every `commit` flush is idempotent,
+//! so "resume" is that one query plus a redo of that row's derivations.
+//! Loops [`clickdoom_executor::fold::batch`] then the `commit` flushes,
+//! called exactly as those modules define them.
+//!
+//! Every flush names the batch this loop just ran, and the loop refuses to
+//! flush a batch id other than the one it expected to commit. A second
+//! runner against the same database moves `batch_commit`'s maximum, and a
+//! flush that read the maximum instead would derive that runner's batch and
+//! drop this one's write-log with no error anywhere.
 //!
 //! Each batch is passed `min(K, next_boundary - current_icount)` rather
 //! than a constant K, so a batch lands exactly on the next
@@ -63,6 +69,10 @@ pub enum RunError {
         expected: String,
         actual: String,
     },
+    #[error(
+        "expected to have committed batch_id={expected}, but batch_commit's latest is {found}: another runner is writing to this database, and flushing now would derive its batch instead of this one"
+    )]
+    BatchIdMoved { expected: u64, found: u64 },
     #[error("fatal halt ({reason}) at icount={icount}, short of target icount={target}")]
     FatalHalt {
         reason: String,
@@ -109,6 +119,23 @@ fn trace_line_for(trace_path: &Path, icount: u64) -> Result<String, RunError> {
         .ok_or_else(|| RunError::NoTraceLine(icount, trace_path.to_owned()))
 }
 
+/// Derives `batch_id`'s row into `ram`, `framebuffer`, `palette`,
+/// `console_out` and `cpu_state`, in that order. Idempotent, so a caller
+/// may run it for a batch that has already been flushed.
+async fn flush(db: &crate::client::Db, database: &str, batch_id: u64) -> Result<(), RunError> {
+    db.run(&commit::ram_flush_sql(database, batch_id)).await?;
+    // fbpal_flush_sql returns two statements (framebuffer, then palette) in
+    // one string; the HTTP interface takes one statement per request.
+    for statement in crate::sql::split_statements(&commit::fbpal_flush_sql(database, batch_id)) {
+        db.run(statement).await?;
+    }
+    db.run(&commit::console_out_flush_sql(database, batch_id))
+        .await?;
+    db.run(&commit::cpu_state_flush_sql(database, batch_id))
+        .await?;
+    Ok(())
+}
+
 /// Runs the batch loop until the target icount, `--stop-at-frame`, a fatal
 /// halt, or an interrupt (SIGINT/SIGTERM) stops it. A batch that halts or
 /// hits the write-log high-water mark short of `k` is not treated as an
@@ -124,7 +151,18 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     preflight::check(&db, conn, args.bin, args.manifest_path, args.k, args.hwm).await?;
 
     crate::emulation::bootstrap::seed(&db, &crate::emulation::bootstrap::RESET_REGS).await?;
-    db.run(&commit::cpu_state_flush_sql(&conn.database)).await?;
+
+    // `batch_commit` is the authority on where a run has got to: it is the
+    // batch's single atomic write, and everything else is derived from it.
+    // Redoing the last row's derivations before any new batch is the
+    // recovery step, so a crash between that write and its flushes cannot
+    // leave `ram` short of a batch the resume point counts as done. Every
+    // flush is idempotent, so this costs one redo on the ordinary path.
+    let (resume_batch, resume_icount): (u64, u64) = db
+        .fetch_one("SELECT batch_id, icount FROM batch_commit ORDER BY batch_id DESC LIMIT 1")
+        .await?;
+    flush(&db, &conn.database, resume_batch).await?;
+    eprintln!("# resuming from batch_id={resume_batch} icount={resume_icount}");
 
     let manifest = Manifest::read(args.manifest_path)?;
     let text_start = manifest.text_start.unwrap_or(RAM_BASE);
@@ -137,11 +175,6 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     let text_end_widx = text_end_word - ram_base_word;
     let decn = text_end_word - text_start_word;
     let ram_words = RAM_WORDS_DEFAULT;
-
-    let (resume_batch, resume_icount): (u64, u64) = db
-        .fetch_one("SELECT max(batch_id), max(icount) FROM cpu_state FINAL")
-        .await?;
-    eprintln!("# resuming from batch_id={resume_batch} icount={resume_icount}");
 
     let interrupted = Arc::new(AtomicBool::new(false));
     {
@@ -197,32 +230,44 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
             args.hwm,
             &batch_args,
         );
+        let this_batch = batch_id + 1;
         db.run(&batch_sql).await?;
-        db.run(&commit::ram_flush_sql(&conn.database)).await?;
-        // fbpal_flush_sql returns two statements (framebuffer, then
-        // palette) in one string; the HTTP interface takes one statement
-        // per request.
-        for statement in crate::sql::split_statements(&commit::fbpal_flush_sql(&conn.database)) {
-            db.run(statement).await?;
-        }
-        db.run(&commit::console_out_flush_sql(&conn.database))
+
+        // The fold numbers its own row from the previous one, so the row it
+        // just wrote is this batch only if nothing else wrote to this
+        // database. A second runner moves `max(batch_id)` and every flush
+        // below would then name its batch instead of ours, losing this
+        // batch's write-log with no error anywhere.
+        let (committed, new_icount, pc, halted, halt_reason, has_frame, frame_no): (
+            u64,
+            u64,
+            u32,
+            u8,
+            String,
+            u8,
+            u32,
+        ) = db
+            .fetch_one(
+                "SELECT batch_id, icount, pc, halted, halt_reason, has_frame, frame_no \
+                 FROM batch_commit ORDER BY batch_id DESC LIMIT 1",
+            )
             .await?;
-        db.run(&commit::cpu_state_flush_sql(&conn.database)).await?;
+        if committed != this_batch {
+            return Err(RunError::BatchIdMoved {
+                expected: this_batch,
+                found: committed,
+            });
+        }
+
+        flush(&db, &conn.database, this_batch).await?;
         db.run(&commit::retention_sql(
             &conn.database,
+            this_batch,
             BATCH_COMMIT_RETENTION_N,
         ))
         .await?;
 
-        let (new_batch_id, new_icount, pc, halted, halt_reason): (u64, u64, u32, u8, String) = db
-            .fetch_one("SELECT batch_id, icount, pc, halted, halt_reason FROM cpu_state ORDER BY batch_id DESC LIMIT 1")
-            .await?;
-        let (has_frame, frame_no): (u8, u32) = db
-            .fetch_one(
-                "SELECT has_frame, frame_no FROM batch_commit ORDER BY batch_id DESC LIMIT 1",
-            )
-            .await?;
-        batch_id = new_batch_id;
+        batch_id = this_batch;
         icount = new_icount;
         batches_run += 1;
         eprintln!(

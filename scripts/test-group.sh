@@ -35,7 +35,9 @@ case "$group" in
         # server's connections, which a neighbour's session would move.
         run $live --test-threads 1 \
             -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live))'
-        run --release --workspace --features refemu/rom-tests \
+        # The ROM suites are the reference emulator's, so only it is built
+        # in release.
+        run --release -p refemu --features rom-tests \
             -E 'binary(reference_trace) | binary(demo3_parity) | binary(rom_symbols) | binary(probe_fixture)'
         ;;
     native-sim-a)

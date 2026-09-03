@@ -118,7 +118,7 @@ require-rom:
 test: up require-rom build-refemu ## Every suite, live ones included
 	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
 	    cargo test --locked --workspace --features clickhouse-tests -- --nocapture
-	cargo test --locked --release --workspace --features refemu/rom-tests \
+	cargo test --locked --release -p refemu --features rom-tests \
 	    --test reference_trace --test demo3_parity --test rom_symbols \
 	    --test probe_fixture -- --nocapture
 

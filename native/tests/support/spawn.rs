@@ -106,7 +106,7 @@ fn fixed_mul(a: i32, b: i32) -> i32 {
     ((i64::from(a) * i64::from(b)) >> FRACBITS) as i32
 }
 
-struct Node {
+pub struct Node {
     x: i32,
     y: i32,
     dx: i32,
@@ -115,7 +115,7 @@ struct Node {
 }
 
 /// `R_PointInSubsector`, from `r_main.c`.
-fn point_in_subsector(x: i32, y: i32, nodes: &[Node]) -> i32 {
+pub fn point_in_subsector(x: i32, y: i32, nodes: &[Node]) -> i32 {
     if nodes.is_empty() {
         return 0;
     }
@@ -127,7 +127,7 @@ fn point_in_subsector(x: i32, y: i32, nodes: &[Node]) -> i32 {
     (at & !NF_SUBSECTOR) as i32
 }
 
-fn nodes(wad: &Wad<'_>, map: &str) -> Vec<Node> {
+pub fn nodes(wad: &Wad<'_>, map: &str) -> Vec<Node> {
     let bytes = wad.map_lump(map, "NODES").expect("the map has nodes").bytes;
     bytes
         .as_chunks::<28>()

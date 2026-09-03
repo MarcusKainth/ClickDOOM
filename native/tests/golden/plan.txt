@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.finesine (id UInt32, value Int32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.tantoangle (id UInt32, value UInt32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rndtable (id UInt32, value UInt8)
 CREATE TABLE IF NOT EXISTS clickdoom_native.fuzzoffset (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.opposite (id UInt32, value UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.diags (id UInt32, value UInt32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.xspeed (id UInt32, value Int32)
+CREATE TABLE IF NOT EXISTS clickdoom_native.yspeed (id UInt32, value Int32)
 CREATE TABLE IF NOT EXISTS clickdoom_native.gammatable (level UInt8, id UInt32, value UInt8)
 CREATE TABLE IF NOT EXISTS clickdoom_native.messages (name String, text String)
 CREATE TABLE IF NOT EXISTS clickdoom_native.lv_vertexes
@@ -94,5 +98,9 @@ INSERT INTO clickdoom_native.finesine FORMAT TSVWithNames  [114765 bytes]
 INSERT INTO clickdoom_native.tantoangle FORMAT TSVWithNames  [29294 bytes]
 INSERT INTO clickdoom_native.rndtable FORMAT TSVWithNames  [1837 bytes]
 INSERT INTO clickdoom_native.fuzzoffset FORMAT TSVWithNames  [370 bytes]
+INSERT INTO clickdoom_native.opposite FORMAT TSVWithNames  [45 bytes]
+INSERT INTO clickdoom_native.diags FORMAT TSVWithNames  [25 bytes]
+INSERT INTO clickdoom_native.xspeed FORMAT TSVWithNames  [68 bytes]
+INSERT INTO clickdoom_native.yspeed FORMAT TSVWithNames  [68 bytes]
 INSERT INTO clickdoom_native.gammatable FORMAT TSVWithNames  [11895 bytes]
 INSERT INTO clickdoom_native.messages FORMAT TSVWithNames  [7787 bytes]

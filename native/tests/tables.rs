@@ -175,6 +175,33 @@ fn tantoangle_ends_at_a_binary_45_degrees() {
     assert!(values.windows(2).all(|w| w[0] <= w[1]), "not monotonic");
 }
 
+/// `P_NewChaseDir` indexes its four tables by direction, so each has to
+/// be as long as the directions that reach it and hold directions of its
+/// own.
+#[test]
+fn the_chase_direction_tables_line_up_with_the_eight_directions() {
+    let opposite = tables::table("opposite").unwrap().ints("value").unwrap();
+    // `DI_NODIR` closes the list and is its own opposite.
+    assert_eq!(opposite.len(), 9);
+    assert_eq!(opposite[8], 8);
+    for (dir, back) in opposite[..8].iter().enumerate() {
+        assert_eq!(*back, ((dir + 4) % 8) as i64, "the opposite of {dir}");
+    }
+    // The four diagonals, in the order `((deltay < 0) << 1) + (deltax > 0)`
+    // reaches them.
+    let diags = tables::table("diags").unwrap().ints("value").unwrap();
+    assert_eq!(diags, [3, 1, 5, 7]);
+    let x = tables::table("xspeed").unwrap().ints("value").unwrap();
+    let y = tables::table("yspeed").unwrap().ints("value").unwrap();
+    assert_eq!((x.len(), y.len()), (8, 8));
+    // The two are one table a quarter turn apart, which is what makes a
+    // direction and the one two along it square to each other.
+    for dir in 0..8 {
+        assert_eq!(x[(dir + 2) % 8], -y[dir], "a quarter turn from {dir}");
+    }
+    assert_eq!((x[0], y[0]), (65536, 0), "a step east is one unit long");
+}
+
 /// `R_DrawFuzzColumn` adds an entry of `fuzzoffset` to a framebuffer
 /// pointer, so every entry is one screen row up or down.
 #[test]

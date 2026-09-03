@@ -28,6 +28,10 @@ the source does not produce fails the suite.
 | `tantoangle.tsv` | `tantoangle` | `tables.c` |
 | `rndtable.tsv` | `rndtable` | `m_random.c` |
 | `fuzzoffset.tsv` | `fuzzoffset` | `r_draw.c` |
+| `opposite.tsv` | `opposite` | `p_enemy.c` |
+| `diags.tsv` | `diags` | `p_enemy.c` |
+| `xspeed.tsv` | `xspeed` | `p_enemy.c` |
+| `yspeed.tsv` | `yspeed` | `p_enemy.c` |
 | `gammatable.tsv` | `gammatable` | `tables.c` |
 | `messages.tsv` | every string the header defines | `d_englsh.h` |
 

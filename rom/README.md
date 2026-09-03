@@ -27,6 +27,23 @@ nondeterministic build; check `doom-rv32im.bin`'s sha256 (or
 `rom/PINNED_HASH`, once #10 lands), which is the thing SPEC §4 actually
 promises.
 
+### Both artifacts are reproducible, and each is checked differently
+
+`doom-rv32im.bin` is pinned by a stored hash, `rom/PINNED_HASH`.
+`doom-rv32im.elf` is checked by `make -C rom check-elf-reproducible`, which
+links it a second time and compares the two files.
+
+The two checks reach different bytes. `objcopy -O binary` keeps only the
+allocated sections, so anything that varies in `.symtab` or `.strtab`
+passes `check-pinned-hash` untouched. Those tables are what `refemu probe`
+reads the engine's globals out of, so they need a check of their own. The
+ELF gets a second link rather than a second stored hash because the
+property wanted here is that two builds agree, and a stored hash is one
+more file to move on every ROM change.
+
+Every hand-written assembly source under `src/` names itself with a `.file`
+directive, for the reason `src/crt0.S` gives beside its own.
+
 ## Toolchain
 
 **xPack GNU RISC-V Embedded GCC v15.2.0-1** (`riscv-none-elf-*`), a

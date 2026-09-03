@@ -57,7 +57,7 @@ const ROUND_TRIP: &[(&str, &str, &str)] = &[
 ];
 
 /// The version every table's `spec_version` column defaults to.
-const SPEC_VERSION: &str = "0.2.0";
+const SPEC_VERSION: &str = "0.3.0";
 
 pub async fn check(db: &Db, database: &str) -> Result<String, CheckError> {
     let mut wrong = Vec::new();

@@ -1,0 +1,9 @@
+# cargo-nextest settings. `make test-group` and ci.yml run the suites through
+# nextest so that each test is its own process and a group's binaries can
+# run side by side. Every live test names its own database, so two running
+# at once share nothing but the server.
+[profile.default]
+fail-fast = false
+# A live suite's first session analyses a statement that takes about a
+# minute on a CI runner, so a test is slow only past this.
+slow-timeout = { period = "300s", terminate-after = 4 }

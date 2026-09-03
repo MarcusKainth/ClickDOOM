@@ -66,7 +66,7 @@ DEMO3_MAX ?= 4000000000
 reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12 rom/PINNED_HASH).tsv
 
 .PHONY: help up down build-rom \
-        test smoke diff \
+        test test-group smoke diff \
         bench-canonical-throughput machine-lock \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
@@ -121,6 +121,13 @@ test: up require-rom build-refemu ## Every suite, live ones included
 	cargo test --locked --release --workspace --features refemu/rom-tests \
 	    --test reference_trace --test demo3_parity --test rom_symbols \
 	    --test probe_fixture -- --nocapture
+
+# The suites in the groups ci.yml runs side by side, through cargo-nextest
+# (`cargo install cargo-nextest --locked`). scripts/test-group.sh says what
+# each group holds.
+test-group: up require-rom build-refemu ## One CI group of suites: make test-group GROUP=native-sim-a
+	CLICKHOUSE_HOST=$(CH_HOST) CLICKHOUSE_HTTP_PORT=$(CH_HTTP_PORT) CLICKHOUSE_PASSWORD="$(CLICKHOUSE_PASSWORD)" \
+	    scripts/test-group.sh "$(GROUP)"
 
 N ?= 100000
 diff: up require-rom build-refemu build-clickdoom ## Differential run of N instructions, reporting the first divergence

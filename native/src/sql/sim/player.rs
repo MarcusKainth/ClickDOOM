@@ -312,8 +312,11 @@ fn weapon_and_use(state: &State) -> Vec<(String, String)> {
                 state.get("p_powers")
             ),
         ),
+        // The pickups run after this and may ask for a weapon of their
+        // own, so the command's answer is a value the tic carries rather
+        // than the column, which `writeback` names from what they left.
         (
-            "now_p_pendingweapon".to_owned(),
+            "pl_pendingweapon".to_owned(),
             format!(
                 "toInt32(if(bitAnd(pl_buttons, {BT_CHANGE}) != 0 AND {owned} != 0 \
                  AND pl_wanted != {ready} \
@@ -408,7 +411,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         cards: &state.get("p_cards"),
         powers: "pl_powers",
         weaponowned: &state.get("p_weaponowned"),
-        pendingweapon: "now_p_pendingweapon",
+        pendingweapon: "pl_pendingweapon",
         message: &state.get("p_message"),
         itemcount: &state.get("p_itemcount"),
         bonuscount: "pl_bonuscount_down",
@@ -619,6 +622,12 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         ("now_p_cards".to_owned(), "pk.7".to_owned()),
         ("now_p_powers".to_owned(), "pk.8".to_owned()),
         ("now_p_weaponowned".to_owned(), "pk.9".to_owned()),
+        // `P_GiveWeapon` puts the weapon it gave up next, so the column is
+        // the pickups' answer and not the command's.
+        (
+            "now_p_pendingweapon".to_owned(),
+            "toInt32(pk.10)".to_owned(),
+        ),
         ("now_p_message".to_owned(), "toUInt64(pk.11)".to_owned()),
         ("now_p_itemcount".to_owned(), "toInt32(pk.12)".to_owned()),
         ("now_p_bonuscount".to_owned(), "toInt32(pk.13)".to_owned()),

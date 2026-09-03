@@ -23,7 +23,12 @@ use support::db::Fixture;
 use support::walk;
 
 /// How far the run goes. `DEMO3`'s player walks a corridor, meets a wall
-/// on the last of these tics and slides along it.
+/// at `CLEAR_TICS`, slides along it, and walks over the level's shotgun
+/// on the last of these tics.
+const RUN_TICS: u32 = 47;
+
+/// The last tic of the walk down the corridor, where the wall first
+/// changes where the player ends up.
 const CLEAR_TICS: u32 = 32;
 
 /// How far the reader beside this test follows. It works out a free move
@@ -36,6 +41,15 @@ const FREE_TICS: u32 = 31;
 const CLIP_AMMO: i32 = 60;
 const BONUSADD: i32 = 6;
 
+/// `doomdef.h`: the shotgun, and the value `readyweapon` keeps while
+/// nothing is pending.
+const WP_SHOTGUN: i32 = 2;
+const WP_PISTOL: i32 = 1;
+const WP_NOCHANGE: i32 = 10;
+
+/// What `P_GiveWeapon` leaves after the shotgun: two clips of shells.
+const SHOTGUN_SHELLS: i32 = 8;
+
 #[tokio::test]
 async fn the_player_walks_the_way_the_engine_walks() {
     let bytes = support::doom1();
@@ -45,7 +59,7 @@ async fn the_player_walks_the_way_the_engine_walks() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, CLEAR_TICS));
+    plan.push(sim::tick::demo_statement(&db, 1, RUN_TICS));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -56,17 +70,20 @@ async fn the_player_walks_the_way_the_engine_walks() {
             "SELECT tic, m_x[p_mo] AS x, m_y[p_mo] AS y, m_angle[p_mo] AS angle, \
              m_momx[p_mo] AS momx, m_momy[p_mo] AS momy, m_state[p_mo] AS state, \
              p_bob, p_viewz, p_viewheight, p_ammo[1] AS clip, p_bonuscount, \
+             p_ammo[2] AS shells, p_weaponowned[1 + {WP_SHOTGUN}] AS owns_shotgun, \
+             p_pendingweapon, p_readyweapon, \
              p_message, hu_message, length(m_x) AS mobjs, unresolved, \
              p_cmd_forwardmove AS forwardmove, p_cmd_sidemove AS sidemove, \
              p_cmd_angleturn AS angleturn \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await;
-    assert_eq!(rows.len(), CLEAR_TICS as usize + 1);
+    assert_eq!(rows.len(), RUN_TICS as usize + 1);
 
     the_clear_tics_are_carried_through(&rows);
     the_push_and_the_bob_are_what_the_engine_works_out(&rows);
     the_clip_on_the_floor_is_picked_up_once(&rows);
+    the_shotgun_is_taken_and_asked_for(&rows);
 
     fixture.finish().await;
 }
@@ -85,6 +102,10 @@ struct Tic {
     p_viewheight: i32,
     clip: i32,
     p_bonuscount: i32,
+    shells: i32,
+    owns_shotgun: i32,
+    p_pendingweapon: i32,
+    p_readyweapon: i32,
     p_message: u64,
     hu_message: u64,
     mobjs: u64,
@@ -100,7 +121,7 @@ fn the_clear_tics_are_carried_through(rows: &[Tic]) {
     for row in rows {
         assert_eq!(row.unresolved, 0, "tic {} was not carried through", row.tic);
     }
-    assert_eq!(rows.last().expect("the run has a last tic").tic, CLEAR_TICS);
+    assert_eq!(rows.last().expect("the run has a last tic").tic, RUN_TICS);
 }
 
 /// `P_Thrust`, `P_XYMovement`'s friction and `P_CalcHeight`, against a
@@ -176,6 +197,38 @@ fn the_clip_on_the_floor_is_picked_up_once(rows: &[Tic]) {
             row.tic
         );
         assert_eq!(row.mobjs, after.mobjs, "the list holds at tic {}", row.tic);
+    }
+}
+
+/// `P_GiveWeapon` takes the shotgun, gives the shells that come with it
+/// and asks for it, and the ask reaches the state row.
+///
+/// The command asks for no weapon on any tic of this run, so a pending
+/// weapon here can only be the pickup's.
+fn the_shotgun_is_taken_and_asked_for(rows: &[Tic]) {
+    let taken = rows
+        .iter()
+        .find(|row| row.owns_shotgun != 0)
+        .expect("the player walks over the shotgun");
+    assert_eq!(taken.tic, RUN_TICS, "the shotgun is taken on the last tic");
+    assert_eq!(taken.shells, SHOTGUN_SHELLS);
+    assert_eq!(taken.p_pendingweapon, WP_SHOTGUN, "the pickup asks for it");
+    assert_eq!(
+        taken.p_readyweapon, WP_PISTOL,
+        "the weapon in hand is the psprites' to change"
+    );
+    assert_eq!(
+        taken.hu_message,
+        walk::message("You got the shotgun!"),
+        "the widget is told what it was"
+    );
+    for row in rows.iter().filter(|row| row.tic < taken.tic) {
+        assert_eq!(row.shells, 0, "no shells before the shotgun at {}", row.tic);
+        assert_eq!(
+            row.p_pendingweapon, WP_NOCHANGE,
+            "nothing is pending at tic {}",
+            row.tic
+        );
     }
 }
 

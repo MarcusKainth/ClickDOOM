@@ -244,16 +244,19 @@ mod tests {
     }
 
     /// One walk of the blockmap for the things and one for the lines is
-    /// what a single `P_CheckPosition` costs.
+    /// what a single `P_CheckPosition` costs, and the statement holds one
+    /// for the player's move and one for the chase.
     ///
     /// `P_ThingHeightClip` asks a narrower question and has a generator of
-    /// its own, so the whole of `P_CheckPosition` is written once.
+    /// its own. The chase's move test sits inside a fold over a list of
+    /// one entry or none, so a tic with nothing to chase does not run it.
     #[test]
-    fn the_move_test_is_in_the_statement_once() {
+    fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 1);
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 2);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
+        assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);
     }
 
     #[test]

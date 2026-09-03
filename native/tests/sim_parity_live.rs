@@ -8,7 +8,8 @@
 //! the screen, bobs, and is swapped for the shotgun the player picks up,
 //! against the engine's own positions. Then the things on the list cycle
 //! their states, `A_Look` takes the player as the first monster's target on
-//! the tic the engine does, and the sound it makes there is a draw.
+//! the tic the engine does, and `A_Chase` walks it towards the player from
+//! the tic after.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -70,24 +71,41 @@ const DOOR: [(u32, usize, i32, u32, i16); 6] = [
 /// The engine plays a sound and moves on, and so does the simulation.
 const USE_INTO_NOTHING: u32 = 42;
 
-/// The tic demo3's first monster acts on the player. `A_Look` takes the
-/// player as its target on the tic before, and the see state it enters
-/// carries `A_Chase`, which is not written, so this tic and every one
-/// after it says it could not be produced.
+/// The tic demo3's first monster acts on the player: `A_Look` takes the
+/// player as its target and the see state it enters carries `A_Chase`,
+/// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
+
+/// The first tic two monsters stand close enough that one's move changes
+/// what the other is told. The engine runs them one after the other and
+/// this runs them together, so the tic says it could not be produced.
+const FIRST_CROWDED: u32 = 82;
 
 /// `gametic, prndindex` read out of the reference emulator's demo3 trace.
 ///
 /// The index holds still on a tic that draws nothing and moves by one for
 /// each draw. Gametic 77 is the first tic the two part: the engine draws
 /// three times there and this simulation once.
-const RANDOM: [(u32, u8); 5] = [(2, 209), (40, 226), (61, 233), (76, 241), (77, 244)];
+const RANDOM: [(u32, u8); 7] = [
+    (2, 209),
+    (40, 226),
+    (61, 233),
+    (76, 241),
+    (77, 244),
+    (110, 83),
+    (124, 121),
+];
 
-/// What the run leaves at `FIRST_CHASE`: the engine's index at the tic
-/// before, and the one of that tic's three draws this makes, which is the
-/// sound a monster plays on seeing the player. The two that are missing
-/// are `P_NewChaseDir`'s and `A_Chase`'s.
-const FIRST_CHASE_PRNDINDEX: u8 = 242;
+/// `gametic, m_movedir, m_movecount, m_reactiontime, m_angle, m_x, m_y`
+/// for that monster, read out of the reference emulator's demo3 trace.
+/// Gametic 76 is the last tic it stands still, 77 the tic it wakes, turns
+/// a step towards the way it is about to walk and takes its first, and 80
+/// the next tic its state cycle reaches `A_Chase`.
+const CHASE: [(u32, i32, i32, i32, u32, i32, i32); 3] = [
+    (76, 0, 0, 8, 536870912, 0, -12582912),
+    (FIRST_CHASE, 1, 15, 7, 0, 376000, -12206912),
+    (80, 1, 14, 6, 536870912, 752000, -11830912),
+];
 
 /// `gametic, m_state[118], m_target[118]` around that monster, and the
 /// state cycle of the thing in slot 25, read out of the reference
@@ -169,6 +187,12 @@ struct Walked {
     pendingweapon: i32,
     attackdown: u8,
     prndindex: u8,
+    movedir118: i32,
+    movecount118: i32,
+    reactiontime118: i32,
+    angle118: u32,
+    x118: i32,
+    y118: i32,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -184,7 +208,10 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              m_lastlook[34] AS lastlook34, \
              psp_state, psp_sx, psp_sy, \
              p_readyweapon AS readyweapon, p_pendingweapon AS pendingweapon, \
-             p_attackdown AS attackdown, prndindex \
+             p_attackdown AS attackdown, prndindex, \
+             m_movedir[118] AS movedir118, m_movecount[118] AS movecount118, \
+             m_reactiontime[118] AS reactiontime118, m_angle[118] AS angle118, \
+             m_x[118] AS x118, m_y[118] AS y118 \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -247,7 +274,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     };
     // The run reaches past the door, and every tic up to the first shot
     // completes.
-    for row in walk.iter().filter(|row| row.tic < FIRST_CHASE) {
+    for row in walk.iter().filter(|row| row.tic < FIRST_CROWDED) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
@@ -255,9 +282,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_CHASE).unresolved,
+        at(FIRST_CROWDED).unresolved,
         1,
-        "the tic the first monster chases on says it could not be produced"
+        "the tic two monsters stand close enough says it could not be produced"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");
@@ -307,13 +334,26 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     for (tic, prndindex) in RANDOM {
+        assert_eq!(
+            at(tic).prndindex,
+            prndindex,
+            "the random index at gametic {tic}"
+        );
+    }
+    for (tic, movedir, movecount, reactiontime, angle, x, y) in CHASE {
         let row = at(tic);
-        let (ours, theirs) = if tic < FIRST_CHASE {
-            (row.prndindex, prndindex)
-        } else {
-            (row.prndindex, FIRST_CHASE_PRNDINDEX)
-        };
-        assert_eq!(ours, theirs, "the random index at gametic {tic}");
+        assert_eq!(
+            (
+                row.movedir118,
+                row.movecount118,
+                row.reactiontime118,
+                row.angle118,
+                row.x118,
+                row.y118
+            ),
+            (movedir, movecount, reactiontime, angle, x, y),
+            "the chasing monster at gametic {tic}"
+        );
     }
     // `P_LookForPlayers` walks `lastlook` round to the one player in the
     // game and stops there, whatever it decides.

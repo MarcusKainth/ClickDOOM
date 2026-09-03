@@ -395,51 +395,37 @@ Materialize `ram` into the batch's constant array with `FINAL`, **not**
 ## 6. Batch execution contract
 
 The driver invokes one batch = one `INSERT ... SELECT` executing up to `K`
-instructions (`K` default **50,000**; tunable). **50,000 was Phase 0's
-measured optimum for its prototype fold** (the pre-decoded baseline in
-`docs/experiments/arrayfold-baseline.md`, before SPEC §1's halt semantics,
-the real 31-element (no-`x0`-slot) register file, `SELF_MODIFY` detection,
-or MMIO (§3) existed): below it the ~0.30 s per-batch fixed cost dominated,
-above it the write-log's superlinear growth cancelled the remaining amortization (8,721 /
-11,894 / 11,628 instructions/sec end-to-end at K = 10,000 / 50,000 / 200,000 —
-`docs/experiments/arrayfold-baseline.md`).
+instructions (`K` default **50,000**; tunable).
 
-**Those are historical prototype numbers, not the current fold's
-throughput, and citing them without that label is actively misleading —
-see #96.** Under this fold's own cost model as Phase 0 stated it
-(~0.8 µs per evaluated expression node per step, independent of
-whether the step retires — ADR-0001), correctness the prototype
-never implemented is paid on every instruction, not only the ones
-that exercise it: ADR-0004 measured SPEC §1's halt semantics alone
-at 1,159 instructions/sec end-to-end (K=50,000) and retired the
-≥10,000 instr/sec threshold ADR-0001 originally checked the Phase 0
-numbers against (§9). That cost model is superseded. An expression
-node prices at 4.4 ns compiled and 0.225 to 0.293 µs interpreted,
-and the remainder of the 0.8 µs sits in the distinct constants the
-nodes capture, at 0.35 to 0.42 µs each per step on the production
-fold. The independent-of-retirement half stands: 88% of the step's
-nodes compute before anything tests whether the step retires. `#86`
-(a state-reload fix) and `#88` (MMIO, §3) have moved the number
-again since. Current measured real-ROM throughput is **5,340
-+/- 50 instructions/sec** end to end on the boot window and **5,060
-+/- 50** on the store-heavy gameplay window, both at K = 60,000 and
-HWM = 20,000 on ClickHouse 26.7.5.10, chained batches past the compile
-threshold, one fresh container per arm, five repeats with the machine
-allowed to settle between them. A figure taken over the first three
-batches of a series reads 18.3% lower, because those are both the
-uncompiled batches and, in boot, the write-log-saturated ones. Quote
-the window, K, the high-water mark, the batch range and the server
-version with any number here. #104 sets the actual target this needs
-to clear: **≥5,000 instructions/sec** (a week-long `-timedemo demo3`
-run), stretch **≥11,000** (restores the ~3-day run the phase
-plan implicitly assumed when Phase 0's fictional 11,894 was still believed
-current). Whether `K = 50,000` itself is still the right default under the
-current cost structure is a separate, open question — issue #80 tracks
-whether the write-log high-water mark now binds before `K` does for
-store-dense code, which would make this exact value moot for a different
-reason than the one that originally set it; the default here is unchanged
-pending that answer, not because it has been re-confirmed against the real
-fold. A batch ends early on: halt,
+The write-log high-water mark bounds `K` from above before cost does. A
+boot-window batch stops on the mark after **60,006** retired instructions
+whatever `K` says, and `arrayFold` runs every element of `range(K)` whether
+or not it retires, so a larger `K` there buys iterations that retire nothing
+(`docs/experiments/batch-attribution.md`). Over a fixed
+120,000-instruction window, batch cost fits a fixed setup plus per-step work
+plus superlinear write-log growth, which puts the optimum at **K ≈ 47,900**,
+0.4% under the cost at K = 60,000 (same record). The default sits inside that
+flat region. Per-batch fixed cost is **624 ms** on ClickHouse 26.7.5.10,
+4.8% of a 13,088 ms steady-state batch, and it is the analyzer walking the
+generated SQL rather than the RAM capture (same record).
+
+Measured real-ROM throughput is **5,340 +/- 50 instructions/sec** end to end
+on the boot window and **5,060 +/- 50** on the store-heavy gameplay window,
+both at K = 60,000 and HWM = 20,000 on ClickHouse 26.7.5.10, chained batches
+past the compile threshold, one fresh container per arm, five repeats with
+the machine allowed to settle between them
+(`docs/experiments/short-circuit-and-gameplay.md`, indexed by
+`docs/benchmarks.md`). A figure taken over the first three batches of a
+series reads **18.3%** lower, because those are both the uncompiled batches
+and, in boot, the write-log-saturated ones (same record). Quote the window,
+K, the high-water mark, the batch range and the server version with any
+number here.
+
+The bar to clear is **≥5,000 instructions/sec**, stretch **≥11,000**.
+Against §1's measured `-timedemo demo3` length those are a five-day run and a
+two-and-a-half-day one.
+
+A batch ends early on: halt,
 `FRAME_COMMIT` write, or write-log high-water mark. Batch commit is atomic:
 either all effects (ram deltas, cpu_state row, MMIO side effects) land or
 none do. "Atomic" is a statement about externally observable state, not a
@@ -502,25 +488,17 @@ Both `refemu` and `sqlcpu` must emit identical checkpoints:
 Resolved by the Phase 0 benchmark (evidence:
 `docs/experiments/arrayfold-baseline.md`; decisions: ADR-0001, ADR-0002):
 
-- [x] **arrayFold throughput.** Phase 0's *prototype* fold measured 8,721 /
-      11,894 / 11,628 instructions per second end-to-end at K = 10,000 /
-      50,000 / 200,000, against ADR-0001's ≥10,000 threshold, and ADR-0001
-      was **accepted** on that basis. **Superseded by ADR-0004**: the real
-      fold (SPEC §1 halt semantics, the 31-element register file,
-      `SELF_MODIFY` detection, MMIO §3 — none of which the prototype
-      implemented) does not clear that threshold. ADR-0004 measured 1,159
-      instructions/sec end-to-end at K=50,000 (issue #23) and retired the
-      ≥10,000 figure as a merge gate for correctness work; current
-      real-ROM throughput is **5,340 +/- 50 instructions/sec** end to end on
-      the boot window and **5,060 +/- 50** on gameplay, at K = 60,000 and
-      HWM = 20,000 on 26.7.5.10, after `#86`/`#88`, the 26.3 to 26.7 pin bump
-      and the short-circuit pin. Both windows clear #104's target.
-      Issue #104 sets the number that actually matters now — ≥5,000
-      instr/sec for a week-long `demo3` run, stretch ≥11,000 to restore
-      the ~3-day run Phase 0's number implied — and issue #96 is the fuller
-      account of the gap. The architectural decision (arrayFold, write-log
-      memory, K=50,000 as a starting default) still stands; only the
-      acceptance number does not.
+- [x] **arrayFold throughput.** `arrayFold` carries a CPU step, and
+      pre-decoding is the lever (7.4× on the same fold, ADR-0002).
+      ADR-0004 retired ADR-0001's ≥10,000 instructions/sec acceptance
+      criterion as a merge gate for correctness work. Measured real-ROM
+      throughput is **5,340 +/- 50 instructions/sec** end to end on the boot
+      window and **5,060 +/- 50** on the store-heavy gameplay window, at
+      K = 60,000 and HWM = 20,000 on 26.7.5.10 (`docs/benchmarks.md`; §6
+      states the conditions). Both clear the ≥5,000 bar, gameplay by 1.2%,
+      which is close enough that it is re-checked rather than assumed after
+      a change. The architectural decision — arrayFold, write-log memory,
+      K = 50,000 as the default — stands.
 - [x] **Accumulator copy with large captured constant arrays.** Does not
       happen. Fold throughput is flat across a 6,144× range in captured-array
       size (4 KiB → 24 MiB: 113,895 vs 106,951 instructions/sec). Holding all

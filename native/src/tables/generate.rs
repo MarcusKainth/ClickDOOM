@@ -16,7 +16,7 @@ use crate::csource::symbols::{Symbols, skip_to_separator};
 /// The headers and sources every table is read from. Symbols are taken
 /// from all of them at once, so a table may name a constant any of them
 /// defines.
-pub const SOURCES: [&str; 19] = [
+pub const SOURCES: [&str; 20] = [
     "doomtype.h",
     "m_fixed.h",
     "i_video.h",
@@ -35,6 +35,7 @@ pub const SOURCES: [&str; 19] = [
     "r_bsp.c",
     "p_spec.c",
     "p_switch.c",
+    "p_enemy.c",
     "d_englsh.h",
 ];
 
@@ -139,12 +140,16 @@ fn read(dir: &Path, name: &str) -> Result<String, CError> {
 
 /// `(table name, C file, C array)` for the tables that are a flat list of
 /// integers.
-const VALUE_TABLES: [(&str, &str, &str); 5] = [
+const VALUE_TABLES: [(&str, &str, &str); 9] = [
     ("finetangent", "tables.c", "finetangent"),
     ("finesine", "tables.c", "finesine"),
     ("tantoangle", "tables.c", "tantoangle"),
     ("rndtable", "m_random.c", "rndtable"),
     ("fuzzoffset", "r_draw.c", "fuzzoffset"),
+    ("opposite", "p_enemy.c", "opposite"),
+    ("diags", "p_enemy.c", "diags"),
+    ("xspeed", "p_enemy.c", "xspeed"),
+    ("yspeed", "p_enemy.c", "yspeed"),
 ];
 
 /// The `state_t` fields, in the order `info.c` initializes them.

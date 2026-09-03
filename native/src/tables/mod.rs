@@ -50,7 +50,7 @@ macro_rules! embedded {
 }
 
 /// Every table, in the order `generate` produces them.
-pub const TABLES: [Embedded; 16] = embedded![
+pub const TABLES: [Embedded; 20] = embedded![
     "states",
     "action_functions",
     "mobjinfo",
@@ -65,6 +65,10 @@ pub const TABLES: [Embedded; 16] = embedded![
     "tantoangle",
     "rndtable",
     "fuzzoffset",
+    "opposite",
+    "diags",
+    "xspeed",
+    "yspeed",
     "gammatable",
     "messages",
 ];

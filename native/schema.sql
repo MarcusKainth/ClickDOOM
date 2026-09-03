@@ -170,6 +170,21 @@ ENGINE = MergeTree ORDER BY id;
 CREATE TABLE IF NOT EXISTS {{DB}}.fuzzoffset (id UInt32, value Int32)
 ENGINE = MergeTree ORDER BY id;
 
+-- `P_NewChaseDir`'s own tables: the direction opposite each one, the four
+-- diagonals it picks a direct route from, and how far a step of speed 1
+-- carries along each direction.
+CREATE TABLE IF NOT EXISTS {{DB}}.opposite (id UInt32, value UInt32)
+ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS {{DB}}.diags (id UInt32, value UInt32)
+ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS {{DB}}.xspeed (id UInt32, value Int32)
+ENGINE = MergeTree ORDER BY id;
+
+CREATE TABLE IF NOT EXISTS {{DB}}.yspeed (id UInt32, value Int32)
+ENGINE = MergeTree ORDER BY id;
+
 CREATE TABLE IF NOT EXISTS {{DB}}.gammatable (level UInt8, id UInt32, value UInt8)
 ENGINE = MergeTree ORDER BY (level, id);
 

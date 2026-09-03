@@ -1,6 +1,6 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.1.2**. The decisions behind it are in `docs/adr/`.
+**SPEC_VERSION: 0.2.0**. The decisions behind it are in `docs/adr/`.
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
@@ -34,6 +34,16 @@ change that moves no contract bumps the patch version. Either must update
 - Misaligned word/halfword **data** access (load/store): fatal halt, reason =
   `MISALIGNED`, with pc and target address in the halt record (compile ROM
   with `-mstrict-align`, keeping the SQL load/store path branch-free).
+- **Misalignment is decided before the address's region and before the
+  access's width.** An access that is both misaligned and outside every
+  region of §2 halts `MISALIGNED`, not `BAD_ADDR`; so does a misaligned
+  narrow store to FRAMEBUFFER or PALETTE, which §2 clause 2 would otherwise
+  make `BAD_ADDR`. This matches the RISC-V privileged architecture's
+  synchronous-exception priority, which ranks address-misaligned above
+  access-fault. Both rules can fire for one access and `halt_reason` is
+  observable state both engines must produce identically (§1's closed
+  vocabulary), so the order is part of the contract rather than a property
+  of each engine's arm order.
 - Misaligned **jump/branch target** (`jal`/`jalr`/a taken branch computes a
   target not aligned to 4 bytes): fatal halt, reason = `MISALIGNED`, checked
   **at the transferring instruction, eagerly** — matching real RISC-V's

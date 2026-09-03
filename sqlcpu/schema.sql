@@ -119,7 +119,7 @@ CREATE DATABASE IF NOT EXISTS clickdoom;
 -- on.
 CREATE TABLE IF NOT EXISTS clickdoom.batch_commit
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     batch_id     UInt64,
     icount       UInt64,
     pc           UInt32,
@@ -176,7 +176,7 @@ SETTINGS min_bytes_for_wide_part = 0;
 -- the start of the next batch.
 CREATE TABLE IF NOT EXISTS clickdoom.cpu_state
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     batch_id     UInt64,
     icount       UInt64,
     pc           UInt32,
@@ -197,7 +197,7 @@ ORDER BY batch_id;
 -- flat with 1.2M accumulated deltas (docs/adr/0001-batch-execution-with-arrayfold.md).
 CREATE TABLE IF NOT EXISTS clickdoom.ram
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     word_addr    UInt32,
     value        UInt32,
     version      UInt64
@@ -216,7 +216,7 @@ ORDER BY word_addr;
 -- word, never a partial blend against a previous value nothing ever reads.
 CREATE TABLE IF NOT EXISTS clickdoom.framebuffer
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     word_addr    UInt32,
     value        UInt32,
     version      UInt64
@@ -231,7 +231,7 @@ ORDER BY word_addr;
 -- so a palette read never pays framebuffer's write volume and vice versa.
 CREATE TABLE IF NOT EXISTS clickdoom.palette
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     word_addr    UInt32,
     value        UInt32,
     version      UInt64
@@ -246,7 +246,7 @@ ORDER BY word_addr;
 -- event.
 CREATE TABLE IF NOT EXISTS clickdoom.input_queue
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     event_seq    UInt64,
     key_event    UInt16,
     consumed     UInt8
@@ -258,7 +258,7 @@ ORDER BY event_seq;
 -- per committed frame; frame_no is the value the ROM wrote to FRAME_COMMIT.
 CREATE TABLE IF NOT EXISTS clickdoom.frames_out
 (
-    spec_version     String DEFAULT '0.1.2',
+    spec_version     String DEFAULT '0.2.0',
     frame_no         UInt32,
     committed_icount UInt64,
     fb               String,  -- 64,000 bytes: 320x200, 8bpp palette-indexed, row-major
@@ -304,7 +304,7 @@ ORDER BY frame_no;
 -- for a one-off row-count check elsewhere in this file.
 CREATE TABLE IF NOT EXISTS clickdoom.console_out
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     seq          UInt64,
     byte         UInt8
 )
@@ -437,7 +437,7 @@ ORDER BY seq;
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS clickdoom.decoded
 (
-    spec_version String DEFAULT '0.1.2',
+    spec_version String DEFAULT '0.2.0',
     word_addr    UInt32,
     id           UInt8,
     rd           UInt8,

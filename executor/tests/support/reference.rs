@@ -9,7 +9,8 @@
 //!
 //! Nothing here reads `clickdoom_executor`. The arithmetic and the halt
 //! codes are written from the semantics, so a mistake in the fold and a
-//! mistake here cannot cancel out.
+//! mistake here cannot cancel out. The halt-reason precedence is part of
+//! those semantics: misalignment is decided before the address's region.
 //!
 //! The regions outside RAM are deliberately unmodelled: MMIO, FRAMEBUFFER
 //! and PALETTE all read here as an address outside RAM, so a case touching
@@ -142,14 +143,17 @@ pub fn run(args: &Run) -> Outcome {
         let (sa, sb) = (a as i32, b as i32);
         let addr = a.wrapping_add(ins.imm);
         let is_mem = ins.op_id == OP_LOAD || ins.op_id == OP_STORE;
-        let bad_addr =
-            is_mem && !((addr as u64) >= args.ram_base as u64 && (addr as u64) < ram_end);
         let align_mask: u32 = match ins.width_mask {
             0xFFFF_FFFF => 3,
             0xFFFF => 1,
             _ => 0,
         };
-        let misaligned = is_mem && !bad_addr && (addr & align_mask) != 0;
+        // Misalignment is decided before the region, so an address that is
+        // both misaligned and outside every region is misaligned.
+        let misaligned = is_mem && (addr & align_mask) != 0;
+        let bad_addr = is_mem
+            && !misaligned
+            && !((addr as u64) >= args.ram_base as u64 && (addr as u64) < ram_end);
         let wa = (addr.wrapping_sub(args.ram_base) >> 2) & (args.ram_words - 1);
         let self_modify = ins.op_id == OP_STORE
             && !bad_addr
@@ -174,10 +178,10 @@ pub fn run(args: &Run) -> Outcome {
                 (HALT_MISALIGNED, jump_target)
             } else if self_modify {
                 (HALT_SELF_MODIFY, addr)
-            } else if bad_addr {
-                (HALT_BAD_ADDR, addr)
             } else if misaligned {
                 (HALT_MISALIGNED, addr)
+            } else if bad_addr {
+                (HALT_BAD_ADDR, addr)
             } else if ins.op_id == OP_ECALL {
                 (HALT_ECALL, 0)
             } else if ins.op_id == OP_EBREAK {

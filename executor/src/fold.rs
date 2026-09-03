@@ -627,14 +627,19 @@ fn build_step_inner(
     } else {
         format!("{wa} < {text_end_widx}")
     };
+    // `multiIf` takes the first match, so arm order is the halt-reason
+    // precedence. Misalignment is tested before the address's region and
+    // before the access's width, so an access that is both misaligned and
+    // outside every region is `MISALIGNED`, and so is a misaligned narrow
+    // store to FRAMEBUFFER or PALETTE.
     let halt_code = format!(
         "multiIf({is_illegal}, {HALT_ILLEGAL_INSN},\
          {is_ecall}, {HALT_ECALL},\
          {is_ebreak}, {HALT_EBREAK},\
          {is_csr}, {HALT_CSR},\
          {jump_misaligned}, {HALT_MISALIGNED},\
+         {is_mem} AND {misaligned_cond}, {HALT_MISALIGNED},\
          {is_mem} AND {bad_addr_cond}, {HALT_BAD_ADDR},\
-         {is_mem} AND NOT {bad_addr_cond} AND {misaligned_cond}, {HALT_MISALIGNED},\
          {is_fb_or_pal_store} AND {dmkv} != 4294967295, {HALT_BAD_ADDR},\
          {is_store} AND NOT {bad_addr_cond} AND NOT {misaligned_cond} AND NOT {is_mmio}{self_modify_extra_guard} AND {wa} >= {text_start_widx} AND {text_upper}, {HALT_SELF_MODIFY},\
          {is_mmio_store} AND NOT {misaligned_cond} AND {}, {HALT_EXIT},\

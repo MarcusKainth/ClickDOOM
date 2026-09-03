@@ -36,6 +36,8 @@ PLATFORM := linux/amd64
 BIN      := $(BUILD)/doom-rv32im.bin
 ELF      := $(BUILD)/doom-rv32im.elf
 MANIFEST := $(BUILD)/manifest.json
+# The second ELF check-elf-reproducible links, compared against $(ELF).
+REPRO_ELF := $(BUILD)/repro/doom-rv32im.elf
 
 # Kept in sync with SPEC.md's own SPEC_VERSION by hand (SPEC.md: "must
 # update SPEC_VERSION here and the spec_version constants in code") --
@@ -137,6 +139,20 @@ CFLAGS  := -march=rv32im -mabi=ilp32 -mstrict-align -mno-relax \
 LDFLAGS := -nostdlib -Wl,--build-id=none -T $(LD)
 LDLIBS  := -lc -lm -lgcc
 
+# Runs one command inside the pinned toolchain image, with rom/ mounted at
+# the fixed /work every path in this file is relative to. Every step that
+# needs the cross toolchain goes through this, so the image, the platform
+# and the environment are set in one place.
+TOOLCHAIN_RUN := docker run --rm --platform $(PLATFORM) \
+                   -v $(CURDIR):/work -w /work \
+                   -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
+                   $(IMAGE):$(IMAGE_TAG)
+
+# Compiles and links the whole ROM in one gcc invocation, writing the ELF
+# to $(1). The sources it reads are the same paths whatever $(1) is, which
+# check-elf-reproducible below relies on.
+link_elf = riscv-none-elf-gcc $(CFLAGS) $(LDFLAGS) -o $(1) $(SRC) $(LDLIBS)
+
 # The engine's struct layout for RV32 ILP32, computed by the compiler rather
 # than transcribed. toolchain/layout.c is compiled to assembly and never
 # linked or objcopied, so it cannot reach $(BIN) and cannot move PINNED_HASH.
@@ -146,7 +162,8 @@ LAYOUT_SRC := toolchain/layout.c
 # refemu's committed copy, which is what the probe reads.
 LAYOUT_COMMITTED := ../refemu/probe/layout.tsv
 
-.PHONY: all toolchain-image check-pinned-hash layout check-layout clean
+.PHONY: all toolchain-image check-pinned-hash check-elf-reproducible \
+        layout check-layout clean
 
 all: $(BIN) $(MANIFEST)
 
@@ -192,11 +209,8 @@ $(PATCHED_VENDOR)/.stamp: $(sort $(wildcard $(DG_DIR)/*.c $(DG_DIR)/*.h)) $(PATC
 # of $(DOOM_SRCS) gets correct staleness tracking without needing one.
 $(BIN): toolchain-image $(PATCHED_VENDOR)/.stamp src/crt0.S src/syscalls.c src/main.c src/dg_hooks.c src/wad_embed.S src/wad_embed.c $(LD) $(WAD)
 	@mkdir -p $(BUILD)
-	docker run --rm --platform $(PLATFORM) \
-	  -v $(CURDIR):/work -w /work \
-	  -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
-	  $(IMAGE):$(IMAGE_TAG) \
-	  sh -c 'riscv-none-elf-gcc $(CFLAGS) $(LDFLAGS) -o $(ELF) $(SRC) $(LDLIBS) && \
+	$(TOOLCHAIN_RUN) \
+	  sh -c '$(call link_elf,$(ELF)) && \
 	         riscv-none-elf-objcopy -O binary --gap-fill=0x00 $(ELF) $(BIN)'
 
 # manifest.json (SPEC §4): emitted from the built ELF/binary, never
@@ -204,9 +218,7 @@ $(BIN): toolchain-image $(PATCHED_VENDOR)/.stamp src/crt0.S src/syscalls.c src/m
 # text_start/text_end all come from readelf/nm rather than being
 # transcribed constants. Issue #10.
 $(MANIFEST): $(BIN) toolchain/gen_manifest.sh
-	docker run --rm --platform $(PLATFORM) \
-	  -v $(CURDIR):/work -w /work \
-	  $(IMAGE):$(IMAGE_TAG) \
+	$(TOOLCHAIN_RUN) \
 	  sh toolchain/gen_manifest.sh $(ELF) $(BIN) $(MANIFEST) $(SPEC_VERSION)
 
 # Not part of `all`: CI runs this as its own step (rom/PINNED_HASH must
@@ -222,6 +234,31 @@ check-pinned-hash: $(BIN)
 	fi; \
 	echo "PINNED_HASH matches: $$built"
 
+# The ELF is reproducible too, and check-pinned-hash cannot show it:
+# objcopy keeps only the allocated sections, so a symbol or string table
+# that varies never reaches the flat binary. Two links of one tree have to
+# produce the same ELF, so this runs a second one and compares.
+#
+# Both links read their sources from the same paths on purpose. The engine
+# reaches __FILE__ from a couple of I_Error() call sites, so a second build
+# directory would change .rodata and the two would differ for a reason that
+# has nothing to do with reproducibility.
+#
+# Not part of `all`, for the same reason check-pinned-hash is not: a
+# mismatch reports as "the ELF went nondeterministic", not as a build
+# failure. Named in the same `make -C rom` as `all`, it costs one extra
+# link rather than a second full build.
+check-elf-reproducible: $(BIN)
+	@mkdir -p $(dir $(REPRO_ELF))
+	$(TOOLCHAIN_RUN) sh -c '$(call link_elf,$(REPRO_ELF))'
+	@first=$$(sha256sum $(ELF) | cut -d' ' -f1); \
+	second=$$(sha256sum $(REPRO_ELF) | cut -d' ' -f1); \
+	if [ "$$first" != "$$second" ]; then \
+	  echo "::error::ROM ELF is not reproducible: $(ELF)=$$first $(REPRO_ELF)=$$second. Two builds of one tree must agree byte for byte. Compare them with cmp -l and readelf -a." >&2; \
+	  exit 1; \
+	fi; \
+	echo "ELF reproducible: $$first"
+
 # Same compiler, same flags, same patched headers the ROM is built from, so
 # the offsets are the ones in the linked binary and not a second opinion.
 # -S stops before the assembler: the `@@` lines are what this is for, and the
@@ -230,10 +267,7 @@ layout: $(LAYOUT)
 
 $(LAYOUT): toolchain-image $(PATCHED_VENDOR)/.stamp $(LAYOUT_SRC)
 	@mkdir -p $(BUILD)
-	docker run --rm --platform $(PLATFORM) \
-	  -v $(CURDIR):/work -w /work \
-	  -e SOURCE_DATE_EPOCH=0 -e LC_ALL=C -e TZ=UTC \
-	  $(IMAGE):$(IMAGE_TAG) \
+	$(TOOLCHAIN_RUN) \
 	  sh -c 'riscv-none-elf-gcc $(CFLAGS) -S -o $(LAYOUT_ASM) $(LAYOUT_SRC)'
 	printf '# clickdoom-layout 1\n# columns\tstruct\tfield\toffset\tsize\n' > $@
 	sed -n 's/^[[:space:]]*@@[[:space:]]*//p' $(LAYOUT_ASM) >> $@

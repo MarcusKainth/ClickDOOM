@@ -10,6 +10,10 @@
 # section already globs `.rodata.*`, so it lands in the same read-only
 # region as everything else -- no linker script change needed.
 
+    # Names this source in the linked ELF's symbol table, on the terms
+    # src/crt0.S states.
+    .file "wad_embed.S"
+
     .section .rodata.wad
     .global _wad_doom1_start
     .global _wad_doom1_end

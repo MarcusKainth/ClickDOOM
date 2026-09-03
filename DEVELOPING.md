@@ -40,6 +40,10 @@ What `make help` does not say:
   run it yourself. It waits for the container to report healthy.
 - **`test`, `diff` and the bench need a live ClickHouse.** `lint`,
   `build-rom` and a bare `cargo test --workspace` do not.
+- **`check-rom-hash` links the ROM twice.** `rom/PINNED_HASH` pins the flat
+  binary. The ELF is pinned by linking it a second time and comparing the two
+  files, because `objcopy` drops the symbol and string tables on the way to
+  the flat binary and the hash check never sees them.
 - **Targets are not parallel-safe.** Most share one container, and the
   compiled-expression cache is server-global, so two timing runs at once
   measure each other. Do not pass `-j`.

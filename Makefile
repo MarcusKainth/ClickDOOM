@@ -316,5 +316,5 @@ zizmor: ## Workflow security posture
 
 gates: lint check-rom-hash test smoke native-smoke ## Every check ci.yml runs on a pull request
 
-check-rom-hash: ## The built ROM matches rom/PINNED_HASH, and the committed layout matches the headers
-	make -C rom all check-pinned-hash check-layout
+check-rom-hash: ## The built ROM matches rom/PINNED_HASH, the ELF rebuilds byte-identically, and the committed layout matches the headers
+	make -C rom all check-pinned-hash check-elf-reproducible check-layout

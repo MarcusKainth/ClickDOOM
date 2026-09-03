@@ -12,6 +12,12 @@
 # word up front (ADR-0002) — fewer addressing modes in play is a feature
 # here, not just a simplification.
 
+    # Names this source in the linked ELF's symbol table. Without it the
+    # linker names this object's local symbols after the object file, and
+    # rom/Makefile compiles and links in one step, so that name is a
+    # temporary gcc picks at random.
+    .file "crt0.S"
+
     .section .text.crt0, "ax", @progbits
     .global _start
     .type _start, @function

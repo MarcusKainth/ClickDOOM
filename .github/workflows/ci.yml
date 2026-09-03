@@ -60,6 +60,11 @@ jobs:
           persist-credentials: false
       - name: Build ROM (dockerized rv32 toolchain)
         run: make -C rom
+      - name: Verify the ELF is byte-reproducible
+        # Through rom/Makefile, so the second build runs in the same pinned
+        # toolchain image under the same flags as the first. It rebuilds the
+        # ROM and then links once more, so the step costs two ROM builds.
+        run: make -C rom check-elf-reproducible
       - name: Verify reproducible-build hash pin
         # Recomputed here rather than calling `make -C rom check-pinned-hash`,
         # so the pin is checked by something other than the tool that built it.

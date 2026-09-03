@@ -1,6 +1,7 @@
 //! Byte-for-byte comparison of `fold`'s generated SQL text against the
 //! Python original's output for the same inputs.
 
+use clickdoom_executor::config::{K_DEFAULT, LOG_QUERIES_CUT_TO_LENGTH};
 use clickdoom_executor::fold::{
     BatchArgs, SelectOnlyArgs, batch, halt_reason_transform, select_only,
 };
@@ -115,6 +116,62 @@ fn batch_prod_matches_python_output() {
         &args,
     );
     assert_matches_fixture(&actual, fixture!("batch_prod"), "batch_prod");
+}
+
+/// The one expression in this project that every feature grows. Past
+/// `LOG_QUERIES_CUT_TO_LENGTH` the server keeps a prefix of it in
+/// `system.query_log.query` and says nothing, so a query-log capture of a
+/// long run would start recording partial statements mid-run and read
+/// exactly like one that did not.
+///
+/// K is not what scales it: K reaches the text only as `range(K)`'s decimal
+/// literal, one byte per digit. What scales it is the step expression's node
+/// count, which is to say every arm any change adds.
+#[test]
+fn the_batch_statement_fits_in_the_query_log() {
+    let args = BatchArgs {
+        db: "clickdoom_executor",
+        ipms: 10_000,
+    };
+    let sql = batch(
+        K_DEFAULT,
+        0,
+        TEXT_WORDS_DEFAULT,
+        TEXT_WORDS_DEFAULT,
+        RAM_WORDS_DEFAULT,
+        HWM_DEFAULT,
+        &args,
+    );
+    let cap = LOG_QUERIES_CUT_TO_LENGTH;
+    println!(
+        "batch statement: {} bytes, {} of the {cap}-byte query-log cap, {} bytes of headroom",
+        sql.len(),
+        format_args!("{:.0}%", sql.len() as f64 / cap as f64 * 100.0),
+        cap - sql.len().min(cap),
+    );
+    assert!(
+        sql.len() < cap,
+        "the batch statement is {} bytes, at or past the {cap}-byte query-log cap: \
+         system.query_log would keep a prefix of it and report nothing",
+        sql.len()
+    );
+    // K only reaches the text as a decimal literal, so a K sweep cannot be
+    // what crosses the cap. Pinned because the opposite is the intuitive
+    // reading and a sweep would otherwise look like the risk.
+    let wide_k = batch(
+        1_000_000,
+        0,
+        TEXT_WORDS_DEFAULT,
+        TEXT_WORDS_DEFAULT,
+        RAM_WORDS_DEFAULT,
+        HWM_DEFAULT,
+        &args,
+    );
+    assert_eq!(
+        wide_k.len() - sql.len(),
+        1_000_000u32.to_string().len() - K_DEFAULT.to_string().len(),
+        "K reaches the statement somewhere other than range(K)'s literal"
+    );
 }
 
 #[test]

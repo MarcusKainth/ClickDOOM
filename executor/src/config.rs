@@ -15,6 +15,15 @@ pub const WRITE_LOG_HIGH_WATER_MARK_DEFAULT: u32 = 20_000;
 /// `batch_commit` retention, in batch_id lag.
 pub const BATCH_COMMIT_RETENTION_N: u32 = 16;
 
+/// Bytes of a query ClickHouse keeps in `system.query_log.query`. A longer
+/// one is stored as a prefix, with no error and no marker, so a log-based
+/// reconstruction of what ran degrades without saying so.
+///
+/// This is the server's own default and nothing under `docker/clickhouse/`
+/// overrides it, so the value is pinned here and checked against a live
+/// server rather than assumed.
+pub const LOG_QUERIES_CUT_TO_LENGTH: usize = 100_000;
+
 /// Word count of the RAM region a dense `ram` spans.
 pub const RAM_WORDS_DEFAULT: u32 = RAM_SIZE / 4;
 

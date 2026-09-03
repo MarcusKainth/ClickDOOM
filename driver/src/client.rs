@@ -118,11 +118,14 @@ impl Db {
     }
 
     /// Runs a statement and fetches a single row.
+    ///
+    /// The rest of the response is read and dropped, so the row is the
+    /// first one whatever the statement returns.
     pub async fn fetch_one<T>(&self, sql: &str) -> Result<T, Error>
     where
         T: clickhouse::RowOwned + clickhouse::RowRead,
     {
-        Ok(self.client.query(sql).fetch_one::<T>().await?)
+        first_row(self.client.query(sql)).await
     }
 
     /// Runs a statement and fetches a single row under `query_id`. Same
@@ -131,12 +134,7 @@ impl Db {
     where
         T: clickhouse::RowOwned + clickhouse::RowRead,
     {
-        Ok(self
-            .client
-            .query(sql)
-            .with_setting("query_id", query_id)
-            .fetch_one::<T>()
-            .await?)
+        first_row(self.client.query(sql).with_setting("query_id", query_id)).await
     }
 
     /// Runs a statement and fetches every row.
@@ -181,4 +179,23 @@ impl Db {
         insert.end().await?;
         Ok(())
     }
+}
+
+/// The first row of `query`, with the rest of the response read and
+/// dropped.
+///
+/// Reading to the end is what returns the connection to the client's pool.
+/// A read that stops at the row leaves the response unfinished, so the
+/// connection is dropped and the next read opens another one.
+async fn first_row<T>(query: clickhouse::query::Query) -> Result<T, Error>
+where
+    T: clickhouse::RowOwned + clickhouse::RowRead,
+{
+    let mut cursor = query.fetch::<T>()?;
+    let first = cursor
+        .next()
+        .await?
+        .ok_or(clickhouse::error::Error::RowNotFound)?;
+    while cursor.next().await?.is_some() {}
+    Ok(first)
 }

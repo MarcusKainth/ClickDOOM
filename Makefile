@@ -67,7 +67,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
 
 .PHONY: help up down build-rom \
         test smoke diff \
-        bench-canonical-throughput \
+        bench-canonical-throughput machine-lock \
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         gen-layout gen-probe-trace gen-probe-fixture \
@@ -186,13 +186,22 @@ native-smoke: up build-clickdoom ## Render the first gameplay frame from the com
 # docker-compose.yml so the pin is stated in one place.
 clickhouse_image = $(shell sed -n 's|^ *image: \(clickhouse/clickhouse-server.*\)$$|\1|p' docker-compose.yml)
 
+# Who the bench target takes the machine lock as. Override it with a name a
+# reader of the lock can reach.
+MACHINE_LOCK_HOLDER ?= $(USER)
+
+machine-lock: ## Who holds the machine lock
+	./scripts/machine-lock.sh status
+
 # No `up`: each arm starts and removes a container of its own, so this target
-# does not touch the shared one.
+# does not touch the shared one. It still holds the machine lock, because a
+# timing measures whatever else is running on the box.
 bench-canonical-throughput: require-rom build-refemu build-clickdoom ## Real-ROM throughput: boot and gameplay windows, fold-alone and end to end
-	$(CLICKDOOM) emulation bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
-		--image "$(clickhouse_image)" \
-		--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
-		--refemu-bin $(REFEMU)
+	./scripts/machine-lock.sh run "$(MACHINE_LOCK_HOLDER)" bench-canonical-throughput -- \
+		$(CLICKDOOM) emulation bench canonical --bin $(ROM_BIN) --manifest $(ROM_MANIFEST) \
+			--image "$(clickhouse_image)" \
+			--k "$(CLICKDOOM_RUN_K)" --hwm "$(CLICKDOOM_RUN_HWM)" \
+			--refemu-bin $(REFEMU)
 
 ##@ Milestone
 

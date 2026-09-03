@@ -41,12 +41,15 @@ pub fn dense_words_sql(db: &str, table: &str, n_words: u32) -> String {
     )
 }
 
-/// Inserts one `frames_out` row from the latest committed frame's
-/// `framebuffer`/`palette` word-table state. Correct to call once per
-/// commit: `framebuffer`/`palette` hold only the latest value per
-/// `word_addr`, which is the just-committed frame's content only right
-/// after the commit fires.
-pub fn frame_readout_sql(db: &str) -> String {
+/// Inserts `batch_id`'s committed frame into `frames_out` from the
+/// `framebuffer`/`palette` word-table state. Writes nothing when that batch
+/// committed no frame, and nothing when the frame is already there, so a
+/// caller may run it for a batch it has already read out.
+///
+/// Call it before the next batch runs: `framebuffer`/`palette` hold only
+/// the latest value per `word_addr`, which is this frame's content until
+/// something else stores into either region.
+pub fn frame_readout_sql(db: &str, batch_id: u64) -> String {
     let fb_bytes = region_bytes_sql(&dense_words_sql(db, "framebuffer", FRAMEBUFFER_WORDS));
     let pal_bytes = region_bytes_sql(&dense_words_sql(db, "palette", PALETTE_WORDS));
     format!(
@@ -55,10 +58,27 @@ pub fn frame_readout_sql(db: &str) -> String {
          FROM (\n    \
              SELECT frame_no, icount\n    \
              FROM {db}.batch_commit\n    \
-             WHERE has_frame = 1\n    \
-             ORDER BY batch_id DESC\n    \
-             LIMIT 1\n\
+             WHERE batch_id = {batch_id} AND has_frame = 1\n      \
+               AND frame_no NOT IN (SELECT frame_no FROM {db}.frames_out)\n\
          )"
+    )
+}
+
+/// The latest batch that committed a frame, or none. The batch loop knows
+/// its own batch and does not need this; a caller reading a frame out by
+/// hand does.
+pub fn latest_frame_batch_sql(db: &str) -> String {
+    format!("SELECT max(batch_id) FROM {db}.batch_commit WHERE has_frame = 1")
+}
+
+/// How many `frames_out` rows there are, how many distinct frame numbers
+/// they carry, and the span those numbers cover. A readout lost to a crash
+/// leaves a gap that nothing else in a run reports, and a redone one would
+/// leave a duplicate.
+pub fn frames_out_span_sql(db: &str) -> String {
+    format!(
+        "SELECT count(), count(DISTINCT frame_no), toUInt64(min(frame_no)), toUInt64(max(frame_no))\n\
+         FROM {db}.frames_out"
     )
 }
 

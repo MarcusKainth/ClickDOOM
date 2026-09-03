@@ -416,7 +416,11 @@ async fn cmd_render(cmd: &RenderCmd) -> Result<Exit, Failure> {
     let db = cmd.conn.connect();
     match &cmd.mode {
         RenderMode::Frame => {
-            db.run(&render::frame_readout_sql(&cmd.conn.database))
+            let batch_id: u64 = db
+                .fetch_one(&render::latest_frame_batch_sql(&cmd.conn.database))
+                .await
+                .map_err(|err| failed(err.to_string()))?;
+            db.run(&render::frame_readout_sql(&cmd.conn.database, batch_id))
                 .await
                 .map_err(|err| failed(err.to_string()))?;
         }

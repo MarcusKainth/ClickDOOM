@@ -89,6 +89,16 @@ pub enum RunError {
         from: u64,
         to: u64,
     },
+    #[error(
+        "frames_out holds {rows} rows ({distinct} distinct) over frame_no {lowest}..{highest}, which spans {} -- a frame's readout was lost or redone, and neither cpu_state nor a checkpoint reports it",
+        highest - lowest + 1
+    )]
+    FramesOutGap {
+        rows: u64,
+        distinct: u64,
+        lowest: u64,
+        highest: u64,
+    },
     #[error("fatal halt ({reason}) at icount={icount}, short of target icount={target}")]
     FatalHalt {
         reason: String,
@@ -161,6 +171,22 @@ fn register_fields(line: &str) -> String {
     line.split('\t').take(3).collect::<Vec<_>>().join("\t")
 }
 
+/// Redoes every derivation of `batch_id`'s committed row: the four flushes,
+/// and the `frames_out` readout when that batch committed a frame. Every
+/// one of them is safe to redo, so a caller runs this for the last
+/// committed batch before any new one rather than deciding whether it is
+/// needed.
+pub async fn recover(
+    db: &crate::client::Db,
+    database: &str,
+    batch_id: u64,
+) -> Result<(), RunError> {
+    flush(db, database, batch_id).await?;
+    db.run(&render::frame_readout_sql(database, batch_id))
+        .await?;
+    Ok(())
+}
+
 /// Compares every register checkpoint `batch_id` recorded against the
 /// reference trace, in icount order, and returns how many it compared.
 /// Stops at the first line that differs.
@@ -212,13 +238,14 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
     // `batch_commit` is the authority on where a run has got to: it is the
     // batch's single atomic write, and everything else is derived from it.
     // Redoing the last row's derivations before any new batch is the
-    // recovery step, so a crash between that write and its flushes cannot
-    // leave `ram` short of a batch the resume point counts as done. Every
-    // flush is idempotent, so this costs one redo on the ordinary path.
+    // recovery step, so a crash between that write and any of them cannot
+    // leave `ram` short of a batch, or `frames_out` short of a frame, that
+    // the resume point counts as done. Every derivation is safe to redo, so
+    // this costs one redo on the ordinary path.
     let (resume_batch, resume_icount): (u64, u64) = db
         .fetch_one("SELECT batch_id, icount FROM batch_commit ORDER BY batch_id DESC LIMIT 1")
         .await?;
-    flush(&db, &conn.database, resume_batch).await?;
+    recover(&db, &conn.database, resume_batch).await?;
     eprintln!("# resuming from batch_id={resume_batch} icount={resume_icount}");
 
     let manifest = Manifest::read(args.manifest_path)?;
@@ -372,7 +399,8 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
         }
         if has_frame == 1 {
             frames_observed += 1;
-            db.run(&render::frame_readout_sql(&conn.database)).await?;
+            db.run(&render::frame_readout_sql(&conn.database, batch_id))
+                .await?;
             let fb_hash: String = db
                 .fetch_one(&render::frame_readout_fb_hash_sql(&conn.database))
                 .await?;
@@ -397,6 +425,25 @@ pub async fn run(conn: &ConnArgs, args: &Args<'_>) -> Result<Outcome, RunError> 
         "{}",
         stats.finish(progress(icount, batches_run, frames_observed))
     );
+
+    // A frame lost to a crash before this run started leaves a hole that
+    // nothing else reports: `cpu_state` is consistent, every checkpoint
+    // passes, and `frames_out` is simply one row short.
+    let (rows, distinct, lowest, highest): (u64, u64, u64, u64) = db
+        .fetch_one(&render::frames_out_span_sql(&conn.database))
+        .await?;
+    if rows > 0 {
+        let span = highest - lowest + 1;
+        if rows != span || distinct != span {
+            return Err(RunError::FramesOutGap {
+                rows,
+                distinct,
+                lowest,
+                highest,
+            });
+        }
+        eprintln!("# frames_out holds {rows} rows over frame_no {lowest}..{highest}");
+    }
 
     // Every boundary between where this process resumed and where it
     // stopped had to produce exactly one comparison. Without this, a fold

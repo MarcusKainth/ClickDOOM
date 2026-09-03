@@ -30,7 +30,7 @@ fn dense_words_matches_python_output() {
 
 #[test]
 fn frame_readout_matches_python_output() {
-    assert_eq!(frame_readout_sql("db1"), fixture!("frame_readout"));
+    assert_eq!(frame_readout_sql("db1", 7), fixture!("frame_readout"));
 }
 
 #[test]

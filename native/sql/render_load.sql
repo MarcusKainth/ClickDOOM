@@ -237,10 +237,18 @@ CROSS JOIN
 
 -- Where each sprite lump's bytes start in the pool, and the fields
 -- `R_ProjectSprite` reads off it.
+--
+-- `R_InitSpriteLumps` caches every sprite lump once, in lump order, so the
+-- engine holds them in one run of zone blocks. `Z_Malloc` rounds a block up
+-- to a four-byte `MEM_ALIGN` and puts a 24-byte `memblock_t` in front of it,
+-- so one lump's bytes start that far after the previous one's. The pool
+-- spaces them the same way, and a column that reads past its own lump then
+-- reads the byte the engine reads.
 INSERT INTO {{DB}}.rt_sprite_lump (id, base, width, width_fixed, leftoffset, topoffset)
+WITH intDiv(length(l.bytes) + 3, 4) * 4 + 24 AS stride
 SELECT
     sl.id,
-    toUInt32(sum(length(l.bytes)) OVER (ORDER BY sl.id
+    toUInt32(sum(stride) OVER (ORDER BY sl.id
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)) AS base,
     sl.width,
     sl.width_fixed,
@@ -249,27 +257,31 @@ SELECT
 FROM {{DB}}.sprite_lumps AS sl
 INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump;
 
--- The pool itself: every lump's bytes, in sprite number order.
+-- The pool itself: every lump's bytes at the offset `rt_sprite_lump` gives
+-- it, each padded out to the next one. The engine's bytes in that gap are the
+-- next block's header, which holds addresses, and the pool holds zeros.
 INSERT INTO {{DB}}.rt_sprite_pool (id, data)
-SELECT 0 AS id, arrayStringConcat(arrayMap(t -> char(t.2), arraySort(t -> t.1, groupArray((at, b)))), '') AS data
+SELECT 0 AS id,
+    arrayStringConcat(arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((base, block)))), '')
+        AS data
 FROM
 (
-    SELECT
-        sb.base + k AS at,
-        reinterpretAsUInt8(substring(l.bytes, k + 1, 1)) AS b
+    WITH intDiv(length(l.bytes) + 3, 4) * 4 + 24 AS stride
+    SELECT sb.base AS base, rightPad(l.bytes, toUInt64(stride), '\0') AS block
     FROM {{DB}}.rt_sprite_lump AS sb
     INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.id = sb.id
     INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump
-    ARRAY JOIN range(toUInt32(length(l.bytes))) AS k
 );
 
--- Every lump has to be in it, or a sprite reads the lump after the one it
--- asked for.
+-- Every lump has to lie at its own offset, or a sprite reads another lump's
+-- bytes.
 SELECT throwIf(
-    (SELECT length(data) FROM {{DB}}.rt_sprite_pool) !=
-        (SELECT sum(length(l.bytes)) FROM {{DB}}.sprite_lumps AS sl
-         INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump),
-    'the sprite pool is not every sprite lump end to end');
+    (SELECT countIf(substring(p.data, sb.base + 1, length(l.bytes)) != l.bytes)
+     FROM {{DB}}.rt_sprite_lump AS sb
+     INNER JOIN {{DB}}.sprite_lumps AS sl ON sl.id = sb.id
+     INNER JOIN {{DB}}.wad_lumps AS l ON l.id = sl.lump
+     CROSS JOIN {{DB}}.rt_sprite_pool AS p) != 0,
+    'a sprite lump is not where the pool says it is');
 
 -- `spriteframe_t`, one row per rotation. A frame that serves every rotation
 -- with one picture repeats it eight times, which is what `sprframe->lump[0]`

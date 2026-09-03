@@ -1,8 +1,8 @@
 //! The frame transform against a real ClickHouse server.
 //!
-//! Five frames are rendered from the probed game states they were drawn from
-//! and compared, pixel by pixel, against the framebuffers the real engine
-//! drew. The oracle
+//! Each case is rendered from the probed game state it was drawn from and
+//! compared, pixel by pixel, against the framebuffer the real engine drew.
+//! The oracle
 //! is the reference emulator's own dump; `native/tests/fixtures/README.md`
 //! says where it came from.
 //!
@@ -35,7 +35,7 @@ struct Case {
     melt_step: u8,
 }
 
-const CASES: [Case; 5] = [
+const CASES: [Case; 6] = [
     Case {
         frame: 0,
         tic: 2,
@@ -61,6 +61,12 @@ const CASES: [Case; 5] = [
         melt_step: 0,
     },
     Case {
+        frame: 378,
+        tic: 341,
+        previous: 377,
+        melt_step: 0,
+    },
+    Case {
         frame: 1000,
         tic: 963,
         previous: 999,
@@ -72,7 +78,7 @@ const STATES: &[u8] = include_bytes!("fixtures/demo3-states.tsv");
 
 /// Each fixture frame, with the hash `spec::fb_hash` gives it. A fixture that
 /// was replaced by something else fails here rather than passing quietly.
-const FRAMES: [(u32, &[u8], &[u8], u64); 8] = [
+const FRAMES: [(u32, &[u8], &[u8], u64); 10] = [
     (
         0,
         include_bytes!("fixtures/demo3-frame0-fb.bin"),
@@ -108,6 +114,18 @@ const FRAMES: [(u32, &[u8], &[u8], u64); 8] = [
         include_bytes!("fixtures/demo3-frame110-fb.bin"),
         include_bytes!("fixtures/demo3-frame110-palette.bin"),
         0xffca_3225_ffc1_4b77,
+    ),
+    (
+        377,
+        include_bytes!("fixtures/demo3-frame377-fb.bin"),
+        include_bytes!("fixtures/demo3-frame377-palette.bin"),
+        0x14d4_e767_9ba9_6858,
+    ),
+    (
+        378,
+        include_bytes!("fixtures/demo3-frame378-fb.bin"),
+        include_bytes!("fixtures/demo3-frame378-palette.bin"),
+        0x4216_34b4_a5f6_06b3,
     ),
     (
         999,

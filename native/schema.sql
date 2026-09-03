@@ -950,9 +950,10 @@ ENGINE = MergeTree ORDER BY frame;
 -- The sprite side of the renderer, built by `native/sql/render_load.sql`.
 -- ---------------------------------------------------------------------------
 
--- Every sprite lump's bytes, end to end in sprite number order. A draw
--- reads the lump itself rather than a repacked pool, so a column that reads
--- past a post's length reads what the engine reads.
+-- Every sprite lump's bytes, in sprite number order and spaced the way the
+-- engine's zone allocator spaces the cached lumps. A draw reads the lump
+-- itself rather than a repacked pool, so a column that reads past a post's
+-- length reads what the engine reads.
 CREATE TABLE IF NOT EXISTS {{DB}}.rt_sprite_pool (id UInt8, data String)
 ENGINE = MergeTree ORDER BY id;
 

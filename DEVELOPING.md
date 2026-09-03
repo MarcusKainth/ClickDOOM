@@ -44,6 +44,11 @@ What `make help` does not say:
   binary. The ELF is pinned by linking it a second time and comparing the two
   files, because `objcopy` drops the symbol and string tables on the way to
   the flat binary and the hash check never sees them.
+- **`test` is five groups in CI.** `ci.yml` runs `scripts/test-group.sh`
+  once per group on its own runner, through cargo-nextest, so the native
+  simulation suites do not queue behind the SQL CPU's. `make test-group
+  GROUP=native-sim-a` runs one group the way CI does (`cargo install
+  cargo-nextest --locked` first); `make test` runs every suite in one pass.
 - **Targets are not parallel-safe.** Most share one container, and the
   compiled-expression cache is server-global, so two timing runs at once
   measure each other. Do not pass `-j`.

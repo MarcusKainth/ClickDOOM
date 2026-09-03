@@ -37,6 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Non-Rust lint tools
         # shellcheck, clang-format and actionlint have no cargo distribution.
         # `make lint` installs typos and zizmor through cargo itself.
@@ -93,6 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build the reference emulator
         run: cargo build --locked --release -p refemu
       - name: Upload refemu artifact
@@ -102,16 +104,30 @@ jobs:
           path: target/release/refemu
 
   test:
-    # Every suite, through the same `make test` a contributor runs, so CI and
-    # a local run cannot drift. Throwaway databases only; never `clickdoom`.
+    # Every suite, in the groups scripts/test-group.sh names, one runner per
+    # group with its own ClickHouse. Throwaway databases only; never
+    # `clickdoom`. `make test` runs the same suites in one pass locally.
     needs: [build-rom, build-refemu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [emulator, native-sim-a, native-sim-b, native-rest, driver-native]
+    name: test (${{ matrix.group }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # One cache per group: the groups build different test binaries.
+          key: test-${{ matrix.group }}
+      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
+        with:
+          tool: cargo-nextest@0.9.140
       - name: Start the pinned ClickHouse
         run: make up
       - name: Download ROM artifact
@@ -124,14 +140,15 @@ jobs:
         with:
           name: refemu
           path: target/release
-      - name: Every suite
+      - name: The group's suites
         env:
           CLICKHOUSE_HOST: localhost
           CLICKHOUSE_HTTP_PORT: "8123"
           CLICKHOUSE_PASSWORD: clickdoom
+          GROUP: ${{ matrix.group }}
         run: |
           chmod +x target/release/refemu
-          make test
+          scripts/test-group.sh "$GROUP"
 
   differential-smoke:
     # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
@@ -149,7 +166,7 @@ jobs:
     # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
     # would take about 13.9 minutes on every pull request. timeout-minutes is a
     # safety net for runner variance, not a substitute for that measurement.
-    needs: [build-rom, build-refemu, test]
+    needs: [build-rom, build-refemu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -170,6 +187,7 @@ jobs:
         with:
           name: refemu
           path: target/release
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build clickdoom
         run: cargo build --locked --release -p clickdoom-driver
       - name: Smoke diff (100,000 instructions, full checkpoint trace)

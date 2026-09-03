@@ -91,7 +91,8 @@ pub fn generate(dir: &Path) -> Result<Vec<Table>, CError> {
     tables.push(action_functions(&actions));
     tables.push(reader.mobjinfo()?);
     tables.push(reader.sprnames()?);
-    tables.push(reader.sfxenum()?);
+    tables.push(reader.enum_table("sfxenum", SFX_ENUM)?);
+    tables.push(reader.enum_table("mobjtype", MOBJ_TYPE_ENUM)?);
     tables.push(reader.weaponinfo()?);
     tables.push(reader.animdefs()?);
     tables.push(reader.switch_list()?);
@@ -203,10 +204,30 @@ const WEAPON_FIELDS: [&str; 6] = [
 /// The `animdef_t` fields.
 const ANIM_FIELDS: [&str; 4] = ["istexture", "endname", "startname", "speed"];
 
-/// Where the sound numbers are declared, and the enumerator that closes
-/// the list.
-const SFX_FILE: &str = "sounds.h";
-const SFX_COUNT: &str = "NUMSFX";
+/// One enumerator list a table is read from.
+struct EnumList {
+    file: &'static str,
+    /// The tag the `typedef` gives the list.
+    tag: &'static str,
+    /// The enumerator that closes the list, which counts the entries
+    /// before it rather than naming one of its own.
+    count: &'static str,
+}
+
+/// The sound numbers `mobjinfo`'s five sound fields hold.
+const SFX_ENUM: EnumList = EnumList {
+    file: "sounds.h",
+    tag: "sfxenum_t",
+    count: "NUMSFX",
+};
+
+/// The thing types `mobjinfo` is indexed by, which the routines that
+/// switch on a thing's kind name.
+const MOBJ_TYPE_ENUM: EnumList = EnumList {
+    file: "info.h",
+    tag: "mobjtype_t",
+    count: "NUMMOBJTYPES",
+};
 
 /// The `switchlist_t` fields.
 const SWITCH_FIELDS: [&str; 3] = ["name1", "name2", "episode"];
@@ -379,42 +400,47 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// `sfxenum_t`, the sound numbers `mobjinfo`'s five sound fields hold.
+    /// One enumerator list as a table of `id name`.
     ///
-    /// The list ends with `NUMSFX`, which is how many sounds there are
-    /// rather than a sound of its own, so it bounds the table instead of
-    /// filling a row in it.
-    fn sfxenum(&self) -> Result<Table, CError> {
-        let members = enum_members(SFX_FILE, self.toks(SFX_FILE), "sfxenum_t")?;
-        let Some((count, sounds)) = members.split_last() else {
+    /// The last enumerator is how many entries there are rather than an
+    /// entry of its own, so it bounds the table instead of filling a row
+    /// in it, and its name has to be `count`.
+    fn enum_table(&self, table: &'static str, list: EnumList) -> Result<Table, CError> {
+        let EnumList {
+            file,
+            tag,
+            count: count_name,
+        } = list;
+        let members = enum_members(file, self.toks(file), tag)?;
+        let Some((count, entries)) = members.split_last() else {
             return Err(CError::NoEnum {
-                file: SFX_FILE.to_owned(),
-                name: "sfxenum_t".to_owned(),
+                file: file.to_owned(),
+                name: tag.to_owned(),
             });
         };
         let value = |(name, line): &(String, u32)| {
             self.symbols.get(name).ok_or_else(|| CError::UnknownSymbol {
-                file: SFX_FILE.to_owned(),
+                file: file.to_owned(),
                 line: *line,
                 name: name.clone(),
             })
         };
         let declared = value(count)?;
-        if count.0 != SFX_COUNT || declared != sounds.len() as i64 {
+        if count.0 != count_name || declared != entries.len() as i64 {
             return Err(CError::TooManyEntries {
-                file: SFX_FILE.to_owned(),
-                name: "sfxenum_t".to_owned(),
+                file: file.to_owned(),
+                name: tag.to_owned(),
                 declared,
-                actual: sounds.len(),
+                actual: entries.len(),
             });
         }
-        let mut rows = Vec::with_capacity(sounds.len());
-        for sound in sounds {
-            rows.push(vec![value(sound)?.to_string(), sound.0.clone()]);
+        let mut rows = Vec::with_capacity(entries.len());
+        for entry in entries {
+            rows.push(vec![value(entry)?.to_string(), entry.0.clone()]);
         }
         Ok(Table {
-            name: "sfxenum",
-            source: SFX_FILE,
+            name: table,
+            source: file,
             columns: vec!["id", "name"],
             rows,
         })

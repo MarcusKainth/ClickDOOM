@@ -24,8 +24,30 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 group="${1-}"
-run() { cargo nextest run --locked "$@"; }
-live="--workspace --features clickhouse-tests"
+
+# With NEXTEST_ARCHIVE_DIR set, the suites come pre-built from
+# `cargo nextest archive` (tests.tar.zst for the workspace with the live
+# suites, rom-suites.tar.zst for the reference emulator's release ROM
+# suites) and nothing is compiled here. Without it, each run builds what it
+# needs.
+archive="${NEXTEST_ARCHIVE_DIR-}"
+if [ -n "$archive" ]; then
+    # Extracted over the workspace rather than into a temporary directory:
+    # a test that runs the driver binary reaches it by the path compiled in
+    # at build time, which is the workspace's own target directory.
+    extract=(--workspace-remap . --extract-to . --extract-overwrite)
+    run() {
+        cargo nextest run --archive-file "$archive/tests.tar.zst" "${extract[@]}" "$@"
+    }
+    run_rom() {
+        cargo nextest run --archive-file "$archive/rom-suites.tar.zst" "${extract[@]}" "$@"
+    }
+    live=""
+else
+    run() { cargo nextest run --locked "$@"; }
+    run_rom() { cargo nextest run --locked --release -p refemu --features rom-tests "$@"; }
+    live="--workspace --features clickhouse-tests"
+fi
 
 case "$group" in
     emulator)
@@ -33,26 +55,31 @@ case "$group" in
         # the server's compiled-expression cache, which a second run beside
         # them would warm or cool, and the connection suite counts the
         # server's connections, which a neighbour's session would move.
+        # shellcheck disable=SC2086 # $live is a list of flags or nothing
         run $live --test-threads 1 \
             -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live))'
         # The ROM suites are the reference emulator's, so only it is built
         # in release.
-        run --release -p refemu --features rom-tests \
+        run_rom \
             -E 'binary(reference_trace) | binary(demo3_parity) | binary(rom_symbols) | binary(probe_fixture)'
         ;;
     native-sim-a)
+        # shellcheck disable=SC2086
         run $live --test-threads 2 \
             -E 'package(clickdoom-native) and (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live))'
         ;;
     native-sim-b)
+        # shellcheck disable=SC2086
         run $live --test-threads 2 \
             -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live))'
         ;;
     native-rest)
+        # shellcheck disable=SC2086
         run $live --test-threads 2 \
             -E 'package(clickdoom-native) and not binary(/^sim_/)'
         ;;
     driver-native)
+        # shellcheck disable=SC2086
         run $live --test-threads 2 \
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;

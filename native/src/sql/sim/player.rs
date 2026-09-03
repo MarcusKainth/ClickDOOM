@@ -58,7 +58,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         ),
         (
             "skill".to_owned(),
-            format!("toInt32(assumeNotNull((SELECT skill FROM {db}.demo_header)))"),
+            format!("toInt32(assumeNotNull((SELECT h.skill FROM {db}.demo_header AS h)))"),
         ),
     ]
 }

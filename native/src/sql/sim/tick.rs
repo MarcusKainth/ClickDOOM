@@ -308,4 +308,63 @@ mod tests {
             written.push(name);
         }
     }
+
+    /// Whether `expr` names `binding` as a name of its own rather than as
+    /// the table or column half of a qualified one.
+    fn reads(expr: &str, binding: &str) -> bool {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+        expr.match_indices(binding).any(|(at, _)| {
+            let before = expr[..at].chars().next_back();
+            let after = expr[at + binding.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+    }
+
+    /// Each `(SELECT ...)` in `expr`, brackets balanced, without the
+    /// leading bracket.
+    fn subqueries(expr: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        for (at, _) in expr.match_indices("(SELECT") {
+            let mut depth = 0;
+            for (offset, c) in expr[at..].char_indices() {
+                depth += match c {
+                    '(' => 1,
+                    ')' => -1,
+                    _ => 0,
+                };
+                if depth == 0 {
+                    found.push(&expr[at + 1..at + offset]);
+                    break;
+                }
+            }
+        }
+        found
+    }
+
+    /// A subquery that names a binding from outside itself is a
+    /// correlated subquery, which ClickHouse answers with a join. A join
+    /// in this statement's pipeline batches the rows a session feeds it
+    /// one at a time, so a tic reads the state from before the batch
+    /// rather than the tic before it.
+    #[test]
+    fn a_subquery_names_nothing_bound_outside_it() {
+        let with = bindings("nat").bindings;
+        let names: Vec<&str> = with.iter().map(|(name, _)| name.as_str()).collect();
+        for (name, expr) in &with {
+            for query in subqueries(expr) {
+                // What the subquery binds for itself, which shadows any
+                // name outside it.
+                let own: Vec<&str> = query
+                    .match_indices(" AS ")
+                    .filter_map(|(at, _)| query[at + 4..].split([',', ' ', '\n']).next())
+                    .collect();
+                for other in &names {
+                    assert!(
+                        own.contains(other) || !reads(query, other),
+                        "the subquery in {name} reads {other} from outside itself"
+                    );
+                }
+            }
+        }
+    }
 }

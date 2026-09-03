@@ -131,6 +131,13 @@ fn buttons(state: &super::State) -> Vec<(String, String)> {
 /// `animdefs` names the first and last picture of each cycle by name, and
 /// an entry whose first picture this WAD does not carry is left out, which
 /// is how one table serves every episode.
+///
+/// The two name-to-number maps are named inside each subquery rather than
+/// bound beside it. A name a subquery does not define resolves outwards,
+/// which makes the subquery a correlated one, and ClickHouse answers a
+/// correlated subquery with a join. A join in this statement's pipeline
+/// batches the rows a session feeds it one at a time, so the tic reads
+/// the state from before the batch rather than the tic before it.
 fn anims(db: &str) -> Vec<(String, String)> {
     let numbers = |table: &str| {
         format!(
@@ -146,13 +153,14 @@ fn anims(db: &str) -> Vec<(String, String)> {
     let kept = format!("istexture != -1 AND {start} != 0");
     let column = |expr: &str| {
         format!(
-            "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((id, {expr}))))\
-             \n     FROM {db}.animdefs WHERE {kept})"
+            "(WITH {} AS texnum, {} AS flatnum\
+             \n     SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((id, {expr}))))\
+             \n     FROM {db}.animdefs WHERE {kept})",
+            numbers("tex_textures"),
+            numbers("flats"),
         )
     };
     vec![
-        ("texnum".to_owned(), numbers("tex_textures")),
-        ("flatnum".to_owned(), numbers("flats")),
         (
             "anim_istexture".to_owned(),
             column("toInt32(istexture != 0)"),

@@ -15,7 +15,7 @@ CREATE DATABASE IF NOT EXISTS {{DB}};
 
 CREATE TABLE {{DB}}.framebuffer
 (
-    spec_version String DEFAULT '0.1.1',
+    spec_version String DEFAULT '0.1.2',
     word_addr    UInt32,  -- relative to FRAMEBUFFER_BASE (0x1100_0000), 0..15999
     value        UInt32,
     version      UInt64   -- the store's absolute icount, same convention as ram
@@ -25,7 +25,7 @@ ORDER BY word_addr;
 
 CREATE TABLE {{DB}}.palette
 (
-    spec_version String DEFAULT '0.1.1',
+    spec_version String DEFAULT '0.1.2',
     word_addr    UInt32,  -- relative to PALETTE_BASE (0x1101_0000), 0..191
     value        UInt32,
     version      UInt64
@@ -39,7 +39,7 @@ ORDER BY word_addr;
 -- frames_out exactly as the real schema defines them.
 CREATE TABLE {{DB}}.frames_out
 (
-    spec_version     String DEFAULT '0.1.1',
+    spec_version     String DEFAULT '0.1.2',
     frame_no         UInt32,
     committed_icount UInt64,
     fb               String,  -- 64,000 bytes: 320x200, 8bpp palette-indexed, row-major
@@ -50,7 +50,7 @@ ORDER BY frame_no;
 
 CREATE TABLE {{DB}}.batch_commit
 (
-    spec_version String DEFAULT '0.1.1',
+    spec_version String DEFAULT '0.1.2',
     batch_id     UInt64,
     icount       UInt64,
     pc           UInt32,

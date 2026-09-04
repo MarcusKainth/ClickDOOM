@@ -494,7 +494,7 @@ fn walked(things: Option<&Things<'_>>) -> String {
         "arrayMap(k -> (toInt32(k), toUInt8(0)), \
          arraySort(k -> -toInt64({}[k]), arrayFilter(k -> {} = c, pt_near)))",
         things.m_linkseq,
-        cell_of("k", things),
+        cell_of("k", things.m_x, things.m_y),
     );
     format!(
         "arrayFold((wk, c) -> (\
@@ -509,11 +509,10 @@ fn walked(things: Option<&Things<'_>>) -> String {
 }
 
 /// The blockmap cell a mobj is filed under.
-fn cell_of(slot: &str, things: &Things<'_>) -> String {
+pub fn cell_of(slot: &str, m_x: &str, m_y: &str) -> String {
     format!(
-        "(bitShiftRight(toInt64({}[{slot}]) - bmap_orgy, {MAPBLOCKSHIFT}) * bmap_cols + \
-         bitShiftRight(toInt64({}[{slot}]) - bmap_orgx, {MAPBLOCKSHIFT}))",
-        things.m_y, things.m_x,
+        "(bitShiftRight(toInt64({m_y}[{slot}]) - bmap_orgy, {MAPBLOCKSHIFT}) * bmap_cols + \
+         bitShiftRight(toInt64({m_x}[{slot}]) - bmap_orgx, {MAPBLOCKSHIFT}))"
     )
 }
 
@@ -522,7 +521,7 @@ fn cell_of(slot: &str, things: &Things<'_>) -> String {
 fn near(things: &Things<'_>) -> String {
     format!(
         "arrayFilter(k -> {alive}[k] = 1 AND has(pt_cells, {}), arrayEnumerate({alive}))",
-        cell_of("k", things),
+        cell_of("k", things.m_x, things.m_y),
         alive = things.alive,
     )
 }

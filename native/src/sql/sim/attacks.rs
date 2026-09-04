@@ -6,6 +6,7 @@
 //! fireball. `A_Scream`, `A_Pain`, `A_XScream` and `A_Fall` leave a flag
 //! or nothing at all.
 
+use super::{inter, maputl, sight};
 use crate::sql::Statement;
 use crate::sql::{bind, fixed};
 
@@ -19,10 +20,30 @@ const FACE_SHIFT: u32 = 21;
 /// `P_CheckMeleeRange` stops.
 const MELEERANGE: i64 = 64 * FRACUNIT;
 const MELEE_SLOP: i64 = 20 * FRACUNIT;
+/// `p_local.h`: the furthest a thing's edge reaches from the cell its
+/// origin sits in.
+const MAXRADIUS: i64 = 32 * FRACUNIT;
+/// `p_enemy.c`: what `A_Explode` asks `P_RadiusAttack` for, and nothing
+/// else in the engine calls it.
+const BOMBDAMAGE: i64 = 128;
+/// `p_map.c`: how far from the spot the block walk reaches.
+///
+/// The engine works this out as `(damage + MAXRADIUS) << FRACBITS` in an
+/// `int`. `MAXRADIUS` is already in fixed point, so its term is two to the
+/// thirty-seventh and the shift carries it off the top of the word. What is
+/// left is the damage in fixed point, and the walk covers 128 units rather
+/// than the 160 the expression reads as.
+const BLAST_REACH: i64 = (((BOMBDAMAGE + MAXRADIUS) << 16) as i32) as i64;
+
 /// `p_mobj.h`
 const MF_SOLID: i64 = 2;
+const MF_SHOOTABLE: i64 = 4;
 const MF_AMBUSH: i64 = 32;
 const MF_SHADOW: i64 = 0x4_0000;
+
+/// The thing types `PIT_RadiusAttack` names by hand, which take no damage
+/// from a blast. `enemy::constants` binds both for `P_CheckMissileRange`.
+const BOSSES: [&str; 2] = ["MT_CYBORG", "MT_SPIDER"];
 
 /// The sounds `A_Scream`'s switch picks between with a draw, as the names
 /// `sounds.h` gives them.
@@ -74,7 +95,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             super::table_column(db, "mobjinfo", "deathsound"),
         ),
     ];
-    for name in ["A_TroopAttack", "A_SargAttack"] {
+    for name in ["A_TroopAttack", "A_SargAttack", "A_Explode"] {
         constants.push((
             name.to_lowercase(),
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = '{name}'))"),
@@ -254,6 +275,197 @@ pub fn claw_ask(attacked: &str, slot: &str, m_target: &str, base: &str) -> Strin
     )
 }
 
+// ---------------------------------------------------------------------------
+// A_Explode
+// ---------------------------------------------------------------------------
+
+/// Where each field of a blast ask sits in its tuple.
+pub mod bombing {
+    /// The slot the blast goes off at, which is the inflictor.
+    pub const SPOT: usize = 1;
+    /// The slot the blast is credited to, 0 for none. `A_Explode` passes
+    /// the thing's own target.
+    pub const SOURCE: usize = 2;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 3;
+}
+
+/// Where each field of what a blast decides sits in its tuple.
+pub mod bombed {
+    /// The damage calls the blast makes, as [`inter::hurting`] asks, in the
+    /// order the block walk reaches them and each with its own base.
+    pub const ASKS: usize = 1;
+    /// How many numbers those calls draw between them.
+    pub const DRAWS: usize = 2;
+}
+
+/// The ClickHouse type of a [`bombed`] tuple, for a caller that carries a
+/// list of them through a fold.
+pub const BOMBED_TYPE: &str = "Tuple(Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32)), UInt32)";
+
+/// The mobj arrays a blast reads.
+pub struct Blast<'a> {
+    pub m_x: &'a str,
+    pub m_y: &'a str,
+    pub m_z: &'a str,
+    pub m_radius: &'a str,
+    pub m_height: &'a str,
+    pub m_flags: &'a str,
+    pub m_type: &'a str,
+    pub m_subsector: &'a str,
+    pub m_linkseq: &'a str,
+    /// One per mobj slot: 1 while it is still on the list.
+    pub alive: &'a str,
+}
+
+/// `A_Explode`, which is `P_RadiusAttack` at the thing, credited to
+/// whatever the thing was chasing, for 128 damage.
+pub fn blast_ask(slot: &str, m_target: &str, base: &str) -> String {
+    format!("(toUInt32({slot}), toUInt32({m_target}[{slot}]), toUInt32({base}))")
+}
+
+/// `P_RadiusAttack` over every ask in `asks`, as a [`bombed`] tuple each.
+///
+/// The walk covers a square of blockmap cells around the spot, one row at a
+/// time and left to right inside a row, which is the order the engine's two
+/// loops reach them; inside a cell it reaches the thing linked last first.
+/// `PIT_RadiusAttack` skips a thing that cannot be shot and the two bosses
+/// concussion does not reach, measures the distance as the wider of the two
+/// axes less the thing's own radius in whole units held at zero, and skips
+/// one that far or further away. What is left takes `128 - dist`, and only
+/// where it can see the spot.
+///
+/// The thing the blast goes off at is not skipped by name. `P_KillMobj` has
+/// already taken `MF_SHOOTABLE` off it by the time its death frame runs
+/// `A_Explode`, so the shootable test is what leaves it out.
+///
+/// The asks come back with their bases already counted: nothing a damage
+/// call draws changes how many draws it makes, so [`inter::draws`] answers
+/// every count before any call is worked out.
+///
+/// The whole of it is the body of a fold, so it runs once per ask and not
+/// at all for none. It asks `P_CheckSight` about the things the walk
+/// reaches, and reads the seg openings [`sight::seg_openings`] binds.
+pub fn radius_attack(asks: &str, world: &Blast<'_>, hurting: &inter::Hurting<'_>) -> String {
+    let (values, body) = bombs(world, hurting);
+    format!(
+        "arrayFold((rd_held, rd_ask) -> arrayPushBack(rd_held, {}), {asks}, \
+         CAST([], 'Array({BOMBED_TYPE})'))",
+        bind::chain_in("rda", &values, &body)
+    )
+}
+
+/// What one blast works out, as the values a body reads and the [`bombed`]
+/// tuple it answers with.
+fn bombs(world: &Blast<'_>, hurting: &inter::Hurting<'_>) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("rd_ask.{field}");
+    let at = |array: &str| format!("{array}[rd_spot]");
+    let on = |array: &str, slot: &str| format!("{array}[{slot}]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("rd_spot", format!("toUInt32({})", a(bombing::SPOT)));
+    value("rd_source", format!("toUInt32({})", a(bombing::SOURCE)));
+    // The square of cells, row by row. `P_BlockThingsIterator` answers
+    // nothing for a cell off the map, which is what the clamp does.
+    let side = |origin: &str, count: &str, coord: &str| {
+        format!(
+            "range(greatest(bitShiftRight(toInt64({coord}) - {BLAST_REACH} - {origin}, {shift}), 0), \
+             least(bitShiftRight(toInt64({coord}) + {BLAST_REACH} - {origin}, {shift}), \
+             {count} - 1) + 1)",
+            shift = maputl::MAPBLOCKSHIFT,
+        )
+    };
+    value(
+        "rd_cells",
+        format!(
+            "arrayFlatten(arrayMap(by -> arrayMap(bx -> by * bmap_cols + bx, {}), {}))",
+            side("bmap_orgx", "bmap_cols", &at(world.m_x)),
+            side("bmap_orgy", "bmap_rows", &at(world.m_y)),
+        ),
+    );
+    value(
+        "rd_reached",
+        format!(
+            "arraySort(k -> (indexOf(rd_cells, {cell}), -toInt64({})), \
+             arrayFilter(k -> {alive}[k] = 1 AND has(rd_cells, {cell}), arrayEnumerate({alive})))",
+            on(world.m_linkseq, "k"),
+            cell = maputl::cell_of("k", world.m_x, world.m_y),
+            alive = world.alive,
+        ),
+    );
+    // `PIT_RadiusAttack` up to the sight check, as the slot and what the
+    // blast would do to it.
+    let axis = |array: &str| format!("abs(toInt64({}) - toInt64({}))", on(array, "k"), at(array));
+    value(
+        "rd_scored",
+        format!(
+            "arrayMap(k -> (toUInt32(k), toInt32({BOMBDAMAGE} - greatest(bitShiftRight(\
+             greatest({}, {}) - toInt64({}), 16), 0))), rd_reached)",
+            axis(world.m_x),
+            axis(world.m_y),
+            on(world.m_radius, "k"),
+        ),
+    );
+    let boss = BOSSES
+        .iter()
+        .map(|name| format!("{} != {}", on(world.m_type, "s.1"), name.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    value(
+        "rd_near",
+        format!(
+            "arrayFilter(s -> bitAnd({}, {MF_SHOOTABLE}) != 0 AND {boss} AND s.2 > 0, rd_scored)",
+            on(world.m_flags, "s.1"),
+        ),
+    );
+    // `P_CheckSight (thing, bombspot)`, in the walk's own order.
+    value(
+        "rd_pairs",
+        format!(
+            "arrayMap(s -> {}, rd_near)",
+            sight::asking(
+                &on(world.m_subsector, "s.1"),
+                &on(world.m_x, "s.1"),
+                &on(world.m_y, "s.1"),
+                &on(world.m_z, "s.1"),
+                &on(world.m_height, "s.1"),
+                &at(world.m_subsector),
+                &at(world.m_x),
+                &at(world.m_y),
+                &at(world.m_z),
+                &at(world.m_height),
+            )
+        ),
+    );
+    value("rd_seen", sight::check_sight("rd_pairs"));
+    value(
+        "rd_hit",
+        "arrayFilter((s, v) -> v = 1, rd_near, rd_seen)".to_owned(),
+    );
+    // Every call's own draw count, worked out before any of them is.
+    value(
+        "rd_counts",
+        inter::draws(
+            "arrayMap(s -> (s.1, rd_spot, rd_source, s.2, toUInt32(0)), rd_hit)",
+            hurting,
+        ),
+    );
+    value(
+        "rd_bases",
+        "arrayMap((c, d) -> toUInt32(c - d), arrayCumSum(rd_counts), rd_counts)".to_owned(),
+    );
+    let members = [
+        format!(
+            "arrayMap((s, b) -> (s.1, rd_spot, rd_source, s.2, toUInt32(toUInt32({}) + b)), \
+             rd_hit, rd_bases)",
+            a(bombing::BASE)
+        ),
+        "toUInt32(arraySum(rd_counts))".to_owned(),
+    ];
+    (values, format!("({})", members.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,19 +596,158 @@ mod tests {
         }
     }
 
-    /// The two routines and the sounds come from the tables inside the
+    /// The routines and the sounds come from the tables inside the
     /// statement rather than out of the generator.
     #[test]
     fn every_name_it_switches_on_comes_from_a_table() {
         let names: Vec<String> = constants("nat").into_iter().map(|(name, _)| name).collect();
         assert!(names.contains(&"a_troopattack".to_owned()), "{names:?}");
         assert!(names.contains(&"a_sargattack".to_owned()), "{names:?}");
+        assert!(names.contains(&"a_explode".to_owned()), "{names:?}");
         let sql = attack("asks", &world());
         assert!(
             sql.contains("a_troopattack") && sql.contains("a_sargattack"),
             "{sql}"
         );
         assert!(scream_draws("s").contains("a_scream_sounds"));
+    }
+
+    fn blast() -> Blast<'static> {
+        Blast {
+            m_x: "m_x",
+            m_y: "m_y",
+            m_z: "m_z",
+            m_radius: "m_radius",
+            m_height: "m_height",
+            m_flags: "m_flags",
+            m_type: "m_type",
+            m_subsector: "m_subsector",
+            m_linkseq: "m_linkseq",
+            alive: "m_alive",
+        }
+    }
+
+    fn hurting() -> inter::Hurting<'static> {
+        inter::Hurting {
+            m_x: "m_x",
+            m_y: "m_y",
+            m_z: "m_z",
+            m_momx: "m_momx",
+            m_momy: "m_momy",
+            m_momz: "m_momz",
+            m_reactiontime: "m_reactiontime",
+            m_type: "m_type",
+            m_state: "m_state",
+            m_tics: "m_tics",
+            m_flags: "m_flags",
+            m_health: "m_health",
+            m_height: "m_height",
+            m_target: "m_target",
+            m_threshold: "m_threshold",
+            m_player: "m_player",
+            prndindex: "prndindex",
+            readyweapon: "readyweapon",
+        }
+    }
+
+    fn bombed_value(name: &str) -> String {
+        let (values, _) = bombs(&blast(), &hurting());
+        values
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("the call names {name}"))
+    }
+
+    /// The walk reaches 128 units, not the 160 the engine's expression
+    /// reads as: `MAXRADIUS` is already in fixed point and the shift carries
+    /// its term off the top of the word.
+    #[test]
+    fn the_blast_reaches_what_the_overflow_leaves() {
+        assert_eq!(BLAST_REACH, BOMBDAMAGE << 16);
+        assert_ne!(BLAST_REACH, (BOMBDAMAGE + MAXRADIUS) << 16);
+        assert!(bombed_value("rd_cells").contains(&BLAST_REACH.to_string()));
+    }
+
+    /// `P_RadiusAttack` walks the rows outside and the columns inside,
+    /// which decides the order the damage calls draw in.
+    #[test]
+    fn the_square_is_walked_row_by_row() {
+        let cells = bombed_value("rd_cells");
+        assert!(
+            cells.starts_with("arrayFlatten(arrayMap(by -> arrayMap(bx ->"),
+            "the rows are the outer loop: {cells}"
+        );
+        let cols = cells
+            .find("bmap_cols - 1")
+            .expect("the columns are clamped");
+        let rows = cells.find("bmap_rows - 1").expect("the rows are clamped");
+        assert!(cols < rows, "the inner range is the columns: {cells}");
+    }
+
+    /// Each call's base counts the draws of the calls before it and not its
+    /// own.
+    #[test]
+    fn the_bases_are_the_prefix_of_the_counts() {
+        assert_eq!(
+            bombed_value("rd_bases"),
+            "arrayMap((c, d) -> toUInt32(c - d), arrayCumSum(rd_counts), rd_counts)"
+        );
+    }
+
+    /// A blast is its own inflictor and is credited to whatever the thing
+    /// was chasing.
+    #[test]
+    fn the_blast_is_its_own_inflictor() {
+        let (_, body) = bombs(&blast(), &hurting());
+        assert!(body.contains("(s.1, rd_spot, rd_source, s.2,"), "{body}");
+        assert_eq!(
+            blast_ask("k", "m_target", "b"),
+            "(toUInt32(k), toUInt32(m_target[k]), toUInt32(b))"
+        );
+        assert_eq!(inter::hurting::INFLICTOR, 2);
+        assert_eq!(inter::hurting::SOURCE, 3);
+    }
+
+    /// The two bosses concussion does not reach come from `mobjtype`
+    /// inside the statement rather than out of the generator.
+    #[test]
+    fn the_bosses_come_from_the_table() {
+        let bound: Vec<String> = super::super::constants("nat")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let near = bombed_value("rd_near");
+        for boss in BOSSES {
+            let name = boss.to_lowercase();
+            assert!(near.contains(&name), "the walk reads {name}");
+            assert!(bound.contains(&name), "the statement binds {name}");
+        }
+    }
+
+    /// The blast asks the sight check once however many things it reaches,
+    /// and the whole of it is the body of a fold, so a tic with no barrel
+    /// going off does not run it.
+    #[test]
+    fn the_sight_check_is_one_call_site_inside_a_fold() {
+        let sql = radius_attack("asks", &blast(), &hurting());
+        assert_eq!(
+            sql.matches("sg_reject").count(),
+            sight::check_sight("p").matches("sg_reject").count()
+        );
+        assert_eq!(sql.matches("arrayFold((rd_held, rd_ask) ->").count(), 1);
+        assert!(!sql.contains("arrayMap(rd_ask ->"), "the body is a fold's");
+    }
+
+    #[test]
+    fn the_blast_expression_balances_its_parentheses() {
+        let sql = radius_attack("asks", &blast(), &hurting());
+        let depth = sql.chars().fold(0i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "{sql}");
     }
 
     #[test]

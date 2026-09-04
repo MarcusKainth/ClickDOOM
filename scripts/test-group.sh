@@ -9,10 +9,11 @@
 #                  native_* suites: the SQL CPU, the executor, the reference
 #                  emulator and the driver's emulation side, then the ROM
 #                  suites that need a release build
-#   native-sim-a   the three longest native simulation suites
-#   native-sim-b   the shot, input and lights suites, and every simulation
-#                  suite the other two groups do not name
+#   native-sim-a   the tic, plat and compaction suites
+#   native-sim-b   every simulation suite the other groups do not name
 #   native-sim-c   the hearing, missile, parity and move suites
+#   native-sim-d   the shot and fall suites
+#   native-sim-e   the thrust suite
 #   native-rest    the native crate's loader, renderer and table suites
 #   driver-native  the driver's native_* suites: load, render, demo, play,
 #                  diff, session and stream; the connection suite runs in
@@ -65,23 +66,34 @@ case "$group" in
         run_rom \
             -E 'binary(reference_trace) | binary(demo3_parity) | binary(rom_symbols) | binary(probe_fixture)'
         ;;
+    # A test that opens a session pays the tic statement's analysis, about
+    # five minutes on a runner, and the analysis runs on one thread, so the
+    # simulation groups run four tests at a time and the suites that open
+    # sessions are spread over the groups by their measured length.
     native-sim-a)
         # shellcheck disable=SC2086
-        run $live --test-threads 2 \
+        run $live --test-threads 4 \
             -E 'package(clickdoom-native) and (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live))'
         ;;
     native-sim-b)
-        # A suite that opens a session pays the tic statement's analysis
-        # each time, about four minutes on a runner, so the suites that do
-        # are spread over this group and the next by their measured length.
         # shellcheck disable=SC2086
-        run $live --test-threads 2 \
-            -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live) | binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live))'
+        run $live --test-threads 4 \
+            -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live) | binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live) | binary(sim_shot_live) | binary(sim_fall_live) | binary(sim_thrust_live))'
         ;;
     native-sim-c)
         # shellcheck disable=SC2086
-        run $live --test-threads 2 \
+        run $live --test-threads 4 \
             -E 'package(clickdoom-native) and (binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live))'
+        ;;
+    native-sim-d)
+        # shellcheck disable=SC2086
+        run $live --test-threads 4 \
+            -E 'package(clickdoom-native) and (binary(sim_shot_live) | binary(sim_fall_live))'
+        ;;
+    native-sim-e)
+        # shellcheck disable=SC2086
+        run $live --test-threads 4 \
+            -E 'package(clickdoom-native) and binary(sim_thrust_live)'
         ;;
     native-rest)
         # shellcheck disable=SC2086
@@ -94,7 +106,7 @@ case "$group" in
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)
-        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-rest|driver-native" >&2
+        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-rest|driver-native" >&2
         exit 2
         ;;
 esac

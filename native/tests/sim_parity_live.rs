@@ -214,6 +214,21 @@ const FLASH: [(u32, i32, i32, i32); 6] = [
     (149, -1, 0, 0),
 ];
 
+/// `gametic, m_state[119], m_flags[119], m_angle[119]` for the imp whose
+/// missile check passes, read out of the reference emulator's demo3 trace.
+///
+/// Gametic 152 is the last tic it chases. At 153 `A_Chase` puts it in its
+/// missile frames, marks it as having just attacked and turns it towards
+/// the player, and at 161 the frame after that turns it again. Both frames
+/// carry `A_FaceTarget`; the first is entered by the attack and the second
+/// by the tic count running out.
+const ATTACK: [(u32, i32, i32, u32); 4] = [
+    (152, 444, 4194310, 1610612736),
+    (153, 452, 4194438, 1413509120),
+    (161, 453, 4194438, 1393606112),
+    (168, 453, 4194438, 1393606112),
+];
+
 const THRUST: [(u32, usize, i32, i32, i32, i32); 4] = [
     (142, 118, 8272000, -4310912, 0, 0),
     (142, 258, 13992912, 4297488, 0, 0),
@@ -321,6 +336,9 @@ struct Walked {
     thrust_momx: Vec<i32>,
     thrust_momy: Vec<i32>,
     extralight: i32,
+    state119: i32,
+    flags119: i32,
+    angle119: u32,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -350,7 +368,8 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              arrayMap(k -> m_y[k], [118, 258]) AS thrust_y, \
              arrayMap(k -> m_momx[k], [118, 258]) AS thrust_momx, \
              arrayMap(k -> m_momy[k], [118, 258]) AS thrust_momy, \
-             p_extralight AS extralight \
+             p_extralight AS extralight, m_state[119] AS state119, \
+             m_flags[119] AS flags119, m_angle[119] AS angle119 \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -544,6 +563,14 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             (row.psp_state[1], row.psp_tics[1], row.extralight),
             (state, tics, extralight),
             "the flash sprite at gametic {tic}"
+        );
+    }
+    for (tic, state, flags, angle) in ATTACK {
+        let row = at(tic);
+        assert_eq!(
+            (row.state119, row.flags119, row.angle119),
+            (state, flags, angle),
+            "the imp winding up its attack at gametic {tic}"
         );
     }
     for (tic, slot, x, y, momx, momy) in THRUST {

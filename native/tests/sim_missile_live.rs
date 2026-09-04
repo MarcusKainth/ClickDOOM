@@ -28,8 +28,14 @@ use support::seed;
 const BEFORE: u32 = 124;
 
 /// `p_mobj.h`: the target has just hit the thing, which makes the check
-/// answer yes without drawing.
+/// answer yes without drawing. The routine clears the mark as it reads it,
+/// and `A_Chase` marks the thing as having attacked.
 const MF_JUSTHIT: i32 = 64;
+const MF_JUSTATTACKED: i32 = 128;
+
+/// The thing the reference run's random-call log has drawing for its
+/// missile check at this tic, which is the one every arm turns on.
+const SLOT: usize = 118;
 
 /// One arm per seeded row: where the copy of `BEFORE` lands and which tic
 /// runs from it. The tics are far apart so the arms cannot read each
@@ -41,6 +47,7 @@ struct Ran {
     tic: u32,
     prndindex: u8,
     unresolved: u8,
+    flags: i32,
 }
 
 #[tokio::test]
@@ -96,15 +103,15 @@ async fn the_missile_check_draws_only_where_the_engine_draws() {
     let wanted: Vec<String> = ARMS.iter().map(|(_, at)| (at + 1).to_string()).collect();
     let rows: Vec<Ran> = fixture
         .rows(&format!(
-            "SELECT tic, prndindex, unresolved FROM {db}.native_state \
-             WHERE tic IN ({}) ORDER BY tic",
+            "SELECT tic, prndindex, unresolved, m_flags[{SLOT}] AS flags \
+             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
             wanted.join(", ")
         ))
         .await;
     let seeded: Vec<Ran> = fixture
         .rows(&format!(
-            "SELECT tic, prndindex, unresolved FROM {db}.native_state \
-             WHERE tic = {BEFORE} ORDER BY tic"
+            "SELECT tic, prndindex, unresolved, m_flags[{SLOT}] AS flags \
+             FROM {db}.native_state WHERE tic = {BEFORE} ORDER BY tic"
         ))
         .await;
     fixture.finish().await;
@@ -130,14 +137,32 @@ async fn the_missile_check_draws_only_where_the_engine_draws() {
         "a thing still waiting out its reaction time does not draw"
     );
     assert_eq!(at("reactiontime").unresolved, 0, "and the chase carries on");
-    assert_eq!(
+    // The check answers yes without drawing, and `A_Chase` then puts the
+    // thing in its missile frames and returns, so it makes no draw at all
+    // where a thing still waiting out its reaction time skips only the
+    // check's own number and walks as usual.
+    assert!(
+        drew("justhit") < drew("reactiontime"),
+        "a thing that attacks draws nothing, where one waiting out its \
+         reaction time skips one number: {} against {}",
         drew("justhit"),
-        untouched - 1,
-        "a thing the target has just hit answers yes without drawing"
+        drew("reactiontime")
     );
     assert_eq!(
         at("justhit").unresolved,
-        1,
-        "and the attack it starts says the tic could not be produced"
+        0,
+        "and the attack it starts is one this runs"
+    );
+    // `P_CheckMissileRange` clears the mark as it reads it and `A_Chase`
+    // marks the thing as having attacked.
+    assert_eq!(
+        at("justhit").flags & (MF_JUSTHIT | MF_JUSTATTACKED),
+        MF_JUSTATTACKED,
+        "the mark it answered on is cleared and the attack's own is set"
+    );
+    assert_eq!(
+        at("untouched").flags & (MF_JUSTHIT | MF_JUSTATTACKED),
+        0,
+        "a thing the check answers no on carries neither"
     );
 }

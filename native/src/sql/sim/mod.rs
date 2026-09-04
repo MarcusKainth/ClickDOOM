@@ -206,6 +206,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(inter::damage_constants(db));
     constants.extend(enemy::constants(db));
     constants.extend(mobj::constants(db));
+    constants.extend(missile::constants(db));
     constants
 }
 

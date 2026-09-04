@@ -51,6 +51,15 @@ pub mod answer {
     pub const SUBSECTOR: usize = 5;
     pub const PICKED: usize = 6;
     pub const SPECHIT: usize = 7;
+    /// The last line the walk reached that brought the ceiling down, or -1.
+    /// `P_XYMovement` reads it to tell a sky ceiling from a solid one.
+    pub const CEILINGLINE: usize = 8;
+    /// Every mobj slot the box reaches, in the order
+    /// `P_BlockThingsIterator` reaches them. `PIT_CheckThing` decides
+    /// about each in turn, and a missile decides differently from
+    /// everything else: it passes over and under things a solid one would
+    /// have stopped, so the list is not cut at the first that blocks.
+    pub const TOUCHED: usize = 9;
 }
 
 /// One pending move, as the tuple [`try_moves`] reads.
@@ -74,7 +83,8 @@ pub fn asking(
 /// An empty answer, for a move nobody made.
 pub fn no_answer() -> String {
     "(toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
-     CAST([], 'Array(UInt32)'), CAST([], 'Array(Int32)'))"
+     CAST([], 'Array(UInt32)'), CAST([], 'Array(Int32)'), toInt32(-1), \
+     CAST([], 'Array(UInt32)'))"
         .to_owned()
 }
 
@@ -225,6 +235,14 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
             world.m_flags
         ),
     );
+    // `PIT_CheckLine` names the line each time it brings the ceiling down,
+    // so what is left is the last one that did.
+    bind(
+        "tm_ceilingline",
+        "toInt32(arrayFold((acc, o, l) -> if(o.1 < acc.1, (toInt32(o.1), toInt32(l)), acc), \
+         tm_openings, tm_line_open, (tm_baseceiling, toInt32(-1))).2)"
+            .to_owned(),
+    );
     bind(
         "tm_dropoffz",
         "toInt32(arrayMin(arrayPushBack(arrayMap(o -> o.3, tm_openings), \
@@ -247,7 +265,8 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
     let body = format!(
         "(toUInt8(tm_thing_stop = 0 AND tm_line_stop = 0 AND ({fits})), \
          tm_floorz, tm_ceilingz, tm_dropoffz, tm_subsector, tm_picked, \
-         arrayFilter(l -> {}[1 + l] != 0, tm_line_open))",
+         arrayFilter(l -> {}[1 + l] != 0, tm_line_open), tm_ceilingline, \
+         arrayMap(k -> toUInt32(k), tm_thing_touch))",
         world.line_special
     );
     format!("arrayMap(mv -> {}, {moves})", bind::chain(&values, &body))

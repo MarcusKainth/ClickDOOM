@@ -426,6 +426,273 @@ pub fn born_column(column: &str, spawn: &str) -> Option<String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Flight
+// ---------------------------------------------------------------------------
+
+/// The thing types `PIT_CheckThing` names by hand when it decides whether
+/// a missile hits, as the names `info.h` gives them.
+const SPECIES: [&str; 3] = ["MT_KNIGHT", "MT_BRUISER", "MT_PLAYER"];
+
+/// The engine tables a missile in flight reads that no other stage does.
+pub fn constants(db: &str) -> Vec<(String, String)> {
+    let mut constants = vec![(
+        "mobj_damage".to_owned(),
+        super::table_column(db, "mobjinfo", "damage"),
+    )];
+    for name in SPECIES {
+        constants.push((
+            name.to_lowercase(),
+            format!("assumeNotNull((SELECT toInt32(id) FROM {db}.mobjtype WHERE name = '{name}'))"),
+        ));
+    }
+    constants
+}
+
+/// Where each field of an explosion ask sits in its tuple.
+pub mod stopping {
+    /// The missile's slot.
+    pub const SLOT: usize = 1;
+    /// The line the move test named as the one that brought the ceiling
+    /// down, or -1. `P_ZMovement` names none, because the sky test is
+    /// `P_XYMovement`'s alone.
+    pub const CEILINGLINE: usize = 2;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 3;
+}
+
+/// Where each field of what an explosion leaves sits in its tuple.
+///
+/// The momentum a caller zeroes is not here: `P_ExplodeMissile` sets all
+/// three to nothing whatever else it does.
+pub mod stopped {
+    pub const STATE: usize = 1;
+    pub const TICS: usize = 2;
+    pub const FLAGS: usize = 3;
+    /// 1 where the sky took the missile off the list rather than setting
+    /// it off.
+    pub const REMOVED: usize = 4;
+    /// How many numbers the call drew.
+    pub const DRAWS: usize = 5;
+    /// 1 where the call reached a path this does not write.
+    pub const STUCK: usize = 6;
+}
+
+/// The mobj arrays a missile in flight reads.
+pub struct Flying<'a> {
+    pub m_z: &'a str,
+    pub m_height: &'a str,
+    pub m_type: &'a str,
+    pub m_state: &'a str,
+    pub m_tics: &'a str,
+    pub m_flags: &'a str,
+    pub m_target: &'a str,
+    pub prndindex: &'a str,
+}
+
+/// `P_ExplodeMissile` over every ask in `asks`, as a [`stopped`] tuple
+/// each, with the sky check `P_XYMovement` makes ahead of it.
+///
+/// One draw apiece, for the wait the death frame is shortened by. A
+/// missile the sky takes draws nothing: `P_RemoveMobj` runs instead.
+///
+/// The sky check is `P_XYMovement`'s. The line the move test named is the
+/// last one that brought the ceiling down, which is what the engine leaves
+/// in `ceilingline`, and a missile stopped under a two-sided line whose
+/// back sector has a sky ceiling is removed rather than set off.
+pub fn explode(asks: &str, world: &Flying<'_>) -> String {
+    let (values, body) = exploded(world);
+    format!(
+        "arrayMap(ex_ask -> {}, {asks})",
+        bind::chain_in("exa", &values, &body)
+    )
+}
+
+/// What one explosion works out, as the values a body reads and the
+/// [`stopped`] tuple it answers with.
+fn exploded(world: &Flying<'_>) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("ex_ask.{field}");
+    let at = |array: &str| format!("{array}[ex_slot]");
+    let info = |table: &str| format!("{table}[1 + ex_type]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("ex_slot", format!("toUInt32({})", a(stopping::SLOT)));
+    value("ex_line", format!("toInt32({})", a(stopping::CEILINGLINE)));
+    value("ex_type", format!("toInt32({})", at(world.m_type)));
+    value(
+        "ex_sky",
+        "toUInt8(ex_line != -1 AND line_side1[1 + ex_line] != -1 \
+         AND sec_ceilingpic[1 + line_back[1 + ex_line]] = skyflatnum)"
+            .to_owned(),
+    );
+    value("ex_death", info("mobj_deathstate"));
+    value(
+        "ex_tics",
+        format!(
+            "toInt32(greatest(state_tics[1 + ex_death] - bitAnd(toInt64(rnd[1 + bitAnd(\
+             toUInt32({}) + toUInt32({}) + 1, 255)]), 3), 1))",
+            world.prndindex,
+            a(stopping::BASE),
+        ),
+    );
+    // `P_SetMobjState` runs whatever the death frame carries. No missile
+    // type the engine ships carries one bar the rocket, whose `A_Explode`
+    // is not written here.
+    let members = [
+        format!("toInt32(if(ex_sky = 1, {}, ex_death))", at(world.m_state)),
+        format!("toInt32(if(ex_sky = 1, {}, ex_tics))", at(world.m_tics)),
+        format!(
+            "toInt32(if(ex_sky = 1, {held}, bitAnd({held}, {})))",
+            !MF_MISSILE,
+            held = at(world.m_flags),
+        ),
+        "toUInt8(ex_sky)".to_owned(),
+        "toUInt32(if(ex_sky = 1, 0, 1))".to_owned(),
+        "toUInt8(ex_sky = 0 AND state_action[1 + ex_death] != 0)".to_owned(),
+    ];
+    (values, format!("({})", members.join(", ")))
+}
+
+/// Where each field of an impact ask sits in its tuple.
+pub mod striking {
+    /// The missile's slot.
+    pub const SLOT: usize = 1;
+    /// The slots the move test's box reached, in the order
+    /// `P_BlockThingsIterator` reached them.
+    pub const TOUCHED: usize = 2;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 3;
+}
+
+/// Where each field of what an impact decides sits in its tuple.
+pub mod struck {
+    /// The slot the missile stopped on, 0 for none.
+    pub const HIT: usize = 1;
+    /// 1 where the walk answered no, which refuses the move and sets the
+    /// missile off.
+    pub const BLOCKED: usize = 2;
+    /// What the hit does, 0 where the missile stopped on something it does
+    /// not damage.
+    pub const DAMAGE: usize = 3;
+    /// How many numbers the call drew.
+    pub const DRAWS: usize = 4;
+}
+
+/// `PIT_CheckThing`'s missile branch over every ask in `asks`, as a
+/// [`struck`] tuple each.
+///
+/// The walk reaches the things in order and the first that decides ends
+/// it. A thing the missile passes over or under is skipped, and so is
+/// whatever fired it. A thing of the shooter's own species stops the
+/// missile without damage unless it is the player. A thing that cannot be
+/// shot stops it if it is solid. Anything else takes `(P_Random()%8+1)`
+/// times the missile's own damage, which is the call's one draw.
+///
+/// The missile itself is not in the list: the move test excludes the slot
+/// it is asked about, and a missile carries `MF_NOBLOCKMAP` so nothing
+/// else's walk reaches it either. A dehacked patch can let a species hurt
+/// its own; no patch is loaded, so the rule always holds.
+pub fn impact(asks: &str, world: &Flying<'_>) -> String {
+    let (values, body) = strikes(world);
+    format!(
+        "arrayMap(st_ask -> {}, {asks})",
+        bind::chain_in("sta", &values, &body)
+    )
+}
+
+/// What one impact works out, as the values a body reads and the
+/// [`struck`] tuple it answers with.
+fn strikes(world: &Flying<'_>) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("st_ask.{field}");
+    let at = |array: &str| format!("{array}[st_slot]");
+    let hit = |array: &str| format!("{array}[k]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("st_slot", format!("toUInt32({})", a(striking::SLOT)));
+    value("st_touched", a(striking::TOUCHED));
+    value("st_type", format!("toInt32({})", at(world.m_type)));
+    value("st_target", format!("toUInt32({})", at(world.m_target)));
+    value(
+        "st_shot_type",
+        format!(
+            "toInt32(if(st_target = 0, -1, {}[st_target]))",
+            world.m_type
+        ),
+    );
+    // 0 walks on, 1 stops without damage, 2 stops and damages.
+    let species = format!(
+        "st_target != 0 AND ({t} = st_shot_type \
+         OR (st_shot_type = mt_knight AND {t} = mt_bruiser) \
+         OR (st_shot_type = mt_bruiser AND {t} = mt_knight))",
+        t = hit(world.m_type),
+    );
+    let decision = format!(
+        "toUInt8(multiIf(\
+         toInt64({mz}) > toInt64({tz}) + toInt64({th}), 0, \
+         toInt64({mz}) + toInt64({mh}) < toInt64({tz}), 0, \
+         k = st_target, 0, \
+         ({species}) AND {t} != mt_player, 1, \
+         bitAnd({tf}, {MF_SHOOTABLE}) = 0, toUInt8(bitAnd({tf}, {MF_SOLID}) != 0), \
+         2))",
+        mz = at(world.m_z),
+        mh = at(world.m_height),
+        tz = hit(world.m_z),
+        th = hit(world.m_height),
+        tf = hit(world.m_flags),
+        t = hit(world.m_type),
+    );
+    value(
+        "st_decided",
+        format!("arrayMap(k -> {decision}, st_touched)"),
+    );
+    value(
+        "st_at",
+        "toUInt32(indexOf(arrayMap(d -> toUInt8(d != 0), st_decided), toUInt8(1)))".to_owned(),
+    );
+    value(
+        "st_hit",
+        "toUInt32(if(st_at = 0, 0, st_touched[st_at]))".to_owned(),
+    );
+    value(
+        "st_damages",
+        "toUInt8(st_at != 0 AND st_decided[st_at] = 2)".to_owned(),
+    );
+    value(
+        "st_damage",
+        format!(
+            "toInt32(if(st_damages = 0, 0, (rnd[1 + bitAnd(toUInt32({}) + toUInt32({}) + 1, 255)] \
+             % 8 + 1) * mobj_damage[1 + st_type]))",
+            world.prndindex,
+            a(striking::BASE),
+        ),
+    );
+    let members = [
+        "toUInt32(st_hit)".to_owned(),
+        "toUInt8(st_at != 0)".to_owned(),
+        "toInt32(st_damage)".to_owned(),
+        "toUInt32(st_damages)".to_owned(),
+    ];
+    (values, format!("({})", members.join(", ")))
+}
+
+/// The `inter::hurting` ask a hit makes: the thing it reached, the missile
+/// as the inflictor, and whatever fired the missile as the source.
+///
+/// `struck` names one [`struck`] tuple and `slot` the missile. `base` is
+/// how many numbers the tic drew before the impact's own, so the damage
+/// call's draws sit behind the one the impact made.
+pub fn damage_ask(struck: &str, slot: &str, m_target: &str, base: &str) -> String {
+    format!(
+        "(toUInt32({struck}.{hit}), toUInt32({slot}), toUInt32({m_target}[{slot}]), \
+         toInt32({struck}.{damage}), toUInt32({base}) + toUInt32({struck}.{draws}))",
+        hit = struck::HIT,
+        damage = struck::DAMAGE,
+        draws = struck::DRAWS,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +830,99 @@ mod tests {
         }
         assert!(missiles > 5, "the table carries missiles: {missiles}");
         assert_eq!(noclip, 1, "one missile type is not stopped by the map");
+    }
+
+    fn flying() -> Flying<'static> {
+        Flying {
+            m_z: "m_z",
+            m_height: "m_height",
+            m_type: "m_type",
+            m_state: "m_state",
+            m_tics: "m_tics",
+            m_flags: "m_flags",
+            m_target: "m_target",
+            prndindex: "prndindex",
+        }
+    }
+
+    /// The sky check reads the back sector of the line the move test
+    /// named, and a missile the sky takes draws nothing.
+    #[test]
+    fn a_sky_ceiling_removes_the_missile_and_draws_nothing() {
+        let (values, body) = exploded(&flying());
+        let sky = values.iter().find(|(name, _)| name == "ex_sky").unwrap();
+        assert!(
+            sky.1
+                .contains("sec_ceilingpic[1 + line_back[1 + ex_line]] = skyflatnum"),
+            "{sky:?}"
+        );
+        assert!(body.contains("toUInt32(if(ex_sky = 1, 0, 1))"), "{body}");
+    }
+
+    /// The explosion takes `MF_MISSILE` off, and leaves the flags alone
+    /// where the sky removed the thing instead.
+    #[test]
+    fn the_explosion_stops_the_thing_being_a_missile() {
+        let (_, body) = exploded(&flying());
+        assert!(
+            body.contains(&format!("bitAnd(m_flags[ex_slot], {})", !MF_MISSILE)),
+            "{body}"
+        );
+    }
+
+    /// The impact draws once, and only where it damages what it reached.
+    #[test]
+    fn an_impact_draws_only_where_it_damages() {
+        let (values, body) = strikes(&flying());
+        assert!(body.contains("toUInt32(st_damages)"), "{body}");
+        let damage = values.iter().find(|(name, _)| name == "st_damage").unwrap();
+        assert!(
+            damage.1.contains("% 8 + 1) * mobj_damage[1 + st_type]"),
+            "{damage:?}"
+        );
+    }
+
+    /// The damage ask names the missile as the inflictor and whatever
+    /// fired it as the source, in `inter::hurting`'s order.
+    #[test]
+    fn the_damage_ask_puts_the_missile_in_the_inflictor_slot() {
+        let ask = damage_ask("st", "k", "m_target", "base");
+        assert_eq!(
+            ask,
+            "(toUInt32(st.1), toUInt32(k), toUInt32(m_target[k]), toInt32(st.3), \
+             toUInt32(base) + toUInt32(st.4))"
+        );
+        assert_eq!(struck::HIT, 1);
+        assert_eq!(super::super::inter::hurting::INFLICTOR, 2);
+        assert_eq!(super::super::inter::hurting::SOURCE, 3);
+    }
+
+    /// The types `PIT_CheckThing` names by hand come from `mobjtype`
+    /// inside the statement rather than out of the generator.
+    #[test]
+    fn every_type_the_impact_names_comes_from_the_table() {
+        let names: Vec<String> = constants("nat")
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name.starts_with("mt_"))
+            .collect();
+        assert_eq!(names.len(), SPECIES.len());
+        let sql = impact("asks", &flying());
+        for name in names {
+            assert!(sql.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_flight_expressions_balance_their_parentheses() {
+        for sql in [explode("asks", &flying()), impact("asks", &flying())] {
+            let depth = sql.chars().fold(0i32, |d, c| match c {
+                '(' => d + 1,
+                ')' => d - 1,
+                _ => d,
+            });
+            assert_eq!(depth, 0, "{sql}");
+        }
     }
 
     #[test]

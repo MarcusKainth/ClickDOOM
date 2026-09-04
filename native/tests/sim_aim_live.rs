@@ -204,9 +204,13 @@ fn pointing(from: &Thing, to: &Thing) -> u32 {
     (turns.rem_euclid(1.0) * 4_294_967_296.0) as u32
 }
 
+/// One traverse answer as the statement gives it, in [`shoot::reached`]'s
+/// order.
+type ReachedRow = (i32, i32, u8, i32, i32, i32, i32, Vec<i32>);
+
 #[derive(Row, Deserialize)]
 struct Found {
-    found: Vec<(i32, i32)>,
+    found: Vec<ReachedRow>,
 }
 
 /// What the statement answers for every ask.
@@ -249,11 +253,12 @@ async fn ask_server(
     let answer = if swing {
         shoot::bullet_slope("aim_asks", &targets)
     } else {
-        shoot::aim_line_attack("aim_asks", &targets)
+        shoot::traverse("aim_asks", &targets)
     };
     // The line flags come from the level, so an arm can change them and
     // both sides read the same array.
     let mut constants = maputl::constants(db);
+    constants.extend(shoot::constants(db));
     for (name, expr) in &mut constants {
         if name == "line_flags" {
             expr.clone_from(&arrays.line_flags);
@@ -270,6 +275,6 @@ async fn ask_server(
     let ours: Found = fixture.scalar(&sql).await;
     ours.found
         .into_iter()
-        .map(|(slope, target)| (i64::from(slope), i64::from(target)))
+        .map(|found| (i64::from(found.0), i64::from(found.1)))
         .collect()
 }

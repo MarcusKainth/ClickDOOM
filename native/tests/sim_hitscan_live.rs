@@ -154,9 +154,13 @@ fn pointing(from: &Thing, to: &Thing) -> u32 {
     (turns.rem_euclid(1.0) * 4_294_967_296.0) as u32
 }
 
+/// One traverse answer as the statement gives it, in [`shoot::reached`]'s
+/// order.
+type ReachedRow = (i32, i32, u8, i32, i32, i32, i32, Vec<i32>);
+
 #[derive(Row, Deserialize)]
 struct Reached {
-    reached: Vec<(u8, i32, i32, i32, i32, Vec<i32>)>,
+    reached: Vec<ReachedRow>,
 }
 
 /// What the statement answers for every ask.
@@ -220,18 +224,18 @@ async fn one_batch(fixture: &Fixture, db: &str, level: &Level, asks: &[Ask]) -> 
             .map(|(name, expr)| format!("    ({expr}) AS {name}"))
             .collect::<Vec<_>>()
             .join(",\n"),
-        shoot::line_attack("shot_asks", &targets),
+        shoot::traverse("shot_asks", &targets),
     );
     let ours: Reached = fixture.scalar(&sql).await;
     ours.reached
         .into_iter()
-        .map(|(kind, id, x, y, z, spechit)| Shot {
-            kind,
-            id: i64::from(id),
-            x: i64::from(x),
-            y: i64::from(y),
-            z: i64::from(z),
-            spechit: spechit.into_iter().map(i64::from).collect(),
+        .map(|r| Shot {
+            kind: r.2,
+            id: i64::from(r.3),
+            x: i64::from(r.4),
+            y: i64::from(r.5),
+            z: i64::from(r.6),
+            spechit: r.7.into_iter().map(i64::from).collect(),
         })
         .collect()
 }

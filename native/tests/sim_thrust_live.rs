@@ -6,7 +6,11 @@
 //! the move a monster makes there is checked in `sim_parity_live` against
 //! the engine's own trace. The parts of the routine the demo does not
 //! reach are seeded here: the halving a momentum over half of `MAXMOVE`
-//! takes, the clamp above `MAXMOVE`, and a move a wall refuses.
+//! takes, the clamp above `MAXMOVE`, and the special line a move crosses.
+//!
+//! Every arm is a row seeded into one session. A session pays the tic
+//! statement's analysis once, and for a suite this size that is the whole
+//! of what it costs.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -15,6 +19,7 @@
 #![cfg(feature = "clickhouse-tests")]
 
 use clickdoom_native::sql::sim;
+use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::{load, sql, wad::Wad};
 use clickhouse::Row;
 use serde::Deserialize;
@@ -24,34 +29,24 @@ mod support;
 use support::db::Fixture;
 use support::seed;
 
-/// The tic the run stops on before the seeded row, and the row's own tic.
-/// Gametic 40 is early enough that no monster has woken and the list still
-/// holds the level's own things.
+/// The tic every arm copies its row from. Gametic 40 is early enough that
+/// no monster has woken and the list still holds the level's own things.
 const BEFORE: u32 = 40;
-const SEED_TIC: u32 = 41;
 
 /// The slot the momentum is seeded onto. Slot 118 is the monster the
 /// demo's player later shoots, and at gametic 40 it stands still.
 const SLOT: usize = 118;
 
-/// The thrust the crossing test uses, which is the distance from where it
-/// stands to the line.
-const CROSSING: i64 = 8 * 65536;
-
-/// `p_spec.c`: what the seeded lines are given, which opens a door.
-const DOOR_OPEN: i64 = 2;
-
-/// Where a test that needs room puts the thing before it moves, and how
+/// Where an arm that needs room puts the thing before it moves, and how
 /// wide it is made there.
 ///
 /// A move of `MAXMOVE` covers thirty map units, which is further than the
 /// monster can go from where it stands. This is where the demo's player
 /// stands at gametic 26, part way down a corridor it walks the whole of,
-/// so the way back up is open for as far as the move reaches, and the
-/// player is fifty units past it by gametic 41. The thing is given a
-/// radius of one unit as well, so what the corridor is shaped like cannot
-/// decide what this reads; the width is no part of the arithmetic under
-/// test.
+/// so the way back up is open for as far as the move reaches. The thing is
+/// given a radius of one unit as well, so what the corridor is shaped like
+/// cannot decide what this reads; the width is no part of the arithmetic
+/// under test.
 const OPEN: (i64, i64) = (4_498_858, 28_739_495);
 const NARROW: i64 = 65_536;
 
@@ -78,6 +73,22 @@ const SPLIT_MOMX: i64 = -3;
 /// A momentum over `MAXMOVE`, which the clamp cuts down before anything
 /// else reads it.
 const OVER_MOMY: i64 = MAXMOVE + 100_000;
+
+/// The thrust the crossing arms use, which is the distance from where the
+/// thing stands to the line.
+const CROSSING: i64 = 8 * 65536;
+
+/// `p_spec.c`: what the seeded lines are given, which opens a door.
+const DOOR_OPEN: i64 = 2;
+
+/// One arm per seeded row: its name and where the copy of `BEFORE` lands.
+/// The tics are far apart so the arms cannot read each other's rows.
+const ARMS: [(&str, u32); 4] = [
+    ("split", 200),
+    ("clamp", 300),
+    ("plain", 400),
+    ("crossed", 500),
+];
 
 #[derive(Row, Deserialize)]
 struct Moved {
@@ -120,17 +131,22 @@ fn left(momx: i64, momy: i64) -> (i32, i32) {
     }
 }
 
-async fn run(
-    name: &str,
-    slot: usize,
-    place: Option<(i64, i64)>,
-    specials: bool,
-    momx: i64,
-    momy: i64,
-) -> (Moved, Moved) {
+/// Where an arm puts the thing, how it sends it, and whether the lines it
+/// crosses carry a special.
+fn arm(name: &str) -> (i64, i64, i64, i64, bool) {
+    match name {
+        "split" => (OPEN.0, OPEN.1, SPLIT_MOMX, SPLIT_MOMY, false),
+        "clamp" => (OPEN.0, OPEN.1, 0, OVER_MOMY, false),
+        "plain" => (BELOW_A_LINE.0, BELOW_A_LINE.1, 0, CROSSING, false),
+        _ => (BELOW_A_LINE.0, BELOW_A_LINE.1, 0, CROSSING, true),
+    }
+}
+
+#[tokio::test]
+async fn a_thing_spends_the_momentum_the_engine_spends() {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create(name).await;
+    let fixture = Fixture::create("sim_thrust").await;
     let db = fixture.database.clone();
 
     let mut plan = load::plan(&db, &wad);
@@ -142,79 +158,85 @@ async fn run(
         panic!("{error}");
     }
 
-    let put = |column: &'static str, value: i64| {
+    let put = |column: &'static str, value: String| {
         (
             column,
             format!(
-                "arrayMap((v, k) -> toInt32(if(k = {slot}, {value}, v)), \
+                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {value}, v)), \
                  p.{column}, arrayEnumerate(p.{column}))"
             ),
         )
     };
-    let mut overrides = vec![put("m_momx", momx), put("m_momy", momy)];
-    if let Some((x, y)) = place {
-        overrides.push(put("m_x", x));
-        overrides.push(put("m_y", y));
-        overrides.push(put("m_radius", NARROW));
-    }
-    if specials {
-        // Every line made to carry one, so what the move crosses is
-        // whatever it crosses and the test does not depend on the map
-        // putting a special where the thrust happens to go.
-        overrides.push((
-            "line_special",
-            format!("arrayMap(v -> toInt16({DOOR_OPEN}), p.line_special)"),
+    let mut statements: Vec<sql::Statement> = Vec::new();
+    for (name, at) in ARMS {
+        let (x, y, momx, momy, specials) = arm(name);
+        let mut overrides = vec![
+            put("m_x", x.to_string()),
+            put("m_y", y.to_string()),
+            put("m_radius", NARROW.to_string()),
+            put("m_momx", momx.to_string()),
+            put("m_momy", momy.to_string()),
+        ];
+        if specials {
+            // Every line made to carry one, so what the move crosses is
+            // whatever it crosses and the arm does not depend on the map
+            // putting a special where the thrust happens to go.
+            overrides.push((
+                "line_special",
+                format!("arrayMap(v -> toInt16({DOOR_OPEN}), p.line_special)"),
+            ));
+        }
+        statements.extend(
+            seed::row(&db, at, BEFORE, &overrides)
+                .into_iter()
+                .map(sql::Statement::sql),
+        );
+        statements.push(sim::tick::run_statement(
+            &db,
+            &[Input::keys(at + 1, 0, (0, 0))],
         ));
     }
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, BEFORE, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
+    if let Err(error) = fixture.execute(&statements).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    let wanted: Vec<String> = ARMS
+        .iter()
+        .flat_map(|(_, at)| [at.to_string(), (at + 1).to_string()])
         .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let tic = sim::tick::demo_statement(&db, SEED_TIC + 1, SEED_TIC + 1);
-    if let Err(error) = fixture.execute(&[tic]).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
     let rows: Vec<Moved> = fixture
         .rows(&format!(
-            "SELECT tic, m_x[{slot}] AS x, m_y[{slot}] AS y, \
-             m_momx[{slot}] AS momx, m_momy[{slot}] AS momy, unresolved \
-             FROM {db}.native_state WHERE tic IN ({SEED_TIC}, {}) ORDER BY tic",
-            SEED_TIC + 1
+            "SELECT tic, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
+             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, unresolved \
+             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
+            wanted.join(", ")
         ))
         .await;
     fixture.finish().await;
-    assert_eq!(rows.len(), 2, "the seeded row and the tic after it");
-    let mut rows = rows.into_iter();
-    (rows.next().unwrap(), rows.next().unwrap())
-}
+    assert_eq!(
+        rows.len(),
+        ARMS.len() * 2,
+        "a seeded row and a tic from it for every arm"
+    );
+    let at = |tic: u32| {
+        rows.iter()
+            .find(|row| row.tic == tic)
+            .unwrap_or_else(|| panic!("no row for tic {tic}"))
+    };
 
-#[tokio::test]
-async fn a_momentum_over_half_of_maxmove_is_spent_in_two_parts() {
-    let (before, after) = run(
-        "sim_thrust_split",
-        SLOT,
-        Some(OPEN),
-        false,
-        SPLIT_MOMX,
-        SPLIT_MOMY,
-    )
-    .await;
-    assert_eq!(before.tic, SEED_TIC);
+    // The momentum over half of `MAXMOVE` is spent in two parts.
+    let (before, after) = (at(200), at(201));
     assert_eq!(
         (before.momx as i64, before.momy as i64),
         (SPLIT_MOMX, SPLIT_MOMY),
-        "the seeded row carries the momentum the test asked for"
+        "the seeded row carries the momentum the arm asked for"
     );
     // The whole of the move has to land, or the wall and not the halving
     // is what this would be reading.
     assert_eq!(
         after.unresolved, 0,
-        "the tic runs, so nothing the move met stopped it"
+        "the split arm runs, so nothing the move met stopped it"
     );
     assert_eq!(
         (after.x as i64, after.y as i64),
@@ -244,18 +266,16 @@ async fn a_momentum_over_half_of_maxmove_is_spent_in_two_parts() {
         "the odd negative axis lands whole, because the first half \
          truncates towards zero where the second floors"
     );
-}
 
-#[tokio::test]
-async fn a_momentum_over_maxmove_is_cut_down_to_it() {
-    let (before, after) = run("sim_thrust_clamp", SLOT, Some(OPEN), false, 0, OVER_MOMY).await;
+    // The momentum over `MAXMOVE` is cut down to it.
+    let (before, after) = (at(300), at(301));
     assert_eq!(
         before.momy as i64, OVER_MOMY,
         "the seeded row carries more than the clamp allows"
     );
     assert_eq!(
         after.unresolved, 0,
-        "the tic runs, so nothing the move met stopped it"
+        "the clamp arm runs, so nothing the move met stopped it"
     );
     assert_eq!(
         after.y as i64 - before.y as i64,
@@ -267,42 +287,22 @@ async fn a_momentum_over_maxmove_is_cut_down_to_it() {
         left(0, OVER_MOMY),
         "friction reads the clamp too"
     );
-}
 
-/// `P_CrossSpecialLine` is what a move that landed owes the special lines
-/// it crossed, and a thrust can push a monster over one. Nothing runs it
-/// here, so the tic says it could not be produced rather than dropping the
-/// crossing on the floor.
-///
-/// The two runs are the test. They are the same thrust from the same place
-/// and differ only in whether the lines carry a special, so a tic that was
-/// unresolved for any other reason would leave both of them unresolved.
-#[tokio::test]
-async fn a_thrust_across_a_special_line_leaves_the_tic_unresolved() {
-    let (_, plain) = run(
-        "sim_thrust_plain",
-        SLOT,
-        Some(BELOW_A_LINE),
-        false,
-        0,
-        CROSSING,
-    )
-    .await;
+    // `P_CrossSpecialLine` is what a move that landed owes the special
+    // lines it crossed, and a thrust can push a monster over one. Nothing
+    // runs it here, so the tic says it could not be produced rather than
+    // dropping the crossing on the floor.
+    //
+    // The two arms are the test. They are the same thrust from the same
+    // place and differ only in whether the lines carry a special, so a tic
+    // unresolved for any other reason would leave both of them unresolved.
+    let (seeded, plain, crossed) = (at(400), at(401), at(501));
     assert_eq!(
         plain.unresolved, 0,
         "the same thrust over lines with no special runs"
     );
-    let (before, crossed) = run(
-        "sim_thrust_special",
-        SLOT,
-        Some(BELOW_A_LINE),
-        true,
-        0,
-        CROSSING,
-    )
-    .await;
     assert_ne!(
-        crossed.y, before.y,
+        crossed.y, seeded.y,
         "the thrust moved it, so the move landed"
     );
     assert_eq!(crossed.y, plain.y, "and moved it to the same place");

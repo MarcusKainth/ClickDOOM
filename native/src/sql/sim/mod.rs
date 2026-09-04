@@ -4,6 +4,7 @@
 //! into expressions over the state row. Nothing executes: a caller gets
 //! statements and issues them.
 
+pub mod attacks;
 pub mod doors;
 pub mod enemy;
 pub mod game;
@@ -45,6 +46,7 @@ pub mod unimplemented {
 pub fn load_statements(db: &str) -> Vec<Statement> {
     let mut statements = spec::guards(db);
     statements.extend(enemy::guards(db));
+    statements.extend(attacks::guards(db));
     statements.extend(player::guards(db));
     statements.extend(noise::guards(db));
     statements.extend(mobj::guards(db));
@@ -205,6 +207,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(shoot::constants(db));
     constants.extend(inter::damage_constants(db));
     constants.extend(enemy::constants(db));
+    constants.extend(attacks::constants(db));
     constants.extend(mobj::constants(db));
     constants.extend(missile::constants(db));
     constants

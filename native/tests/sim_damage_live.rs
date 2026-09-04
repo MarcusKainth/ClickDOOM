@@ -4,7 +4,7 @@
 //! is checked on its own against `native/tests/support/damage.rs`, a reader
 //! written from `p_inter.c`. The fan seeds a world of the engine's own
 //! thing types at healths either side of what a shot does and hits every
-//! one of them from every source.
+//! one of them from every inflictor and source pair.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -76,7 +76,7 @@ async fn a_hit_leaves_what_the_engine_leaves() {
             let ours = ask_server(&fixture, &db, &world, &asks).await;
             let want: Vec<Hurt> = asks
                 .iter()
-                .map(|(t, s, d, base)| world.damage(*t, *s, *d, *base))
+                .map(|(t, i, s, d, base)| world.damage(*t, *i, *s, *d, *base))
                 .collect();
             let what = format!("a hit from index {prnd} with weapon {weapon}");
             assert_eq!(ours.len(), want.len());
@@ -91,7 +91,7 @@ async fn a_hit_leaves_what_the_engine_leaves() {
 }
 
 /// That the fan reached every arm the routine has.
-fn check(what: &str, want: &[Hurt], mobjs: &[Mobj], asks: &[(i64, i64, i64, i64)]) {
+fn check(what: &str, want: &[Hurt], mobjs: &[Mobj], asks: &[Ask]) {
     let count = |of: &dyn Fn(&Hurt) -> bool| want.iter().filter(|h| of(h)).count();
     let killed = count(&|h| h.killed);
     let pained = count(&|h| !h.killed && h.flags & 64 != 0);
@@ -107,6 +107,25 @@ fn check(what: &str, want: &[Hurt], mobjs: &[Mobj], asks: &[(i64, i64, i64, i64)
         .count();
     let quiet = count(&|h| h.draws == 0);
     let fell = count(&|h| h.draws == 2);
+    // The two slots pull apart only where they differ, so the fan has to
+    // reach a push with no source behind it and a source that pushes
+    // nothing.
+    // A charging thing stops dead wherever the hit lands, so its
+    // momentum moves without a push and it is left out.
+    let pushed = |at: usize| {
+        let it = &mobjs[(asks[at].0 - 1) as usize];
+        it.flags & MF_SKULLFLY == 0 && (want[at].momx != it.momx || want[at].momy != it.momy)
+    };
+    let credited_only = (0..want.len())
+        .filter(|at| asks[*at].1 == 0 && asks[*at].2 != 0 && pushed(*at))
+        .count();
+    let uncredited = (0..want.len())
+        .filter(|at| asks[*at].1 != 0 && asks[*at].2 == 0 && pushed(*at))
+        .count();
+    let crossed = (0..want.len())
+        .filter(|at| asks[*at].1 != 0 && asks[*at].2 != 0 && asks[*at].1 != asks[*at].2)
+        .filter(|at| pushed(*at))
+        .count();
     assert!(
         killed > 10
             && pained > 10
@@ -115,9 +134,13 @@ fn check(what: &str, want: &[Hurt], mobjs: &[Mobj], asks: &[(i64, i64, i64, i64)
             && stuck > 0
             && routine > 5
             && quiet > 0
-            && fell > 0,
+            && fell > 0
+            && credited_only == 0
+            && uncredited > 10
+            && crossed > 10,
         "{what} reaches every arm: killed {killed}, pained {pained}, dropped {dropped}, \
-         chased {chased}, stuck {stuck}, routine {routine}, quiet {quiet}, fell {fell}"
+         chased {chased}, stuck {stuck}, routine {routine}, quiet {quiet}, fell {fell}, \
+         credited_only {credited_only}, uncredited {uncredited}, crossed {crossed}"
     );
 }
 
@@ -131,7 +154,7 @@ fn check(what: &str, want: &[Hurt], mobjs: &[Mobj], asks: &[(i64, i64, i64, i64)
 fn a_pained_thing_stays_in_its_pain_frame(
     what: &str,
     mobjs: &[Mobj],
-    asks: &[(i64, i64, i64, i64)],
+    asks: &[Ask],
     ours: &[Hurt],
     prnd: i64,
 ) {
@@ -140,7 +163,7 @@ fn a_pained_thing_stays_in_its_pain_frame(
         tables::table("mobjinfo").unwrap().ints(column).unwrap()[kind as usize]
     };
     let mut pained = 0;
-    for (at, (target, source, damage, base)) in asks.iter().enumerate() {
+    for (at, (target, _, source, damage, base)) in asks.iter().enumerate() {
         let it = &mobjs[(*target - 1) as usize];
         // A thing at full health cannot be knocked over, so its one draw
         // is the pain chance and it sits at the base.
@@ -260,14 +283,24 @@ fn painstate(kind: i64) -> i64 {
         .unwrap()[kind as usize]
 }
 
-/// Every target hit from every source at every damage, each at a base of
-/// its own so no two share their draws.
-fn asks(mobjs: &[Mobj], sources: &[i64]) -> Vec<(i64, i64, i64, i64)> {
+/// One ask: the target, the inflictor, the source, the damage, and how
+/// many numbers the tic drew before it.
+type Ask = (i64, i64, i64, i64, i64);
+
+/// Every target hit from every inflictor and source pair at every damage,
+/// each at a base of its own so no two share their draws.
+///
+/// The pairs are every combination of the slots, so the fan covers a hit
+/// with no inflictor, one with no source, and the crossed pairs a missile
+/// makes.
+fn asks(mobjs: &[Mobj], sources: &[i64]) -> Vec<Ask> {
     let mut asks = Vec::new();
     for target in 1..=mobjs.len() as i64 {
-        for source in sources {
-            for damage in DAMAGE {
-                asks.push((target, *source, damage, asks.len() as i64 % 19));
+        for inflictor in sources {
+            for source in sources {
+                for damage in DAMAGE {
+                    asks.push((target, *inflictor, *source, damage, asks.len() as i64 % 19));
+                }
             }
         }
     }
@@ -306,12 +339,7 @@ fn literal(of: &[i64]) -> String {
     )
 }
 
-async fn ask_server(
-    fixture: &Fixture,
-    db: &str,
-    world: &World,
-    asks: &[(i64, i64, i64, i64)],
-) -> Vec<Hurt> {
+async fn ask_server(fixture: &Fixture, db: &str, world: &World, asks: &[Ask]) -> Vec<Hurt> {
     let of = |get: &dyn Fn(&Mobj) -> i64| literal(&world.mobjs.iter().map(get).collect::<Vec<_>>());
     let (m_x, m_y, m_z) = (of(&|m| m.x), of(&|m| m.y), of(&|m| m.z));
     let (m_momx, m_momy, m_momz) = (of(&|m| m.momx), of(&|m| m.momy), of(&|m| m.momz));
@@ -344,8 +372,8 @@ async fn ask_server(
     let list = format!(
         "[{}]",
         asks.iter()
-            .map(|(t, s, d, base)| format!(
-                "(toUInt32({t}), toUInt32({s}), toInt32({d}), toUInt32({base}))"
+            .map(|(t, i, s, d, base)| format!(
+                "(toUInt32({t}), toUInt32({i}), toUInt32({s}), toInt32({d}), toUInt32({base}))"
             ))
             .collect::<Vec<_>>()
             .join(", ")

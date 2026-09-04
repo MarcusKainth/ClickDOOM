@@ -33,6 +33,8 @@ const MELEERANGE: i64 = 64 << 16;
 const MF_SHOOTABLE: i64 = 4;
 const MF_AMBUSH: i64 = 32;
 const MF_NOGRAVITY: i64 = 512;
+const MF_MISSILE: i64 = 0x1_0000;
+const MF_CORPSE: i64 = 0x10_0000;
 const MF_SKULLFLY: i64 = 0x100_0000;
 
 /// Where each field of one thing's answer sits.
@@ -161,15 +163,32 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // What the tic-start snapshot alone decides, one value per slot.
     bind("mt_slots", format!("arrayEnumerate({})", s("m_state")));
     bind(
-        "mt_still",
+        "mt_alive",
+        format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
+    );
+    let standing = World {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_radius: &s("m_radius"),
+        m_flags: &s("m_flags"),
+        m_linkseq: &s("m_linkseq"),
+        alive: "mt_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    for (name, expr) in thing_moves(state, &standing, &slot) {
+        bind(&name, expr);
+    }
+    // What `P_MobjThinker` runs `P_ZMovement` for, which this does not: a
+    // thing off the floor or carrying height, and a skull in flight.
+    bind(
+        "mt_grounded",
         format!(
-            "arrayMap((mx, my, mz, z, fz, fl) -> toUInt8(mx = 0 AND my = 0 AND mz = 0 \
-             AND z = fz AND bitAnd(fl, {MF_SKULLFLY}) = 0), {}, {}, {}, {}, {}, {})",
-            s("m_momx"),
-            s("m_momy"),
+            "arrayMap((mz, z, fz, fl) -> toUInt8(mz = 0 AND z = fz \
+             AND bitAnd(fl, {MF_SKULLFLY}) = 0), {}, {}, tx_m_floorz, {})",
             s("m_momz"),
             s("m_z"),
-            s("m_floorz"),
             s("m_flags"),
         ),
     );
@@ -355,7 +374,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "mt_one",
         format!(
             "arrayMap((k, c, n, w, l, lk, tt, still, st, tc, th, ll, ty) -> ({}), \
-             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, mt_still, \
+             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, mt_grounded, \
              {}, {}, {}, {}, {})",
             entry_one(&slot),
             s("m_state"),
@@ -420,12 +439,13 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "arrayFilter((k, e) -> e > 0, mt_slots, mt_entries)".to_owned(),
     );
     bind(
-        "mt_alive",
-        format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
+        "tx_shifters",
+        "arrayDistinct(arrayConcat(tx_movers, mt_movers))".to_owned(),
     );
+    bind("tx_crowded", shifted(state, "tx_shifters"));
     let world = World {
-        m_x: &s("m_x"),
-        m_y: &s("m_y"),
+        m_x: "tx_m_x",
+        m_y: "tx_m_y",
         m_radius: &s("m_radius"),
         m_flags: &s("m_flags"),
         m_linkseq: &s("m_linkseq"),
@@ -438,8 +458,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         movers: "mt_movers",
         entries: "mt_entries",
         shouts: "mt_shouts",
-        m_x: &s("m_x"),
-        m_y: &s("m_y"),
+        m_x: "tx_m_x",
+        m_y: "tx_m_y",
         m_z: &s("m_z"),
         m_angle: &s("m_angle"),
         m_radius: &s("m_radius"),
@@ -452,9 +472,9 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_movecount: &s("m_movecount"),
         m_reactiontime: &s("m_reactiontime"),
         m_threshold: "mt_threshold",
-        m_floorz: &s("m_floorz"),
-        m_ceilingz: &s("m_ceilingz"),
-        m_subsector: &s("m_subsector"),
+        m_floorz: "tx_m_floorz",
+        m_ceilingz: "tx_m_ceilingz",
+        m_subsector: "tx_m_subsector",
         sees_target: "mt_sees_target",
         prndindex: &s("prndindex"),
     };
@@ -467,8 +487,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // Every column the chase writes, in the order its answer names them,
     // and where a slot no mover holds takes its value from.
     let held: [(&str, usize, &str, String); 11] = [
-        ("m_x", enemy::chased::X, "toInt32", s("m_x")),
-        ("m_y", enemy::chased::Y, "toInt32", s("m_y")),
+        ("m_x", enemy::chased::X, "toInt32", "tx_m_x".to_owned()),
+        ("m_y", enemy::chased::Y, "toInt32", "tx_m_y".to_owned()),
         ("m_z", enemy::chased::Z, "toInt32", s("m_z")),
         ("m_angle", enemy::chased::ANGLE, "toUInt32", s("m_angle")),
         (
@@ -495,18 +515,23 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "toInt32",
             "mt_threshold".to_owned(),
         ),
-        ("m_floorz", enemy::chased::FLOORZ, "toInt32", s("m_floorz")),
+        (
+            "m_floorz",
+            enemy::chased::FLOORZ,
+            "toInt32",
+            "tx_m_floorz".to_owned(),
+        ),
         (
             "m_ceilingz",
             enemy::chased::CEILINGZ,
             "toInt32",
-            s("m_ceilingz"),
+            "tx_m_ceilingz".to_owned(),
         ),
         (
             "m_subsector",
             enemy::chased::SUBSECTOR,
             "toInt32",
-            s("m_subsector"),
+            "tx_m_subsector".to_owned(),
         ),
     ];
     let mut standing: Vec<String> = vec![String::new(); enemy::chased::STUCK];
@@ -545,7 +570,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "now_unresolved",
         format!(
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
-             OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1)",
+             OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
+             OR tx_crowded = 1 OR tx_unrun = 1)",
             s("unresolved"),
             cycled::STUCK,
             enemy::chased::STUCK
@@ -726,6 +752,300 @@ pub fn steps(momx: &str, momy: &str, uses: &str) -> String {
         half = MAXMOVE / 2,
         clamped_x = clamp(momx),
         clamped_y = clamp(momy),
+    )
+}
+
+/// `P_XYMovement` for the things that are not the player.
+///
+/// A thing that is not the player has no slide, no use line and no
+/// pickup: a move `P_TryMove` refuses stops it dead. The engine clamps the
+/// momentum to `MAXMOVE` and then spends it in at most two parts, because
+/// halving once puts both axes under half of `MAXMOVE`, so the two parts
+/// are written out rather than looped. Each part asks `P_TryMove` once for
+/// every thing the part covers, so a tic moving many things walks twice.
+///
+/// Everything between the two walks is one value per thing that moves, and
+/// a tic that moves nothing folds over empty lists. Only the columns the
+/// rest of the tic reads are put back over every slot, where a slot
+/// nothing moved keeps what it came in with; the player's own columns,
+/// which `P_PlayerThink` has already written, pass through that way.
+pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+    // Read at the slot a mover holds, inside a lambda taking `k`.
+    let at = |column: &str| format!("{}[k]", s(column));
+    // Read at a mover's own place in the lists below, inside one taking `i`.
+    let half = MAXMOVE / 2;
+    let quarter = FRACUNIT / 4;
+    // One value per mover, in the order `tx_movers` names them.
+    let over_movers = |expr: &str| format!("arrayMap(k -> {expr}, tx_movers)");
+    let by_place = |expr: &str| format!("arrayMap(i -> {expr}, arrayEnumerate(tx_movers))");
+
+    bind(
+        "tx_moving",
+        format!(
+            "arrayMap((k, mx, my) -> toUInt8(k != {player} AND (mx != 0 OR my != 0)), \
+             mt_slots, {}, {})",
+            s("m_momx"),
+            s("m_momy"),
+        ),
+    );
+    bind(
+        "tx_movers",
+        "arrayFilter((k, m) -> m = 1, mt_slots, tx_moving)".to_owned(),
+    );
+    bind(
+        "tx_at",
+        "arrayMap(k -> indexOf(tx_movers, k), mt_slots)".to_owned(),
+    );
+    for (name, column) in [
+        ("x", "m_x"),
+        ("y", "m_y"),
+        ("z", "m_z"),
+        ("flags", "m_flags"),
+        ("floorz", "m_floorz"),
+        ("ceilingz", "m_ceilingz"),
+        ("subsector", "m_subsector"),
+    ] {
+        bind(&format!("tx_hold_{name}"), over_movers(&at(column)));
+    }
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_mom{axis}"),
+            over_movers(&clamp(&at(&format!("m_mom{axis}")))),
+        );
+    }
+    // The loop halves while either axis is over half of `MAXMOVE`, and the
+    // clamp above means one halving is enough. `P_TryMove` is asked for the
+    // half C division leaves, and the half the shift leaves is what
+    // remains; the two differ by one for a negative odd momentum.
+    bind(
+        "tx_splits",
+        by_place(&format!(
+            "toUInt8(tx_momx[i] > {half} OR tx_momy[i] > {half})"
+        )),
+    );
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_first{axis}"),
+            by_place(&format!(
+                "toInt32(if(tx_splits[i] = 1, intDiv(tx_mom{axis}[i], 2), tx_mom{axis}[i]))"
+            )),
+        );
+        bind(
+            &format!("tx_left{axis}"),
+            by_place(&format!(
+                "toInt32(if(tx_splits[i] = 1, bitShiftRight(tx_mom{axis}[i], 1), 0))"
+            )),
+        );
+    }
+
+    // The first part. A thing carries itself out of the way, so both walks
+    // read the world as the tic left it.
+    let asking = |x: String, y: String| {
+        map::asking(
+            "tx_movers[i]",
+            &x,
+            &y,
+            &format!("{}[tx_movers[i]]", s("m_radius")),
+            &format!("{}[tx_movers[i]]", s("m_height")),
+            "tx_hold_z[i]",
+            "tx_hold_flags[i]",
+            "0",
+        )
+    };
+    bind(
+        "tx_asks_one",
+        by_place(&asking(
+            "toInt64(tx_hold_x[i]) + toInt64(tx_firstx[i])".to_owned(),
+            "toInt64(tx_hold_y[i]) + toInt64(tx_firsty[i])".to_owned(),
+        )),
+    );
+    bind("tx_one", map::try_moves("tx_asks_one", world));
+    bind(
+        "tx_ok_one",
+        by_place(&format!("toUInt8(tx_one[i].{} = 1)", answer::OK)),
+    );
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_{axis}_one"),
+            by_place(&format!(
+                "toInt32(if(tx_ok_one[i] = 1, \
+                 toInt64(tx_hold_{axis}[i]) + toInt64(tx_first{axis}[i]), \
+                 toInt64(tx_hold_{axis}[i])))"
+            )),
+        );
+    }
+
+    // The second part, for the moves the halving split. A thing the first
+    // part stopped still tries it, because the engine zeroes the momentum
+    // and keeps what is left of the move.
+    bind(
+        "tx_split_at",
+        "arrayFilter(i -> tx_splits[i] = 1, arrayEnumerate(tx_movers))".to_owned(),
+    );
+    bind(
+        "tx_asks_two",
+        format!(
+            "arrayMap(i -> {}, tx_split_at)",
+            asking(
+                "toInt64(tx_x_one[i]) + toInt64(tx_leftx[i])".to_owned(),
+                "toInt64(tx_y_one[i]) + toInt64(tx_lefty[i])".to_owned(),
+            )
+        ),
+    );
+    bind("tx_two", map::try_moves("tx_asks_two", world));
+    bind("tx_two_at", by_place("indexOf(tx_split_at, i)"));
+    bind(
+        "tx_ok_two",
+        by_place(&format!(
+            "toUInt8(tx_two_at[i] != 0 AND tx_two[greatest(tx_two_at[i], 1)].{} = 1)",
+            answer::OK
+        )),
+    );
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_{axis}"),
+            by_place(&format!(
+                "toInt32(if(tx_ok_two[i] = 1, \
+                 toInt64(tx_{axis}_one[i]) + toInt64(tx_left{axis}[i]), toInt64(tx_{axis}_one[i])))"
+            )),
+        );
+    }
+
+    // A move nothing allowed leaves the thing with nothing left to spend.
+    bind(
+        "tx_stopped",
+        by_place("toUInt8(tx_ok_one[i] = 0 OR (tx_splits[i] = 1 AND tx_ok_two[i] = 0))"),
+    );
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_spent{axis}"),
+            by_place(&format!(
+                "toInt32(if(tx_stopped[i] = 1, 0, tx_mom{axis}[i]))"
+            )),
+        );
+    }
+    // What the thing stands between, from the last part `P_TryMove`
+    // allowed.
+    for (name, field) in [
+        ("floorz", answer::FLOORZ),
+        ("ceilingz", answer::CEILINGZ),
+        ("subsector", answer::SUBSECTOR),
+    ] {
+        bind(
+            &format!("tx_{name}"),
+            by_place(&format!(
+                "toInt32(multiIf(tx_ok_two[i] = 1, tx_two[greatest(tx_two_at[i], 1)].{field}, \
+                 tx_ok_one[i] = 1, tx_one[i].{field}, tx_hold_{name}[i]))"
+            )),
+        );
+    }
+
+    // The friction `P_XYMovement` ends with. A thing above its floor keeps
+    // what it has, and so does a corpse with speed left that is half off a
+    // step, which is a floor its own subsector does not give it.
+    bind(
+        "tx_airborne",
+        by_place("toUInt8(toInt64(tx_hold_z[i]) > toInt64(tx_floorz[i]))"),
+    );
+    bind(
+        "tx_sliding",
+        format!(
+            "arrayMap(i -> toUInt8(bitAnd(tx_hold_flags[i], {MF_CORPSE}) != 0 \
+             AND (tx_spentx[i] > {quarter} OR tx_spentx[i] < -{quarter} \
+             OR tx_spenty[i] > {quarter} OR tx_spenty[i] < -{quarter}) \
+             AND tx_floorz[i] != {floor}[1 + ssec_sector[1 + tx_subsector[i]]]), \
+             arrayEnumerate(tx_movers))",
+            floor = s("sec_floorheight"),
+        ),
+    );
+    bind(
+        "tx_stops",
+        by_place(&format!(
+            "toUInt8(tx_spentx[i] > -{STOPSPEED} AND tx_spentx[i] < {STOPSPEED} \
+             AND tx_spenty[i] > -{STOPSPEED} AND tx_spenty[i] < {STOPSPEED})"
+        )),
+    );
+    for axis in ["x", "y"] {
+        bind(
+            &format!("tx_mom{axis}_left"),
+            by_place(&format!(
+                "toInt32(multiIf(tx_airborne[i] = 1 OR tx_sliding[i] = 1, tx_spent{axis}[i], \
+                 tx_stops[i] = 1, 0, bitShiftRight(toInt64(tx_spent{axis}[i]) * {FRICTION}, 16)))"
+            )),
+        );
+    }
+
+    // What the rest of the tic reads, over every slot.
+    for (column, moved) in [
+        ("m_x", "tx_x"),
+        ("m_y", "tx_y"),
+        ("m_floorz", "tx_floorz"),
+        ("m_ceilingz", "tx_ceilingz"),
+        ("m_subsector", "tx_subsector"),
+    ] {
+        let held = s(column);
+        bind(
+            &format!("tx_{column}"),
+            format!(
+                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {moved}[i])), mt_slots, tx_at)"
+            ),
+        );
+    }
+    for axis in ["x", "y"] {
+        let held = s(&format!("m_mom{axis}"));
+        bind(
+            &format!("now_m_mom{axis}"),
+            format!(
+                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tx_mom{axis}_left[i])), \
+                 mt_slots, tx_at)"
+            ),
+        );
+    }
+
+    // A missile is not a thing this moves: a move it cannot make ends it
+    // rather than stopping it.
+    bind(
+        "tx_unrun",
+        format!(
+            "toUInt8(arrayExists(k -> bitAnd({}, {MF_MISSILE}) != 0, tx_movers))",
+            at("m_flags"),
+        ),
+    );
+    bindings
+}
+
+/// Whether two of the things moving this tic stand close enough that one's
+/// move changes what the other is told.
+///
+/// The reach is the momentum a thing spends this tic or the step a chase
+/// takes, whichever it is doing, so one test covers both lists.
+fn shifted(state: &State, movers: &str) -> String {
+    let s = |column: &str| state.get(column);
+    let reach = |slot: &str| {
+        format!(
+            "toInt64({r}[{slot}]) + bitShiftLeft(toInt64(mobj_speed[1 + {t}[{slot}]]), 16) \
+             + greatest(abs(toInt64({mx}[{slot}])), abs(toInt64({my}[{slot}])))",
+            r = s("m_radius"),
+            t = s("m_type"),
+            mx = s("m_momx"),
+            my = s("m_momy"),
+        )
+    };
+    let axis = |array: &str| {
+        format!(
+            "abs(toInt64({array}[a]) - toInt64({array}[b])) < {} + {}",
+            reach("a"),
+            reach("b"),
+        )
+    };
+    format!(
+        "toUInt8(arrayExists((a, i) -> arrayExists(b -> {} AND {}, \
+         arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
+        axis(&s("m_x")),
+        axis(&s("m_y")),
     )
 }
 

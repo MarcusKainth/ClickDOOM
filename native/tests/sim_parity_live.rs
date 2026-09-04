@@ -192,6 +192,18 @@ const CHASE: [(u32, i32, i32, i32, u32, i32, i32); 5] = [
 /// the state.
 const HURT: [(u32, i32, i32, i32); 2] = [(142, 449, 2, 60), (FIRST_SHOT_FRAME, 455, 7, 50)];
 
+/// `gametic, slot, m_x, m_y, m_momx, m_momy` for the two monsters a pellet
+/// thrusts, read out of the reference emulator's demo3 trace. Each stands
+/// still at gametic 142 and spends what `P_DamageMobj` gave it at 143:
+/// `P_XYMovement` moves it by the whole of that momentum and friction
+/// takes the rest.
+const THRUST: [(u32, usize, i32, i32, i32, i32); 4] = [
+    (142, 118, 8272000, -4310912, 0, 0),
+    (142, 258, 13992912, 4297488, 0, 0),
+    (FIRST_SHOT_FRAME, 118, 8245976, -4388589, -23585, -70395),
+    (FIRST_SHOT_FRAME, 258, 14040150, 4184052, 42809, -102802),
+];
+
 /// `gametic, m_state[118], m_target[118]` around that monster, and the
 /// state cycle of the thing in slot 25, read out of the reference
 /// emulator's demo3 trace. Slot 25 alternates two stand frames from the
@@ -286,6 +298,10 @@ struct Walked {
     y118: i32,
     frame118: i32,
     health118: i32,
+    thrust_x: Vec<i32>,
+    thrust_y: Vec<i32>,
+    thrust_momx: Vec<i32>,
+    thrust_momy: Vec<i32>,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -310,7 +326,11 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              m_movedir[118] AS movedir118, m_movecount[118] AS movecount118, \
              m_reactiontime[118] AS reactiontime118, m_angle[118] AS angle118, \
              m_x[118] AS x118, m_y[118] AS y118, \
-             m_frame[118] AS frame118, m_health[118] AS health118 \
+             m_frame[118] AS frame118, m_health[118] AS health118, \
+             arrayMap(k -> m_x[k], [118, 258]) AS thrust_x, \
+             arrayMap(k -> m_y[k], [118, 258]) AS thrust_y, \
+             arrayMap(k -> m_momx[k], [118, 258]) AS thrust_momx, \
+             arrayMap(k -> m_momy[k], [118, 258]) AS thrust_momy \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -489,6 +509,20 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             ),
             (movedir, movecount, reactiontime, angle, x, y),
             "the chasing monster at gametic {tic}"
+        );
+    }
+    for (tic, slot, x, y, momx, momy) in THRUST {
+        let row = at(tic);
+        let place = if slot == 118 { 0 } else { 1 };
+        assert_eq!(
+            (
+                row.thrust_x[place],
+                row.thrust_y[place],
+                row.thrust_momx[place],
+                row.thrust_momy[place]
+            ),
+            (x, y, momx, momy),
+            "the monster a pellet thrusts, slot {slot} at gametic {tic}"
         );
     }
     for (tic, state, frame, health) in HURT {

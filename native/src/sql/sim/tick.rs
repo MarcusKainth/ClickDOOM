@@ -244,16 +244,20 @@ mod tests {
     }
 
     /// One walk of the blockmap for the things and one for the lines is
-    /// what a single `P_CheckPosition` costs, and the statement holds one
-    /// for the player's move and one for the chase.
+    /// what a single `P_CheckPosition` costs. The statement holds one for
+    /// the player's move, one for the chase, and two for the momentum a
+    /// thing that is not the player spends, which the engine spends in as
+    /// many parts.
     ///
     /// `P_ThingHeightClip` asks a narrower question and has a generator of
     /// its own. The chase's move test sits inside a fold over a list of
-    /// one entry or none, so a tic with nothing to chase does not run it.
+    /// one entry or none, so a tic with nothing to chase does not run it,
+    /// and both of the momentum's walks read a list that is empty on a tic
+    /// where nothing carries any.
     #[test]
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 2);
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 4);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
         assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);

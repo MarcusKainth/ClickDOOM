@@ -571,7 +571,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!(
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
              OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
-             OR tx_crowded = 1 OR tx_unrun = 1)",
+             OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1)",
             s("unresolved"),
             cycled::STUCK,
             enemy::chased::STUCK
@@ -1005,13 +1005,33 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
         );
     }
 
-    // A missile is not a thing this moves: a move it cannot make ends it
-    // rather than stopping it.
+    // `P_TryMove` runs `P_CrossSpecialLine` for the special lines a move
+    // that landed crossed, which a thrust can push a monster over. A move
+    // the walk refused crosses nothing, so only a part that landed counts.
+    bind(
+        "tx_special",
+        by_place(&format!(
+            "toUInt8((tx_ok_one[i] = 1 AND notEmpty(tx_one[i].{spechit})) \
+             OR (tx_ok_two[i] = 1 \
+             AND notEmpty(tx_two[greatest(tx_two_at[i], 1)].{spechit})))",
+            spechit = answer::SPECHIT,
+        )),
+    );
+    bind(
+        "tx_crossed",
+        "toUInt8(arrayExists(v -> v = 1, tx_special))".to_owned(),
+    );
+
+    // Neither a missile nor a skull in flight is a thing this moves. A
+    // move a missile cannot make ends it, and one a skull cannot make
+    // slams it back into its spawn frames, where this would take friction
+    // off both.
     bind(
         "tx_unrun",
         format!(
-            "toUInt8(arrayExists(k -> bitAnd({}, {MF_MISSILE}) != 0, tx_movers))",
+            "toUInt8(arrayExists(k -> bitAnd({}, {}) != 0, tx_movers))",
             at("m_flags"),
+            MF_MISSILE | MF_SKULLFLY,
         ),
     );
     bindings

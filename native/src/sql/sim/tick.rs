@@ -254,6 +254,24 @@ mod tests {
     /// one entry or none, so a tic with nothing to chase does not run it,
     /// and both of the momentum's walks read a list that is empty on a tic
     /// where nothing carries any.
+    /// `P_XYMovement` returns before the friction for a missile and for a
+    /// skull in flight. A move the first cannot make ends it, and one the
+    /// second cannot make slams it back into its spawn frames, where
+    /// taking friction off either would be wrong. E1M7 holds no skull, so
+    /// nothing on the demo reaches this and the statement's own text is
+    /// what says the refusal is there.
+    #[test]
+    fn a_missile_or_a_flying_skull_leaves_the_tic_unresolved() {
+        /// `p_mobj.h`: `MF_MISSILE | MF_SKULLFLY`.
+        const REFUSED: i64 = 0x1_0000 | 0x100_0000;
+        let sql = resident_statement("nat");
+        assert!(
+            sql.contains(&format!("m_flags[k], {REFUSED}) != 0")),
+            "the move refuses both flags together"
+        );
+        assert!(sql.contains("tx_unrun = 1"), "and the refusal is read");
+    }
+
     #[test]
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");

@@ -50,6 +50,9 @@ mod cycled {
     pub const STUCK: usize = 7;
     /// Whether the thing entered a state, which is what moves its picture.
     pub const MOVED: usize = 8;
+    /// Where the thing faces, which `A_FaceTarget` turns towards the
+    /// target and every other entry leaves alone.
+    pub const ANGLE: usize = 9;
 }
 
 /// The constants the thinkers read.
@@ -66,6 +69,13 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         (
             "a_look".to_owned(),
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = 'A_Look'))"),
+        ),
+        (
+            "a_facetarget".to_owned(),
+            format!(
+                "assumeNotNull((SELECT id FROM {db}.action_functions \
+                 WHERE name = 'A_FaceTarget'))"
+            ),
         ),
         (
             "mobj_spawnstate".to_owned(),
@@ -368,7 +378,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "arrayMap((k, c, n, w, l, lk, tt, st, tc, th, ll, ty) -> ({}), \
              mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, \
              {}, {}, {}, {}, {})",
-            entry_one(&slot),
+            entry_one(&slot, state),
             s("m_state"),
             s("m_tics"),
             s("m_threshold"),
@@ -384,14 +394,15 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // What the state cycle leaves. The chase below reads the target and
     // the threshold it left and writes the threshold again.
     let read = |member: usize, cast: &str| format!("arrayMap(a -> {cast}(a.{member}), mt_two)");
-    bind("mk_m_state", read(cycled::STATE, "toInt32"));
-    bind("mk_m_tics", read(cycled::TICS, "toInt32"));
+    bind("mc_m_angle", read(cycled::ANGLE, "toUInt32"));
+    bind("mc_m_state", read(cycled::STATE, "toInt32"));
+    bind("mc_m_tics", read(cycled::TICS, "toInt32"));
     bind("mk_m_target", read(cycled::TARGET, "toUInt32"));
     bind("mt_threshold", read(cycled::THRESHOLD, "toInt32"));
     bind("mk_m_lastlook", read(cycled::LASTLOOK, "toInt32"));
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         bind(
-            &format!("mk_{column}"),
+            &format!("mc_{column}"),
             format!(
                 "arrayMap((a, v) -> toInt32(if(a.{} = 1, {table}[1 + a.{}], v)), mt_two, {})",
                 cycled::MOVED,
@@ -482,7 +493,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         ("m_x", enemy::chased::X, "toInt32", "tx_m_x".to_owned()),
         ("m_y", enemy::chased::Y, "toInt32", "tx_m_y".to_owned()),
         ("m_z", enemy::chased::Z, "toInt32", "tz_m_z".to_owned()),
-        ("m_angle", enemy::chased::ANGLE, "toUInt32", s("m_angle")),
+        (
+            "m_angle",
+            enemy::chased::ANGLE,
+            "toUInt32",
+            "mc_m_angle".to_owned(),
+        ),
         (
             "m_movedir",
             enemy::chased::MOVEDIR,
@@ -526,12 +542,15 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "tx_m_subsector".to_owned(),
         ),
     ];
-    let mut standing: Vec<String> = vec![String::new(); enemy::chased::STUCK];
+    let mut standing: Vec<String> = vec![String::new(); enemy::chased::FLAGS];
     for (_, member, cast, array) in &held {
         standing[member - 1] = format!("{cast}({array}[k])");
     }
     standing[enemy::chased::DRAWS - 1] = "toUInt32(0)".to_owned();
     standing[enemy::chased::STUCK - 1] = "toUInt8(0)".to_owned();
+    // A thing no chase reaches attacks nothing and keeps its flags.
+    standing[enemy::chased::STATE - 1] = "toInt32(-1)".to_owned();
+    standing[enemy::chased::FLAGS - 1] = format!("toInt32({}[k])", s("m_flags"));
     // What the chase left, put back where the mover stands, as one value
     // per slot. A slot no mover holds keeps what the cycle left it.
     bind(
@@ -543,6 +562,40 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             s("m_x")
         ),
     );
+    bind(
+        "cw_attack",
+        format!(
+            "arrayMap(c -> toInt32(c.{}), cw_slot)",
+            enemy::chased::STATE
+        ),
+    );
+    bind("mk_m_flags", {
+        let held = s("m_flags");
+        format!(
+            "arrayMap((k, c) -> toInt32(if(indexOf(mt_movers, k) = 0, {held}[k], c.{})), \
+             mt_slots, cw_slot)",
+            enemy::chased::FLAGS
+        )
+    });
+    bind(
+        "mk_m_state",
+        "arrayMap((k, a) -> toInt32(if(a = -1, mc_m_state[k], a)), mt_slots, cw_attack)".to_owned(),
+    );
+    bind(
+        "mk_m_tics",
+        "arrayMap((k, a) -> toInt32(if(a = -1, mc_m_tics[k], state_tics[1 + a])), \
+         mt_slots, cw_attack)"
+            .to_owned(),
+    );
+    for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
+        bind(
+            &format!("mk_{column}"),
+            format!(
+                "arrayMap((k, a) -> toInt32(if(a = -1, mc_{column}[k], {table}[1 + a])), \
+                 mt_slots, cw_attack)"
+            ),
+        );
+    }
     for (column, member, cast, _) in &held {
         bind(
             &format!("mk_{column}"),
@@ -648,7 +701,8 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
 
 /// The mobj array columns the thinker writes, which the compaction reads
 /// from it rather than from the tic's own start.
-const THINKER_COLUMNS: [&str; 20] = [
+const THINKER_COLUMNS: [&str; 21] = [
+    "m_flags",
     "m_state",
     "m_tics",
     "m_target",
@@ -678,7 +732,7 @@ const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 
 /// The first state a cycle enters, and `A_Look` where the state carries
 /// it.
-fn entry_one(slot: &str) -> String {
+fn entry_one(slot: &str, state: &State) -> String {
     let enters = "c = 1 AND n != 0";
     let members = [
         format!("toInt32(if({enters}, n, st))"),
@@ -699,11 +753,30 @@ fn entry_one(slot: &str) -> String {
         format!(
             "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 0, \
              state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
-             AND state_action[1 + n] != a_chase, 1, 0))"
+             AND state_action[1 + n] != a_chase \
+             AND state_action[1 + n] != a_facetarget, 1, 0))"
         ),
         format!("toUInt8({enters})"),
+        format!(
+            "toUInt32(if({enters} AND state_action[1 + n] = a_facetarget AND tt != 0, \
+             {}, {}[k]))",
+            facing(state, "tt", "k"),
+            state.get("m_angle"),
+        ),
     ];
     members.join(", ")
+}
+
+/// `R_PointToAngle2` from a thing to what it faces, which is the whole of
+/// what `A_FaceTarget` leaves behind for a target it can see plainly.
+fn facing(state: &State, target: &str, slot: &str) -> String {
+    let at = |column: &str| format!("{}[{slot}]", state.get(column));
+    let of = |column: &str| format!("{}[{target}]", state.get(column));
+    crate::sql::fixed::point_to_angle(
+        &format!("toInt64({}) - toInt64({})", of("m_x"), at("m_x")),
+        &format!("toInt64({}) - toInt64({})", of("m_y"), at("m_y")),
+        "tantoangle",
+    )
 }
 
 /// The state a routine sent the cycle on to. Nothing written here carries
@@ -726,11 +799,13 @@ fn entry_two() -> String {
         format!(
             "toUInt8({} = 1 OR ({enters} AND ({entering} = 0 \
              OR (state_action[1 + {entering}] != 0 \
-             AND state_action[1 + {entering}] != a_chase) \
+             AND state_action[1 + {entering}] != a_chase \
+             AND state_action[1 + {entering}] != a_facetarget) \
              OR state_tics[1 + {entering}] = 0)))",
             held(cycled::STUCK)
         ),
         format!("toUInt8({enters} OR a.{} = 1)", cycled::MOVED),
+        held(cycled::ANGLE),
     ];
     members.join(", ")
 }

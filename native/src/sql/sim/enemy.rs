@@ -33,6 +33,8 @@ const SK_NIGHTMARE: i64 = 4;
 const MF_SHOOTABLE: i64 = 4;
 const MF_JUSTHIT: i64 = 64;
 const MF_JUSTATTACKED: i64 = 128;
+const MF_AMBUSH: i64 = 32;
+const MF_SHADOW: i64 = 0x4_0000;
 const MF_FLOAT: i64 = 0x4000;
 
 /// The sounds `A_Look`'s switch picks between with a draw, as the names
@@ -222,6 +224,10 @@ pub mod chased {
     /// How many random numbers the thing drew.
     pub const DRAWS: usize = 12;
     pub const STUCK: usize = 13;
+    /// The state the attack sends the thing to, or -1 where it does not
+    /// attack.
+    pub const STATE: usize = 14;
+    pub const FLAGS: usize = 15;
 }
 
 /// The state a chase reads, as the names the tic binds the arrays under.
@@ -343,22 +349,33 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
     );
     // A draw the tic has already made stands ahead of this thing's own:
     // every look the list made up to and including this slot, and every
-    // chase before it.
-    value(
-        "cf_draws",
-        format!(
-            "arrayMap(sh -> {}, cf_shape)",
-            draws(&|f| format!("sh.{f}"))
-        ),
+    // chase before it. How many a chase makes is not known until its own
+    // first draw is read, because a thing whose missile check answers yes
+    // attacks and returns rather than walking, so the running index is a
+    // fold rather than a sum over counts worked out in advance.
+    value("cf_shouts", format!("arrayCumSum({})", state.shouts));
+    let sh = |field: usize| format!("cf_shape[i].{field}");
+    let base = "cf_shouts[cf_movers[i]] + fb.2";
+    let missile = format!(
+        "toInt64(rnd[1 + bitAnd(toUInt32({}) + {base} + 1, 255)])",
+        state.prndindex
+    );
+    let attacked = format!(
+        "toUInt8({} = 1 OR ({} = 1 AND {missile} >= {}))",
+        sh(shape::MISSILEHIT),
+        sh(shape::MISSILEDRAW),
+        sh(shape::MISSILEDIST),
     );
     value(
-        "cf_base",
+        "cf_run",
         format!(
-            "arrayMap((k, c, d) -> toUInt32(arrayCumSum({})[k] + c - d), cf_movers, \
-             arrayCumSum(cf_draws), cf_draws)",
-            state.shouts
+            "arrayFold((fb, i) -> (arrayPushBack(fb.1, toUInt32({base})), \
+             toUInt32(fb.2 + {})), arrayEnumerate(cf_movers), \
+             (CAST([], 'Array(UInt32)'), toUInt32(0)))",
+            draws(&sh, &attacked),
         ),
     );
+    value("cf_base", "cf_run.1".to_owned());
     value(
         "cf_chased",
         format!(
@@ -402,9 +419,9 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
 /// The type of one mover's answer, in the order [`chased`] names it. The
 /// fold starts from an empty list of them, and a list has to carry its
 /// type.
-const CHASED_TYPES: [&str; 13] = [
+const CHASED_TYPES: [&str; 15] = [
     "Int32", "Int32", "Int32", "UInt32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
-    "Int32", "UInt32", "UInt8",
+    "Int32", "UInt32", "UInt8", "Int32", "Int32",
 ];
 
 /// Whether one mover's move changes what another is told.
@@ -620,8 +637,10 @@ fn shape(state: &Chasing<'_>) -> String {
              OR bitAnd(toInt64({}[cs_target]), {MF_SHOOTABLE}) = 0 \
              OR bitAnd(cs_flags, {MF_JUSTATTACKED}) != 0 \
              OR bitAnd(cs_flags, {MF_FLOAT}) != 0 \
+             OR bitAnd(toInt64({}[cs_target]), {MF_SHADOW}) != 0 \
              OR cs_melee = 1)",
             format_args!("{}[k]", state.entries),
+            state.m_flags,
             state.m_flags,
         ),
     );
@@ -661,9 +680,10 @@ fn shape(state: &Chasing<'_>) -> String {
 /// the swap puts first changes the order the search runs in and not
 /// whether one of them works, so the count does not depend on either
 /// number.
-fn draws(field: &dyn Fn(usize) -> String) -> String {
+fn draws(field: &dyn Fn(usize) -> String, attacked: &str) -> String {
     format!(
-        "toUInt32({} + multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {})",
+        "toUInt32({} + if({attacked} = 1, 0, \
+         multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {}))",
         field(shape::MISSILEDRAW),
         field(shape::NEWCHASE),
         field(shape::DIRECT),
@@ -697,13 +717,9 @@ fn chased(state: &Chasing<'_>) -> String {
     value("cc_walk_at", format!("toUInt32(sh.{})", shape::MISSILEDRAW));
     value("cc_swap_draw", draw("cc_walk_at"));
     value("cc_search_draw", draw("cc_walk_at + 1"));
-    value("cc_draws", draws(&sh));
-    value(
-        "cc_count_draw",
-        draw(&format!("cc_draws - toUInt32(sh.{}) - 1", shape::SOUND)),
-    );
     // `P_CheckMissileRange` answers no when the number it drew is under
-    // the distance, and the attack it starts is not written.
+    // the distance. Where it answers yes, `A_Chase` puts the thing in its
+    // missile frames and returns, so nothing below this runs.
     value(
         "cc_attacked",
         format!(
@@ -712,6 +728,11 @@ fn chased(state: &Chasing<'_>) -> String {
             shape::MISSILEDRAW,
             shape::MISSILEDIST,
         ),
+    );
+    value("cc_draws", draws(&sh, "cc_attacked"));
+    value(
+        "cc_count_draw",
+        draw(&format!("cc_draws - toUInt32(sh.{}) - 1", shape::SOUND)),
     );
     value(
         "cc_swap",
@@ -755,7 +776,7 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_moved",
         format!(
-            "toUInt8(multiIf({} = 0, 1, {} = 1, 1, cc_won != 0))",
+            "toUInt8(cc_attacked = 0 AND multiIf({} = 0, 1, {} = 1, 1, cc_won != 0))",
             sh(shape::NEWCHASE),
             sh(shape::DIRECT)
         ),
@@ -794,7 +815,8 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_movedir",
         format!(
-            "toInt64(if({} = 0, {}, cc_dir))",
+            "toInt64(multiIf(cc_attacked = 1, {}, {} = 0, {}, cc_dir))",
+            sh(shape::MOVEDIR),
             sh(shape::NEWCHASE),
             sh(shape::MOVEDIR)
         ),
@@ -802,7 +824,9 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_movecount",
         format!(
-            "toInt64(multiIf({} = 0, {count}, cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
+            "toInt64(multiIf(cc_attacked = 1, {}, {} = 0, {count}, \
+             cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
+            at(state.m_movecount),
             sh(shape::NEWCHASE),
             count = sh(shape::COUNT),
         ),
@@ -847,10 +871,34 @@ fn chased(state: &Chasing<'_>) -> String {
              cc_delta < 2147483648, -{ANG45}, {ANG45}) + 4294967296, 4294967295))"
         ),
     );
+    // `A_FaceTarget` points the thing at what it is about to attack and
+    // takes it off ambush. A target it cannot see clearly turns the angle
+    // by a random amount, which is two draws; nothing on this map carries
+    // that flag and `cs_stuck` refuses one that does.
+    let target = |array: &str| format!("{array}[{}[k]]", state.m_target);
+    value(
+        "cc_faced",
+        format!(
+            "toUInt32({})",
+            fixed::point_to_angle(
+                &format!(
+                    "toInt64({}) - toInt64({})",
+                    target(state.m_x),
+                    at(state.m_x)
+                ),
+                &format!(
+                    "toInt64({}) - toInt64({})",
+                    target(state.m_y),
+                    at(state.m_y)
+                ),
+                "tantoangle",
+            )
+        ),
+    );
     value(
         "cc_angle",
         format!(
-            "toUInt32(if({} < {DI_NODIR}, cc_turned, {}))",
+            "toUInt32(multiIf(cc_attacked = 1, cc_faced, {} < {DI_NODIR}, cc_turned, {}))",
             sh(shape::MOVEDIR),
             at(state.m_angle)
         ),
@@ -897,9 +945,21 @@ fn chased(state: &Chasing<'_>) -> String {
             at(state.m_subsector)
         ),
         "toUInt32(cc_draws)".to_owned(),
+        format!("toUInt8({} = 1 OR cc_special = 1)", sh(shape::STUCK)),
         format!(
-            "toUInt8({} = 1 OR cc_special = 1 OR cc_attacked = 1)",
-            sh(shape::STUCK)
+            "toInt32(if(cc_attacked = 1, mobj_missilestate[1 + {}], -1))",
+            at(state.m_type)
+        ),
+        // `P_CheckMissileRange` clears the mark on the branch that answers
+        // yes without drawing, and `A_FaceTarget` takes the thing off
+        // ambush as it turns.
+        format!(
+            "toInt32(if(cc_attacked = 1, bitOr(bitAnd(toInt64({flags}), \
+             if(sh.{} = 1, {}, {})), {MF_JUSTATTACKED}), toInt64({flags})))",
+            shape::MISSILEHIT,
+            !(MF_AMBUSH | MF_JUSTHIT),
+            !MF_AMBUSH,
+            flags = at(state.m_flags),
         ),
     ];
     bind::chain_in("cc", &values, &format!("({})", members.join(", ")))
@@ -999,11 +1059,16 @@ mod tests {
     }
 
     /// How many numbers a thing draws is a function of the walk's answers
-    /// alone. `P_NewChaseDir`'s two draws decide the order the axes and
-    /// the search run in, and neither decides whether one of them works.
+    /// and of whether it attacks. `P_NewChaseDir`'s two draws decide the
+    /// order the axes and the search run in, and neither decides whether
+    /// one of them works; the missile check's own draw decides whether the
+    /// thing attacks and returns, which is the difference between one draw
+    /// and four, and the count names that answer rather than reading the
+    /// number again.
     #[test]
-    fn the_draw_count_does_not_read_a_drawn_number() {
-        let count = draws(&|field| format!("sh.{field}"));
+    fn the_draw_count_names_the_attack_rather_than_the_number() {
+        let count = draws(&|field| format!("sh.{field}"), "cc_attacked");
+        assert!(count.contains("cc_attacked"), "{count}");
         assert!(!count.contains("rnd"), "{count}");
         for member in [
             shape::NEWCHASE,

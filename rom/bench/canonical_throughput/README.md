@@ -149,7 +149,7 @@ or directly:
 
     clickdoom emulation bench canonical \
         --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
-        --image clickhouse/clickhouse-server:26.7.5.10 \
+        --image clickhouse/clickhouse-server:26.8.2.7 \
         --refemu-bin target/release/refemu
 
 Needs `rom/build/` built (`make build-rom`), `refemu` and `clickdoom` built

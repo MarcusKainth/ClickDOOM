@@ -33,6 +33,7 @@ const MELEERANGE: i64 = 64 << 16;
 const MF_SHOOTABLE: i64 = 4;
 const MF_AMBUSH: i64 = 32;
 const MF_NOGRAVITY: i64 = 512;
+const MF_FLOAT: i64 = 0x4000;
 const MF_MISSILE: i64 = 0x1_0000;
 const MF_CORPSE: i64 = 0x10_0000;
 const MF_SKULLFLY: i64 = 0x100_0000;
@@ -180,18 +181,9 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     for (name, expr) in thing_moves(state, &standing, &slot) {
         bind(&name, expr);
     }
-    // What `P_MobjThinker` runs `P_ZMovement` for, which this does not: a
-    // thing off the floor or carrying height, and a skull in flight.
-    bind(
-        "mt_grounded",
-        format!(
-            "arrayMap((mz, z, fz, fl) -> toUInt8(mz = 0 AND z = fz \
-             AND bitAnd(fl, {MF_SKULLFLY}) = 0), {}, {}, tx_m_floorz, {})",
-            s("m_momz"),
-            s("m_z"),
-            s("m_flags"),
-        ),
-    );
+    for (name, expr) in thing_falls(state) {
+        bind(&name, expr);
+    }
     bind(
         "mt_cycles",
         format!(
@@ -373,8 +365,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_one",
         format!(
-            "arrayMap((k, c, n, w, l, lk, tt, still, st, tc, th, ll, ty) -> ({}), \
-             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, mt_grounded, \
+            "arrayMap((k, c, n, w, l, lk, tt, st, tc, th, ll, ty) -> ({}), \
+             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, \
              {}, {}, {}, {}, {})",
             entry_one(&slot),
             s("m_state"),
@@ -460,7 +452,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         shouts: "mt_shouts",
         m_x: "tx_m_x",
         m_y: "tx_m_y",
-        m_z: &s("m_z"),
+        m_z: "tz_m_z",
         m_angle: &s("m_angle"),
         m_radius: &s("m_radius"),
         m_height: &s("m_height"),
@@ -489,7 +481,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     let held: [(&str, usize, &str, String); 11] = [
         ("m_x", enemy::chased::X, "toInt32", "tx_m_x".to_owned()),
         ("m_y", enemy::chased::Y, "toInt32", "tx_m_y".to_owned()),
-        ("m_z", enemy::chased::Z, "toInt32", s("m_z")),
+        ("m_z", enemy::chased::Z, "toInt32", "tz_m_z".to_owned()),
         ("m_angle", enemy::chased::ANGLE, "toUInt32", s("m_angle")),
         (
             "m_movedir",
@@ -571,7 +563,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!(
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
              OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
-             OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1)",
+             OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1 \
+             OR tz_unrun = 1)",
             s("unresolved"),
             cycled::STUCK,
             enemy::chased::STUCK
@@ -601,7 +594,7 @@ fn entry_one(slot: &str) -> String {
              state_tics[1 + n] = 0, state_nextstate[1 + n], -1))"
         ),
         format!(
-            "toUInt8(multiIf(k = {slot}, 0, still = 0, 1, c = 0, 0, n = 0, 1, \
+            "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 1, \
              state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
              AND state_action[1 + n] != a_chase, 1, 0))"
         ),
@@ -1067,6 +1060,130 @@ fn shifted(state: &State, movers: &str) -> String {
         axis(&s("m_x")),
         axis(&s("m_y")),
     )
+}
+
+/// `P_ZMovement` for the things that are not the player.
+///
+/// `P_MobjThinker` runs it on a thing standing off its floor or carrying
+/// height, which after the shots is the blood and the puffs they leave.
+/// The height moves, the floor and the ceiling clip it, and gravity pulls
+/// on whatever the floor is not already holding.
+///
+/// The routine asks the map nothing, so this is arithmetic over the
+/// things that fall and nothing else. The player's own copy carries the
+/// view height a step up lowers, which no other thing has.
+pub fn thing_falls(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+    let at = |column: &str| format!("{}[k]", s(column));
+    let over_fallers = |expr: &str| format!("arrayMap(k -> {expr}, tz_fallers)");
+    let by_place = |expr: &str| format!("arrayMap(i -> {expr}, arrayEnumerate(tz_fallers))");
+
+    bind(
+        "tz_falling",
+        format!(
+            "arrayMap((k, z, fz, mz) -> toUInt8(k != {} AND (z != fz OR mz != 0)), \
+             mt_slots, {}, tx_m_floorz, {})",
+            s("p_mo"),
+            s("m_z"),
+            s("m_momz"),
+        ),
+    );
+    bind(
+        "tz_fallers",
+        "arrayFilter((k, f) -> f = 1, mt_slots, tz_falling)".to_owned(),
+    );
+    bind(
+        "tz_at",
+        "arrayMap(k -> indexOf(tz_fallers, k), mt_slots)".to_owned(),
+    );
+    for (name, column) in [
+        ("z", "m_z"),
+        ("momz", "m_momz"),
+        ("height", "m_height"),
+        ("flags", "m_flags"),
+    ] {
+        bind(&format!("tz_hold_{name}"), over_fallers(&at(column)));
+    }
+    for (name, array) in [("floorz", "tx_m_floorz"), ("ceilingz", "tx_m_ceilingz")] {
+        bind(
+            &format!("tz_hold_{name}"),
+            over_fallers(&format!("{array}[k]")),
+        );
+    }
+
+    bind(
+        "tz_stepped",
+        by_place("toInt64(tz_hold_z[i]) + toInt64(tz_hold_momz[i])"),
+    );
+    bind(
+        "tz_onfloor",
+        by_place("toUInt8(tz_stepped[i] <= toInt64(tz_hold_floorz[i]))"),
+    );
+    bind(
+        "tz_floored",
+        by_place("if(tz_onfloor[i] = 1, toInt64(tz_hold_floorz[i]), tz_stepped[i])"),
+    );
+    // The floor takes what is falling onto it, and gravity pulls on what
+    // the floor is not holding. A thing that has just started falling
+    // takes two pulls, which is what makes the first tic of a drop move
+    // twice as far as gravity alone.
+    bind(
+        "tz_pulled",
+        by_place(&format!(
+            "toInt32(multiIf(tz_onfloor[i] = 1 AND tz_hold_momz[i] < 0, 0, \
+             tz_onfloor[i] = 1, tz_hold_momz[i], \
+             bitAnd(tz_hold_flags[i], {MF_NOGRAVITY}) != 0, tz_hold_momz[i], \
+             tz_hold_momz[i] = 0, -{}, toInt64(tz_hold_momz[i]) - {GRAVITY}))",
+            GRAVITY * 2
+        )),
+    );
+    bind(
+        "tz_hitceiling",
+        by_place(
+            "toUInt8(tz_floored[i] + toInt64(tz_hold_height[i]) > toInt64(tz_hold_ceilingz[i]))",
+        ),
+    );
+    bind(
+        "tz_z",
+        by_place(
+            "toInt32(if(tz_hitceiling[i] = 1, \
+             toInt64(tz_hold_ceilingz[i]) - toInt64(tz_hold_height[i]), tz_floored[i]))",
+        ),
+    );
+    bind(
+        "tz_momz",
+        by_place("toInt32(if(tz_hitceiling[i] = 1 AND tz_pulled[i] > 0, 0, tz_pulled[i]))"),
+    );
+
+    // `A_Chase` writes the height column itself, so the fall hands it the
+    // height rather than writing it, the way the move hands it the place.
+    for (column, moved) in [("m_z", "tz_z"), ("m_momz", "tz_momz")] {
+        let held = s(column);
+        bind(
+            &format!("tz_{column}"),
+            format!(
+                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {moved}[i])), mt_slots, tz_at)"
+            ),
+        );
+    }
+    bind("now_m_momz", "tz_m_momz".to_owned());
+
+    // What `P_ZMovement` does that this does not: a skull in flight bounces
+    // off what it reaches, a floating thing rises and sinks towards its
+    // target, and a missile that reaches the floor or the ceiling goes off.
+    bind(
+        "tz_unrun",
+        format!(
+            "toUInt8(arrayExists(k -> bitAnd({flags}, {}) != 0 \
+             OR (bitAnd({flags}, {MF_FLOAT}) != 0 AND {} != 0), tz_fallers))",
+            MF_SKULLFLY | MF_MISSILE,
+            at("m_target"),
+            flags = at("m_flags"),
+        ),
+    );
+    bindings
 }
 
 /// `P_XYMovement` and `P_SlideMove`, as one fold whose accumulator carries

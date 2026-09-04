@@ -485,8 +485,15 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     }
     assert_eq!(
         at(FIRST_SHOT_FRAME).unresolved,
+        0,
+        "the tic the shotgun's frames reach A_FireShotgun is produced"
+    );
+    // The tic after it is not. The two monsters a pellet hit cycle out of
+    // their pain frames into states carrying a routine this does not run.
+    assert_eq!(
+        at(FIRST_SHOT_FRAME + 1).unresolved,
         1,
-        "the tic the shotgun's frames reach A_FireShotgun says it could not be produced"
+        "the tic after the shot says it could not be produced"
     );
 
     for (tic, prndindex) in RANDOM {

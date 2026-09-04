@@ -102,22 +102,24 @@ outside the lambda whatever the fold does, so such a body has to lead back to
 one of them.
 
 Analysis is paid once per session, and its cost is not a function of the
-statement's size. A call taking two or more arrays costs about 160 ms of
-analysis on ClickHouse 26.7.5.10, whatever the call is and whatever its body
-does. The price is per call site and not per array, so one call over many
-arrays is free where many calls over two are not, and it is charged whether a
-lambda is present or not: `arrayZip(a, b)` costs what
-`arrayFilter((v, k) -> …, a, b)` costs. A call over one array costs nothing
-measurable. `arrayConcat` is the exception at about 20 ms a site, so list
-growth is written the plain way.
+statement's size. Where it comes from is not settled. One shape is measured
+on ClickHouse 26.7.5.10: writing a thirty-column compaction as
+`arrayFilter((v, a) -> a = 1, X, mt_kept)` costs 5.2 s more than writing it
+as the surviving places worked out once and each column read through them,
+and the same 5.2 s more than one `arrayZip` of every column filtered once.
+`arrayZip(a, b)` costs what `arrayFilter((v, k) -> …, a, b)` costs, so
+whatever this is, it is not the lambda.
 
-The 160 ms is the price at the statement's present size and is smaller in a
-smaller one, so it sizes a change rather than the whole. The way to hold it
-down is to read the arrays at an index instead of passing them: `arrayMap(k ->
-f(a[k], b[k]), arrayEnumerate(a))` takes one array where `arrayMap((x, y) ->
-f(x, y), a, b)` takes two, and a filter over a flag becomes the places that
-survive, worked out once, and each column read through them. Every piece
-added to a statement is measured with `QueryAnalysisMicroseconds` from
+The same rewrite applied to the rest of `mobj.rs` saves nothing. Sixty-six
+calls over two or more arrays were taken out of the statement two ways, by
+indexing and by zipping a row per stage, and neither moved the analysis;
+indexing added 9 s by repeating the array text. So the 5.2 s belongs to that
+compaction and not to a count of call sites, and a rewrite of this kind is
+worth doing only against a measurement of the piece in hand.
+
+`arrayConcat` over several arrays costs about 20 ms a site, which is small
+enough that list growth is written the plain way. Every piece added to a
+statement is measured with `QueryAnalysisMicroseconds` from
 `system.query_log`.
 
 A body that has to be one binding, such as a fold whose steps each read what

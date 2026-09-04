@@ -57,3 +57,4 @@ is reached without a multi-hour run.
 |---|---|---|
 | [`native-vs-docker`](experiments/native-vs-docker.md) | Is native ClickHouse faster than Docker, and how do two releases compare? | Docker is 2.07x faster than native on 26.3.25.2. Native rejected. |
 | [`memcpy-memset-cost`](experiments/memcpy-memset-cost.md) | Are `memcpy` and `memset` byte-loop shims, and what do they cost? | They are newlib's and already word-wise, at 0.836 instructions per byte. Rejected. |
+| [`clickhouse-26-8`](experiments/clickhouse-26-8.md) | What do the two modes read on ClickHouse 26.8.2.7 against 26.7.5.10? | Emulation costs 0.88x on the gameplay window end to end. The resident simulation statement's analysis costs 3.07x less and its tic 1.24x less. |

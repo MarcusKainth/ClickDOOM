@@ -99,6 +99,7 @@ pub fn think(state: &State) -> Vec<(String, String)> {
         "pl_buttons",
         "pl_pendingweapon",
     ));
+    bindings.extend(pspr::fire_shots(state));
     bindings.extend(fire_weapon(state));
     bindings.extend(powers(state));
     bindings.extend(mobj_thinker(state));
@@ -405,14 +406,16 @@ fn fire_weapon(state: &State) -> Vec<(String, String)> {
     vec![
         (
             "pl_state_set".to_owned(),
-            "toUInt8(psp_fired = 1 OR (psp_readied = 1 \
+            "toUInt8(psp_shots > 0 OR psp_fired = 1 OR (psp_readied = 1 \
              AND (pl_state_moved = s_play_atk1 OR pl_state_moved = s_play_atk2)))"
                 .to_owned(),
         ),
+        // `A_FireShotgun` runs after `P_FireWeapon`, in a later entry of a
+        // later tic, so the frame it asks for is the one that stands.
         (
             "pl_state_fired".to_owned(),
-            "toInt32(multiIf(psp_fired = 1, s_play_atk1, pl_state_set = 1, s_play, \
-             pl_state_moved))"
+            "toInt32(multiIf(psp_shots > 0, s_play_atk2, psp_fired = 1, s_play_atk1, \
+             pl_state_set = 1, s_play, pl_state_moved))"
                 .to_owned(),
         ),
         (
@@ -502,7 +505,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         health: &state.get("p_health"),
         armorpoints: &state.get("p_armorpoints"),
         armortype: &state.get("p_armortype"),
-        ammo: &state.get("p_ammo"),
+        ammo: "gs_p_ammo",
         maxammo: &state.get("p_maxammo"),
         backpack: &state.get("p_backpack"),
         cards: &state.get("p_cards"),
@@ -668,6 +671,15 @@ fn writeback(state: &State) -> Vec<(String, String)> {
              bitAnd(pl_flags_noclip, -262145)))",
         ),
     ];
+    // What the shots left, for the columns the damage moves. Every other
+    // column is what the tic came in with.
+    let base = |column: &str| {
+        if SHOT_COLUMNS.contains(&column) {
+            format!("gs_{column}")
+        } else {
+            state.get(column)
+        }
+    };
     let mut bindings = vec![
         // A slot that survives keeps its place, and a pointer to it moves
         // down with it.
@@ -677,8 +689,24 @@ fn writeback(state: &State) -> Vec<(String, String)> {
                 .to_owned(),
         ),
     ];
+    // `P_SetMobjState` writes the entered state's picture along with the
+    // state, so a thing the damage put into its pain or its death frames
+    // shows that state's picture. The state is what the shots left and the
+    // picture follows from it, so it is read here rather than carried
+    // through the shots.
+    for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
+        let held = state.get(column);
+        let was = state.get("m_state");
+        bindings.push((
+            format!("gs_{column}"),
+            format!(
+                "arrayMap((v, st, wa) -> toInt32(if(st != wa, {table}[1 + st], v)), \
+                 {held}, gs_m_state, {was})"
+            ),
+        ));
+    }
     for (column, value) in &moved {
-        let array = state.get(column);
+        let array = base(column);
         bindings.push((
             format!("moved_{column}"),
             format!(
@@ -694,16 +722,22 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         let held = if moved.iter().any(|(name, _)| *name == column) {
             format!("moved_{column}")
         } else {
-            state.get(column)
+            base(column)
         };
         let held = if MOBJ_POINTERS.contains(&column) {
             renumbered(&held)
         } else {
             held
         };
+        // `P_AddThinker` puts a new thing on the end of the list, so the
+        // spawns go behind what survived the tic's own compaction.
+        let born = match mobj::born_column(column, "b") {
+            Some(value) => format!("arrayMap(b -> {value}, gs_spawned)"),
+            None => assigned_column(column),
+        };
         bindings.push((
             format!("now_{column}"),
-            format!("arrayFilter((v, a) -> a = 1, {held}, pk_alive)"),
+            format!("arrayConcat(arrayFilter((v, a) -> a = 1, {held}, pk_alive), {born})"),
         ));
     }
     bindings.push((
@@ -714,6 +748,22 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         (
             "now_m_id".to_owned(),
             "arrayMap(n -> toUInt32(n), arrayEnumerate(now_m_x))".to_owned(),
+        ),
+        // Every thing the shots added took one of each counter.
+        (
+            "now_unresolved".to_owned(),
+            "toUInt8(use_unresolved = 1 OR gs_unresolved = 1)".to_owned(),
+        ),
+        (
+            "now_next_seq".to_owned(),
+            "toUInt32(use_next_seq + length(gs_spawned))".to_owned(),
+        ),
+        (
+            "now_next_linkseq".to_owned(),
+            format!(
+                "toUInt32({} + length(gs_spawned))",
+                state.get("next_linkseq")
+            ),
         ),
         (
             "now_p_mo".to_owned(),
@@ -744,6 +794,42 @@ fn writeback(state: &State) -> Vec<(String, String)> {
     ]);
     bindings
 }
+
+/// What a spawn takes for the two columns [`mobj::born_column`] leaves to
+/// the caller: `P_SetThingPosition` puts each new thing at the head of its
+/// sector's list, so each takes the next link order in turn, and the
+/// identity is the slot the compaction below leaves it at.
+const STATE_NEXT_LINKSEQ: &str = "prev_next_linkseq";
+
+fn assigned_column(column: &str) -> String {
+    match column {
+        "m_linkseq" => format!(
+            "arrayMap((b, i) -> toUInt32({} + i - 1), gs_spawned, arrayEnumerate(gs_spawned))",
+            STATE_NEXT_LINKSEQ
+        ),
+        // `now_m_id` is written from the slot below, so the entries only
+        // have to be there to be counted.
+        _ => "arrayMap(b -> toUInt32(0), gs_spawned)".to_owned(),
+    }
+}
+
+/// The mobj array columns a shot's damage moves, which the writeback takes
+/// from the shots rather than from the tic's own start.
+const SHOT_COLUMNS: [&str; 13] = [
+    "m_health",
+    "m_flags",
+    "m_state",
+    "m_tics",
+    "m_sprite",
+    "m_frame",
+    "m_momx",
+    "m_momy",
+    "m_momz",
+    "m_height",
+    "m_target",
+    "m_threshold",
+    "m_reactiontime",
+];
 
 /// The mobj array columns that hold a slot rather than a value of their
 /// own. `sec_soundtarget` and `p_attacker` hold one too and are written

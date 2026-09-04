@@ -371,3 +371,48 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod expansion {
+    use super::*;
+
+    /// The largest bindings are materialised rather than copied.
+    ///
+    /// A `WITH` binding is copied into every place that names it, and a
+    /// binding that names a copied one multiplies again, so a large one
+    /// read twice is analysed twice. `stages` cuts a stage ahead of a
+    /// binding that would copy too much, which leaves the big ones as
+    /// subquery columns that later stages read by name. This fails if one
+    /// of them starts being copied instead.
+    #[test]
+    fn no_large_binding_is_copied() {
+        let tic = bindings("lanew");
+        let row = row(&tic.state);
+        let stages = super::super::stages(&tic.bindings);
+        for (at, stage) in stages.iter().enumerate() {
+            let last = at + 1 == stages.len();
+            let mut count: Vec<usize> = vec![1; stage.len()];
+            for index in (0..stage.len()).rev() {
+                let (name, _) = &stage[index];
+                if last {
+                    for (_, expr) in &row {
+                        count[index] += super::super::references(expr, name);
+                    }
+                }
+                let mut extra = 0;
+                for later in index + 1..stage.len() {
+                    extra += super::super::references(&stage[later].1, name) * count[later];
+                }
+                count[index] += extra;
+            }
+            for (index, (name, expr)) in stage.iter().enumerate() {
+                assert!(
+                    expr.len() < 4000 || count[index] == 1,
+                    "{name} is {} bytes and copied {} times",
+                    expr.len(),
+                    count[index]
+                );
+            }
+        }
+    }
+}

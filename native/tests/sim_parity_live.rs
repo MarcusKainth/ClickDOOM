@@ -184,6 +184,14 @@ const CHASE: [(u32, i32, i32, i32, u32, i32, i32); 5] = [
     (139, 1, 7, 0, 536870912, 7896000, -4686912),
 ];
 
+/// `gametic, m_state[118], m_frame[118], m_health[118]` for the monster a
+/// pellet of the first shot reaches, read out of the reference emulator's
+/// demo3 trace. Gametic 142 is the last tic before the shot lands and 143
+/// the tic it does: `P_DamageMobj` takes ten off the monster and puts it
+/// in its pain state, and `P_SetMobjState` writes that state's frame with
+/// the state.
+const HURT: [(u32, i32, i32, i32); 2] = [(142, 449, 2, 60), (FIRST_SHOT_FRAME, 455, 7, 50)];
+
 /// `gametic, m_state[118], m_target[118]` around that monster, and the
 /// state cycle of the thing in slot 25, read out of the reference
 /// emulator's demo3 trace. Slot 25 alternates two stand frames from the
@@ -276,6 +284,8 @@ struct Walked {
     angle118: u32,
     x118: i32,
     y118: i32,
+    frame118: i32,
+    health118: i32,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -299,7 +309,8 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              p_attackdown AS attackdown, prndindex, \
              m_movedir[118] AS movedir118, m_movecount[118] AS movecount118, \
              m_reactiontime[118] AS reactiontime118, m_angle[118] AS angle118, \
-             m_x[118] AS x118, m_y[118] AS y118 \
+             m_x[118] AS x118, m_y[118] AS y118, \
+             m_frame[118] AS frame118, m_health[118] AS health118 \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -478,6 +489,14 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             ),
             (movedir, movecount, reactiontime, angle, x, y),
             "the chasing monster at gametic {tic}"
+        );
+    }
+    for (tic, state, frame, health) in HURT {
+        let row = at(tic);
+        assert_eq!(
+            (row.state118, row.frame118, row.health118),
+            (state, frame, health),
+            "the monster a pellet reaches at gametic {tic}"
         );
     }
     // `P_LookForPlayers` walks `lastlook` round to the one player in the

@@ -1586,6 +1586,11 @@ pub mod bleeding {
     pub const BASE: usize = 7;
 }
 
+/// The ClickHouse type of a [`born`] tuple, for a caller that carries a
+/// list of them through a fold.
+pub const BORN_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
+                             Int32, Int32, Int32, Int32, UInt32)";
+
 /// Where each field of a spawned thing sits in its tuple.
 ///
 /// Everything else a new thing carries is a function of its type and its
@@ -1834,6 +1839,13 @@ pub fn born_column(column: &str, spawn: &str) -> Option<String> {
         "m_height" => info("mobj_height"),
         "m_flags" => info("mobj_flags"),
         "m_health" => info("mobj_spawnhealth"),
+        // `P_SpawnMobj` clears the structure, and the contract writes a
+        // null player pointer as -1 rather than as 0.
+        "m_player" => "toInt8(-1)".to_owned(),
+        "m_angle" | "m_target" | "m_tracer" => "toUInt32(0)".to_owned(),
+        "m_sp_x" | "m_sp_y" | "m_sp_angle" | "m_sp_type" | "m_sp_options" => {
+            "toInt16(0)".to_owned()
+        }
         _ => "toInt32(0)".to_owned(),
     })
 }
@@ -1913,17 +1925,28 @@ mod spawn_tests {
         assert!(spawn_debris("asks", &world()).contains("toUInt32(4))"));
     }
 
-    /// Every column a spawn leaves at zero reads as zero, because
-    /// `P_SpawnMobj` clears the structure before it fills any of it in.
+    /// Every column a spawn leaves at zero reads as zero in the column's
+    /// own type, because `P_SpawnMobj` clears the structure before it
+    /// fills any of it in. The player pointer is the exception: the
+    /// contract writes a null one as -1.
     #[test]
     fn a_column_a_spawn_does_not_set_is_zero() {
-        for column in ["m_angle", "m_momx", "m_momy", "m_target", "m_movedir"] {
+        for column in ["m_momx", "m_momy", "m_movedir"] {
             assert_eq!(
                 born_column(column, "b").as_deref(),
                 Some("toInt32(0)"),
                 "{column}"
             );
         }
+        for column in ["m_angle", "m_target", "m_tracer"] {
+            assert_eq!(
+                born_column(column, "b").as_deref(),
+                Some("toUInt32(0)"),
+                "{column}"
+            );
+        }
+        assert_eq!(born_column("m_player", "b").as_deref(), Some("toInt8(-1)"));
+        assert_eq!(born_column("m_sp_x", "b").as_deref(), Some("toInt16(0)"));
         assert_eq!(born_column("m_x", "b").as_deref(), Some("b.1"));
     }
 

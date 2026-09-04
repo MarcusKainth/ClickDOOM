@@ -160,14 +160,19 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
                 held = s("line_special"),
             ),
         ),
+        // A door the press made took an identity. The writeback adds what
+        // the tic spawned on top and names the column, because two stages
+        // of one tic cannot both write it.
         (
-            "now_next_seq".to_owned(),
+            "use_next_seq".to_owned(),
             format!("toUInt32({} + if(use_makes = 1, 1, 0))", s("next_seq")),
         ),
         // A press that reaches a door is a tic this finishes. One that
         // reaches any other special, or a locked door, is not.
+        // The writeback names the column, because the shots have their own
+        // reason to leave the tic unresolved and one stage writes it once.
         (
-            "now_unresolved".to_owned(),
+            "use_unresolved".to_owned(),
             format!(
                 "toUInt8({also} = 1 OR mv_unfinished = 1 OR pl_action_needed = 1 \
                  OR ({line} >= 0 AND use_handles = 0) OR use_opened.{} = 1)",

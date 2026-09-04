@@ -844,6 +844,15 @@ pub mod hurt {
     pub const STUCK: usize = 16;
 }
 
+/// A call nobody made, for a caller that reads the first answer of a list
+/// that may be empty.
+pub fn no_hurt() -> String {
+    "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+     toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
+     toUInt32(0), toUInt8(0))"
+        .to_owned()
+}
+
 /// The arrays a damage call reads.
 pub struct Hurting<'a> {
     pub m_x: &'a str,

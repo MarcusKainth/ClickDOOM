@@ -200,6 +200,8 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(player::constants(db));
     constants.extend(pspr::constants(db));
     constants.extend(sight::constants(db));
+    constants.extend(shoot::constants(db));
+    constants.extend(inter::damage_constants(db));
     constants.extend(enemy::constants(db));
     constants.extend(mobj::constants(db));
     constants

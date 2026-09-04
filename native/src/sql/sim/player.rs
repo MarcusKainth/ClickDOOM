@@ -689,6 +689,22 @@ fn writeback(state: &State) -> Vec<(String, String)> {
                 .to_owned(),
         ),
     ];
+    // `P_SetMobjState` writes the entered state's picture along with the
+    // state, so a thing the damage put into its pain or its death frames
+    // shows that state's picture. The state is what the shots left and the
+    // picture follows from it, so it is read here rather than carried
+    // through the shots.
+    for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
+        let held = state.get(column);
+        let was = state.get("m_state");
+        bindings.push((
+            format!("gs_{column}"),
+            format!(
+                "arrayMap((v, st, wa) -> toInt32(if(st != wa, {table}[1 + st], v)), \
+                 {held}, gs_m_state, {was})"
+            ),
+        ));
+    }
     for (column, value) in &moved {
         let array = base(column);
         bindings.push((
@@ -799,11 +815,13 @@ fn assigned_column(column: &str) -> String {
 
 /// The mobj array columns a shot's damage moves, which the writeback takes
 /// from the shots rather than from the tic's own start.
-const SHOT_COLUMNS: [&str; 11] = [
+const SHOT_COLUMNS: [&str; 13] = [
     "m_health",
     "m_flags",
     "m_state",
     "m_tics",
+    "m_sprite",
+    "m_frame",
     "m_momx",
     "m_momy",
     "m_momz",

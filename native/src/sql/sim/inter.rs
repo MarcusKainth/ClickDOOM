@@ -933,6 +933,82 @@ pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
     )
 }
 
+/// How many numbers each ask in `asks` draws.
+///
+/// A caller making several calls in a row needs each one's offset before
+/// any of them is worked out. Nothing a call draws changes how many draws
+/// it makes, so the count is this much of the routine and no more.
+pub fn draws(asks: &str, world: &Hurting<'_>) -> String {
+    let body = "toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))";
+    format!(
+        "arrayMap(dm_ask -> {}, {asks})",
+        bind::chain_in("dmd", &reach(world), body)
+    )
+}
+
+/// What a call works out before it reads a number: whether the damage
+/// lands, whether it pushes, and whether it may knock the target over.
+fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
+    let a = |field: usize| format!("dm_ask.{field}");
+    let at = |array: &str| format!("{array}[dm_target]");
+    let from = |array: &str| format!("{array}[dm_inflictor]");
+    let credited = |array: &str| format!("{array}[dm_source]");
+    vec![
+        (
+            "dm_target".to_owned(),
+            format!("toUInt32({})", a(hurting::TARGET)),
+        ),
+        (
+            "dm_inflictor".to_owned(),
+            format!("toUInt32({})", a(hurting::INFLICTOR)),
+        ),
+        (
+            "dm_source".to_owned(),
+            format!("toUInt32({})", a(hurting::SOURCE)),
+        ),
+        (
+            "dm_damage".to_owned(),
+            format!("toInt32({})", a(hurting::DAMAGE)),
+        ),
+        (
+            "dm_flags".to_owned(),
+            format!("toInt32({})", at(world.m_flags)),
+        ),
+        (
+            "dm_health".to_owned(),
+            format!("toInt32({})", at(world.m_health)),
+        ),
+        // The two early returns: a thing that cannot be shot, and one
+        // already dead, take nothing and draw nothing.
+        (
+            "dm_lands".to_owned(),
+            format!("toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0)"),
+        ),
+        // The push. A call with no inflictor pushes nothing, and a
+        // chainsaw in the source's hands holds its target in reach.
+        (
+            "dm_pushes".to_owned(),
+            format!(
+                "toUInt8(dm_lands = 1 AND dm_inflictor != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
+                 AND (dm_source = 0 OR {} = -1 OR {} != {WP_CHAINSAW}))",
+                credited(world.m_player),
+                world.readyweapon,
+            ),
+        ),
+        // Falling forwards is the one draw a call makes before the damage
+        // lands, and whether it is made is decided without reading it.
+        (
+            "dm_may_fall".to_owned(),
+            format!(
+                "toUInt8(dm_pushes = 1 AND dm_damage < {FALL_DAMAGE} AND dm_damage > dm_health \
+                 AND toInt64({}) - toInt64({}) > {FALL_HEIGHT})",
+                at(world.m_z),
+                from(world.m_z),
+            ),
+        ),
+    ]
+}
+
 /// What one call works out, as the values a body reads and the [`hurt`]
 /// tuple it answers with.
 fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
@@ -941,25 +1017,10 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
     let from = |array: &str| format!("{array}[dm_inflictor]");
     let credited = |array: &str| format!("{array}[dm_source]");
     let info = |table: &str| format!("{table}[1 + dm_type]");
-    let mut values: Vec<(String, String)> = Vec::new();
+    let mut values: Vec<(String, String)> = reach(world);
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
-    value("dm_target", format!("toUInt32({})", a(hurting::TARGET)));
-    value(
-        "dm_inflictor",
-        format!("toUInt32({})", a(hurting::INFLICTOR)),
-    );
-    value("dm_source", format!("toUInt32({})", a(hurting::SOURCE)));
-    value("dm_damage", format!("toInt32({})", a(hurting::DAMAGE)));
     value("dm_type", format!("toInt32({})", at(world.m_type)));
-    value("dm_flags", format!("toInt32({})", at(world.m_flags)));
-    value("dm_health", format!("toInt32({})", at(world.m_health)));
-    // The two early returns: a thing that cannot be shot, and one already
-    // dead, take nothing and draw nothing.
-    value(
-        "dm_lands",
-        format!("toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0)"),
-    );
     // A lost soul charging stops dead where it is hit, and the push below
     // then reads the momentum it stopped at.
     value(
@@ -973,17 +1034,6 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
     value(
         "dm_momy_held",
         format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momy)),
-    );
-    // The push. A call with no inflictor pushes nothing, and a chainsaw in
-    // the source's hands holds its target in reach.
-    value(
-        "dm_pushes",
-        format!(
-            "toUInt8(dm_lands = 1 AND dm_inflictor != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
-             AND (dm_source = 0 OR {} = -1 OR {} != {WP_CHAINSAW}))",
-            credited(world.m_player),
-            world.readyweapon,
-        ),
     );
     value(
         "dm_thrust",
@@ -1016,17 +1066,6 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
             a(hurting::BASE),
         )
     };
-    // Falling forwards is the one draw a call makes before the damage
-    // lands, and whether it is made is decided without reading it.
-    value(
-        "dm_may_fall",
-        format!(
-            "toUInt8(dm_pushes = 1 AND dm_damage < {FALL_DAMAGE} AND dm_damage > dm_health \
-             AND toInt64({}) - toInt64({}) > {FALL_HEIGHT})",
-            at(world.m_z),
-            from(world.m_z),
-        ),
-    );
     value(
         "dm_falls",
         format!("toUInt8(dm_may_fall = 1 AND bitAnd({}, 1) != 0)", draw("1")),

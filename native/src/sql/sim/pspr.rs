@@ -862,7 +862,7 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         "gs_hurt",
         inter::damage_mobj(
             &format!(
-                "arraySlice([(toUInt32(gs_id), toUInt32(pl_slot), gs_damage, \
+                "arraySlice([(toUInt32(gs_id), toUInt32(pl_slot), toUInt32(pl_slot), gs_damage, \
                  toUInt32({} + gs_shot_draws + gs_spawn_draws))], 1, toUInt8(gs_kind = 2))",
                 at(firing::DRAWS),
             ),

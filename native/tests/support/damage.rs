@@ -159,9 +159,9 @@ impl World {
         finesine[(at & FINEMASK) as usize]
     }
 
-    /// `P_DamageMobj`, with `P_KillMobj` where the target dies. `target`
-    /// and `source` are one-based slots, and `source` 0 is none.
-    pub fn damage(&self, target: i64, source: i64, damage: i64, base: i64) -> Hurt {
+    /// `P_DamageMobj`, with `P_KillMobj` where the target dies. `target`,
+    /// `inflictor` and `source` are one-based slots, and 0 is none.
+    pub fn damage(&self, target: i64, inflictor: i64, source: i64, damage: i64, base: i64) -> Hurt {
         let it = &self.mobjs[(target - 1) as usize];
         let at = it.kind as usize;
         let info = |name: &str| column("mobjinfo", name)[at];
@@ -195,13 +195,14 @@ impl World {
             hurt.momy = 0;
             hurt.momz = 0;
         }
-        let hit = (source != 0).then(|| &self.mobjs[(source - 1) as usize]);
-        let pushes = hit.is_some_and(|from| {
-            it.flags & MF_NOCLIP == 0 && (from.player == -1 || self.readyweapon != WP_CHAINSAW)
-        });
+        let hit = (inflictor != 0).then(|| &self.mobjs[(inflictor - 1) as usize]);
+        let credited = (source != 0).then(|| &self.mobjs[(source - 1) as usize]);
+        let pushes = hit.is_some()
+            && it.flags & MF_NOCLIP == 0
+            && credited.is_none_or(|from| from.player == -1 || self.readyweapon != WP_CHAINSAW);
         let mut draws = 1;
         if pushes {
-            let from = hit.expect("a push has a source");
+            let from = hit.expect("a push has an inflictor");
             let mut angle = point_to_angle(it.x - from.x, it.y - from.y);
             let mut thrust = wrap32(damage * (FRACUNIT >> 3) * 100 / info("mass"));
             let may_fall =
@@ -257,7 +258,7 @@ impl World {
         let chases = (it.threshold == 0 || it.kind == vile)
             && source != 0
             && source != target
-            && hit.is_some_and(|from| from.kind != vile);
+            && credited.is_some_and(|from| from.kind != vile);
         if chases {
             hurt.target = source;
             hurt.threshold = BASETHRESHOLD;

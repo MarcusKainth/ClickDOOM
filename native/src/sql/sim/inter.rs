@@ -811,12 +811,16 @@ const FALL_DAMAGE: i64 = 40;
 pub mod hurting {
     /// The mobj slot taking the damage.
     pub const TARGET: usize = 1;
-    /// The slot that dealt it, 0 for none. A hitscan's source and its
-    /// inflictor are the same thing.
-    pub const SOURCE: usize = 2;
-    pub const DAMAGE: usize = 3;
+    /// The slot the damage arrived from, 0 for none. The push and the fall
+    /// read where it stands. A hitscan passes the shooter for this and for
+    /// [`SOURCE`] both.
+    pub const INFLICTOR: usize = 2;
+    /// The slot the hit is credited to, 0 for none. The chainsaw test, the
+    /// chase and the kill count read it.
+    pub const SOURCE: usize = 3;
+    pub const DAMAGE: usize = 4;
     /// How many numbers the tic drew before this call's own.
-    pub const BASE: usize = 4;
+    pub const BASE: usize = 5;
 }
 
 /// Where each field of a damage answer sits in its tuple.
@@ -934,12 +938,17 @@ pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
 fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
     let a = |field: usize| format!("dm_ask.{field}");
     let at = |array: &str| format!("{array}[dm_target]");
-    let from = |array: &str| format!("{array}[dm_source]");
+    let from = |array: &str| format!("{array}[dm_inflictor]");
+    let credited = |array: &str| format!("{array}[dm_source]");
     let info = |table: &str| format!("{table}[1 + dm_type]");
     let mut values: Vec<(String, String)> = Vec::new();
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
     value("dm_target", format!("toUInt32({})", a(hurting::TARGET)));
+    value(
+        "dm_inflictor",
+        format!("toUInt32({})", a(hurting::INFLICTOR)),
+    );
     value("dm_source", format!("toUInt32({})", a(hurting::SOURCE)));
     value("dm_damage", format!("toInt32({})", a(hurting::DAMAGE)));
     value("dm_type", format!("toInt32({})", at(world.m_type)));
@@ -965,14 +974,14 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
         "dm_momy_held",
         format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momy)),
     );
-    // The push. A hitscan's inflictor is its source, so a call with none
-    // pushes nothing, and a chainsaw holds its target in reach.
+    // The push. A call with no inflictor pushes nothing, and a chainsaw in
+    // the source's hands holds its target in reach.
     value(
         "dm_pushes",
         format!(
-            "toUInt8(dm_lands = 1 AND dm_source != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
-             AND ({} = -1 OR {} != {WP_CHAINSAW}))",
-            from(world.m_player),
+            "toUInt8(dm_lands = 1 AND dm_inflictor != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
+             AND (dm_source = 0 OR {} = -1 OR {} != {WP_CHAINSAW}))",
+            credited(world.m_player),
             world.readyweapon,
         ),
     );
@@ -1105,7 +1114,7 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
              AND ({} = 0 OR dm_type = mt_vile) \
              AND dm_source != 0 AND dm_source != dm_target AND {} != mt_vile)",
             at(world.m_threshold),
-            from(world.m_type),
+            credited(world.m_type),
         ),
     );
     // The chase reads the frame the thing stands in after the pain frame
@@ -1246,6 +1255,31 @@ mod damage_tests {
             body.contains("toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))"),
             "{body}"
         );
+    }
+
+    /// The push angle and the fall test read where the inflictor stands;
+    /// the chainsaw test and the chase read the source.
+    #[test]
+    fn the_push_reads_the_inflictor_and_the_credit_reads_the_source() {
+        let (values, _) = damaged(&world());
+        let named = |name: &str| {
+            values
+                .iter()
+                .find(|(held, _)| held == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("the call names {name}"))
+        };
+        let angle = named("dm_angle");
+        assert!(angle.contains("m_x[dm_inflictor]"), "{angle}");
+        assert!(!angle.contains("dm_source"), "{angle}");
+        let falls = named("dm_may_fall");
+        assert!(falls.contains("m_z[dm_inflictor]"), "{falls}");
+        let pushes = named("dm_pushes");
+        assert!(pushes.contains("dm_inflictor != 0"), "{pushes}");
+        assert!(pushes.contains("m_player[dm_source]"), "{pushes}");
+        let chases = named("dm_chases");
+        assert!(chases.contains("m_type[dm_source]"), "{chases}");
+        assert!(!chases.contains("dm_inflictor"), "{chases}");
     }
 
     /// A player target leaves the call stuck rather than guessed, because

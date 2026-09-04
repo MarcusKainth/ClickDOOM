@@ -99,7 +99,7 @@ fn wrap32(v: i64) -> i64 {
 }
 
 /// `R_PointToAngle2`, over the engine's own arctangent table.
-fn point_to_angle(dx: i64, dy: i64) -> i64 {
+pub fn point_to_angle(dx: i64, dy: i64) -> i64 {
     let tantoangle = column("tantoangle", "value");
     let slope_div = |num: i64, den: i64| {
         let (num, den) = (num as u32 as u64, den as u32 as u64);

@@ -12,6 +12,7 @@ pub mod inter;
 pub mod lights;
 pub mod map;
 pub mod maputl;
+pub mod missile;
 pub mod mobj;
 pub mod noise;
 pub mod plane;
@@ -47,6 +48,7 @@ pub fn load_statements(db: &str) -> Vec<Statement> {
     statements.extend(player::guards(db));
     statements.extend(noise::guards(db));
     statements.extend(mobj::guards(db));
+    statements.extend(missile::guards(db));
     statements.extend(setup::statements(db));
     statements
 }

@@ -102,21 +102,29 @@ outside the lambda whatever the fold does, so such a body has to lead back to
 one of them.
 
 Analysis is paid once per session, and its cost is not a function of the
-statement's size. Measured on ClickHouse 26.7.5.10 with the simulation
-statement at 650 KB and a 20 s analysis: 32 KB of flat arithmetic, of array
-lambdas over a real column or of an 80-value chain adds nothing, while the
-32 KB fold that fires the shotgun's seven pellets adds about 13 s, whatever
-depth it sits at, however many columns read it and whether or not it is a
-stage of its own, and the same fold alone analyses in a quarter of a second.
-Bisecting that fold puts the cost in its blockmap walk, its damage routine,
-its spawns and the chain that carries them between steps, in that order. No
-mechanism is known, so a body that has to be one binding, such as a fold
-whose steps each read what the step before wrote, is kept to what the
-dependency forces inside it, and every piece added to a statement is measured
-with `QueryAnalysisMicroseconds` from `system.query_log`. The driver's budget
-for the first tic (`FIRST_TIC_TIMEOUT` in `driver/src/cli/native/diff.rs`) is
-sized for this analysis on a CI runner, which is about four times slower than
-a development machine.
+statement's size. A call taking two or more arrays costs about 160 ms of
+analysis on ClickHouse 26.7.5.10, whatever the call is and whatever its body
+does. The price is per call site and not per array, so one call over many
+arrays is free where many calls over two are not, and it is charged whether a
+lambda is present or not: `arrayZip(a, b)` costs what
+`arrayFilter((v, k) -> …, a, b)` costs. A call over one array costs nothing
+measurable. `arrayConcat` is the exception at about 20 ms a site, so list
+growth is written the plain way.
+
+The 160 ms is the price at the statement's present size and is smaller in a
+smaller one, so it sizes a change rather than the whole. The way to hold it
+down is to read the arrays at an index instead of passing them: `arrayMap(k ->
+f(a[k], b[k]), arrayEnumerate(a))` takes one array where `arrayMap((x, y) ->
+f(x, y), a, b)` takes two, and a filter over a flag becomes the places that
+survive, worked out once, and each column read through them. Every piece
+added to a statement is measured with `QueryAnalysisMicroseconds` from
+`system.query_log`.
+
+A body that has to be one binding, such as a fold whose steps each read what
+the step before wrote, is kept to what the dependency forces inside it. The
+driver's budget for the first tic (`FIRST_TIC_TIMEOUT` in
+`driver/src/cli/native/diff.rs`) is sized for this analysis on a CI runner,
+which is about four times slower than a development machine.
 
 Rows reach the statement one block each. Rows written into a statement from a
 `VALUES` list share one block whatever `max_insert_block_size` says, so every

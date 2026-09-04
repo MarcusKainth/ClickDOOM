@@ -52,6 +52,21 @@ mod cycled {
     pub const MOVED: usize = 8;
 }
 
+/// One value per mobj slot.
+///
+/// The arrays the body reads are read at `k` rather than passed, so the
+/// call takes one array however many of them it reads. A call over two or
+/// more arrays costs analysis in proportion to nothing but its own
+/// presence; `NATIVE.md` carries the number.
+fn per_slot(body: &str) -> String {
+    format!("arrayMap(k -> {body}, mt_slots)")
+}
+
+/// The slots a test holds for, read the same way.
+fn slots_where(body: &str) -> String {
+    format!("arrayFilter(k -> {body}, mt_slots)")
+}
+
 /// The constants the thinkers read.
 pub fn constants(db: &str) -> Vec<(String, String)> {
     vec![
@@ -186,11 +201,10 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     }
     bind(
         "mt_cycles",
-        format!(
-            "arrayMap((k, tc) -> toUInt8(k != {slot} AND tc != -1 AND tc - 1 = 0), \
-             mt_slots, {})",
-            s("m_tics")
-        ),
+        per_slot(&format!(
+            "toUInt8(k != {slot} AND {tics}[k] != -1 AND {tics}[k] - 1 = 0)",
+            tics = s("m_tics")
+        )),
     );
     bind(
         "mt_next",
@@ -201,20 +215,20 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     bind(
         "mt_looks",
-        "arrayMap((c, n) -> toUInt8(c = 1 AND n != 0 AND state_action[1 + n] = a_look), \
-         mt_cycles, mt_next)"
-            .to_owned(),
+        per_slot(
+            "toUInt8(mt_cycles[k] = 1 AND mt_next[k] != 0 \
+             AND state_action[1 + mt_next[k]] = a_look)",
+        ),
     );
     // `A_Look` reads its sector's sound target before it looks for the
     // player, and a shootable one becomes the thing's target.
     bind(
         "mt_heard",
-        format!(
-            "arrayMap((l, ss) -> toUInt32(if(l = 1, {}[1 + ssec_sector[1 + ss]], 0)), \
-             mt_looks, {})",
+        per_slot(&format!(
+            "toUInt32(if(mt_looks[k] = 1, {}[1 + ssec_sector[1 + {}[k]]], 0))",
             s("sec_soundtarget"),
             s("m_subsector")
-        ),
+        )),
     );
     bind(
         "mt_shootable",
@@ -234,17 +248,14 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // answer. All three lists come out of the tic-start snapshot: a state
     // cycle enters at most one routine, so a thing that looks does not
     // chase in the same entry, and only a look moves a target.
-    bind(
-        "mt_lookers",
-        "arrayFilter((k, l) -> l = 1, mt_slots, mt_looks)".to_owned(),
-    );
+    bind("mt_lookers", slots_where("mt_looks[k] = 1"));
     bind(
         "mt_chasers",
-        format!(
-            "arrayFilter((k, c, n, t) -> c = 1 AND n != 0 \
-             AND state_action[1 + n] = a_chase AND t != 0, mt_slots, mt_cycles, mt_next, {})",
+        slots_where(&format!(
+            "mt_cycles[k] = 1 AND mt_next[k] != 0 \
+             AND state_action[1 + mt_next[k]] = a_chase AND {}[k] != 0",
             s("m_target")
-        ),
+        )),
     );
     let pairs = |slot: &str, other: &dyn Fn(&str) -> String| {
         sight::asking(
@@ -261,10 +272,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         )
     };
     let target = |column: &str| format!("{}[{}[k]]", s(column), s("m_target"));
-    bind(
-        "mt_hearers",
-        "arrayFilter((k, sh) -> sh = 1, mt_slots, mt_shootable)".to_owned(),
-    );
+    bind("mt_hearers", slots_where("mt_shootable[k] = 1"));
     let heard = |column: &str| format!("{}[mt_heard[k]]", s(column));
     bind(
         "mt_pairs",
@@ -298,62 +306,58 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // anyway so the chase that follows reads the target it holds.
     bind(
         "mt_hears",
-        format!(
-            "arrayMap((fl, sh, hs) -> toUInt8(sh = 1 \
-             AND (bitAnd(fl, {MF_AMBUSH}) = 0 OR hs = 1)), {}, mt_shootable, mt_heard_seen)",
+        per_slot(&format!(
+            "toUInt8(mt_shootable[k] = 1 \
+             AND (bitAnd({}[k], {MF_AMBUSH}) = 0 OR mt_heard_seen[k] = 1))",
             s("m_flags")
-        ),
+        )),
     );
     bind(
         "mt_sees_target",
-        "arrayMap((k, l, h, hs) -> toUInt8(multiIf(h = 1, hs, \
-         l = 1, mt_seen[indexOf(mt_lookers, k)], \
-         mt_chase_seen[indexOf(mt_chasers, k)])), \
-         mt_slots, mt_looks, mt_hears, mt_heard_seen)"
-            .to_owned(),
+        per_slot(
+            "toUInt8(multiIf(mt_hears[k] = 1, mt_heard_seen[k], \
+             mt_looks[k] = 1, mt_seen[indexOf(mt_lookers, k)], \
+             mt_chase_seen[indexOf(mt_chasers, k)]))",
+        ),
     );
     // `P_LookForPlayers`, which a look runs where its sector heard nothing
     // it wakes on.
     bind(
         "mt_finds",
-        format!(
-            "arrayMap((k, l, mx, my, ma) -> if(l = 1, {}, toUInt8(0)), \
-             mt_slots, mt_looks, {}, {}, {})",
+        per_slot(&format!(
+            "if(mt_looks[k] = 1, {}, toUInt8(0))",
             enemy::look_for_players(
                 "mt_seen[indexOf(mt_lookers, k)]",
                 &player("m_health"),
-                "mx",
-                "my",
-                "ma",
+                &format!("{}[k]", s("m_x")),
+                &format!("{}[k]", s("m_y")),
+                &format!("{}[k]", s("m_angle")),
                 &player("m_x"),
                 &player("m_y"),
             ),
-            s("m_x"),
-            s("m_y"),
-            s("m_angle"),
-        ),
+        )),
     );
     bind(
         "mt_wakes",
-        "arrayMap((h, f) -> toUInt8(h = 1 OR f = 1), mt_hears, mt_finds)".to_owned(),
+        per_slot("toUInt8(mt_hears[k] = 1 OR mt_finds[k] = 1)"),
     );
     // Only the walk over the players writes `lastlook`, and a look that
     // wakes on what it heard never reaches it.
     bind(
         "mt_looked",
-        "arrayMap((l, h) -> toUInt8(l = 1 AND h = 0), mt_looks, mt_hears)".to_owned(),
+        per_slot("toUInt8(mt_looks[k] = 1 AND mt_hears[k] = 0)"),
     );
     // What the look leaves as the target. A thing that heard something
     // shootable takes it even where the sight a deaf one needs fails, and
     // the walk over the players overwrites it where that finds one.
     bind(
         "mt_target",
-        format!(
-            "arrayMap((l, sh, h, f, hd, tg) -> toUInt32(multiIf(l = 0, tg, \
-             h = 1, hd, f = 1, {slot}, sh = 1, hd, tg)), \
-             mt_looks, mt_shootable, mt_hears, mt_finds, mt_heard, {})",
-            s("m_target")
-        ),
+        per_slot(&format!(
+            "toUInt32(multiIf(mt_looks[k] = 0, {tg}[k], \
+             mt_hears[k] = 1, mt_heard[k], mt_finds[k] = 1, {slot}, \
+             mt_shootable[k] = 1, mt_heard[k], {tg}[k]))",
+            tg = s("m_target")
+        )),
     );
 
     // `P_SetMobjState`, unrolled twice. Each entry sets the state, its
@@ -364,17 +368,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // cycle that wants one says the tic could not be produced.
     bind(
         "mt_one",
-        format!(
-            "arrayMap((k, c, n, w, l, lk, tt, st, tc, th, ll, ty) -> ({}), \
-             mt_slots, mt_cycles, mt_next, mt_wakes, mt_looks, mt_looked, mt_target, \
-             {}, {}, {}, {}, {})",
-            entry_one(&slot),
-            s("m_state"),
-            s("m_tics"),
-            s("m_threshold"),
-            s("m_lastlook"),
-            s("m_type"),
-        ),
+        per_slot(&format!("({})", entry_one(&slot, state))),
     );
     bind(
         "mt_two",
@@ -392,12 +386,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         bind(
             &format!("mk_{column}"),
-            format!(
-                "arrayMap((a, v) -> toInt32(if(a.{} = 1, {table}[1 + a.{}], v)), mt_two, {})",
+            per_slot(&format!(
+                "toInt32(if(mt_two[k].{} = 1, {table}[1 + mt_two[k].{}], {}[k]))",
                 cycled::MOVED,
                 cycled::STATE,
                 s(column)
-            ),
+            )),
         );
     }
     // A thing that takes the player as its target plays the sound it makes
@@ -405,12 +399,10 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // number, so what the pass carries out of it is how many were drawn.
     bind(
         "mt_shouts",
-        format!(
-            "arrayMap((l, w, ty) -> toUInt8(l = 1 AND w = 1 AND {} = 1), \
-             mt_looks, mt_wakes, {})",
-            enemy::see_sound_draws("mobj_seesound[1 + ty]"),
-            s("m_type")
-        ),
+        per_slot(&format!(
+            "toUInt8(mt_looks[k] = 1 AND mt_wakes[k] = 1 AND {} = 1)",
+            enemy::see_sound_draws(&format!("mobj_seesound[1 + {}[k]]", s("m_type"))),
+        )),
     );
 
     // `A_Chase` runs inside the `P_SetMobjState` that entered the state
@@ -426,10 +418,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             pending = cycled::PENDING,
         ),
     );
-    bind(
-        "mt_movers",
-        "arrayFilter((k, e) -> e > 0, mt_slots, mt_entries)".to_owned(),
-    );
+    bind("mt_movers", slots_where("mt_entries[k] > 0"));
     bind(
         "tx_shifters",
         "arrayDistinct(arrayConcat(tx_movers, mt_movers))".to_owned(),
@@ -593,18 +582,26 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
 
     bind(
         "mt_gone",
-        format!(
-            "arrayMap((k, c, n) -> toUInt8(k != {player} AND c = 1 AND n = 0), \
-             mt_slots, mt_cycles, mt_next)"
-        ),
+        per_slot(&format!(
+            "toUInt8(k != {player} AND mt_cycles[k] = 1 AND mt_next[k] = 0)"
+        )),
     );
-    bind("mt_kept", "arrayMap(g -> toUInt8(1 - g), mt_gone)".to_owned());
+    bind(
+        "mt_kept",
+        "arrayMap(g -> toUInt8(1 - g), mt_gone)".to_owned(),
+    );
     // Where each slot ends up, or 0 for the one that was taken.
     bind(
         "mt_slot",
-        "arrayMap((a, c) -> toUInt32(if(a = 1, c, 0)), mt_kept, arrayCumSum(mt_kept))".to_owned(),
+        per_slot("toUInt32(if(mt_kept[k] = 1, arrayCumSum(mt_kept)[k], 0))"),
     );
 
+    // The places that survive, worked out once. Each column is then read
+    // through them with one array rather than filtered against a second.
+    bind(
+        "mt_places",
+        "arrayFilter(i -> mt_kept[i] = 1, arrayEnumerate(mt_kept))".to_owned(),
+    );
     let moved_slot = |slot: &str| format!("toUInt32(if({slot} = 0, 0, mt_slot[{slot}]))");
     for column in super::state_columns() {
         // `m_id` is the slot itself, which is read off the compacted list.
@@ -623,7 +620,7 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
         };
         bind(
             &format!("now_{column}"),
-            format!("arrayFilter((v, a) -> a = 1, {held}, mt_kept)"),
+            format!("arrayMap(i -> {held}[i], mt_places)"),
         );
     }
     bind(
@@ -632,7 +629,11 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     );
     bind(
         "now_sec_soundtarget",
-        format!("arrayMap(t -> {}, {})", moved_slot("t"), s("sec_soundtarget")),
+        format!(
+            "arrayMap(t -> {}, {})",
+            moved_slot("t"),
+            s("sec_soundtarget")
+        ),
     );
     bind("now_p_attacker", moved_slot(&s("p_attacker")));
     bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
@@ -671,28 +672,39 @@ const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 
 /// The first state a cycle enters, and `A_Look` where the state carries
 /// it.
-fn entry_one(slot: &str) -> String {
-    let enters = "c = 1 AND n != 0";
+fn entry_one(slot: &str, state: &State) -> String {
+    // What the pass reads, at the slot the map is on. Each of these was a
+    // parameter of a lambda over as many arrays; read this way the call
+    // takes one array and costs the analysis of one.
+    let at = |array: &str| format!("{array}[k]");
+    let held = |column: &str| format!("{}[k]", state.get(column));
+    let (cycles, next) = (at("mt_cycles"), at("mt_next"));
+    let (wakes, looks) = (at("mt_wakes"), at("mt_looks"));
+    let (looked, target) = (at("mt_looked"), at("mt_target"));
+    let (state_now, tics) = (held("m_state"), held("m_tics"));
+    let (threshold, lastlook) = (held("m_threshold"), held("m_lastlook"));
+    let kind = held("m_type");
+    let enters = format!("{cycles} = 1 AND {next} != 0");
     let members = [
-        format!("toInt32(if({enters}, n, st))"),
+        format!("toInt32(if({enters}, {next}, {state_now}))"),
         // `P_MobjThinker` drops the count, and `P_SetMobjState` writes the
         // entered state's own over it.
         format!(
-            "toInt32(multiIf({enters}, state_tics[1 + n], \
-             k = {slot} OR tc = -1, tc, tc - 1))"
+            "toInt32(multiIf({enters}, state_tics[1 + {next}], \
+             k = {slot} OR {tics} = -1, {tics}, {tics} - 1))"
         ),
-        "toUInt32(tt)".to_owned(),
-        "toInt32(if(l = 1, 0, th))".to_owned(),
-        format!("toInt32(if(lk = 1, {}, ll))", enemy::LASTLOOK),
+        format!("toUInt32({target})"),
+        format!("toInt32(if({looks} = 1, 0, {threshold}))"),
+        format!("toInt32(if({looked} = 1, {}, {lastlook}))", enemy::LASTLOOK),
         format!(
             "toInt32(multiIf(NOT ({enters}), -1, \
-             l = 1 AND w = 1, mobj_seestate[1 + ty], \
-             state_tics[1 + n] = 0, state_nextstate[1 + n], -1))"
+             {looks} = 1 AND {wakes} = 1, mobj_seestate[1 + {kind}], \
+             state_tics[1 + {next}] = 0, state_nextstate[1 + {next}], -1))"
         ),
         format!(
-            "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 0, \
-             state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
-             AND state_action[1 + n] != a_chase, 1, 0))"
+            "toUInt8(multiIf(k = {slot}, 0, {cycles} = 0, 0, {next} = 0, 0, \
+             state_action[1 + {next}] != 0 AND state_action[1 + {next}] != a_look \
+             AND state_action[1 + {next}] != a_chase, 1, 0))"
         ),
         format!("toUInt8({enters})"),
     ];
@@ -873,17 +885,13 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
 
     bind(
         "tx_moving",
-        format!(
-            "arrayMap((k, mx, my) -> toUInt8(k != {player} AND (mx != 0 OR my != 0)), \
-             mt_slots, {}, {})",
+        per_slot(&format!(
+            "toUInt8(k != {player} AND ({}[k] != 0 OR {}[k] != 0))",
             s("m_momx"),
             s("m_momy"),
-        ),
+        )),
     );
-    bind(
-        "tx_movers",
-        "arrayFilter((k, m) -> m = 1, mt_slots, tx_moving)".to_owned(),
-    );
+    bind("tx_movers", slots_where("tx_moving[k] = 1"));
     bind(
         "tx_at",
         "arrayMap(k -> indexOf(tx_movers, k), mt_slots)".to_owned(),
@@ -1078,19 +1086,18 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
         let held = s(column);
         bind(
             &format!("tx_{column}"),
-            format!(
-                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {moved}[i])), mt_slots, tx_at)"
-            ),
+            per_slot(&format!(
+                "toInt32(if(tx_at[k] = 0, {held}[k], {moved}[tx_at[k]]))"
+            )),
         );
     }
     for axis in ["x", "y"] {
         let held = s(&format!("m_mom{axis}"));
         bind(
             &format!("mk_m_mom{axis}"),
-            format!(
-                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tx_mom{axis}_left[i])), \
-                 mt_slots, tx_at)"
-            ),
+            per_slot(&format!(
+                "toInt32(if(tx_at[k] = 0, {held}[k], tx_mom{axis}_left[tx_at[k]]))"
+            )),
         );
     }
 
@@ -1143,16 +1150,19 @@ fn shifted(state: &State, movers: &str) -> String {
             my = s("m_momy"),
         )
     };
+    // The outer walk reads the mover at its own place rather than taking
+    // the list twice, so both calls take one array.
+    let a = format!("{movers}[i]");
     let axis = |array: &str| {
         format!(
-            "abs(toInt64({array}[a]) - toInt64({array}[b])) < {} + {}",
-            reach("a"),
+            "abs(toInt64({array}[{a}]) - toInt64({array}[b])) < {} + {}",
+            reach(&a),
             reach("b"),
         )
     };
     format!(
-        "toUInt8(arrayExists((a, i) -> arrayExists(b -> {} AND {}, \
-         arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
+        "toUInt8(arrayExists(i -> arrayExists(b -> {} AND {}, \
+         arraySlice({movers}, i + 1)), arrayEnumerate({movers})))",
         axis(&s("m_x")),
         axis(&s("m_y")),
     )
@@ -1178,18 +1188,14 @@ pub fn thing_falls(state: &State) -> Vec<(String, String)> {
 
     bind(
         "tz_falling",
-        format!(
-            "arrayMap((k, z, fz, mz) -> toUInt8(k != {} AND (z != fz OR mz != 0)), \
-             mt_slots, {}, tx_m_floorz, {})",
+        per_slot(&format!(
+            "toUInt8(k != {} AND ({}[k] != tx_m_floorz[k] OR {}[k] != 0))",
             s("p_mo"),
             s("m_z"),
             s("m_momz"),
-        ),
+        )),
     );
-    bind(
-        "tz_fallers",
-        "arrayFilter((k, f) -> f = 1, mt_slots, tz_falling)".to_owned(),
-    );
+    bind("tz_fallers", slots_where("tz_falling[k] = 1"));
     bind(
         "tz_at",
         "arrayMap(k -> indexOf(tz_fallers, k), mt_slots)".to_owned(),
@@ -1259,9 +1265,9 @@ pub fn thing_falls(state: &State) -> Vec<(String, String)> {
         let held = s(column);
         bind(
             &format!("tz_{column}"),
-            format!(
-                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {moved}[i])), mt_slots, tz_at)"
-            ),
+            per_slot(&format!(
+                "toInt32(if(tz_at[k] = 0, {held}[k], {moved}[tz_at[k]]))"
+            )),
         );
     }
     bind("mk_m_momz", "tz_m_momz".to_owned());
@@ -1597,7 +1603,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         ),
         "st_pk".to_owned(),
         format!(
-            "arrayMap((a, k) -> toUInt8(if(has(st_pk.{}, toUInt32(k)), 0, a)), {held_alive}, \
+            "arrayMap(k -> toUInt8(if(has(st_pk.{}, toUInt32(k)), 0, {held_alive}[k])), \
              arrayEnumerate({held_alive}))",
             inter::TAKEN,
             held_alive = held(moving::ALIVE)

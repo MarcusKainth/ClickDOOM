@@ -33,7 +33,7 @@ const RUN: i8 = 0x32;
 
 /// The first tic of a session pays for the statement's analysis, which is
 /// seconds. `TIC_TIMEOUT` is the budget for the tics after it.
-const FIRST_ROW_TIMEOUT: Duration = Duration::from_secs(300);
+const FIRST_ROW_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// The tic command the simulation built for `tic`, and where the player
 /// stands after it.

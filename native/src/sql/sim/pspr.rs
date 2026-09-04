@@ -77,6 +77,9 @@ mod held {
     pub const ACCURATE: usize = 13;
     /// The frame the flash sprite was put into, -1 for none.
     pub const FLASH: usize = 14;
+    /// What the light routines have left, which the status bar and the
+    /// renderer read as the flash's brightness.
+    pub const EXTRALIGHT: usize = 15;
 }
 
 /// The constants the sprites read: the weapon table and the action
@@ -334,7 +337,8 @@ pub fn move_psprites(
             "toUInt8(psp_enters = 1 AND (\
              (psp_action != 0 AND psp_action != a_weaponready \
              AND psp_action != a_lower AND psp_action != a_raise \
-             AND psp_fires_shots = 0) \
+             AND psp_action != a_light0 AND psp_action != a_light1 \
+             AND psp_action != a_light2 AND psp_fires_shots = 0) \
              OR (psp_ready_fires = 1 AND psp_has_ammo = 0) \
              OR (psp_fires_shots = 1 AND (psp_flash_entered = 0 \
              OR (state_action[1 + psp_flash_entered] != a_light0 \
@@ -403,6 +407,23 @@ pub fn move_psprites(
         "toInt32(if(psp_fires_shots = 1, psp_flash_entered, {}))",
         w(held::FLASH)
     );
+    // `A_Light0`, `A_Light1` and `A_Light2` are the whole of what a
+    // psprite routine leaves outside the sprite itself. An entry that
+    // fires runs the flash frame's own routine as it puts the sprite
+    // there, and a flash frame the sprite cycles into runs it as any
+    // state does.
+    let light = |state: &str, held: &str| {
+        format!(
+            "multiIf(state_action[1 + {state}] = a_light1, toInt32(1), \
+             state_action[1 + {state}] = a_light2, toInt32(2), \
+             state_action[1 + {state}] = a_light0, toInt32(0), {held})"
+        )
+    };
+    let extralight_now = format!(
+        "toInt32(if(psp_fires_shots = 1, {}, {}))",
+        light("psp_flash_entered", &w(held::EXTRALIGHT)),
+        light("greatest(psp_entering, 0)", &w(held::EXTRALIGHT)),
+    );
     let members = [
         put(w(held::STATE), &state_now),
         put(w(held::TICS), &tics_now),
@@ -418,6 +439,7 @@ pub fn move_psprites(
         shots_now,
         accurate_now,
         flash_now,
+        extralight_now,
     ];
     let body = format!("if(psp_runs = 0, psp_at, ({}))", members.join(", "));
 
@@ -432,12 +454,13 @@ pub fn move_psprites(
     let start = format!(
         "({}, {dropped}, {}, {}, toInt32({}), toInt32({pendingweapon}), toUInt8({}), \
          CAST([{NO_STATE}, {NO_STATE}], 'Array(Int32)'), toUInt8(0), toUInt8(0), toUInt8(0), \
-         toUInt32(0), toUInt8(0), toInt32({NO_STATE}))",
+         toUInt32(0), toUInt8(0), toInt32({NO_STATE}), toInt32({}))",
         s("psp_state"),
         s("psp_sx"),
         s("psp_sy"),
         s("p_readyweapon"),
         s("p_attackdown"),
+        s("p_extralight"),
     );
     // One step per entry each cycling sprite is given, in sprite order.
     // A sprite whose count did not run out contributes none, so a tic that
@@ -534,17 +557,9 @@ pub fn move_psprites(
             "psp_fired".to_owned(),
             format!("toUInt8({})", held(held::FIRED)),
         ),
-        // `P_MovePsprites` walks the weapon sprite before the flash, so a
-        // flash the weapon's own entry put in is dropped a tic by the pass
-        // that follows it.
         (
             "now_p_extralight".to_owned(),
-            format!(
-                "toInt32(multiIf(psp_flash = {NO_STATE}, {}, \
-                 state_action[1 + psp_flash] = a_light1, 1, \
-                 state_action[1 + psp_flash] = a_light2, 2, 0))",
-                s("p_extralight")
-            ),
+            format!("toInt32({})", held(held::EXTRALIGHT)),
         ),
     ]
 }

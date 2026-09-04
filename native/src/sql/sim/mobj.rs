@@ -384,14 +384,14 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // What the state cycle leaves. The chase below reads the target and
     // the threshold it left and writes the threshold again.
     let read = |member: usize, cast: &str| format!("arrayMap(a -> {cast}(a.{member}), mt_two)");
-    bind("now_m_state", read(cycled::STATE, "toInt32"));
-    bind("now_m_tics", read(cycled::TICS, "toInt32"));
-    bind("now_m_target", read(cycled::TARGET, "toUInt32"));
+    bind("mk_m_state", read(cycled::STATE, "toInt32"));
+    bind("mk_m_tics", read(cycled::TICS, "toInt32"));
+    bind("mk_m_target", read(cycled::TARGET, "toUInt32"));
     bind("mt_threshold", read(cycled::THRESHOLD, "toInt32"));
-    bind("now_m_lastlook", read(cycled::LASTLOOK, "toInt32"));
+    bind("mk_m_lastlook", read(cycled::LASTLOOK, "toInt32"));
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         bind(
-            &format!("now_{column}"),
+            &format!("mk_{column}"),
             format!(
                 "arrayMap((a, v) -> toInt32(if(a.{} = 1, {table}[1 + a.{}], v)), mt_two, {})",
                 cycled::MOVED,
@@ -459,7 +459,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_flags: &s("m_flags"),
         m_type: &s("m_type"),
         m_health: &s("m_health"),
-        m_target: "now_m_target",
+        m_target: "mk_m_target",
         m_movedir: &s("m_movedir"),
         m_movecount: &s("m_movecount"),
         m_reactiontime: &s("m_reactiontime"),
@@ -545,7 +545,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     for (column, member, cast, _) in &held {
         bind(
-            &format!("now_{column}"),
+            &format!("mk_{column}"),
             format!("arrayMap(c -> {cast}(c.{member}), cw_slot)"),
         );
     }
@@ -558,6 +558,9 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             enemy::chased::DRAWS
         ),
     );
+    for (name, expr) in removed(state, &slot) {
+        bind(&name, expr);
+    }
     bind(
         "now_unresolved",
         format!(
@@ -572,6 +575,106 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     bindings
 }
+
+/// `P_RemoveMobj` for the things whose state cycle reached `S_NULL`.
+///
+/// `P_SetMobjState` removes a thing rather than entering state zero, and
+/// `P_RemoveThinker` takes it off the list at the end of the tic. The
+/// arrays close the gap the thing leaves, so every slot above it moves
+/// down by one and every pointer naming one of those moves with it. A
+/// pointer at the thing that was taken becomes 0, which is what the
+/// contract says none means.
+///
+/// `next_seq` counts what the level has ever spawned and does not move.
+fn removed(state: &State, player: &str) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+
+    bind(
+        "mt_gone",
+        format!(
+            "arrayMap((k, c, n) -> toUInt8(k != {player} AND c = 1 AND n = 0), \
+             mt_slots, mt_cycles, mt_next)"
+        ),
+    );
+    bind(
+        "mt_kept",
+        "arrayMap(g -> toUInt8(1 - g), mt_gone)".to_owned(),
+    );
+    // Where each slot ends up, or 0 for the one that was taken.
+    bind(
+        "mt_slot",
+        "arrayMap((a, c) -> toUInt32(if(a = 1, c, 0)), mt_kept, arrayCumSum(mt_kept))".to_owned(),
+    );
+
+    let moved_slot = |slot: &str| format!("toUInt32(if({slot} = 0, 0, mt_slot[{slot}]))");
+    for column in super::state_columns() {
+        // `m_id` is the slot itself, which is read off the compacted list.
+        if !column.starts_with("m_") || column == "m_id" {
+            continue;
+        }
+        let held = if THINKER_COLUMNS.contains(&column) {
+            format!("mk_{column}")
+        } else {
+            s(column)
+        };
+        let held = if POINTERS.contains(&column) {
+            format!("arrayMap(t -> {}, {held})", moved_slot("t"))
+        } else {
+            held
+        };
+        bind(
+            &format!("now_{column}"),
+            format!("arrayFilter((v, a) -> a = 1, {held}, mt_kept)"),
+        );
+    }
+    bind(
+        "now_m_id",
+        "arrayMap(n -> toUInt32(n), arrayEnumerate(now_m_x))".to_owned(),
+    );
+    bind(
+        "now_sec_soundtarget",
+        format!(
+            "arrayMap(t -> {}, {})",
+            moved_slot("t"),
+            s("sec_soundtarget")
+        ),
+    );
+    bind("now_p_attacker", moved_slot(&s("p_attacker")));
+    bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
+    bindings
+}
+
+/// The mobj array columns the thinker writes, which the compaction reads
+/// from it rather than from the tic's own start.
+const THINKER_COLUMNS: [&str; 20] = [
+    "m_state",
+    "m_tics",
+    "m_target",
+    "m_lastlook",
+    "m_sprite",
+    "m_frame",
+    "m_x",
+    "m_y",
+    "m_z",
+    "m_angle",
+    "m_movedir",
+    "m_movecount",
+    "m_reactiontime",
+    "m_threshold",
+    "m_floorz",
+    "m_ceilingz",
+    "m_subsector",
+    "m_momx",
+    "m_momy",
+    "m_momz",
+];
+
+/// The mobj array columns that hold a slot rather than a value of their
+/// own. `sec_soundtarget`, `p_attacker` and `p_mo` hold one too and are
+/// written beside them.
+const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 
 /// The first state a cycle enters, and `A_Look` where the state carries
 /// it.
@@ -594,7 +697,7 @@ fn entry_one(slot: &str) -> String {
              state_tics[1 + n] = 0, state_nextstate[1 + n], -1))"
         ),
         format!(
-            "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 1, \
+            "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 0, \
              state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
              AND state_action[1 + n] != a_chase, 1, 0))"
         ),
@@ -990,7 +1093,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
     for axis in ["x", "y"] {
         let held = s(&format!("m_mom{axis}"));
         bind(
-            &format!("now_m_mom{axis}"),
+            &format!("mk_m_mom{axis}"),
             format!(
                 "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tx_mom{axis}_left[i])), \
                  mt_slots, tx_at)"
@@ -1168,7 +1271,7 @@ pub fn thing_falls(state: &State) -> Vec<(String, String)> {
             ),
         );
     }
-    bind("now_m_momz", "tz_m_momz".to_owned());
+    bind("mk_m_momz", "tz_m_momz".to_owned());
 
     // What `P_ZMovement` does that this does not: a skull in flight bounces
     // off what it reaches, a floating thing rises and sinks towards its

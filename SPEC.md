@@ -1,6 +1,6 @@
 # ClickDOOM SPEC
 
-**SPEC_VERSION: 0.3.0**. The decisions behind it are in `docs/adr/`.
+**SPEC_VERSION: 0.3.1**. The decisions behind it are in `docs/adr/`.
 
 This document is the single source of truth for every cross-workstream contract.
 If code and SPEC disagree, the code is wrong. Changes require a `spec-change`
@@ -440,17 +440,15 @@ flat region. Per-batch fixed cost is **624 ms** on ClickHouse 26.7.5.10,
 4.8% of a 13,088 ms steady-state batch, and it is the analyzer walking the
 generated SQL rather than the RAM capture (same record).
 
-Measured real-ROM throughput is **5,340 +/- 50 instructions/sec** end to end
-on the boot window and **5,060 +/- 50** on the store-heavy gameplay window,
-both at K = 60,000 and HWM = 20,000 on ClickHouse 26.7.5.10, chained batches
-past the compile threshold, one fresh container per arm, five repeats with
-the machine allowed to settle between them
-(`docs/experiments/short-circuit-and-gameplay.md`, indexed by
-`docs/benchmarks.md`). A figure taken over the first three batches of a
-series reads **18.3%** lower, because those are both the uncompiled batches
-and, in boot, the write-log-saturated ones (same record). Quote the window,
-K, the high-water mark, the batch range and the server version with any
-number here.
+Measured real-ROM throughput is stated by the record `docs/benchmarks.md`
+indexes as current for the pinned server, at K = 60,000 and HWM = 20,000,
+chained batches past the compile threshold, one fresh container per arm, on a
+quiet machine. A figure quoted here carries the window, K, the high-water
+mark, the batch range and the server version, and moves when the pin moves.
+A figure taken over the first three batches of a series reads **18.3%**
+lower, because those are both the uncompiled batches and, in boot, the
+write-log-saturated ones
+(`docs/experiments/short-circuit-and-gameplay.md`).
 
 The bar to clear is **≥5,000 instructions/sec**, stretch **≥11,000**.
 Against §1's measured `-timedemo demo3` length those are a five-day run and a
@@ -523,12 +521,10 @@ Resolved by the Phase 0 benchmark (evidence:
       pre-decoding is the lever (7.4× on the same fold, ADR-0002).
       ADR-0004 retired ADR-0001's ≥10,000 instructions/sec acceptance
       criterion as a merge gate for correctness work. Measured real-ROM
-      throughput is **5,340 +/- 50 instructions/sec** end to end on the boot
-      window and **5,060 +/- 50** on the store-heavy gameplay window, at
-      K = 60,000 and HWM = 20,000 on 26.7.5.10 (`docs/benchmarks.md`; §6
-      states the conditions). Both clear the ≥5,000 bar, gameplay by 1.2%,
-      which is close enough that it is re-checked rather than assumed after
-      a change. The architectural decision — arrayFold, write-log memory,
+      throughput is what `docs/benchmarks.md` indexes for the pinned server;
+      §6 states the conditions. Whether the gameplay window still clears the
+      ≥5,000 bar on 26.8.2.7 is open, and a quiet-machine run settles it.
+      The architectural decision — arrayFold, write-log memory,
       K = 50,000 as the default — stands.
 - [x] **Accumulator copy with large captured constant arrays.** Does not
       happen. Fold throughput is flat across a 6,144× range in captured-array
@@ -540,10 +536,12 @@ Resolved by the Phase 0 benchmark (evidence:
       because it assumed the cost model was about data movement rather than
       expression-node count.
 - [x] **`K` default.** 50,000, fixed in §6 above.
-- [x] **ClickHouse version pin.** 26.7.5.10, pinned by image digest
-      (`sha256:800e8286…`, the multi-arch index) in `docker-compose.yml` and
-      every workflow; bumped from 26.3 on #260 (1.77x fold throughput,
-      differential trace clean). Note the
+- [x] **ClickHouse version pin.** 26.8.2.7, pinned by image digest
+      (`sha256:fa394da8…`, the multi-arch index) in `docker-compose.yml`, which
+      every workflow reads through `make up`; bumped from 26.7.5.10 on #295.
+      Emulation costs 0.88x on the gameplay window end to end and the resident
+      simulation statement's analysis costs 3.07x less
+      (`docs/experiments/clickhouse-26-8.md`). Note the
       image restricts the `default` user to container-local addresses; the pin
       ships `CLICKHOUSE_PASSWORD` in `docker-compose.yml` and in every CI
       service container so host and runner connections work (see issue #3).

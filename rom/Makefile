@@ -41,7 +41,7 @@ REPRO_ELF := $(BUILD)/repro/doom-rv32im.elf
 
 # rom's copy of SPEC.md's SPEC_VERSION, which manifest.json carries. SPEC.md
 # says a change to it updates the constants in code, and this is one of them.
-SPEC_VERSION := 0.3.0
+SPEC_VERSION := 0.3.1
 
 # The real DOOM engine (issue #7), vendored pristine in #41. Excludes:
 # other platforms' doomgeneric_*.c ports (this ROM's own hooks are

@@ -20,7 +20,7 @@ use crate::stats::{Clock, Monotonic};
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How long the first tic may take, which is the statement being analysed.
-const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(120);
+const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Args)]
 #[command(

@@ -197,6 +197,23 @@ const HURT: [(u32, i32, i32, i32); 2] = [(142, 449, 2, 60), (FIRST_SHOT_FRAME, 4
 /// still at gametic 142 and spends what `P_DamageMobj` gave it at 143:
 /// `P_XYMovement` moves it by the whole of that momentum and friction
 /// takes the rest.
+/// `gametic, psp_state[2], psp_tics[2], p_extralight` for the flash the
+/// shotgun leaves, read out of the reference emulator's demo3 trace.
+///
+/// The weapon's own routine puts the sprite in its first flash frame and
+/// `A_Light1` runs as it does, so gametic 143 is already a tic into a
+/// four tic frame. The sprite then cycles on its own: 146 is the second
+/// frame with `A_Light2`, and 149 is the frame after it, which waits no
+/// tics, runs `A_Light0` and takes the sprite off.
+const FLASH: [(u32, i32, i32, i32); 6] = [
+    (142, -1, 0, 0),
+    (FIRST_SHOT_FRAME, 30, 3, 1),
+    (145, 30, 1, 1),
+    (146, 31, 3, 2),
+    (148, 31, 1, 2),
+    (149, -1, 0, 0),
+];
+
 const THRUST: [(u32, usize, i32, i32, i32, i32); 4] = [
     (142, 118, 8272000, -4310912, 0, 0),
     (142, 258, 13992912, 4297488, 0, 0),
@@ -284,6 +301,7 @@ struct Walked {
     heard_none: u64,
     heard_of: u64,
     psp_state: Vec<i32>,
+    psp_tics: Vec<i32>,
     psp_sx: Vec<i32>,
     psp_sy: Vec<i32>,
     readyweapon: i32,
@@ -302,6 +320,7 @@ struct Walked {
     thrust_y: Vec<i32>,
     thrust_momx: Vec<i32>,
     thrust_momy: Vec<i32>,
+    extralight: i32,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -320,7 +339,7 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              toUInt64(countEqual(sec_soundtraversed, 2)) AS heard_far, \
              toUInt64(countEqual(sec_soundtraversed, 0)) AS heard_none, \
              toUInt64(countEqual(sec_soundtarget, p_mo)) AS heard_of, \
-             psp_state, psp_sx, psp_sy, \
+             psp_state, psp_tics, psp_sx, psp_sy, \
              p_readyweapon AS readyweapon, p_pendingweapon AS pendingweapon, \
              p_attackdown AS attackdown, prndindex, \
              m_movedir[118] AS movedir118, m_movecount[118] AS movecount118, \
@@ -330,7 +349,8 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              arrayMap(k -> m_x[k], [118, 258]) AS thrust_x, \
              arrayMap(k -> m_y[k], [118, 258]) AS thrust_y, \
              arrayMap(k -> m_momx[k], [118, 258]) AS thrust_momx, \
-             arrayMap(k -> m_momy[k], [118, 258]) AS thrust_momy \
+             arrayMap(k -> m_momy[k], [118, 258]) AS thrust_momy, \
+             p_extralight AS extralight \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -516,6 +536,14 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             ),
             (movedir, movecount, reactiontime, angle, x, y),
             "the chasing monster at gametic {tic}"
+        );
+    }
+    for (tic, state, tics, extralight) in FLASH {
+        let row = at(tic);
+        assert_eq!(
+            (row.psp_state[1], row.psp_tics[1], row.extralight),
+            (state, tics, extralight),
+            "the flash sprite at gametic {tic}"
         );
     }
     for (tic, slot, x, y, momx, momy) in THRUST {

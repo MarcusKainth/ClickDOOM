@@ -9,6 +9,7 @@
 use clickdoom_native::tables;
 
 use super::damage::point_to_angle;
+use super::mobj::thing_type;
 use super::traverse::fixed_mul;
 
 const FRACUNIT: i64 = 1 << 16;
@@ -16,6 +17,8 @@ const FRACUNIT: i64 = 1 << 16;
 const MISSILE_HEIGHT: i64 = 4 * 8 * FRACUNIT;
 const FUZZ_SHIFT: u32 = 20;
 /// `p_mobj.h`
+const MF_SOLID: i64 = 2;
+const MF_SHOOTABLE: i64 = 4;
 const MF_MISSILE: i64 = 0x1_0000;
 const MF_SHADOW: i64 = 0x4_0000;
 /// `tables.h`
@@ -146,4 +149,129 @@ impl World {
 fn aprox_distance(dx: i64, dy: i64) -> i64 {
     let (ax, ay) = (wrap32(dx).abs(), wrap32(dy).abs());
     wrap32(ax + ay - (ax.min(ay) >> 1))
+}
+
+/// One thing the move test's box reached, on the fields
+/// `PIT_CheckThing`'s missile branch reads.
+#[derive(Clone, Debug)]
+pub struct Reached {
+    pub z: i64,
+    pub height: i64,
+    pub kind: i64,
+    pub flags: i64,
+}
+
+/// What the missile branch of `PIT_CheckThing` decides for one move.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Struck {
+    /// The place in the list the missile stopped at, 0 for none.
+    pub at: usize,
+    pub blocked: bool,
+    pub damage: i64,
+    pub draws: i64,
+}
+
+/// The missile as the walk reads it.
+pub struct Missile {
+    pub z: i64,
+    pub height: i64,
+    pub kind: i64,
+    /// The type of whatever fired it, or -1 where nothing did.
+    pub shooter: i64,
+}
+
+impl World {
+    /// `PIT_CheckThing`'s missile branch over the things the box reached,
+    /// in the order the walk reaches them. `shooter_at` is the place in
+    /// the list whatever fired the missile stands at, or 0.
+    pub fn strike(
+        &self,
+        it: &Missile,
+        touched: &[Reached],
+        shooter_at: usize,
+        base: i64,
+    ) -> Struck {
+        let mut answer = Struck {
+            at: 0,
+            blocked: false,
+            damage: 0,
+            draws: 0,
+        };
+        for (at, thing) in touched.iter().enumerate() {
+            if it.z > thing.z + thing.height || it.z + it.height < thing.z {
+                continue;
+            }
+            if at + 1 == shooter_at {
+                continue;
+            }
+            let knight = thing_type("MT_KNIGHT");
+            let bruiser = thing_type("MT_BRUISER");
+            let species = it.shooter != -1
+                && (it.shooter == thing.kind
+                    || (it.shooter == knight && thing.kind == bruiser)
+                    || (it.shooter == bruiser && thing.kind == knight));
+            if species && thing.kind != thing_type("MT_PLAYER") {
+                answer.at = at + 1;
+                answer.blocked = true;
+                return answer;
+            }
+            if thing.flags & MF_SHOOTABLE == 0 {
+                if thing.flags & MF_SOLID == 0 {
+                    continue;
+                }
+                answer.at = at + 1;
+                answer.blocked = true;
+                return answer;
+            }
+            answer.at = at + 1;
+            answer.blocked = true;
+            answer.draws = 1;
+            answer.damage =
+                (self.draw(base, 1) % 8 + 1) * column("mobjinfo", "damage")[it.kind as usize];
+            return answer;
+        }
+        answer
+    }
+
+    /// `P_ExplodeMissile`, with `P_XYMovement`'s sky check ahead of it.
+    /// `sky` is whether the line the move test named has a sky ceiling
+    /// behind it.
+    pub fn stop(
+        &self,
+        kind: i64,
+        state: i64,
+        tics: i64,
+        flags: i64,
+        sky: bool,
+        base: i64,
+    ) -> Stopped {
+        let info = |name: &str| column("mobjinfo", name)[kind as usize];
+        if sky {
+            return Stopped {
+                state,
+                tics,
+                flags,
+                removed: true,
+                draws: 0,
+            };
+        }
+        let death = info("deathstate");
+        Stopped {
+            state: death,
+            tics: (column("states", "tics")[death as usize] - (self.draw(base, 1) & 3)).max(1),
+            flags: flags & !MF_MISSILE,
+            removed: false,
+            draws: 1,
+        }
+    }
+}
+
+/// What one stop leaves.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Stopped {
+    pub state: i64,
+    pub tics: i64,
+    pub flags: i64,
+    pub removed: bool,
+    pub draws: i64,
 }

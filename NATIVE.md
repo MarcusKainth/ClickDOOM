@@ -102,21 +102,31 @@ outside the lambda whatever the fold does, so such a body has to lead back to
 one of them.
 
 Analysis is paid once per session, and its cost is not a function of the
-statement's size. Measured on ClickHouse 26.7.5.10 with the simulation
-statement at 650 KB and a 20 s analysis: 32 KB of flat arithmetic, of array
-lambdas over a real column or of an 80-value chain adds nothing, while the
-32 KB fold that fires the shotgun's seven pellets adds about 13 s, whatever
-depth it sits at, however many columns read it and whether or not it is a
-stage of its own, and the same fold alone analyses in a quarter of a second.
-Bisecting that fold puts the cost in its blockmap walk, its damage routine,
-its spawns and the chain that carries them between steps, in that order. No
-mechanism is known, so a body that has to be one binding, such as a fold
-whose steps each read what the step before wrote, is kept to what the
-dependency forces inside it, and every piece added to a statement is measured
-with `QueryAnalysisMicroseconds` from `system.query_log`. The driver's budget
-for the first tic (`FIRST_TIC_TIMEOUT` in `driver/src/cli/native/diff.rs`) is
-sized for this analysis on a CI runner, which is about four times slower than
-a development machine.
+statement's size. Where it comes from is not settled. One shape is measured
+on ClickHouse 26.7.5.10: writing a thirty-column compaction as
+`arrayFilter((v, a) -> a = 1, X, mt_kept)` costs 5.2 s more than writing it
+as the surviving places worked out once and each column read through them,
+and the same 5.2 s more than one `arrayZip` of every column filtered once.
+`arrayZip(a, b)` costs what `arrayFilter((v, k) -> …, a, b)` costs, so
+whatever this is, it is not the lambda.
+
+The same rewrite applied to the rest of `mobj.rs` saves nothing. Sixty-six
+calls over two or more arrays were taken out of the statement two ways, by
+indexing and by zipping a row per stage, and neither moved the analysis;
+indexing added 9 s by repeating the array text. So the 5.2 s belongs to that
+compaction and not to a count of call sites, and a rewrite of this kind is
+worth doing only against a measurement of the piece in hand.
+
+`arrayConcat` over several arrays costs about 20 ms a site, which is small
+enough that list growth is written the plain way. Every piece added to a
+statement is measured with `QueryAnalysisMicroseconds` from
+`system.query_log`.
+
+A body that has to be one binding, such as a fold whose steps each read what
+the step before wrote, is kept to what the dependency forces inside it. The
+driver's budget for the first tic (`FIRST_TIC_TIMEOUT` in
+`driver/src/cli/native/diff.rs`) is sized for this analysis on a CI runner,
+which is about four times slower than a development machine.
 
 Rows reach the statement one block each. Rows written into a statement from a
 `VALUES` list share one block whatever `max_insert_block_size` says, so every

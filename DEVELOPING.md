@@ -69,7 +69,7 @@ Each live suite creates its own, named for the suite and the process id. `run-mi
 
 ## The ClickHouse pin
 
-Pinned to `26.7.5.10` by image digest in `docker-compose.yml`. CI starts the
+Pinned to `26.8.2.7` by image digest in `docker-compose.yml`. CI starts the
 server through `make up`, so the digest and the server configuration under
 `docker/clickhouse/config.d/` are read from that one file everywhere.
 

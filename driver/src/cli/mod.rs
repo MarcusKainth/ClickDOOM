@@ -144,7 +144,7 @@ mod tests {
             "--manifest",
             "m.json",
             "--image",
-            "clickhouse/clickhouse-server:26.7.5.10",
+            "clickhouse/clickhouse-server:26.8.2.7",
         ],
         &[
             "bench",

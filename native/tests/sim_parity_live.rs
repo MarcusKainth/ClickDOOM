@@ -221,13 +221,19 @@ const FLASH: [(u32, i32, i32, i32); 6] = [
 /// missile frames, marks it as having just attacked and turns it towards
 /// the player, and at 161 the frame after that turns it again. Both frames
 /// carry `A_FaceTarget`; the first is entered by the attack and the second
-/// by the tic count running out.
-const ATTACK: [(u32, i32, i32, u32); 4] = [
+/// by the tic count running out. At 169 the imp reaches the frame carrying
+/// `A_TroopAttack`, which turns it once more.
+const ATTACK: [(u32, i32, i32, u32); 5] = [
     (152, 444, 4194310, 1610612736),
     (153, 452, 4194438, 1413509120),
     (161, 453, 4194438, 1393606112),
     (168, 453, 4194438, 1393606112),
+    (FIREBALL, 454, 4194438, 1381806976),
 ];
+
+/// The gametic the imp's `A_TroopAttack` runs on. Its target stands far
+/// past `MELEERANGE`, so the routine throws a fireball.
+const FIREBALL: u32 = 169;
 
 const THRUST: [(u32, usize, i32, i32, i32, i32); 4] = [
     (142, 118, 8272000, -4310912, 0, 0),
@@ -573,6 +579,18 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the imp winding up its attack at gametic {tic}"
         );
     }
+    // The routine turns the imp and then wants a missile, which is the
+    // branch this tic does not spawn.
+    assert_eq!(
+        at(FIREBALL).unresolved,
+        1,
+        "the tic the imp throws its fireball says it could not be produced"
+    );
+    assert_eq!(
+        at(FIREBALL - 1).unresolved,
+        0,
+        "and the tic before it is one the run carried through"
+    );
     for (tic, slot, x, y, momx, momy) in THRUST {
         let row = at(tic);
         let place = if slot == 118 { 0 } else { 1 };

@@ -176,6 +176,30 @@ pub fn attack(asks: &str, world: &Attacking<'_>) -> String {
     )
 }
 
+/// [`attack`] over an ask list that carries at most one, folded rather
+/// than mapped.
+///
+/// A map runs every function in its body once even on an empty list, and
+/// this body is the whole routine. A fold runs its body only where the
+/// list has an element, so a tic reaching no attack pays for the fold and
+/// nothing under it. The answer is the last ask in the list, and
+/// [`no_attack`] is what an empty one gives.
+pub fn attack_fold(asks: &str, world: &Attacking<'_>) -> String {
+    let (values, body) = attacks(world);
+    format!(
+        "arrayFold((ak_held, ak_ask) -> {}, {asks}, {})",
+        bind::chain_in("aka", &values, &body),
+        no_attack(),
+    )
+}
+
+/// The [`attacked`] tuple for a tic that reached no attack: no turn, no
+/// claw, no missile and no draw.
+pub fn no_attack() -> String {
+    "(toUInt32(0), toInt32(0), toUInt8(0), toInt32(0), toUInt8(0), toUInt32(0), toUInt8(0))"
+        .to_owned()
+}
+
 /// What one attack works out, as the values a body reads and the
 /// [`attacked`] tuple it answers with.
 fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {

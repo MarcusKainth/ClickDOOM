@@ -1,7 +1,7 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, enemy, inter, maputl, sight};
+use super::{State, attacks, enemy, inter, maputl, sight};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -256,6 +256,16 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             s("m_target")
         ),
     );
+    bind(
+        "mt_attackers",
+        format!(
+            "arrayFilter((k, c, n, t) -> c = 1 AND n != 0 AND t != 0 \
+             AND (state_action[1 + n] = a_troopattack \
+             OR state_action[1 + n] = a_sargattack), \
+             mt_slots, mt_cycles, mt_next, {})",
+            s("m_target")
+        ),
+    );
     let pairs = |slot: &str, other: &dyn Fn(&str) -> String| {
         sight::asking(
             &format!("{}[{slot}]", s("m_subsector")),
@@ -280,10 +290,11 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "mt_pairs",
         format!(
             "arrayConcat(arrayMap(k -> {}, mt_lookers), arrayMap(k -> {}, mt_chasers), \
-             arrayMap(k -> {}, mt_hearers))",
+             arrayMap(k -> {}, mt_hearers), arrayMap(k -> {}, mt_attackers))",
             pairs("k", &player),
             pairs("k", &target),
             pairs("k", &heard),
+            pairs("k", &target),
         ),
     );
     bind("mt_seen", sight::check_sight("mt_pairs"));
@@ -297,6 +308,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_hearer_seen",
         "arraySlice(mt_seen, 1 + length(mt_lookers) + length(mt_chasers), length(mt_hearers))"
+            .to_owned(),
+    );
+    bind(
+        "mt_attack_seen",
+        "arraySlice(mt_seen, 1 + length(mt_lookers) + length(mt_chasers) \
+         + length(mt_hearers), length(mt_attackers))"
             .to_owned(),
     );
     bind(
@@ -569,7 +586,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             enemy::chased::STATE
         ),
     );
-    bind("mk_m_flags", {
+    bind("cq_m_flags", {
         let held = s("m_flags");
         format!(
             "arrayMap((k, c) -> toInt32(if(indexOf(mt_movers, k) = 0, {held}[k], c.{})), \
@@ -597,16 +614,39 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         );
     }
     for (column, member, cast, _) in &held {
-        bind(
-            &format!("mk_{column}"),
-            format!("arrayMap(c -> {cast}(c.{member}), cw_slot)"),
-        );
+        let name = if *column == "m_angle" {
+            "cq_m_angle".to_owned()
+        } else {
+            format!("mk_{column}")
+        };
+        bind(&name, format!("arrayMap(c -> {cast}(c.{member}), cw_slot)"));
     }
+    // The attack reads what the state cycle and the chase left, and what
+    // it leaves stands over them.
+    for (name, expr) in strikes(state) {
+        bind(&name, expr);
+    }
+    bind(
+        "mk_m_angle",
+        format!(
+            "arrayMap((k, v) -> toUInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
+             mt_slots, cq_m_angle)",
+            attacks::attacked::ANGLE
+        ),
+    );
+    bind(
+        "mk_m_flags",
+        format!(
+            "arrayMap((k, v) -> toInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
+             mt_slots, cq_m_flags)",
+            attacks::attacked::FLAGS
+        ),
+    );
     bind(
         "now_prndindex",
         format!(
             "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_shouts) \
-             + arraySum(arrayMap(c -> c.{}, cw_chased)), 255))",
+             + arraySum(arrayMap(c -> c.{}, cw_chased)) + at_draws, 255))",
             s("prndindex"),
             enemy::chased::DRAWS
         ),
@@ -620,7 +660,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
              OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
              OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1 \
-             OR tz_unrun = 1)",
+             OR tz_unrun = 1 OR at_unrun = 1)",
             s("unresolved"),
             cycled::STUCK,
             enemy::chased::STUCK
@@ -672,6 +712,15 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
         } else {
             s(column)
         };
+        // What the claw left, before the renumbering, because the target
+        // the damage sets is a slot like any other.
+        let held = match clawed(column) {
+            Some(member) => format!(
+                "arrayMap((k, v) -> toInt32(if(at_clawed = 1 AND k = at_target, \
+                 mt_hurt.{member}, v)), mt_slots, {held})"
+            ),
+            None => held,
+        };
         let held = if POINTERS.contains(&column) {
             format!("arrayMap(t -> {}, {held})", moved_slot("t"))
         } else {
@@ -697,6 +746,24 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     bind("now_p_attacker", moved_slot(&s("p_attacker")));
     bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
     bindings
+}
+
+/// Where a column the claw moves sits in the answer `P_DamageMobj` gives.
+fn clawed(column: &str) -> Option<usize> {
+    Some(match column {
+        "m_health" => inter::hurt::HEALTH,
+        "m_flags" => inter::hurt::FLAGS,
+        "m_state" => inter::hurt::STATE,
+        "m_tics" => inter::hurt::TICS,
+        "m_momx" => inter::hurt::MOMX,
+        "m_momy" => inter::hurt::MOMY,
+        "m_momz" => inter::hurt::MOMZ,
+        "m_height" => inter::hurt::HEIGHT,
+        "m_reactiontime" => inter::hurt::REACTIONTIME,
+        "m_target" => inter::hurt::TARGET,
+        "m_threshold" => inter::hurt::THRESHOLD,
+        _ => return None,
+    })
 }
 
 /// The mobj array columns the thinker writes, which the compaction reads
@@ -730,6 +797,131 @@ const THINKER_COLUMNS: [&str; 21] = [
 /// written beside them.
 const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 
+/// `A_TroopAttack` and `A_SargAttack` for the things whose state cycle
+/// reached one, and the damage a claw that lands does.
+///
+/// The routine turns the thing towards its target, takes it off ambush and
+/// either claws the target or, for an imp out of reach, throws a fireball.
+/// Both the routine and `P_DamageMobj` are folded over their ask lists
+/// rather than mapped, so a tic that reaches neither runs neither body.
+///
+/// Three cases say the tic could not be produced: more than one thing
+/// reaching a routine, because the second would draw from an index the
+/// first moves; the fireball, which wants a missile spawned; and a claw
+/// that kills, which owes the kill count and whatever the corpse drops.
+fn strikes(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+
+    // One ask per attacker: the slot, the routine its frame carries, the
+    // sight `P_CheckMeleeRange` needs, and how many numbers the tic drew
+    // before it.
+    bind(
+        "at_asks",
+        format!(
+            "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
+             toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), \
+             toUInt32(arraySum(arraySlice(mt_shouts, 1, k)) \
+             + arraySum(arrayMap(c -> toUInt32(c.{}), arraySlice(cw_slot, 1, k))))), \
+             mt_attackers)",
+            enemy::chased::DRAWS
+        ),
+    );
+    let world = attacks::Attacking {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_angle: "cq_m_angle",
+        m_flags: "cq_m_flags",
+        m_type: &s("m_type"),
+        m_target: "mk_m_target",
+        prndindex: &s("prndindex"),
+    };
+    bind("at_struck", attacks::attack_fold("at_asks", &world));
+    // The one attacker a tic carries and what it drew before its own call.
+    // A tic reaching more than one is refused below and reads neither.
+    bind(
+        "at_one",
+        "toUInt32(if(length(mt_attackers) = 1, mt_attackers[1], 0))".to_owned(),
+    );
+    bind(
+        "at_base",
+        format!(
+            "toUInt32(arraySum(arrayMap(a -> toUInt32(a.{}), at_asks)))",
+            attacks::striking::BASE
+        ),
+    );
+
+    // The thinker stage's `P_DamageMobj` ask list, and the one call over
+    // it. A missile's impact, a barrel's blast and a monster's hitscan all
+    // hurt things in this stage; each joins this list rather than standing
+    // up a call of its own, because the routine is among the largest
+    // things the statement carries and every copy costs a tic that hurts
+    // nothing.
+    bind(
+        "mt_hurt_asks",
+        format!(
+            "arraySlice([{}], 1, at_struck.{})",
+            attacks::claw_ask("at_struck", "greatest(at_one, 1)", "mk_m_target", "at_base"),
+            attacks::attacked::CLAWED,
+        ),
+    );
+    // The target as the stage has left it so far. `m_health` and
+    // `m_height` have no writer ahead of this one, so they stand as the
+    // tic started.
+    let hurting = inter::Hurting {
+        m_x: "mk_m_x",
+        m_y: "mk_m_y",
+        m_z: "mk_m_z",
+        m_momx: "mk_m_momx",
+        m_momy: "mk_m_momy",
+        m_momz: "mk_m_momz",
+        m_reactiontime: "mk_m_reactiontime",
+        m_type: &s("m_type"),
+        m_state: "mk_m_state",
+        m_tics: "mk_m_tics",
+        m_flags: "cq_m_flags",
+        m_health: &s("m_health"),
+        m_height: &s("m_height"),
+        m_target: "mk_m_target",
+        m_threshold: "mk_m_threshold",
+        m_player: &s("m_player"),
+        prndindex: &s("prndindex"),
+        readyweapon: &s("p_readyweapon"),
+    };
+    bind("mt_hurt", inter::damage_fold("mt_hurt_asks", &hurting));
+
+    bind(
+        "at_clawed",
+        format!("toUInt8(at_struck.{})", attacks::attacked::CLAWED),
+    );
+    bind(
+        "at_target",
+        "toUInt32(if(at_clawed = 1, mk_m_target[greatest(at_one, 1)], 0))".to_owned(),
+    );
+    bind(
+        "at_draws",
+        format!(
+            "toUInt32(toUInt32(at_struck.{}) + toUInt32(mt_hurt.{}))",
+            attacks::attacked::DRAWS,
+            inter::hurt::DRAWS,
+        ),
+    );
+    bind(
+        "at_unrun",
+        format!(
+            "toUInt8(length(mt_attackers) > 1 \
+             OR at_struck.{throws} = 1 OR at_struck.{stuck} = 1 \
+             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1)",
+            throws = attacks::attacked::THROWS,
+            stuck = attacks::attacked::STUCK,
+            counted = inter::hurt::COUNTED,
+            drop = inter::hurt::DROP,
+        ),
+    );
+    bindings
+}
+
 /// The first state a cycle enters, and `A_Look` where the state carries
 /// it.
 fn entry_one(slot: &str, state: &State) -> String {
@@ -754,7 +946,9 @@ fn entry_one(slot: &str, state: &State) -> String {
             "toUInt8(multiIf(k = {slot}, 0, c = 0, 0, n = 0, 0, \
              state_action[1 + n] != 0 AND state_action[1 + n] != a_look \
              AND state_action[1 + n] != a_chase \
-             AND state_action[1 + n] != a_facetarget, 1, 0))"
+             AND state_action[1 + n] != a_facetarget \
+             AND state_action[1 + n] != a_troopattack \
+             AND state_action[1 + n] != a_sargattack, 1, 0))"
         ),
         format!("toUInt8({enters})"),
         format!(

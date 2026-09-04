@@ -687,6 +687,9 @@ fn message(text: &str) -> String {
 }
 
 /// The constants the switch reads.
+///
+/// `weapon_ammo` is not here. `pspr::constants` binds it for the weapon
+/// the player holds, and one name is bound once.
 pub fn constants(db: &str) -> Vec<(String, String)> {
     vec![
         (
@@ -695,10 +698,6 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
                 "(SELECT mapFromArrays(groupArray(name), groupArray(toInt32(id)))\
                  \n     FROM {db}.sprnames)"
             ),
-        ),
-        (
-            "weapon_ammo".to_owned(),
-            super::table_column(db, "weaponinfo", "ammo"),
         ),
         (
             "clipammo".to_owned(),
@@ -900,9 +899,10 @@ pub fn damage_constants(db: &str) -> Vec<(String, String)> {
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = '{name}'))"),
         ));
     }
+    // `MT_SKULL` and `MT_VILE` are not here. `enemy::constants` binds both
+    // for `P_CheckMissileRange`, and a name bound twice in one `WITH` list
+    // is one whose value depends on which binding the server keeps.
     for name in [
-        "MT_SKULL",
-        "MT_VILE",
         "MT_POSSESSED",
         "MT_WOLFSS",
         "MT_SHOTGUY",
@@ -1336,17 +1336,26 @@ mod damage_tests {
 
     /// The routine reads no thing type it names by hand out of the
     /// generator: every one comes from `mobjtype` inside the statement.
+    /// Two of them are bound by `enemy::constants` rather than here.
     #[test]
     fn every_thing_type_it_names_comes_from_the_table() {
-        let names: Vec<String> = damage_constants("nat")
+        let sql = damage_mobj("asks", &world());
+        let mut named: Vec<String> = damage_constants("nat")
             .into_iter()
             .map(|(name, _)| name)
             .filter(|name| name.starts_with("mt_"))
             .collect();
-        assert!(names.len() >= 9, "{names:?}");
-        let sql = damage_mobj("asks", &world());
-        for name in names {
-            assert!(sql.contains(&name), "{name}");
+        named.extend(["mt_skull".to_owned(), "mt_vile".to_owned()]);
+        assert!(named.len() >= 9, "{named:?}");
+        for name in &named {
+            assert!(sql.contains(name), "{name}");
+        }
+        let bound: Vec<String> = super::super::constants("nat")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for name in &named {
+            assert!(bound.contains(name), "the statement binds {name}");
         }
     }
 

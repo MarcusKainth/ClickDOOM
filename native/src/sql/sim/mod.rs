@@ -476,6 +476,25 @@ mod tests {
         assert_eq!(staged, with);
     }
 
+    /// No name is bound twice.
+    ///
+    /// Every module's constants land in one `WITH` list, and a repeated
+    /// alias there is a name whose value depends on which binding the
+    /// server keeps. It also costs the name once at every level of the
+    /// nested statement.
+    #[test]
+    fn every_constant_is_named_once() {
+        let mut names: Vec<String> = constants("nat").into_iter().map(|(name, _)| name).collect();
+        names.sort();
+        let mut twice: Vec<String> = names
+            .windows(2)
+            .filter(|pair| pair[0] == pair[1])
+            .map(|pair| pair[0].clone())
+            .collect();
+        twice.dedup();
+        assert!(twice.is_empty(), "bound twice: {twice:?}");
+    }
+
     #[test]
     #[should_panic(expected = "no expression for leveltime")]
     fn a_column_nobody_wrote_is_a_panic_rather_than_a_wrong_row() {

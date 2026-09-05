@@ -1,7 +1,7 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, attacks, enemy, inter, maputl, sight};
+use super::{State, attacks, enemy, inter, maputl, missile, sight};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -102,6 +102,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             super::table_column(db, "mobjinfo", "flags"),
         ),
         ("mt_puff".to_owned(), thing_type(db, "MT_PUFF")),
+        ("mt_troopshot".to_owned(), thing_type(db, "MT_TROOPSHOT")),
         ("mt_blood".to_owned(), thing_type(db, "MT_BLOOD")),
         // The engine names the frames a puff and a blood spot are put into
         // by hand. No table holds them, so they are read off the spawn
@@ -623,7 +624,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     }
     // The attack reads what the state cycle and the chase left, and what
     // it leaves stands over them.
-    for (name, expr) in strikes(state) {
+    for (name, expr) in strikes(state, &world) {
         bind(&name, expr);
     }
     bind(
@@ -678,7 +679,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
 /// pointer at the thing that was taken becomes 0, which is what the
 /// contract says none means.
 ///
-/// `next_seq` counts what the level has ever spawned and does not move.
+/// A fireball the tic threw goes on the end of the list, behind what the
+/// compaction left, and takes one of each counter.
 fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
@@ -726,9 +728,25 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
         } else {
             held
         };
+        // `P_AddThinker` puts a new thing on the end of the list, so a
+        // fireball the tic threw goes behind what survived the compaction.
+        let born = match missile::born_column(column, "t") {
+            Some(value) => {
+                let value = if POINTERS.contains(&column) {
+                    moved_slot(&value)
+                } else {
+                    value
+                };
+                format!("arrayMap(t -> {value}, mt_thrown)")
+            }
+            None => format!(
+                "arrayMap((t, i) -> toUInt32({} + i - 1), mt_thrown, arrayEnumerate(mt_thrown))",
+                s("next_linkseq")
+            ),
+        };
         bind(
             &format!("now_{column}"),
-            format!("arrayFilter((v, a) -> a = 1, {held}, mt_kept)"),
+            format!("arrayConcat(arrayFilter((v, a) -> a = 1, {held}, mt_kept), {born})"),
         );
     }
     bind(
@@ -745,6 +763,13 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     );
     bind("now_p_attacker", moved_slot(&s("p_attacker")));
     bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
+    // Every thing the tic threw took one of each counter.
+    for column in ["next_seq", "next_linkseq"] {
+        bind(
+            &format!("now_{column}"),
+            format!("toUInt32({} + length(mt_thrown))", s(column)),
+        );
+    }
     bindings
 }
 
@@ -809,7 +834,7 @@ const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 /// reaching a routine, because the second would draw from an index the
 /// first moves; the fireball, which wants a missile spawned; and a claw
 /// that kills, which owes the kill count and whatever the corpse drops.
-fn strikes(state: &State) -> Vec<(String, String)> {
+fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
@@ -891,6 +916,38 @@ fn strikes(state: &State) -> Vec<(String, String)> {
     };
     bind("mt_hurt", inter::damage_fold("mt_hurt_asks", &hurting));
 
+    // `P_SpawnMissile` for an imp whose claw did not reach. The fireball
+    // is the only missile a routine throws here, so its type is the one
+    // constant.
+    bind(
+        "mt_throw_asks",
+        format!(
+            "arraySlice([(at_one, toUInt32(mk_m_target[greatest(at_one, 1)]), \
+             mt_troopshot, at_base + toUInt32(at_struck.{}))], 1, at_struck.{})",
+            attacks::attacked::DRAWS,
+            attacks::attacked::THROWS,
+        ),
+    );
+    let throwing = missile::Throwing {
+        m_x: "mk_m_x",
+        m_y: "mk_m_y",
+        m_z: "mk_m_z",
+        m_radius: &s("m_radius"),
+        m_height: &s("m_height"),
+        m_flags: "cq_m_flags",
+        prndindex: &s("prndindex"),
+    };
+    let spawning = Spawning {
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        prndindex: &s("prndindex"),
+        skill: "skill",
+    };
+    bind(
+        "mt_thrown",
+        missile::spawn_fold("mt_throw_asks", &throwing, &spawning, map),
+    );
+
     bind(
         "at_clawed",
         format!("toUInt8(at_struck.{})", attacks::attacked::CLAWED),
@@ -902,21 +959,23 @@ fn strikes(state: &State) -> Vec<(String, String)> {
     bind(
         "at_draws",
         format!(
-            "toUInt32(toUInt32(at_struck.{}) + toUInt32(mt_hurt.{}))",
+            "toUInt32(toUInt32(at_struck.{}) + toUInt32(mt_hurt.{}) \
+             + arraySum(arrayMap(t -> toUInt32(t.{}), mt_thrown)))",
             attacks::attacked::DRAWS,
             inter::hurt::DRAWS,
+            missile::thrown::DRAWS,
         ),
     );
     bind(
         "at_unrun",
         format!(
-            "toUInt8(length(mt_attackers) > 1 \
-             OR at_struck.{throws} = 1 OR at_struck.{stuck} = 1 \
-             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1)",
-            throws = attacks::attacked::THROWS,
+            "toUInt8(length(mt_attackers) > 1 OR at_struck.{stuck} = 1 \
+             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1 \
+             OR arrayExists(t -> t.{thrown} = 1, mt_thrown))",
             stuck = attacks::attacked::STUCK,
             counted = inter::hurt::COUNTED,
             drop = inter::hurt::DROP,
+            thrown = missile::thrown::STUCK,
         ),
     );
     bindings

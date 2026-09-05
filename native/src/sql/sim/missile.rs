@@ -142,6 +142,27 @@ pub fn spawn(
     )
 }
 
+/// [`spawn`] over an ask list, folded rather than mapped, as an array of
+/// [`thrown`] tuples.
+///
+/// A map runs every function in its body once even on an empty list, and
+/// this body is `P_SpawnMissile` and the move test under it. A fold runs
+/// its body only where the list has an element, so a tic that throws
+/// nothing pays for the fold and nothing under it.
+pub fn spawn_fold(
+    asks: &str,
+    world: &Throwing<'_>,
+    spawning: &mobj::Spawning<'_>,
+    map: &World<'_>,
+) -> String {
+    let (values, body) = thrown(world, spawning, map);
+    format!(
+        "arrayFold((ms_held, ms_ask) -> arrayPushBack(ms_held, {}), {asks}, \
+         CAST([] AS Array({THROWN_TYPE})))",
+        bind::chain_in("msa", &values, &body)
+    )
+}
+
 /// What one missile works out, as the values a body reads and the
 /// [`thrown`] tuple it answers with.
 fn thrown(

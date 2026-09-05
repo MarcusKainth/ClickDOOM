@@ -6,7 +6,7 @@
 //! fireball. `A_Scream`, `A_Pain`, `A_XScream` and `A_Fall` leave a flag
 //! or nothing at all.
 
-use super::{inter, maputl, sight};
+use super::{inter, maputl, shoot, sight};
 use crate::sql::Statement;
 use crate::sql::{bind, fixed};
 
@@ -16,10 +16,16 @@ const FRACUNIT: i64 = 1 << 16;
 const ANGLE_WRAP: i64 = 1 << 32;
 /// `p_enemy.c`: what the fuzz a `MF_SHADOW` target draws is shifted by.
 const FACE_SHIFT: u32 = 21;
-/// `p_local.h`: how far a claw reaches, and how far short of it
-/// `P_CheckMeleeRange` stops.
+/// `p_local.h`: how far a claw reaches, how far short of it
+/// `P_CheckMeleeRange` stops, and how far a bullet reaches.
 const MELEERANGE: i64 = 64 * FRACUNIT;
 const MELEE_SLOP: i64 = 20 * FRACUNIT;
+const MISSILERANGE: i64 = 32 * 64 * FRACUNIT;
+/// `p_enemy.c`: what the fuzz a shot's own angle takes is shifted by.
+const SPREAD_SHIFT: u32 = 20;
+/// `p_mobj.c`: how many numbers `P_SpawnPuff` and `P_SpawnBlood` draw
+/// between them, which every shot that reaches something pays.
+const DEBRIS_DRAWS: i64 = 4;
 /// `p_local.h`: the furthest a thing's edge reaches from the cell its
 /// origin sits in.
 const MAXRADIUS: i64 = 32 * FRACUNIT;
@@ -95,7 +101,13 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             super::table_column(db, "mobjinfo", "deathsound"),
         ),
     ];
-    for name in ["A_TroopAttack", "A_SargAttack", "A_Explode"] {
+    for name in [
+        "A_TroopAttack",
+        "A_SargAttack",
+        "A_Explode",
+        "A_PosAttack",
+        "A_SPosAttack",
+    ] {
         constants.push((
             name.to_lowercase(),
             format!("assumeNotNull((SELECT id FROM {db}.action_functions WHERE name = '{name}'))"),
@@ -122,9 +134,12 @@ pub fn fallen(flags: &str) -> String {
 pub struct Attacking<'a> {
     pub m_x: &'a str,
     pub m_y: &'a str,
+    pub m_z: &'a str,
     pub m_angle: &'a str,
+    pub m_height: &'a str,
     pub m_flags: &'a str,
     pub m_type: &'a str,
+    pub m_health: &'a str,
     pub m_target: &'a str,
     pub prndindex: &'a str,
 }
@@ -200,13 +215,71 @@ pub fn no_attack() -> String {
         .to_owned()
 }
 
+/// `A_FaceTarget`, as the values a routine that begins with it reads.
+///
+/// `slot` names the thing attacking and `base` how many numbers the tic
+/// drew before the call. The values are `fc_slot`, `fc_target`, `fc_runs`,
+/// `fc_angle` and `fc_flags`, plus `fc_fuzzy`, which is 1 where the target
+/// carries `MF_SHADOW` and the angle is turned by the first two numbers the
+/// call draws. A thing with no target runs none of it.
+fn face_target(slot: &str, base: &str, world: &Attacking<'_>) -> Vec<(String, String)> {
+    let at = |array: &str| format!("{array}[fc_slot]");
+    let on = |array: &str| format!("{array}[fc_target]");
+    let across = |array: &str| format!("toInt32(toInt64({}) - toInt64({}))", on(array), at(array));
+    let draw = |nth: &str| {
+        format!(
+            "toInt64(rnd[1 + bitAnd(toUInt32({}) + toUInt32({base}) + {nth}, 255)])",
+            world.prndindex,
+        )
+    };
+    vec![
+        ("fc_slot".to_owned(), format!("toUInt32({slot})")),
+        (
+            "fc_target".to_owned(),
+            format!("toUInt32({})", at(world.m_target)),
+        ),
+        ("fc_runs".to_owned(), "toUInt8(fc_target != 0)".to_owned()),
+        (
+            "fc_fuzzy".to_owned(),
+            format!(
+                "toUInt8(fc_runs = 1 AND bitAnd({}, {MF_SHADOW}) != 0)",
+                on(world.m_flags)
+            ),
+        ),
+        (
+            "fc_aimed".to_owned(),
+            fixed::point_to_angle(&across(world.m_x), &across(world.m_y), "tantoangle"),
+        ),
+        (
+            "fc_angle".to_owned(),
+            format!(
+                "toUInt32(if(fc_runs = 0, {held}, bitAnd(toInt64(fc_aimed) \
+                 + if(fc_fuzzy = 1, bitShiftLeft({} - {}, {FACE_SHIFT}), 0) + {ANGLE_WRAP}, {})))",
+                draw("1"),
+                draw("2"),
+                ANGLE_WRAP - 1,
+                held = at(world.m_angle),
+            ),
+        ),
+        (
+            "fc_flags".to_owned(),
+            format!(
+                "toInt32(if(fc_runs = 1, bitAnd({held}, {}), {held}))",
+                !MF_AMBUSH,
+                held = at(world.m_flags),
+            ),
+        ),
+    ]
+}
+
 /// What one attack works out, as the values a body reads and the
 /// [`attacked`] tuple it answers with.
 fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {
     let a = |field: usize| format!("ak_ask.{field}");
-    let at = |array: &str| format!("{array}[ak_slot]");
-    let on = |array: &str| format!("{array}[ak_target]");
-    let mut values: Vec<(String, String)> = Vec::new();
+    let at = |array: &str| format!("{array}[fc_slot]");
+    let on = |array: &str| format!("{array}[fc_target]");
+    let mut values: Vec<(String, String)> =
+        face_target(&a(striking::SLOT), &a(striking::BASE), world);
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
     let draw = |nth: &str| {
         format!(
@@ -217,37 +290,11 @@ fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {
     };
     let across = |array: &str| format!("toInt32(toInt64({}) - toInt64({}))", on(array), at(array));
 
-    value("ak_slot", format!("toUInt32({})", a(striking::SLOT)));
-    value("ak_target", format!("toUInt32({})", at(world.m_target)));
-    value("ak_runs", "toUInt8(ak_target != 0)".to_owned());
-    // `A_FaceTarget`: the angle at the target, with the fuzz a `MF_SHADOW`
-    // one draws, and the ambush flag off.
-    value(
-        "ak_fuzzy",
-        format!(
-            "toUInt8(ak_runs = 1 AND bitAnd({}, {MF_SHADOW}) != 0)",
-            on(world.m_flags)
-        ),
-    );
-    value(
-        "ak_aimed",
-        fixed::point_to_angle(&across(world.m_x), &across(world.m_y), "tantoangle"),
-    );
-    value(
-        "ak_angle",
-        format!(
-            "toUInt32(bitAnd(toInt64(ak_aimed) \
-             + if(ak_fuzzy = 1, bitShiftLeft({} - {}, {FACE_SHIFT}), 0) + {ANGLE_WRAP}, {}))",
-            draw("1"),
-            draw("2"),
-            ANGLE_WRAP - 1,
-        ),
-    );
     // `P_CheckMeleeRange`, which the sight answer finishes.
     value(
         "ak_near",
         format!(
-            "toUInt8(ak_runs = 1 AND toInt64({}) < {MELEERANGE} - {MELEE_SLOP} \
+            "toUInt8(fc_runs = 1 AND toInt64({}) < {MELEERANGE} - {MELEE_SLOP} \
              + toInt64(mobj_radius[1 + {}]) AND {} = 1)",
             fixed::aprox_distance(&across(world.m_x), &across(world.m_y)),
             on(world.m_type),
@@ -263,22 +310,18 @@ fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {
             "toInt32(if(ak_near = 0, 0, multiIf(\
              ak_routine = a_troopattack, ({} % 8 + 1) * 3, \
              ak_routine = a_sargattack, ({} % 10 + 1) * 4, 0)))",
-            draw("1 + 2 * toUInt32(ak_fuzzy)"),
-            draw("1 + 2 * toUInt32(ak_fuzzy)"),
+            draw("1 + 2 * toUInt32(fc_fuzzy)"),
+            draw("1 + 2 * toUInt32(fc_fuzzy)"),
         ),
     );
     let members = [
-        format!("toUInt32(if(ak_runs = 1, ak_angle, {}))", at(world.m_angle),),
-        format!(
-            "toInt32(if(ak_runs = 1, bitAnd({held}, {}), {held}))",
-            !MF_AMBUSH,
-            held = at(world.m_flags),
-        ),
+        "toUInt32(fc_angle)".to_owned(),
+        "toInt32(fc_flags)".to_owned(),
         "toUInt8(ak_near)".to_owned(),
         "toInt32(ak_damage)".to_owned(),
-        "toUInt8(ak_runs = 1 AND ak_near = 0 AND ak_routine = a_troopattack)".to_owned(),
-        "toUInt32(if(ak_runs = 0, 0, 2 * toUInt32(ak_fuzzy) + toUInt32(ak_near)))".to_owned(),
-        "toUInt8(ak_runs = 1 AND ak_routine != a_troopattack AND ak_routine != a_sargattack)"
+        "toUInt8(fc_runs = 1 AND ak_near = 0 AND ak_routine = a_troopattack)".to_owned(),
+        "toUInt32(if(fc_runs = 0, 0, 2 * toUInt32(fc_fuzzy) + toUInt32(ak_near)))".to_owned(),
+        "toUInt8(fc_runs = 1 AND ak_routine != a_troopattack AND ak_routine != a_sargattack)"
             .to_owned(),
     ];
     (values, format!("({})", members.join(", ")))
@@ -490,6 +533,288 @@ fn bombs(world: &Blast<'_>, hurting: &inter::Hurting<'_>) -> (Vec<(String, Strin
     (values, format!("({})", members.join(", ")))
 }
 
+// ---------------------------------------------------------------------------
+// A_PosAttack and A_SPosAttack
+// ---------------------------------------------------------------------------
+
+/// Where each field of a gunshot ask sits in its tuple.
+pub mod gunning {
+    /// The slot firing.
+    pub const SLOT: usize = 1;
+    /// The `action_functions` id of the routine the frame carries.
+    pub const ROUTINE: usize = 2;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 3;
+}
+
+/// Where each field of what a gunshot leaves sits in its tuple.
+///
+/// The four arrays run together, one entry per shot in the order they were
+/// fired. A caller reads a shot's own answer out of [`SHOTS`] and hands the
+/// two bases to `mobj::spawn_debris` and `inter::damage_mobj`.
+pub mod gunned {
+    pub const ANGLE: usize = 1;
+    pub const FLAGS: usize = 2;
+    /// The slope the one `P_AimLineAttack` found, which every shot leaves
+    /// at.
+    pub const SLOPE: usize = 3;
+    /// What each shot reached, as a `shoot::reached` answer.
+    pub const SHOTS: usize = 4;
+    /// What each shot rolled.
+    pub const DAMAGE: usize = 5;
+    /// How many numbers the tic had drawn before each shot's own puff or
+    /// blood spot.
+    pub const SPAWN_BASE: usize = 6;
+    /// How many it had drawn before each shot's damage call.
+    pub const HURT_BASE: usize = 7;
+    /// How many numbers the call drew, the shots' puffs and damage
+    /// included.
+    pub const DRAWS: usize = 8;
+    /// 1 where the call reached a path this does not write.
+    pub const STUCK: usize = 9;
+}
+
+/// Where the fold holds what the shots have left.
+mod gun {
+    pub const SLOPE: usize = 1;
+    pub const SHOTS: usize = 2;
+    pub const DAMAGE: usize = 3;
+    pub const SPAWN_BASE: usize = 4;
+    pub const HURT_BASE: usize = 5;
+    pub const DRAWS: usize = 6;
+    pub const STUCK: usize = 7;
+}
+
+/// `A_PosAttack` and `A_SPosAttack` over every ask in `asks`, as a
+/// [`gunned`] tuple each.
+///
+/// Both run `A_FaceTarget`, take one slope from `P_AimLineAttack` at the
+/// angle the face left, and then fire: one shot for the zombieman and three
+/// for the shotgun guy. Each shot turns the angle by two numbers and rolls
+/// its damage from a third, and the puff or blood spot it leaves draws four
+/// more before the next shot turns its own angle.
+///
+/// The shots are a fold because how many numbers a shot draws depends on
+/// what the shot before it reached. Step zero of that fold is the aim and
+/// every step after it is a shot, so the trace, its intercepts and their
+/// order are in the statement once.
+///
+/// The asks are a fold too, so a tic with nothing shooting runs none of
+/// it.
+pub fn hitscan(
+    asks: &str,
+    world: &Attacking<'_>,
+    targets: &shoot::Targets<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> String {
+    let (values, body) = gunshots(world, targets, hurting);
+    format!(
+        "arrayFold((gn_held, gn_ask) -> arrayPushBack(gn_held, {}), {asks}, \
+         CAST([], 'Array({})'))",
+        bind::chain_in("gna", &values, &body),
+        gunned_type(),
+    )
+}
+
+/// The ClickHouse type of a [`gunned`] tuple, which the fold's empty list
+/// has to carry.
+fn gunned_type() -> String {
+    format!(
+        "Tuple(UInt32, Int32, Int32, Array({}), Array(Int32), Array(UInt32), Array(UInt32), \
+         UInt32, UInt8)",
+        shoot::REACHED_TYPE,
+    )
+}
+
+/// What one gunshot works out, as the values a body reads and the
+/// [`gunned`] tuple it answers with.
+fn gunshots(
+    world: &Attacking<'_>,
+    targets: &shoot::Targets<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("gn_ask.{field}");
+    let mut values: Vec<(String, String)> =
+        face_target(&a(gunning::SLOT), &a(gunning::BASE), world);
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("gn_routine", format!("toInt32({})", a(gunning::ROUTINE)));
+    // The zombieman fires once and the shotgun guy three times.
+    value(
+        "gn_shots",
+        "toInt64(multiIf(gn_routine = a_posattack, 1, gn_routine = a_sposattack, 3, 0))".to_owned(),
+    );
+    // What the face itself drew, which is where the first shot's own
+    // numbers start.
+    value(
+        "gn_faced",
+        "toUInt32(if(fc_runs = 0, 0, 2 * toUInt32(fc_fuzzy)))".to_owned(),
+    );
+    value(
+        "gn_ran",
+        gun_fold(&a(gunning::BASE), world, targets, hurting),
+    );
+
+    let held = |field: usize| format!("gn_ran.{field}");
+    let members = [
+        "toUInt32(fc_angle)".to_owned(),
+        "toInt32(fc_flags)".to_owned(),
+        format!("toInt32({})", held(gun::SLOPE)),
+        held(gun::SHOTS),
+        held(gun::DAMAGE),
+        held(gun::SPAWN_BASE),
+        held(gun::HURT_BASE),
+        format!("toUInt32({})", held(gun::DRAWS)),
+        format!(
+            "toUInt8({} = 1 OR (fc_runs = 1 AND gn_shots = 0))",
+            held(gun::STUCK)
+        ),
+    ];
+    (values, format!("({})", members.join(", ")))
+}
+
+/// The aim and the shots, as one fold whose first step is the aim.
+///
+/// A thing with no target folds over nothing and the whole of the walk
+/// costs the empty list.
+fn gun_fold(
+    base: &str,
+    world: &Attacking<'_>,
+    targets: &shoot::Targets<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> String {
+    let (values, body) = gun_step(base, world, targets, hurting);
+    format!(
+        "arrayFold((gs_at, gs_step) -> {}, range(if(fc_runs = 1, 1 + gn_shots, 0)), \
+         (toInt32(0), CAST([], 'Array({})'), CAST([], 'Array(Int32)'), \
+         CAST([], 'Array(UInt32)'), CAST([], 'Array(UInt32)'), toInt64(gn_faced), toUInt8(0)))",
+        bind::chain_in("gsa", &values, &body),
+        shoot::REACHED_TYPE,
+    )
+}
+
+/// One step of the fold: the aim at step zero, and a shot at every step
+/// after it.
+fn gun_step(
+    base: &str,
+    world: &Attacking<'_>,
+    targets: &shoot::Targets<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let at = |array: &str| format!("{array}[fc_slot]");
+    let held = |field: usize| format!("gs_at.{field}");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+    // The numbers this step draws sit behind the ask's own and everything
+    // the steps before it drew.
+    let draw = |nth: &str| {
+        format!(
+            "toInt64(rnd[1 + bitAnd(toUInt32({}) + toUInt32({base}) + toUInt32({}) + {nth}, \
+             255)])",
+            world.prndindex,
+            held(gun::DRAWS),
+        )
+    };
+
+    value(
+        "gs_angle",
+        format!(
+            "toUInt32(bitAnd(toInt64(fc_angle) + bitShiftLeft({} - {}, {SPREAD_SHIFT}) \
+             + {ANGLE_WRAP}, {}))",
+            draw("1"),
+            draw("2"),
+            ANGLE_WRAP - 1,
+        ),
+    );
+    value("gs_damage", format!("toInt32(({} % 5 + 1) * 3)", draw("3")));
+    // One walk serves the aim and the shots. Step zero asks the angle the
+    // face left and every step after it asks the one that shot leaves at.
+    let ask = |angle: &str, slope: &str, aims: bool| {
+        let shooter = "fc_slot";
+        let (x, y, z, height) = (
+            at(world.m_x),
+            at(world.m_y),
+            at(world.m_z),
+            at(world.m_height),
+        );
+        let range = MISSILERANGE.to_string();
+        if aims {
+            shoot::asking(shooter, &x, &y, &z, &height, angle, &range)
+        } else {
+            shoot::shooting(shooter, &x, &y, &z, &height, angle, &range, slope)
+        }
+    };
+    // `shoot::traverse` names its list twice, so it is bound once here.
+    value(
+        "gs_ask",
+        format!(
+            "[if(gs_step = 0, {}, {})]",
+            ask("fc_angle", "0", true),
+            ask("gs_angle", &held(gun::SLOPE), false),
+        ),
+    );
+    value(
+        "gs_reached",
+        format!("{}[1]", shoot::traverse("gs_ask", targets)),
+    );
+    value(
+        "gs_kind",
+        format!("toUInt8(gs_reached.{})", shoot::reached::KIND),
+    );
+    value(
+        "gs_id",
+        format!("toInt32(gs_reached.{})", shoot::reached::ID),
+    );
+    // `P_SpawnPuff` for a wall and for a thing that cannot bleed, and
+    // `P_SpawnBlood` for one that can; both draw the same four numbers.
+    value(
+        "gs_spawn_draws",
+        format!("toInt64(if(gs_kind = 0, 0, {DEBRIS_DRAWS}))"),
+    );
+    value(
+        "gs_hurt_draws",
+        format!(
+            "toInt64(if(gs_kind != 2, 0, {}[1]))",
+            inter::draws(
+                "[(toUInt32(gs_id), toUInt32(fc_slot), toUInt32(fc_slot), gs_damage, \
+                 toUInt32(0))]",
+                hurting,
+            )
+        ),
+    );
+    // A shot that kills what it hit changes what a later shot of the same
+    // call would reach, and a special line the shot crossed is
+    // `P_ShootSpecialLine`, which this does not run.
+    value(
+        "gs_stuck",
+        format!(
+            "toUInt8(notEmpty(gs_reached.{}) \
+             OR (gs_kind = 2 AND gs_step < gn_shots AND toInt64({}[gs_id]) - gs_damage <= 0))",
+            shoot::reached::SPECHIT,
+            world.m_health,
+        ),
+    );
+
+    let body = format!(
+        "if(gs_step = 0, (toInt32(gs_reached.{slope}), {shots}, {damage}, {spawn}, {hurt}, \
+         {draws}, {stuck}), \
+         ({}, arrayPushBack({shots}, gs_reached), arrayPushBack({damage}, gs_damage), \
+         arrayPushBack({spawn}, toUInt32({draws} + 3)), \
+         arrayPushBack({hurt}, toUInt32({draws} + 3 + gs_spawn_draws)), \
+         toInt64({draws} + 3 + gs_spawn_draws + gs_hurt_draws), \
+         toUInt8({stuck} = 1 OR gs_stuck = 1)))",
+        held(gun::SLOPE),
+        slope = shoot::reached::SLOPE,
+        shots = held(gun::SHOTS),
+        damage = held(gun::DAMAGE),
+        spawn = held(gun::SPAWN_BASE),
+        hurt = held(gun::HURT_BASE),
+        draws = held(gun::DRAWS),
+        stuck = held(gun::STUCK),
+    );
+    (values, body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,9 +824,12 @@ mod tests {
         Attacking {
             m_x: "m_x",
             m_y: "m_y",
+            m_z: "m_z",
             m_angle: "m_angle",
+            m_height: "m_height",
             m_flags: "m_flags",
             m_type: "m_type",
+            m_health: "m_health",
             m_target: "m_target",
             prndindex: "prndindex",
         }
@@ -524,11 +852,11 @@ mod tests {
         let (_, body) = attacks(&world());
         assert!(
             body.contains(
-                "toUInt32(if(ak_runs = 0, 0, 2 * toUInt32(ak_fuzzy) + toUInt32(ak_near)))"
+                "toUInt32(if(fc_runs = 0, 0, 2 * toUInt32(fc_fuzzy) + toUInt32(ak_near)))"
             ),
             "{body}"
         );
-        assert!(named("ak_damage").contains("1 + 2 * toUInt32(ak_fuzzy)"));
+        assert!(named("ak_damage").contains("1 + 2 * toUInt32(fc_fuzzy)"));
     }
 
     /// `P_CheckMeleeRange` measures against the target's own type rather
@@ -536,7 +864,7 @@ mod tests {
     #[test]
     fn the_reach_is_measured_against_the_type_s_own_radius() {
         assert!(
-            named("ak_near").contains("mobj_radius[1 + m_type[ak_target]]"),
+            named("ak_near").contains("mobj_radius[1 + m_type[fc_target]]"),
             "{}",
             named("ak_near")
         );
@@ -761,6 +1089,139 @@ mod tests {
         );
         assert_eq!(sql.matches("arrayFold((rd_held, rd_ask) ->").count(), 1);
         assert!(!sql.contains("arrayMap(rd_ask ->"), "the body is a fold's");
+    }
+
+    fn gunned_value(name: &str) -> String {
+        let (values, _) = gunshots(&world(), &targets(), &hurting());
+        values
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("the call names {name}"))
+    }
+
+    fn targets() -> shoot::Targets<'static> {
+        shoot::Targets {
+            m_x: "m_x",
+            m_y: "m_y",
+            m_z: "m_z",
+            m_radius: "m_radius",
+            m_height: "m_height",
+            m_flags: "m_flags",
+            m_linkseq: "m_linkseq",
+            alive: "m_alive",
+            floorheight: "floorheight",
+            ceilingheight: "ceilingheight",
+            line_special: "line_special",
+        }
+    }
+
+    /// The zombieman fires once and the shotgun guy three times.
+    #[test]
+    fn each_routine_fires_what_the_engine_fires() {
+        let shots = gunned_value("gn_shots");
+        assert!(shots.contains("gn_routine = a_posattack, 1"), "{shots}");
+        assert!(shots.contains("gn_routine = a_sposattack, 3"), "{shots}");
+    }
+
+    /// One walk serves the aim and every shot, so the trace and its
+    /// intercepts are in the statement once.
+    #[test]
+    fn one_walk_serves_the_aim_and_the_shots() {
+        let sql = hitscan("asks", &world(), &targets(), &hurting());
+        assert_eq!(
+            sql.matches("arrayMap((am_ask, am_hits)").count(),
+            1,
+            "one walk"
+        );
+        assert_eq!(
+            sql.matches("arrayFold((gs_at, gs_step)").count(),
+            1,
+            "one fold"
+        );
+    }
+
+    fn step_value(name: &str) -> String {
+        let (values, _) = gun_step("gn_ask.3", &world(), &targets(), &hurting());
+        values
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("the step names {name}"))
+    }
+
+    /// A shot turns its angle by the first two numbers it draws, the
+    /// earlier one on the left, and rolls its damage from the third.
+    #[test]
+    fn a_shot_draws_the_spread_before_the_damage() {
+        let angle = step_value("gs_angle");
+        let first = angle.find("+ 1, 255").expect("the first of the spread");
+        let second = angle.find("+ 2, 255").expect("the second");
+        assert!(
+            first < second,
+            "the earlier draw is the left operand: {angle}"
+        );
+        assert!(angle.contains(&format!("{SPREAD_SHIFT})")), "{angle}");
+        let damage = step_value("gs_damage");
+        assert!(damage.contains("+ 3, 255"), "{damage}");
+        assert!(damage.contains("% 5 + 1) * 3"), "{damage}");
+    }
+
+    /// The aim draws nothing, so the first shot's numbers sit right behind
+    /// the face's.
+    #[test]
+    fn the_aim_draws_nothing() {
+        let (_, body) = gunshots(&world(), &targets(), &hurting());
+        assert!(body.contains("toUInt32(fc_angle)"), "{body}");
+        let faced = gunned_value("gn_faced");
+        assert_eq!(
+            faced,
+            "toUInt32(if(fc_runs = 0, 0, 2 * toUInt32(fc_fuzzy)))"
+        );
+    }
+
+    /// A shot's puff sits behind its own three numbers and its damage call
+    /// behind the puff.
+    #[test]
+    fn the_bases_follow_the_engine_s_order() {
+        let (_, body) = gun_step("gn_ask.3", &world(), &targets(), &hurting());
+        assert!(
+            body.contains("+ 3)"),
+            "the puff sits behind the shot: {body}"
+        );
+        assert!(
+            body.contains("+ 3 + gs_spawn_draws)"),
+            "the damage sits behind the puff: {body}"
+        );
+        assert!(
+            step_value("gs_spawn_draws").contains(&format!("gs_kind = 0, 0, {DEBRIS_DRAWS}")),
+            "{}",
+            step_value("gs_spawn_draws")
+        );
+    }
+
+    /// A routine this does not write, and a shot that kills something a
+    /// later shot of the same call would reach, leave the call stuck.
+    #[test]
+    fn what_it_cannot_answer_for_leaves_the_call_stuck() {
+        let (_, body) = gunshots(&world(), &targets(), &hurting());
+        assert!(body.contains("fc_runs = 1 AND gn_shots = 0"), "{body}");
+        assert!(
+            step_value("gs_stuck").contains("gs_step < gn_shots"),
+            "{}",
+            step_value("gs_stuck")
+        );
+    }
+
+    #[test]
+    fn the_gunshot_expression_balances_its_parentheses() {
+        let sql = hitscan("asks", &world(), &targets(), &hurting());
+        let depth = sql.chars().fold(0i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0);
     }
 
     #[test]

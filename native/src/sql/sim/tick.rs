@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 4);
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 5);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
         assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);

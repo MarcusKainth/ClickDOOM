@@ -872,9 +872,11 @@ fn chased(state: &Chasing<'_>) -> String {
         ),
     );
     // `A_FaceTarget` points the thing at what it is about to attack and
-    // takes it off ambush. A target it cannot see clearly turns the angle
-    // by a random amount, which is two draws; nothing on this map carries
-    // that flag and `cs_stuck` refuses one that does.
+    // takes it off ambush. A target carrying `MF_SHADOW` turns the angle
+    // by a random amount instead, which is two draws, and `cs_stuck`
+    // refuses that tic. No target of a face-target on this map carries the
+    // flag, because monsters face the player and the player has no blur
+    // sphere.
     let target = |array: &str| format!("{array}[{}[k]]", state.m_target);
     value(
         "cc_faced",

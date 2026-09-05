@@ -1009,6 +1009,23 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
     ]
 }
 
+/// [`damage_mobj`] over an ask list that carries at most one, folded
+/// rather than mapped.
+///
+/// A map runs every function in its body once even on an empty list, and
+/// this body is the whole routine. A fold runs its body only where the
+/// list has an element, so a caller with nothing to hurt pays for the fold
+/// and nothing under it. The answer is the last ask in the list, and
+/// [`no_hurt`] is what an empty one gives.
+pub fn damage_fold(asks: &str, world: &Hurting<'_>) -> String {
+    let (values, body) = damaged(world);
+    format!(
+        "arrayFold((dm_held, dm_ask) -> {}, {asks}, {})",
+        bind::chain_in("dma", &values, &body),
+        no_hurt(),
+    )
+}
+
 /// What one call works out, as the values a body reads and the [`hurt`]
 /// tuple it answers with.
 fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {

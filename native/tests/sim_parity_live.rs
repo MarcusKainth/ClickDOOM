@@ -235,6 +235,36 @@ const ATTACK: [(u32, i32, i32, u32); 5] = [
 /// past `MELEERANGE`, so the routine throws a fireball.
 const FIREBALL: u32 = 169;
 
+/// The last thing on the list at [`FIREBALL`], read out of the reference
+/// emulator's demo3 trace: `m_type`, `m_x`, `m_y`, `m_z`, `m_momx`,
+/// `m_momy`, `m_momz`, `m_angle`, `m_target`, `m_state`, `m_tics` and
+/// `m_flags`. `MT_TROOPSHOT` is thing type 31 and the imp that threw it is
+/// slot 119.
+///
+/// `P_AddThinker` puts a new thing on the end of the list and
+/// `P_RunThinkers` walks that list to its end, so the engine runs the
+/// fireball's own thinker on the tic it was thrown. The `x`, `y` and
+/// `tics` here are what that thinker left. What `P_SpawnMissile` and
+/// `P_CheckMissileSpawn` leave is one momentum step behind it, with one
+/// tic more on the clock.
+const THROWN: [i64; 12] = [
+    31,
+    21_353_709,
+    -8_314_002,
+    2_097_152,
+    -285_410,
+    589_940,
+    0,
+    1_381_806_976,
+    119,
+    97,
+    1,
+    67_088,
+];
+
+/// How many things stand on the list before the imp throws.
+const ON_THE_LIST: u64 = 264;
+
 const THRUST: [(u32, usize, i32, i32, i32, i32); 4] = [
     (142, 118, 8272000, -4310912, 0, 0),
     (142, 258, 13992912, 4297488, 0, 0),
@@ -345,6 +375,8 @@ struct Walked {
     state119: i32,
     flags119: i32,
     angle119: u32,
+    things: u64,
+    shot: Vec<i64>,
 }
 
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
@@ -375,7 +407,12 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              arrayMap(k -> m_momx[k], [118, 258]) AS thrust_momx, \
              arrayMap(k -> m_momy[k], [118, 258]) AS thrust_momy, \
              p_extralight AS extralight, m_state[119] AS state119, \
-             m_flags[119] AS flags119, m_angle[119] AS angle119 \
+             m_flags[119] AS flags119, m_angle[119] AS angle119, \
+             toUInt64(length(m_x)) AS things, \
+             arrayMap(a -> toInt64(a[length(a)]), \
+             [m_type, m_x, m_y, m_z, m_momx, m_momy, m_momz, \
+             arrayMap(v -> toInt32(v), m_angle), arrayMap(v -> toInt32(v), m_target), \
+             m_state, m_tics, m_flags]) AS shot \
              FROM {db}.native_state ORDER BY tic"
         ))
         .await
@@ -579,17 +616,52 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the imp winding up its attack at gametic {tic}"
         );
     }
-    // The routine turns the imp and then wants a missile, which is the
-    // branch this tic does not spawn.
+    // The fireball the routine throws, on the end of the list.
     assert_eq!(
-        at(FIREBALL).unresolved,
-        1,
-        "the tic the imp throws its fireball says it could not be produced"
+        at(FIREBALL - 1).things,
+        ON_THE_LIST,
+        "the list before the throw is the level's own"
     );
     assert_eq!(
-        at(FIREBALL - 1).unresolved,
-        0,
-        "and the tic before it is one the run carried through"
+        at(FIREBALL).things,
+        ON_THE_LIST + 1,
+        "and the throw puts one more thing on it"
+    );
+    let shot = &at(FIREBALL).shot;
+    let (x, y, momx, momy) = (shot[1], shot[2], shot[4], shot[5]);
+    // Everything the spawn itself decides.
+    for (at, name) in [
+        (0, "type"),
+        (3, "z"),
+        (4, "momx"),
+        (5, "momy"),
+        (6, "momz"),
+        (7, "angle"),
+        (8, "target"),
+        (9, "state"),
+        (11, "flags"),
+    ] {
+        assert_eq!(shot[at], THROWN[at], "the fireball's {name}");
+    }
+    // The engine runs the fireball's own thinker on the tic it was thrown
+    // and this does not, so the point is one momentum step short of the
+    // probe's and the wait is one tic longer.
+    assert_eq!(
+        (x + momx, y + momy),
+        (THROWN[1], THROWN[2]),
+        "the fireball stands one step behind where the engine left it"
+    );
+    assert_eq!(
+        shot[10],
+        THROWN[10] + 1,
+        "and one tic behind on its own clock"
+    );
+    // Every number the throw draws is counted, which is what moved the
+    // first divergence off `prndindex`.
+    assert_eq!(
+        at(FIREBALL).prndindex,
+        194,
+        "the tic draws what the engine draws"
     );
     for (tic, slot, x, y, momx, momy) in THRUST {
         let row = at(tic);

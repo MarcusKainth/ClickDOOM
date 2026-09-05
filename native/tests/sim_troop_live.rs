@@ -49,6 +49,9 @@ const ATTACK: i32 = 454;
 /// `p_local.h`
 const BASETHRESHOLD: i32 = 100;
 
+/// `mobjtype.tsv`: the fireball an imp throws.
+const TROOPSHOT: i32 = 31;
+
 /// `p_mobj.h`
 const MF_AMBUSH: i64 = 32;
 
@@ -88,6 +91,9 @@ struct Clawed {
     threshold: i32,
     prndindex: u8,
     unresolved: u8,
+    things: u64,
+    last_type: i32,
+    last_target: u32,
 }
 
 /// A column of one slot replaced, leaving every other slot alone.
@@ -168,7 +174,9 @@ async fn a_tic_carries_the_imps_attack_through() {
             "SELECT tic, m_state[{ATTACKER}] AS state, m_angle[{ATTACKER}] AS angle, \
              m_flags[{ATTACKER}] AS attacker_flags, m_health[{TARGET}] AS health, \
              m_target[{TARGET}] AS hunts, m_threshold[{TARGET}] AS threshold, \
-             prndindex, unresolved \
+             prndindex, unresolved, toUInt64(length(m_x)) AS things, \
+             m_type[length(m_type)] AS last_type, \
+             m_target[length(m_target)] AS last_target \
              FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
             wanted.join(", ")
         ))
@@ -218,17 +226,30 @@ async fn a_tic_carries_the_imps_attack_through() {
         "and holds that for the threshold's worth of tics"
     );
 
-    // The imp out of reach throws a fireball, which this tic does not
-    // spawn.
+    // The imp out of reach throws a fireball, which goes on the end of the
+    // list.
     let (before, after) = (at(300), at(301));
     assert_eq!(after.state, ATTACK, "the cycle reaches the routine");
     assert_eq!(
         after.health, before.health,
-        "nothing reaches a target four hundred units away"
+        "no claw reaches a target four hundred units away"
     );
     assert_eq!(
-        after.unresolved, 1,
-        "and the fireball says the tic could not be produced"
+        after.things,
+        before.things + 1,
+        "the throw puts one more thing on the list"
+    );
+    assert_eq!(
+        after.last_type, TROOPSHOT,
+        "and the thing it puts there is a fireball"
+    );
+    assert_eq!(
+        after.last_target, ATTACKER as u32,
+        "carrying a pointer back at the imp that threw it"
+    );
+    assert_ne!(
+        after.prndindex, before.prndindex,
+        "and the spawn draws for itself"
     );
 
     // `A_FaceTarget` takes the thing off ambush, and the tic carries that

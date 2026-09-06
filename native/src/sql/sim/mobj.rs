@@ -726,7 +726,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "now_unresolved",
         format!(
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
-             OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
+             OR arrayExists(c -> c.{} = 1, cw_chased) \
              OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1 \
              OR tz_unrun = 1 OR at_unrun = 1 \
              OR arrayExists(u -> u = 1, mt_attacker_unsure))",
@@ -1758,7 +1758,15 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
 /// move changes what the other is told.
 ///
 /// The reach is the momentum a thing spends this tic or the step a chase
-/// takes, whichever it is doing, so one test covers both lists.
+/// takes, whichever it is doing, so one test covers both lists. A pair
+/// that is chasing on both sides with no momentum of its own is the chase
+/// fold's own `cc_disturbed` to decide, since the fold already knows
+/// which of its own destinations the other's move actually reached; this
+/// still covers every other pair, because the momentum stage and the
+/// chase fold run as separate stages while the engine interleaves the two
+/// kinds of move by slot, and that ordering gap is not something either
+/// stage's own fold sees on its own. A chaser a shot has thrust carries
+/// momentum, so it stays a momentum mover here for the pairs it is in.
 fn shifted(state: &State, movers: &str) -> String {
     let s = |column: &str| state.get(column);
     let reach = |slot: &str| {
@@ -1778,9 +1786,14 @@ fn shifted(state: &State, movers: &str) -> String {
             reach("b"),
         )
     };
+    let chases_only = |slot: &str| {
+        format!("(indexOf(mt_movers, {slot}) != 0 AND indexOf(tx_movers, {slot}) = 0)")
+    };
     format!(
-        "toUInt8(arrayExists((a, i) -> arrayExists(b -> {} AND {}, \
+        "toUInt8(arrayExists((a, i) -> arrayExists(b -> NOT ({} AND {}) AND {} AND {}, \
          arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
+        chases_only("a"),
+        chases_only("b"),
         axis(&s("m_x")),
         axis(&s("m_y")),
     )
@@ -2855,6 +2868,32 @@ mod tests {
             _ => d,
         });
         assert_eq!(depth, 0);
+    }
+
+    /// A pair chasing on both sides with no momentum of its own is the
+    /// chase fold's own `cc_disturbed` to decide, so the general gate
+    /// skips it.
+    #[test]
+    fn a_pair_of_momentumless_chasers_skips_the_general_gate() {
+        let sql = shifted(&State::default(), "tx_shifters");
+        assert!(
+            sql.contains(
+                "NOT ((indexOf(mt_movers, a) != 0 AND indexOf(tx_movers, a) = 0) \
+             AND (indexOf(mt_movers, b) != 0 AND indexOf(tx_movers, b) = 0))"
+            ),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn the_general_gate_balances_its_parentheses() {
+        let sql = shifted(&State::default(), "tx_shifters");
+        let depth = sql.chars().fold(0i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "{sql}");
     }
 }
 

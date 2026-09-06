@@ -79,10 +79,10 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic two monsters stand close enough that one's move changes
-/// what the other is told. The engine runs them one after the other and
-/// this runs them together, so the tic says it could not be produced.
-const FIRST_CROWDED: u32 = 82;
+/// The first tic a thing's state cycle wants a third state: the first
+/// entry's own routine sends it on to a second, and that second entry's
+/// state carries a routine too, which nothing here runs.
+const FIRST_THIRD_STATE: u32 = 144;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -474,7 +474,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     };
     // The run reaches past the door, and every tic up to the first shot
     // completes.
-    for row in walk.iter().filter(|row| row.tic < FIRST_CROWDED) {
+    for row in walk.iter().filter(|row| row.tic < FIRST_THIRD_STATE) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
@@ -482,9 +482,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_CROWDED).unresolved,
+        at(FIRST_THIRD_STATE).unresolved,
         1,
-        "the tic two monsters stand close enough says it could not be produced"
+        "the tic a state cycle wants a third state says it could not be produced"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

@@ -56,15 +56,19 @@ database, and which tic each frame reads and how far the screen melt has
 got come from those rows.
 
 --from sim opens the simulation statement too and runs it from the demo
-lump's own commands, the way `native diff` does. The renderer draws each
-frame from the tic the simulation just wrote: the screen melt's frame count
-and per-frame pass count are the reference run's own recorded schedule
-(`driver/melt/`), not something a tic count derives, so every melt frame
-reads the tic that schedule holds and gameplay resumes one tic per frame
-after it. The simulation runs ahead of the paced frames by up to
---lookahead tics; the stats line's sim= and lookahead= report it. A run
-without --stop-at-frame goes until the demo lump runs out of commands,
-which ends the run the same as reaching probe's last frame does.
+lump's own commands, the way `native diff` does. It empties the database's
+simulation rows first and writes the level's first row again, the same
+restart `native diff` does, so a run always plays from the level's own
+start rather than from whatever an earlier run of either command left
+committed. The renderer draws each frame from the tic the simulation just
+wrote: the screen melt's frame count and per-frame pass count are the
+reference run's own recorded schedule (`driver/melt/`), not something a
+tic count derives, so every melt frame reads the tic that schedule holds
+and gameplay resumes one tic per frame after it. The simulation runs ahead
+of the paced frames by up to --lookahead tics; the stats line's sim= and
+lookahead= report it. A run without --stop-at-frame goes until the demo
+lump runs out of commands, which ends the run the same as reaching probe's
+last frame does.
 
 --no-window runs headless, which is what --frame-dir and --hash-out are for:
 a PPM per frame, built in SQL, and a TSV of frame, tic and frame hash. The

@@ -43,14 +43,75 @@ pub fn schema_tables() -> Vec<&'static str> {
         .collect()
 }
 
+/// The column list inside a `CREATE TABLE`'s outer parens, as one string
+/// with every comment already stripped: a trailing `-- comment` loses
+/// everything from the `--` on, and a standalone comment line loses all of
+/// it, both before anything here looks for a comma.
+///
+/// Stripping first, over the whole list at once, is what keeps a comment
+/// carrying its own commas (`bbox`'s `-- top, bottom, left, right`) from
+/// being counted as column separators.
+fn strip_comments(body: &str) -> String {
+    body.lines()
+        .map(|line| line.split("--").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text`, with every run of whitespace collapsed to one space and no
+/// space just inside a paren: the one canonical form both a type
+/// `native/schema.sql` spans several lines to declare, and the type a
+/// live server's `system.columns` names back, reduce to.
+///
+/// A schema type collapses to this shape by construction; a value read
+/// off a server already carries it, but normalising both sides before a
+/// comparison, rather than trusting the server never to differ, is what
+/// tells a real mismatch from a rendering one.
+pub fn collapse_type(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(" )", ")")
+}
+
+/// `text`, split on every comma at paren depth 0.
+///
+/// A column's own type can carry parens deeper than that (`Array(Int32)`,
+/// or a `Tuple` whose members run over several lines with commas of their
+/// own), and those belong to the entry the comma sits inside, not to the
+/// list this splits.
+fn top_level_entries(text: &str) -> Vec<&str> {
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut entries = Vec::new();
+    for (at, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => {
+                entries.push(&text[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    entries.push(&text[start..]);
+    entries
+}
+
 /// Every column the schema declares, as `(table, column, type)`, in
-/// declaration order.
+/// declaration order. A type that spans several lines (a `Tuple`'s own
+/// members, one per line) comes back with its whitespace collapsed to
+/// single spaces, matching how `system.columns` renders one back; `column`
+/// is owned for the same reason `type` is, since both are read out of a
+/// comment-stripped copy of the schema text rather than the text itself.
 ///
 /// `system.columns` names a loaded database's own columns and types the
 /// same way, so a caller can compare the two directly rather than trusting
 /// `CREATE TABLE IF NOT EXISTS` to notice a schema that moved underneath a
 /// table that already exists.
-pub fn schema_columns() -> Vec<(&'static str, &'static str, &'static str)> {
+pub fn schema_columns() -> Vec<(&'static str, String, String)> {
     let prefix = format!("CREATE TABLE IF NOT EXISTS {DB_PLACEHOLDER}.");
     let mut columns = Vec::new();
     for sql in split_statements(SCHEMA) {
@@ -80,15 +141,16 @@ pub fn schema_columns() -> Vec<(&'static str, &'static str, &'static str)> {
                 _ => {}
             }
         }
-        for line in body[..close].lines() {
-            let line = line.split("--").next().unwrap_or_default();
-            for entry in line.split(',') {
-                let entry = entry.trim();
-                let Some((column, kind)) = entry.split_once(char::is_whitespace) else {
-                    continue;
-                };
-                columns.push((table, column, kind.trim()));
+        let stripped = strip_comments(&body[..close]);
+        for entry in top_level_entries(&stripped) {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
             }
+            let Some((column, kind)) = entry.split_once(char::is_whitespace) else {
+                continue;
+            };
+            columns.push((table, column.to_owned(), collapse_type(kind)));
         }
     }
     columns
@@ -168,7 +230,7 @@ pub fn wad_insert(db: &str, wad: &crate::wad::Wad<'_>) -> Statement {
 /// The schema is the one place that says what type a state column has.
 /// `probe_state` takes its types from here, so the table the probe loads
 /// into and the table the simulation writes cannot disagree on a type.
-fn native_state_types() -> Vec<(&'static str, &'static str)> {
+fn native_state_types() -> Vec<(String, String)> {
     schema_columns()
         .into_iter()
         .filter(|(table, _, _)| *table == "native_state")
@@ -235,11 +297,11 @@ mod tests {
             "a table with no columns, or a column with no table, went missing"
         );
         assert!(
-            columns.contains(&("native_state", "unresolved", "UInt64")),
+            columns.contains(&("native_state", "unresolved".to_owned(), "UInt64".to_owned())),
             "{columns:?}"
         );
         assert!(
-            columns.contains(&("finetangent", "value", "Int32")),
+            columns.contains(&("finetangent", "value".to_owned(), "Int32".to_owned())),
             "a single-line CREATE TABLE parses too: {columns:?}"
         );
         // A comment on its own line, or trailing a column's, names no
@@ -250,6 +312,49 @@ mod tests {
                 .all(|(_, column, _)| !column.is_empty() && !column.starts_with("--")),
             "{columns:?}"
         );
+    }
+
+    /// `native_frames.st_cache` is a `Tuple` whose members run one per
+    /// line, each with a comma of its own: exactly the shape a column
+    /// list split on every comma, rather than only the ones between
+    /// columns, would tear apart into `st_cache`'s own members.
+    #[test]
+    fn a_multi_line_tuple_column_is_named_once_with_its_whole_type() {
+        let columns = schema_columns();
+        let st_cache: Vec<_> = columns
+            .iter()
+            .filter(|(table, column, _)| *table == "native_frames" && *column == "st_cache")
+            .collect();
+        assert_eq!(st_cache.len(), 1, "{columns:?}");
+        assert_eq!(
+            st_cache[0].2,
+            "Tuple(ready Int32, frags Int32, health Int32, armor Int32, \
+             ammo Array(Int32), maxammo Array(Int32), arms Array(Int32), \
+             keyboxes Array(Int32), faceindex Int32, armsbg Int32)",
+            "collapsing has to match system.columns' own rendering exactly, \
+             not just start the same way"
+        );
+        assert!(
+            columns
+                .iter()
+                .all(|(table, column, _)| !(*table == "native_frames"
+                    && ["ready", "frags", "health", "armor", "faceindex", "armsbg"]
+                        .contains(&column.as_str()))),
+            "a tuple member split out as its own column: {columns:?}"
+        );
+    }
+
+    #[test]
+    fn collapse_type_matches_a_named_tuple_s_own_rendering() {
+        assert_eq!(collapse_type("Int32"), "Int32");
+        assert_eq!(collapse_type("  Int32  "), "Int32");
+        assert_eq!(
+            collapse_type("Tuple(\n  ready  Int32,\n  frags  Int32\n)"),
+            "Tuple(ready Int32, frags Int32)"
+        );
+        // A nested `Array(...)` carries no whitespace of its own to begin
+        // with, so it passes through unchanged.
+        assert_eq!(collapse_type("Array(Int32)"), "Array(Int32)");
     }
 
     #[test]

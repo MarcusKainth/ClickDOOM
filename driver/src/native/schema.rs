@@ -93,13 +93,15 @@ pub async fn check_columns(db: &Db, database: &str) -> Result<Option<Mismatch>, 
                 column: column.to_owned(),
                 want: want.to_owned(),
             }),
-            Some(found) if found.kind != want => Some(Mismatch::Changed {
-                database: database.to_owned(),
-                table: table.to_owned(),
-                column: column.to_owned(),
-                want: want.to_owned(),
-                got: found.kind.clone(),
-            }),
+            Some(found) if clickdoom_native::sql::collapse_type(&found.kind) != want => {
+                Some(Mismatch::Changed {
+                    database: database.to_owned(),
+                    table: table.to_owned(),
+                    column: column.to_owned(),
+                    want: want.to_owned(),
+                    got: found.kind.clone(),
+                })
+            }
             Some(_) => None,
         };
         if mismatch.is_some() {

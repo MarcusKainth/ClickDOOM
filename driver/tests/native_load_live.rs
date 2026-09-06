@@ -1,7 +1,7 @@
 //! Live proof for `clickdoom native load`, run against a real ClickHouse
 //! server.
 //!
-//! Four things, all of which need a server to show:
+//! Five things, all of which need a server to show:
 //!
 //!   * a level load fills the tables the renderer reads, and loading twice
 //!     leaves the same row counts as loading once;
@@ -11,7 +11,9 @@
 //!     including the -1 the probe writes into a column the schema declares
 //!     unsigned, and the committed fixture is the file it is shown on;
 //!   * a database a narrower schema loaded is refused, both by a load
-//!     without `--fresh` and by the hash check a session opens with.
+//!     without `--fresh` and by the hash check a session opens with;
+//!   * `schema_columns` names the same columns, with the same types, that
+//!     a fresh load's own `system.columns` does, in both directions.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`).
@@ -334,7 +336,11 @@ fn native_state_ddl_with_narrow_unresolved(database: &str) -> String {
         .into_iter()
         .filter(|(table, _, _)| *table == "native_state")
         .map(|(_, name, kind)| {
-            let kind = if name == "unresolved" { "UInt8" } else { kind };
+            let kind = if name == "unresolved" {
+                "UInt8".to_owned()
+            } else {
+                kind
+            };
             format!("{name} {kind}")
         })
         .collect();
@@ -395,6 +401,59 @@ async fn a_database_a_narrower_schema_loaded_is_refused_by_load_and_by_open() {
         matches!(&stale, schema::Mismatch::Stale { database, .. } if database == &fixture.database),
         "{stale}"
     );
+
+    fixture.finish().await;
+}
+
+/// `schema_columns`, checked column for column against a fresh load's own
+/// `system.columns`, in both directions: every column `schema_columns`
+/// names is one `system.columns` also names with the same type, and every
+/// column `system.columns` names is one `schema_columns` also names.
+///
+/// This is the same comparison `check_columns` makes, run once here over
+/// the whole schema rather than stopping at the first table `check_columns`
+/// itself reaches, so a table nothing else in this file loads (`native_frames`,
+/// whose `st_cache` is the `Tuple` that first exposed the parser's own
+/// line-splitting bug) is covered too. `system.columns`' type text is
+/// ClickHouse's own rendering, collapsed the same way `schema_columns`
+/// already collapses a type that spans several lines, so a real
+/// disagreement is not lost in one side's whitespace.
+#[tokio::test]
+async fn schema_columns_matches_system_columns_exactly_both_ways() {
+    let bytes = doom1();
+    let wad = Wad::parse(&bytes).expect("the WAD parses");
+    let fixture = Fixture::create("schema_columns").await;
+    fixture
+        .run_plan(&level_phases(&fixture.database, &wad))
+        .await;
+
+    let rows: Vec<(String, String, String)> = fixture
+        .rows(&format!(
+            "SELECT table, name, type FROM system.columns WHERE database = '{}'",
+            fixture.database
+        ))
+        .await;
+    let actual: Vec<(String, String, String)> = rows
+        .into_iter()
+        .map(|(table, name, kind)| (table, name, sql::collapse_type(&kind)))
+        .collect();
+    let parsed: Vec<(String, String, String)> = sql::schema_columns()
+        .into_iter()
+        .map(|(table, column, kind)| (table.to_owned(), column, kind))
+        .collect();
+
+    for entry in &parsed {
+        assert!(
+            actual.contains(entry),
+            "schema_columns names {entry:?}, a fresh load's system.columns does not"
+        );
+    }
+    for entry in &actual {
+        assert!(
+            parsed.contains(entry),
+            "a fresh load's system.columns names {entry:?}, schema_columns does not"
+        );
+    }
 
     fixture.finish().await;
 }

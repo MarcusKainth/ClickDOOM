@@ -95,14 +95,17 @@ pub fn names() -> Vec<&'static str> {
 
 /// Every `probe_state` column with its type, the contract's fields taking
 /// the type `native_state` declares for them.
-fn columns() -> Vec<(&'static str, &'static str)> {
+fn columns() -> Vec<(&'static str, String)> {
     let declared = super::native_state_types();
-    let mut columns = LEADING.to_vec();
+    let mut columns: Vec<(&'static str, String)> = LEADING
+        .iter()
+        .map(|(name, kind)| (*name, (*kind).to_owned()))
+        .collect();
     for field in native_state::all_fields() {
         let kind = declared
             .iter()
             .find(|(name, _)| *name == field)
-            .map(|(_, kind)| *kind)
+            .map(|(_, kind)| kind.clone())
             .unwrap_or_else(|| panic!("native_state declares no column {field}"));
         columns.push((field, kind));
     }

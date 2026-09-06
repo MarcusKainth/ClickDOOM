@@ -55,10 +55,10 @@ fn conn_args(database: &str) -> ConnArgs {
 /// The type `native/schema.sql` gives one of `native_state`'s own columns,
 /// read from the schema rather than named here, so a column this test
 /// gives its own type to cannot drift from the real one silently.
-fn state_type(column: &str) -> &'static str {
+fn state_type(column: &str) -> String {
     clickdoom_native::sql::schema_columns()
         .into_iter()
-        .find(|(table, name, _)| *table == "native_state" && *name == column)
+        .find(|(table, name, _)| *table == "native_state" && name == column)
         .map(|(_, _, kind)| kind)
         .unwrap_or_else(|| panic!("native_state declares no column {column}"))
 }

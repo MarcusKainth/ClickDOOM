@@ -238,8 +238,12 @@ pub struct Chasing<'a> {
     /// How many entries of the cycle carried `A_Chase`, by slot. A thing
     /// that reached two of them in one tic is one this does not run.
     pub entries: &'a str,
-    /// How many draws `A_Look` made, by slot. A thing that wakes shouts
-    /// before it chases, so its own look draw is behind it.
+    /// How many numbers every routine whose own count does not depend on
+    /// a draw of its own made this tic, by slot: `A_Look`'s shout and the
+    /// one attack, if either reached this slot. A thing that wakes shouts
+    /// before it chases, so its own shout is behind it, and a chaser
+    /// after the attacker's own slot counts the attack's draws the same
+    /// way.
     pub shouts: &'a str,
     pub m_x: &'a str,
     pub m_y: &'a str,
@@ -348,11 +352,12 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
         ),
     );
     // A draw the tic has already made stands ahead of this thing's own:
-    // every look the list made up to and including this slot, and every
-    // chase before it. How many a chase makes is not known until its own
-    // first draw is read, because a thing whose missile check answers yes
-    // attacks and returns rather than walking, so the running index is a
-    // fold rather than a sum over counts worked out in advance.
+    // every shout and every attack up to and including this slot, and
+    // every chase before it. How many a chase makes is not known until
+    // its own first draw is read, because a thing whose missile check
+    // answers yes attacks and returns rather than walking, so the running
+    // index is a fold rather than a sum over counts worked out in
+    // advance.
     value("cf_shouts", format!("arrayCumSum({})", state.shouts));
     let sh = |field: usize| format!("cf_shape[i].{field}");
     let base = "cf_shouts[cf_movers[i]] + fb.2";

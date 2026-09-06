@@ -51,8 +51,11 @@ PPM is a query of its own per frame and the progress line reports what it
 costs, so a run that writes them does not hold 35 Hz. --stop-at-frame ends
 the run early; without it the run ends with the demo.
 
-Exit codes: 0 the run finished, 1 it failed, 3 --expect-probe-fbhash found a
-frame the engine did not draw."
+A tic native_state marks unresolved or unimplemented stops the run rather
+than going on to the tics after it.
+
+Exit codes: 0 the run finished, 1 it failed, 3 a tic refused, or
+--expect-probe-fbhash found a frame the engine did not draw."
 )]
 pub struct DemoCmd {
     /// The demo to play, by lump name
@@ -237,6 +240,16 @@ async fn draw(
         }
         Err(err) => return Err(failed(err.to_string())),
     };
+    // A tic native_state marks unresolved or unimplemented drew whatever
+    // was left of it rather than the tic itself, so the run stops before
+    // going on to the tics after it.
+    if let Some(refusal) = session
+        .first_refusal(row.tic)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
+        return Err(gate(refusal.to_string()));
+    }
 
     run.counters.tics += 1;
     run.counters.frames += 1;

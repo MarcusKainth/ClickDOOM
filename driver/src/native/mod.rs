@@ -10,7 +10,9 @@
 //! The one-off side is beside it: [`plan`] issues the statements that load a
 //! database, [`probe`] loads the reference emulator's state rows, [`melt`]
 //! the screen wipe's schedule, and [`schedule`] reads back which frames a
-//! run renders and what each one draws from.
+//! run renders and what each one draws from. [`refusal`] reads back the
+//! tic a run stopped at, where `unresolved` or `unimplemented` said one
+//! could not be produced exactly.
 //!
 //! A paced run adds [`pace`], the 35 Hz tic clock, and [`window`], which
 //! puts the frame SQL produced on the screen.
@@ -19,6 +21,7 @@ pub mod melt;
 pub mod pace;
 pub mod plan;
 pub mod probe;
+pub mod refusal;
 pub mod rowbinary;
 pub mod schedule;
 pub mod session;
@@ -27,5 +30,6 @@ pub mod stream;
 pub mod url;
 pub mod window;
 
+pub use refusal::Refusal;
 pub use session::{Frame, Recovery, Session, SessionError, Waited};
 pub use stream::{Resident, ResidentError};

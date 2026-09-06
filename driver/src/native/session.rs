@@ -286,6 +286,18 @@ impl Session {
         }
     }
 
+    /// The first tic up to and including `upto` that `native_state` marks
+    /// unresolved or unimplemented, if any.
+    ///
+    /// A caller checks this once [`wait_sim`](Session::wait_sim) confirms
+    /// the tic is committed, since a refused tic is not one to render or
+    /// feed forward.
+    pub async fn first_refusal(&self, upto: u32) -> Result<Option<super::Refusal>, SessionError> {
+        super::refusal::first(&self.db, &self.database, upto)
+            .await
+            .map_err(|source| self.read_error(STATE_TABLE, source))
+    }
+
     /// Sends the input row for one frame. `melt_step` drives the screen
     /// wipe.
     pub fn feed_render(&self, frame: u32, tic: u32, melt_step: u8) -> Result<(), SessionError> {

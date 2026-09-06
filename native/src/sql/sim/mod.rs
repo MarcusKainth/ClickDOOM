@@ -41,6 +41,27 @@ pub mod unimplemented {
     pub const SECTOR_DOOR: u64 = 1 << 0;
 }
 
+/// Every bit `unimplemented` names, in ascending order.
+const UNIMPLEMENTED_BITS: [(u64, &str); 1] = [(unimplemented::SECTOR_DOOR, "SECTOR_DOOR")];
+
+/// The names of the bits `bits` sets, for a message naming why a run
+/// stopped. A bit no name covers stands for itself, as its hex value.
+pub fn unimplemented_names(bits: u64) -> String {
+    let mut names: Vec<String> = UNIMPLEMENTED_BITS
+        .into_iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| name.to_owned())
+        .collect();
+    let known = UNIMPLEMENTED_BITS
+        .into_iter()
+        .fold(0, |acc, (bit, _)| acc | bit);
+    let unnamed = bits & !known;
+    if unnamed != 0 {
+        names.push(format!("{unnamed:#x}"));
+    }
+    names.join(", ")
+}
+
 /// Every statement a loaded level needs before its first tic: the guards
 /// the engine's own setup stops on, and the row it leaves behind.
 pub fn load_statements(db: &str) -> Vec<Statement> {
@@ -435,6 +456,19 @@ mod tests {
         assert_eq!(columns[1], native_state::GAME_FIELDS[0]);
         assert_eq!(&columns[columns.len() - EXTRA_FIELDS.len()..], EXTRA_FIELDS);
         assert_eq!(columns.len(), native_state::all_fields().len() + 5);
+    }
+
+    #[test]
+    fn a_named_bit_reads_by_name_and_an_unnamed_one_by_its_value() {
+        assert_eq!(
+            unimplemented_names(unimplemented::SECTOR_DOOR),
+            "SECTOR_DOOR"
+        );
+        assert_eq!(unimplemented_names(1 << 5), "0x20");
+        assert_eq!(
+            unimplemented_names(unimplemented::SECTOR_DOOR | 1 << 5),
+            "SECTOR_DOOR, 0x20"
+        );
     }
 
     fn values(pairs: &[(&str, &str)]) -> Vec<(String, String)> {

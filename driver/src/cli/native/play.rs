@@ -5,7 +5,7 @@ use std::time::Duration; // purity-ok: the frame budget and the timings the sess
 use clap::Args;
 use clickdoom_native::sql::sim::tick;
 
-use crate::cli::{Exit, Failure, failed};
+use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::ConnArgs;
 use crate::native::pace::{Pace, TIC};
 use crate::native::session::TIC_TIMEOUT;
@@ -41,7 +41,10 @@ Click in the window to take the mouse: the pointer is held and hidden, and
 turning follows the mouse however far it moves. Escape frees the mouse, and
 Escape again ends the run.
 
-Exit codes: 0 the run finished, 1 it failed."
+A tic native_state marks unresolved or unimplemented stops the run rather
+than being drawn.
+
+Exit codes: 0 the run finished, 1 it failed, 3 a tic refused."
 )]
 pub struct PlayCmd {
     #[command(flatten)]
@@ -149,6 +152,15 @@ async fn play(
         );
         let ran = ran.map_err(|err| failed(err.to_string()))?;
         let waited = waited.map_err(|err| failed(err.to_string()))?;
+        // A tic the statement could not produce exactly is not one to feed
+        // forward, checked as soon as it commits.
+        if let Some(refusal) = session
+            .first_refusal(next)
+            .await
+            .map_err(|err| failed(err.to_string()))?
+        {
+            return Err(gate(refusal.to_string()));
+        }
 
         let before = clock.elapsed();
         window
@@ -203,6 +215,13 @@ async fn warm(
     );
     let drawn = drawn.map_err(|err| failed(err.to_string()))?;
     let ran = ran.map_err(|err| failed(err.to_string()))?;
+    if let Some(refusal) = session
+        .first_refusal(first)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
+        return Err(gate(refusal.to_string()));
+    }
     window
         .draw(&drawn.frame.rgb32)
         .map_err(|err| failed(err.to_string()))?;

@@ -131,13 +131,22 @@ fn along_chain(db: &str, kind: &str, hops: usize) -> String {
 }
 
 /// What stops the load: a puff or a blood spot whose state chain is not
-/// the length the engine's own frame names assume.
+/// the length the engine's own frame names assume, or a monster whose
+/// spawn, see, pain, melee, missile, death or xdeath state can reach a
+/// state with no wait of its own.
 ///
 /// `P_SpawnPuff` puts a puff into its third frame and `P_SpawnBlood` puts
 /// a blood spot into its second or its third, and nothing else names them.
+///
+/// `P_SetMobjState` chains straight through a state carrying no wait
+/// without a tic passing, and the cycle unrolls two entries deep: the
+/// state a routine's own transition enters, and the one a wake into
+/// `A_Chase` or a hit into a pain frame sends it to next. A state with no
+/// wait of its own reachable from any of a placed type's own frames would
+/// need a third entry the cycle does not carry.
 pub fn guards(db: &str) -> Vec<Statement> {
     let ends_at = |kind: &str, hops: usize| along_chain(db, kind, hops);
-    [("MT_PUFF", 4), ("MT_BLOOD", 3)]
+    let mut guards: Vec<Statement> = [("MT_PUFF", 4), ("MT_BLOOD", 3)]
         .into_iter()
         .map(|(kind, length)| {
             Statement::sql(format!(
@@ -146,7 +155,48 @@ pub fn guards(db: &str) -> Vec<Statement> {
                 ends_at(kind, length - 1),
             ))
         })
-        .collect()
+        .collect();
+    guards.push(Statement::sql(no_zero_tics_chain(db)));
+    guards
+}
+
+/// How far a chain of `nextstate` links is walked looking for a state
+/// with no wait of its own. Longer than any frame table's own chain runs
+/// several times over, so a cycle among states with a real wait is
+/// walked past rather than mistaken for one that never reaches such a
+/// state.
+const CHAIN_HOPS: usize = 40;
+
+fn no_zero_tics_chain(db: &str) -> String {
+    let starts = [
+        "spawnstate",
+        "seestate",
+        "painstate",
+        "meleestate",
+        "missilestate",
+        "deathstate",
+        "xdeathstate",
+    ]
+    .map(|column| format!("m.{column}"))
+    .join(", ");
+    format!(
+        "SELECT throwIf(\n\
+         arrayExists(s0 -> arrayFold((acc, step) -> (\n\
+             toUInt32(next_tbl[1 + acc.1]),\n\
+             toUInt8(acc.2 = 1 OR toInt32(tics_tbl[1 + acc.1]) = 0)\n\
+         ), range({CHAIN_HOPS}), (toUInt32(s0), toUInt8(toInt32(tics_tbl[1 + s0]) = 0))).2, starts_arr),\n\
+         'a placed type''s own state chain reaches a state with no wait of its own')\n\
+         FROM (\n\
+         SELECT\n\
+             (SELECT groupArray(tics) FROM (SELECT id, tics FROM {db}.states ORDER BY id)) AS tics_tbl,\n\
+             (SELECT groupArray(nextstate) FROM (SELECT id, nextstate FROM {db}.states ORDER BY id)) AS next_tbl,\n\
+             (SELECT arrayDistinct(arrayFilter(x -> x != 0, groupArray(st))) FROM (\n\
+                 SELECT arrayJoin([{starts}]) AS st\n\
+                 FROM (SELECT DISTINCT type FROM {db}.lv_things) t\n\
+                 JOIN {db}.mobjinfo m ON m.doomednum = t.type\n\
+             )) AS starts_arr\n\
+         )"
+    )
 }
 
 /// `P_MobjThinker` over every thing on the list but the player's, whose
@@ -429,6 +479,19 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             ),
         );
     }
+    // `A_Fall` is the one routine the cycle above enters that leaves a
+    // flag behind.
+    bind(
+        "mc_m_flags",
+        format!(
+            "arrayMap((k, a) -> toInt32(if(a.{moved} = 1 AND state_action[1 + a.{state}] = a_fall, \
+             {fallen}, {held}[k])), mt_slots, mt_two)",
+            moved = cycled::MOVED,
+            state = cycled::STATE,
+            fallen = attacks::fallen(&format!("{}[k]", s("m_flags"))),
+            held = s("m_flags"),
+        ),
+    );
     // A thing that takes the player as its target plays the sound it makes
     // on seeing one, and two arms of that switch draw. Nothing reads the
     // number, so what the pass carries out of it is how many were drawn.
@@ -500,13 +563,30 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
          mt_attacker_draws[indexOf(mt_attackers, k)])), mt_slots)"
             .to_owned(),
     );
+    // `A_Scream` draws for the sound a thing makes as it dies, the same
+    // switch `attacks::scream_draws` reads for a damage call's own death
+    // frame, over whichever state the cycle above entered this tic.
+    bind(
+        "mt_scream_draws",
+        format!(
+            "arrayMap((a, ty) -> toUInt32(if(a.{moved} = 1 AND state_action[1 + a.{state}] = a_scream, \
+             {draws}, 0)), mt_two, {ty_arr})",
+            moved = cycled::MOVED,
+            state = cycled::STATE,
+            draws = attacks::scream_draws("mobj_deathsound[1 + ty]"),
+            ty_arr = s("m_type"),
+        ),
+    );
     // Every routine whose own draw count does not depend on a number it
-    // has itself just read: a shout and an attack, in slot order. The
-    // chase fold below is the one exception, because whether it draws
-    // past its own missile check depends on that check's own draw.
+    // has itself just read: a shout, a scream and an attack, in slot
+    // order. The chase fold below is the one exception, because whether
+    // it draws past its own missile check depends on that check's own
+    // draw.
     bind(
         "mt_pure_draws",
-        "arrayMap((sh, at) -> toUInt32(sh) + at, mt_shouts, mt_attack_draws)".to_owned(),
+        "arrayMap((sh, sc, at) -> toUInt32(sh) + sc + at, mt_shouts, mt_scream_draws, \
+         mt_attack_draws)"
+            .to_owned(),
     );
 
     // `A_Chase` runs inside the `P_SetMobjState` that entered the state
@@ -654,14 +734,14 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             enemy::chased::STATE
         ),
     );
-    bind("cq_m_flags", {
-        let held = s("m_flags");
+    bind(
+        "cq_m_flags",
         format!(
-            "arrayMap((k, c) -> toInt32(if(indexOf(mt_movers, k) = 0, {held}[k], c.{})), \
+            "arrayMap((k, c) -> toInt32(if(indexOf(mt_movers, k) = 0, mc_m_flags[k], c.{})), \
              mt_slots, cw_slot)",
             enemy::chased::FLAGS
-        )
-    });
+        ),
+    );
     bind(
         "mk_m_state",
         "arrayMap((k, a) -> toInt32(if(a = -1, mc_m_state[k], a)), mt_slots, cw_attack)".to_owned(),
@@ -1280,7 +1360,11 @@ fn entry_one(slot: &str, state: &State) -> String {
              AND state_action[1 + n] != a_chase \
              AND state_action[1 + n] != a_facetarget \
              AND state_action[1 + n] != a_troopattack \
-             AND state_action[1 + n] != a_sargattack, 1, 0))"
+             AND state_action[1 + n] != a_sargattack \
+             AND state_action[1 + n] != a_pain \
+             AND state_action[1 + n] != a_xscream \
+             AND state_action[1 + n] != a_scream \
+             AND state_action[1 + n] != a_fall, 1, 0))"
         ),
         format!("toUInt8({enters})"),
         format!(
@@ -1326,7 +1410,11 @@ fn entry_two() -> String {
             "toUInt8({} = 1 OR ({enters} AND ({entering} = 0 \
              OR (state_action[1 + {entering}] != 0 \
              AND state_action[1 + {entering}] != a_chase \
-             AND state_action[1 + {entering}] != a_facetarget) \
+             AND state_action[1 + {entering}] != a_facetarget \
+             AND state_action[1 + {entering}] != a_pain \
+             AND state_action[1 + {entering}] != a_xscream \
+             AND state_action[1 + {entering}] != a_scream \
+             AND state_action[1 + {entering}] != a_fall) \
              OR state_tics[1 + {entering}] = 0)))",
             held(cycled::STUCK)
         ),
@@ -2683,6 +2771,54 @@ mod tests {
             named("cw").contains("mt_pure_draws"),
             "the chase fold's own base reads it too: {}",
             named("cw")
+        );
+    }
+
+    /// A pain or a death frame's own routine no longer leaves the cycle
+    /// stuck: `A_Pain` and `A_XScream` carry nothing to write, `A_Scream`
+    /// draws through the same switch a damage call reads, and `A_Fall`
+    /// clears the one flag it clears.
+    #[test]
+    fn a_pain_or_a_death_frame_resolves() {
+        let bindings = thinkers(&State::default());
+        let named = |name: &str| {
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("{name} is bound"))
+        };
+        for action in ["a_pain", "a_xscream", "a_scream", "a_fall"] {
+            assert!(
+                named("mt_one").contains(&format!("!= {action}")),
+                "entry_one recognises {action}: {}",
+                named("mt_one")
+            );
+            assert!(
+                named("mt_two").contains(&format!("!= {action}")),
+                "entry_two recognises {action}: {}",
+                named("mt_two")
+            );
+        }
+        assert!(
+            named("mt_scream_draws").contains("a_scream_sounds"),
+            "{}",
+            named("mt_scream_draws")
+        );
+        assert!(
+            named("mt_pure_draws").contains("mt_scream_draws"),
+            "the scream's own draws join the shared array: {}",
+            named("mt_pure_draws")
+        );
+        assert!(
+            named("mc_m_flags").contains("a_fall"),
+            "{}",
+            named("mc_m_flags")
+        );
+        assert!(
+            named("cq_m_flags").contains("mc_m_flags"),
+            "a slot no mover holds keeps what the cycle left it: {}",
+            named("cq_m_flags")
         );
     }
 

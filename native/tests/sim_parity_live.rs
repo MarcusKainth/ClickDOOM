@@ -79,10 +79,10 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic a thing's state cycle wants a third state: the first
-/// entry's own routine sends it on to a second, and that second entry's
-/// state carries a routine too, which nothing here runs.
-const FIRST_THIRD_STATE: u32 = 144;
+/// The first tic a missile already in flight needs a move: the imp's
+/// fireball, thrown the tic before, is still going and neither the
+/// general movers' own stage nor its Z-axis counterpart runs one for it.
+const FIRST_MISSILE_IN_FLIGHT: u32 = 170;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -474,7 +474,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     };
     // The run reaches past the door, and every tic up to the first shot
     // completes.
-    for row in walk.iter().filter(|row| row.tic < FIRST_THIRD_STATE) {
+    for row in walk.iter().filter(|row| row.tic < FIRST_MISSILE_IN_FLIGHT) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
@@ -482,9 +482,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_THIRD_STATE).unresolved,
+        at(FIRST_MISSILE_IN_FLIGHT).unresolved,
         1,
-        "the tic a state cycle wants a third state says it could not be produced"
+        "a missile already in flight says the tic could not be produced"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");
@@ -569,12 +569,12 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         0,
         "the tic the shotgun's frames reach A_FireShotgun is produced"
     );
-    // The tic after it is not. The two monsters a pellet hit cycle out of
-    // their pain frames into states carrying a routine this does not run.
+    // The tic after it resolves too: the two monsters a pellet hit cycle
+    // out of their pain frames into `A_Pain`, which this now runs.
     assert_eq!(
         at(FIRST_SHOT_FRAME + 1).unresolved,
-        1,
-        "the tic after the shot says it could not be produced"
+        0,
+        "the tic after the shot is produced"
     );
 
     for (tic, prndindex) in RANDOM {

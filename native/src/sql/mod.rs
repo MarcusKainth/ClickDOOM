@@ -43,6 +43,66 @@ pub fn schema_tables() -> Vec<&'static str> {
         .collect()
 }
 
+/// Every column the schema declares, as `(table, column, type)`, in
+/// declaration order.
+///
+/// `system.columns` names a loaded database's own columns and types the
+/// same way, so a caller can compare the two directly rather than trusting
+/// `CREATE TABLE IF NOT EXISTS` to notice a schema that moved underneath a
+/// table that already exists.
+pub fn schema_columns() -> Vec<(&'static str, &'static str, &'static str)> {
+    let prefix = format!("CREATE TABLE IF NOT EXISTS {DB_PLACEHOLDER}.");
+    let mut columns = Vec::new();
+    for sql in split_statements(SCHEMA) {
+        let Some(rest) = sql.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let name_end = rest
+            .find(|c: char| c.is_whitespace() || c == '(')
+            .unwrap_or(rest.len());
+        let table = &rest[..name_end];
+        let open = rest
+            .find('(')
+            .expect("a CREATE TABLE names its columns in parens");
+        let body = &rest[open + 1..];
+        let mut depth = 1i32;
+        let mut close = body.len();
+        for (at, byte) in body.bytes().enumerate() {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = at;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for line in body[..close].lines() {
+            let line = line.split("--").next().unwrap_or_default();
+            for entry in line.split(',') {
+                let entry = entry.trim();
+                let Some((column, kind)) = entry.split_once(char::is_whitespace) else {
+                    continue;
+                };
+                columns.push((table, column, kind.trim()));
+            }
+        }
+    }
+    columns
+}
+
+/// This schema's own identity: `xxh64` of the DDL text, seeded at 0.
+///
+/// `native load` writes this into `schema_hash` the moment a load
+/// finishes; a session refuses a database whose row does not match,
+/// naming both, rather than reading state rows a different schema wrote.
+pub fn schema_hash() -> u64 {
+    xxhash_rust::xxh64::xxh64(SCHEMA.as_bytes(), 0)
+}
+
 /// The schema as one statement per `CREATE`, against `db`.
 pub fn schema_statements(db: &str) -> Vec<Statement> {
     split_statements(&SCHEMA.replace(DB_PLACEHOLDER, db))
@@ -109,17 +169,10 @@ pub fn wad_insert(db: &str, wad: &crate::wad::Wad<'_>) -> Statement {
 /// `probe_state` takes its types from here, so the table the probe loads
 /// into and the table the simulation writes cannot disagree on a type.
 fn native_state_types() -> Vec<(&'static str, &'static str)> {
-    let (_, rest) = SCHEMA
-        .split_once("CREATE TABLE IF NOT EXISTS {{DB}}.native_state\n(\n")
-        .expect("the schema declares native_state");
-    let (body, _) = rest
-        .split_once("\n)\nENGINE")
-        .expect("the native_state declaration ends with its engine");
-    body.lines()
-        .map(|line| line.split("--").next().unwrap_or_default().trim())
-        .map(|line| line.trim_end_matches(','))
-        .filter_map(|line| line.split_once(char::is_whitespace))
-        .map(|(name, kind)| (name, kind.trim()))
+    schema_columns()
+        .into_iter()
+        .filter(|(table, _, _)| *table == "native_state")
+        .map(|(_, column, kind)| (column, kind))
         .collect()
 }
 
@@ -169,6 +222,41 @@ mod tests {
             tables.iter().all(|t| !t.contains('(') && !t.contains('.')),
             "{tables:?}"
         );
+    }
+
+    #[test]
+    fn every_column_names_the_table_the_schema_declares_it_on() {
+        let columns = schema_columns();
+        let tables: std::collections::HashSet<_> =
+            columns.iter().map(|(table, _, _)| *table).collect();
+        assert_eq!(
+            tables,
+            schema_tables().into_iter().collect(),
+            "a table with no columns, or a column with no table, went missing"
+        );
+        assert!(
+            columns.contains(&("native_state", "unresolved", "UInt64")),
+            "{columns:?}"
+        );
+        assert!(
+            columns.contains(&("finetangent", "value", "Int32")),
+            "a single-line CREATE TABLE parses too: {columns:?}"
+        );
+        // A comment on its own line, or trailing a column's, names no
+        // column and carries no comma into the split.
+        assert!(
+            columns
+                .iter()
+                .all(|(_, column, _)| !column.is_empty() && !column.starts_with("--")),
+            "{columns:?}"
+        );
+    }
+
+    #[test]
+    fn the_hash_is_the_same_text_hashed_the_same_way_each_time() {
+        let hash = schema_hash();
+        assert_ne!(hash, 0);
+        assert_eq!(hash, schema_hash());
     }
 
     #[test]

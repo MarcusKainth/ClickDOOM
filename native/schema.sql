@@ -1088,3 +1088,14 @@ ENGINE = MergeTree ORDER BY id;
 -- every widget copies back over its own area before it draws.
 CREATE TABLE IF NOT EXISTS {{DB}}.rt_ui_backing (id UInt8, data String)
 ENGINE = MergeTree ORDER BY id;
+
+-- ---------------------------------------------------------------------------
+-- Load identity
+-- ---------------------------------------------------------------------------
+
+-- This schema's own hash, one row, written the moment a load finishes.
+-- `native diff`, `native demo` and `native play` refuse a database whose
+-- hash is not the binary's own rather than reading state rows a different
+-- schema wrote.
+CREATE TABLE IF NOT EXISTS {{DB}}.schema_hash (hash UInt64)
+ENGINE = MergeTree ORDER BY hash;

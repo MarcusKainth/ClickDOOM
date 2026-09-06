@@ -2234,14 +2234,19 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
             held(moving::USELINE),
             r#use = at(phase::USE)
         ),
-        // `P_TryMove` runs `P_CrossSpecialLine` for every line a landed
-        // move lists in `spechit`; this does not run it yet, so a step
-        // that lists one keeps the mark rather than losing it to the step
+        // `P_TryMove` walks `spechit` and calls `P_CrossSpecialLine` only
+        // for a line whose side flips between the step's start point and
+        // the point it lands at; a line the move's box only brushed keeps
+        // its side. This does not run `P_CrossSpecialLine` yet, so a step
+        // that finds one keeps the mark rather than losing it to the step
         // after it.
         format!(
-            "toUInt8({} = 1 OR (st_ok = 1 AND notEmpty(arrayFirst(a -> 1, st_answers).{})))",
-            held(moving::CROSSED),
-            answer::SPECHIT
+            "toUInt8({crossed} = 1 OR (st_ok = 1 AND arrayExists(l -> {new_side} != {old_side}, \
+             arrayFirst(a -> 1, st_answers).{spechit})))",
+            crossed = held(moving::CROSSED),
+            new_side = map::point_on_line_side("st_tryx", "st_tryy", "l"),
+            old_side = map::point_on_line_side(&held(moving::X), &held(moving::Y), "l"),
+            spechit = answer::SPECHIT,
         ),
     ];
     let body = format!("({})", members.join(", "));
@@ -2755,18 +2760,27 @@ mod tests {
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
     }
 
-    /// `P_TryMove` runs `P_CrossSpecialLine` for every line a landed move
-    /// lists in `spechit`; this does not run it yet, so a step that lists
-    /// one keeps the mark rather than losing it to the step after it.
+    /// A line the move's box only brushed sits in `spechit` without being
+    /// crossed; only a line whose side flips between where the step
+    /// started and where it lands marks the move crossed.
     #[test]
-    fn a_landed_move_that_lists_a_special_line_marks_it_crossed() {
+    fn a_landed_move_marks_a_line_crossed_only_where_its_side_flips() {
         let sql = xy_movement(&mover(), &world(), &pickups());
         assert!(
             sql.contains(&format!("toUInt8(move_at.{} = 1 OR (", moving::CROSSED)),
             "{sql}"
         );
-        assert!(sql.contains("AND notEmpty(arrayFirst(a -> 1, "), "{sql}");
-        assert!(sql.contains(&format!(").{}))", answer::SPECHIT)), "{sql}");
+        assert!(sql.contains("AND arrayExists(l -> "), "{sql}");
+        // The side test against the step's start point reads the
+        // accumulator directly, so it keeps its own name rather than one a
+        // chain gives it.
+        let old_side = map::point_on_line_side(
+            &format!("move_at.{}", moving::X),
+            &format!("move_at.{}", moving::Y),
+            "l",
+        );
+        assert!(sql.contains(&old_side), "{sql}");
+        assert!(sql.contains(&format!(").{}))))", answer::SPECHIT)), "{sql}");
     }
 
     #[test]

@@ -442,6 +442,69 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         ),
     );
 
+    // The engine draws in thinker order, so a chaser after the attacker's
+    // own slot has to count the attacker's draws in its own base, and a
+    // looker that shouts and an attacker never share a slot with each
+    // other or with a chaser. `attacks::draws` reads the tic-start world,
+    // not the attack's own answer, so it stands before the attack itself
+    // and before the chase fold that reads it.
+    let draws_attacking = attacks::Attacking {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_z: &s("m_z"),
+        m_angle: &s("m_angle"),
+        m_height: &s("m_height"),
+        m_flags: &s("m_flags"),
+        m_type: &s("m_type"),
+        m_health: &s("m_health"),
+        m_target: &s("m_target"),
+        prndindex: &s("prndindex"),
+    };
+    let draws_hurting = inter::Hurting {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_z: &s("m_z"),
+        m_momx: &s("m_momx"),
+        m_momy: &s("m_momy"),
+        m_momz: &s("m_momz"),
+        m_reactiontime: &s("m_reactiontime"),
+        m_type: &s("m_type"),
+        m_state: &s("m_state"),
+        m_tics: &s("m_tics"),
+        m_flags: &s("m_flags"),
+        m_health: &s("m_health"),
+        m_height: &s("m_height"),
+        m_target: &s("m_target"),
+        m_threshold: &s("m_threshold"),
+        m_player: &s("m_player"),
+        prndindex: &s("prndindex"),
+        readyweapon: &s("p_readyweapon"),
+    };
+    bind(
+        "mt_attacker_draws_asks",
+        "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
+         toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), toUInt32(0)), mt_attackers)"
+            .to_owned(),
+    );
+    bind(
+        "mt_attacker_draws",
+        attacks::draws("mt_attacker_draws_asks", &draws_attacking, &draws_hurting),
+    );
+    bind(
+        "mt_attack_draws",
+        "arrayMap(k -> toUInt32(if(indexOf(mt_attackers, k) = 0, 0, \
+         mt_attacker_draws[indexOf(mt_attackers, k)])), mt_slots)"
+            .to_owned(),
+    );
+    // Every routine whose own draw count does not depend on a number it
+    // has itself just read: a shout and an attack, in slot order. The
+    // chase fold below is the one exception, because whether it draws
+    // past its own missile check depends on that check's own draw.
+    bind(
+        "mt_pure_draws",
+        "arrayMap((sh, at) -> toUInt32(sh) + at, mt_shouts, mt_attack_draws)".to_owned(),
+    );
+
     // `A_Chase` runs inside the `P_SetMobjState` that entered the state
     // carrying it, so a thing that wakes chases on the same tic.
     bind(
@@ -478,7 +541,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     let chasing = enemy::Chasing {
         movers: "mt_movers",
         entries: "mt_entries",
-        shouts: "mt_shouts",
+        shouts: "mt_pure_draws",
         m_x: "tx_m_x",
         m_y: "tx_m_y",
         m_z: "tz_m_z",
@@ -646,8 +709,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "now_prndindex",
         format!(
-            "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_shouts) \
-             + arraySum(arrayMap(c -> c.{}, cw_chased)) + at_draws, 255))",
+            "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_pure_draws) \
+             + arraySum(arrayMap(c -> c.{}, cw_chased)), 255))",
             s("prndindex"),
             enemy::chased::DRAWS
         ),
@@ -847,7 +910,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         format!(
             "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
              toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), \
-             toUInt32(arraySum(arraySlice(mt_shouts, 1, k)) \
+             toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
              + arraySum(arrayMap(c -> toUInt32(c.{}), arraySlice(cw_slot, 1, k))))), \
              mt_attackers)",
             enemy::chased::DRAWS
@@ -958,16 +1021,6 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     bind(
         "at_target",
         "toUInt32(if(at_clawed = 1, mk_m_target[greatest(at_one, 1)], 0))".to_owned(),
-    );
-    bind(
-        "at_draws",
-        format!(
-            "toUInt32(toUInt32(at_struck.{}) + toUInt32(mt_hurt.{}) \
-             + arraySum(arrayMap(t -> toUInt32(t.{}), mt_thrown)))",
-            attacks::attacked::DRAWS,
-            inter::hurt::DRAWS,
-            missile::thrown::DRAWS,
-        ),
     );
     bind(
         "at_unrun",
@@ -2538,12 +2591,39 @@ mod tests {
         assert_eq!(shouts.matches("a_look_sounds").count(), 1, "{shouts}");
         let index = named("now_prndindex");
         assert!(
-            index.starts_with("toUInt8(bitAnd(toUInt32(prev_prndindex) + arraySum(mt_shouts)"),
+            index.starts_with("toUInt8(bitAnd(toUInt32(prev_prndindex) + arraySum(mt_pure_draws)"),
             "{index}"
         );
         assert!(
             index.contains(&format!("c.{}, cw_chased", enemy::chased::DRAWS)),
             "the chase's own draws are counted too: {index}"
+        );
+    }
+
+    /// The engine draws in thinker order, so a chaser after the attacker's
+    /// own slot has to count the attack's draws in its own base the same
+    /// way the attack stage counts a shout or an earlier chase in its own.
+    /// Both read `mt_pure_draws`, the one per-slot array a shout's and an
+    /// attack's own draw count are precomputed into.
+    #[test]
+    fn the_attack_stage_and_the_chase_fold_read_the_same_draws_array() {
+        let bindings = thinkers(&State::default());
+        let named = |name: &str| {
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("{name} is bound"))
+        };
+        assert!(
+            named("at_asks").contains("mt_pure_draws"),
+            "the attack stage's own base reads it: {}",
+            named("at_asks")
+        );
+        assert!(
+            named("cw").contains("mt_pure_draws"),
+            "the chase fold's own base reads it too: {}",
+            named("cw")
         );
     }
 

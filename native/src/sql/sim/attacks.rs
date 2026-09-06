@@ -327,6 +327,93 @@ fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {
     (values, format!("({})", members.join(", ")))
 }
 
+/// How many numbers [`attack`] draws for each ask in `asks`, worked out
+/// before any of them runs.
+///
+/// The face turn draws twice where the target carries `MF_SHADOW`, a claw
+/// that reaches draws once for its own damage plus [`inter::draws`] for
+/// what `P_DamageMobj` does with it, and an imp whose claw does not reach
+/// draws the fireball's own spawn count instead: two, or four where the
+/// target is fuzzy, the same as [`missile::thrown`](super::missile::thrown)
+/// wires.
+///
+/// `inter::draws`'s own count depends on the damage a claw does, which is
+/// not known until the roll runs; this reads the routine's own worst case
+/// instead, the same tic-start-only reading the blast's own count already
+/// makes of its target's health and flags. A troop's claw never reaches 40,
+/// so its count is exact; a demon's claw can, and a roll under the worst
+/// case that would have knocked its target down where the worst case does
+/// not is not counted here.
+pub fn draws(asks: &str, world: &Attacking<'_>, hurting: &inter::Hurting<'_>) -> String {
+    let (values, body) = attack_draws(world, hurting);
+    format!(
+        "arrayMap(ak_ask -> {}, {asks})",
+        bind::chain_in("akd", &values, &body)
+    )
+}
+
+/// What one ask draws, as the values a body reads and the count it answers
+/// with.
+fn attack_draws(
+    world: &Attacking<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("ak_ask.{field}");
+    let at = |array: &str| format!("{array}[akd_slot]");
+    let on = |array: &str| format!("{array}[akd_target]");
+    let across = |array: &str| format!("toInt32(toInt64({}) - toInt64({}))", on(array), at(array));
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("akd_slot", format!("toUInt32({})", a(striking::SLOT)));
+    value("akd_target", format!("toUInt32({})", at(world.m_target)));
+    value("akd_runs", "toUInt8(akd_target != 0)".to_owned());
+    value(
+        "akd_fuzzy",
+        format!(
+            "toUInt8(akd_runs = 1 AND bitAnd({}, {MF_SHADOW}) != 0)",
+            on(world.m_flags)
+        ),
+    );
+    value(
+        "akd_near",
+        format!(
+            "toUInt8(akd_runs = 1 AND toInt64({}) < {MELEERANGE} - {MELEE_SLOP} \
+             + toInt64(mobj_radius[1 + {}]) AND {} = 1)",
+            fixed::aprox_distance(&across(world.m_x), &across(world.m_y)),
+            on(world.m_type),
+            a(striking::SEES),
+        ),
+    );
+    value("akd_routine", format!("toInt32({})", a(striking::ROUTINE)));
+    value(
+        "akd_throws",
+        "toUInt8(akd_runs = 1 AND akd_near = 0 AND akd_routine = a_troopattack)".to_owned(),
+    );
+    // The most a claw can do: three times eight plus one for a troop,
+    // four times ten plus one for a demon.
+    value(
+        "akd_worst",
+        "toInt32(if(akd_routine = a_troopattack, 24, if(akd_routine = a_sargattack, 40, 0)))"
+            .to_owned(),
+    );
+    value(
+        "akd_claw_asks",
+        "if(akd_near = 1, [(akd_target, akd_slot, akd_slot, akd_worst, toUInt32(0))], \
+         CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32))))"
+            .to_owned(),
+    );
+    value(
+        "akd_claw_draws",
+        format!("arraySum({})", inter::draws("akd_claw_asks", hurting)),
+    );
+    let body = "toUInt32(if(akd_runs = 0, 0, 2 * toUInt32(akd_fuzzy) + toUInt32(akd_near) \
+                 + akd_claw_draws + if(akd_throws = 1, toUInt32(2 + 2 * toUInt32(akd_fuzzy)), \
+                 toUInt32(0))))"
+        .to_owned();
+    (values, body)
+}
+
 /// The `inter::hurting` ask a claw makes: the target, with the attacker as
 /// both the inflictor and the source.
 ///

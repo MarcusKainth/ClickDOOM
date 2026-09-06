@@ -299,8 +299,8 @@ mod ran {
 /// Everything this cannot answer for leaves the tic unresolved: a thing
 /// with no target or one that cannot be shot, a thing that just attacked,
 /// a melee attack, a missile check that needs a draw, a floating thing, a
-/// move that crosses a special line, and two movers close enough to see
-/// each other, which the engine runs one after the other.
+/// move that crosses a special line, and a mover whose own eight answers
+/// an earlier mover in the same fold actually moved into or out of.
 pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
     let at = |array: &str, slot: &str| format!("{array}[{slot}]");
     let mut values: Vec<(String, String)> = Vec::new();
@@ -344,6 +344,15 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
              arrayEnumerate(cf_movers))"
         ),
     );
+    // One mover's own eight candidate destinations, the same way
+    // `cf_walks` holds its own eight answers.
+    value(
+        "cf_positions",
+        format!(
+            "arrayMap(i -> arraySlice(cf_asks, 1 + (i - 1) * {DIRECTIONS}, {DIRECTIONS}), \
+             arrayEnumerate(cf_movers))"
+        ),
+    );
     value(
         "cf_shape",
         format!(
@@ -359,35 +368,36 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
     // index is a fold rather than a sum over counts worked out in
     // advance.
     value("cf_shouts", format!("arrayCumSum({})", state.shouts));
-    let sh = |field: usize| format!("cf_shape[i].{field}");
-    let base = "cf_shouts[cf_movers[i]] + fb.2";
-    let missile = format!(
-        "toInt64(rnd[1 + bitAnd(toUInt32({}) + {base} + 1, 255)])",
-        state.prndindex
-    );
-    let attacked = format!(
-        "toUInt8({} = 1 OR ({} = 1 AND {missile} >= {}))",
-        sh(shape::MISSILEHIT),
-        sh(shape::MISSILEDRAW),
-        sh(shape::MISSILEDIST),
-    );
+    let step_values = vec![
+        ("k".to_owned(), "cf_movers[i]".to_owned()),
+        ("w".to_owned(), "cf_walks[i]".to_owned()),
+        ("sh".to_owned(), "cf_shape[i]".to_owned()),
+        (
+            "base".to_owned(),
+            "cf_shouts[cf_movers[i]] + fb.1".to_owned(),
+        ),
+    ];
+    let step = bind::chain_in("cs", &step_values, &chased(state));
     value(
         "cf_run",
         format!(
-            "arrayFold((fb, i) -> (arrayPushBack(fb.1, toUInt32({base})), \
-             toUInt32(fb.2 + {})), arrayEnumerate(cf_movers), \
-             (CAST([], 'Array(UInt32)'), toUInt32(0)))",
-            draws(&sh, &attacked),
+            "arrayFold((fb, i) -> arrayMap(r -> (toUInt32(fb.1 + r.{draws}), \
+             if(r.{x} != toInt32({mx}[cf_movers[i]]) OR r.{y} != toInt32({my}[cf_movers[i]]), \
+             arrayPushBack(fb.2, (toInt32({mx}[cf_movers[i]]), toInt32({my}[cf_movers[i]]), \
+             toInt32(r.{x}), toInt32(r.{y}), toUInt32({mr}[cf_movers[i]]))), fb.2), \
+             arrayPushBack(fb.3, r)), [{step}])[1], arrayEnumerate(cf_movers), \
+             (toUInt32(0), CAST([], 'Array(Tuple(Int32, Int32, Int32, Int32, UInt32))'), \
+             CAST([], 'Array(Tuple({types}))')))",
+            draws = chased::DRAWS,
+            x = chased::X,
+            y = chased::Y,
+            mx = state.m_x,
+            my = state.m_y,
+            mr = state.m_radius,
+            types = CHASED_TYPES.join(", "),
         ),
     );
-    value("cf_base", "cf_run.1".to_owned());
-    value(
-        "cf_chased",
-        format!(
-            "arrayMap((k, w, sh, base) -> ({}), cf_movers, cf_walks, cf_shape, cf_base)",
-            chased(state)
-        ),
-    );
+    value("cf_chased", "cf_run.3".to_owned());
 
     let body = "(cf_movers, cf_chased)";
     let start = format!(
@@ -405,20 +415,37 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
             ),
         ),
         ("cw_chased".to_owned(), format!("cw.{}", ran::CHASED)),
-        // Two movers the engine runs one after the other cannot both read
-        // the world as it stood, so a tic holding a pair close enough to
-        // change what the other is told is one this does not run. It asks
-        // the move test nothing, so it stays outside the fold.
-        (
-            "cw_crowded".to_owned(),
-            format!(
-                "toUInt8(arrayExists((a, i) -> arrayExists(b -> {}, \
-                 arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
-                crowded(state),
-                movers = state.movers
-            ),
-        ),
     ]
+}
+
+/// Whether an earlier mover's real move in this fold could have changed
+/// one of the destinations this mover's own search actually reached.
+///
+/// A destination the search never tried cannot have changed what it
+/// decided, so this reads `cc_tried` rather than all eight: the
+/// continuing move where the move count carried it, the direct diagonal
+/// where that was tried, and the search up to and including whichever
+/// destination won or, where none did, all of it.
+///
+/// `PIT_CheckThing` stops at things closer than the two radii, on either
+/// axis, so a mover disturbs a destination only where its own old or new
+/// position reaches that close to it.
+fn disturbs(state: &Chasing<'_>) -> String {
+    let axis = |c_field: usize, m_field: usize| {
+        format!(
+            "abs(toInt64(cf_positions[i][1 + d].{c_field}) - toInt64(m.{m_field})) < \
+             toInt64({r}[k]) + toInt64(m.5)",
+            r = state.m_radius,
+        )
+    };
+    format!(
+        "toUInt8(arrayExists(d -> d != {DI_NODIR} AND arrayExists(m -> ({} AND {}) OR ({} AND {}), \
+         fb.2), cc_tried))",
+        axis(map::ask::X, 1),
+        axis(map::ask::Y, 2),
+        axis(map::ask::X, 3),
+        axis(map::ask::Y, 4),
+    )
 }
 
 /// The type of one mover's answer, in the order [`chased`] names it. The
@@ -428,25 +455,6 @@ const CHASED_TYPES: [&str; 15] = [
     "Int32", "Int32", "Int32", "UInt32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
     "Int32", "UInt32", "UInt8", "Int32", "Int32",
 ];
-
-/// Whether one mover's move changes what another is told.
-///
-/// A thing reaches another's move test through `PIT_CheckThing`, which
-/// stops at things closer than the two radii, and a monster picks nothing
-/// up, so what it is told depends on nothing further off than that plus
-/// what either of them can walk in a tic.
-fn crowded(state: &Chasing<'_>) -> String {
-    let axis = |array: &str| {
-        format!(
-            "abs(toInt64({array}[a]) - toInt64({array}[b])) < \
-             toInt64({r}[a]) + toInt64({r}[b]) \
-             + bitShiftLeft(toInt64(mobj_speed[1 + {t}[a]]) + toInt64(mobj_speed[1 + {t}[b]]), 16)",
-            r = state.m_radius,
-            t = state.m_type,
-        )
-    };
-    format!("toUInt8({} AND {})", axis(state.m_x), axis(state.m_y))
-}
 
 /// What one mover's eight answers and its own state decide before any
 /// random number is read, in the order [`shape`](shape) names them.
@@ -806,6 +814,11 @@ fn chased(state: &Chasing<'_>) -> String {
             diag = sh(shape::DIAG),
         ),
     );
+    // `w` and `sh` were worked out against the tic-start world, which is
+    // wrong for a destination the search reached only where an earlier
+    // mover in this same fold actually moved somewhere `PIT_CheckThing`
+    // would have read differently.
+    value("cc_disturbed", disturbs(state));
     // A move that crosses a special line runs it, and a blocked one that
     // reached one opens it. Neither is written.
     value(
@@ -952,7 +965,10 @@ fn chased(state: &Chasing<'_>) -> String {
             at(state.m_subsector)
         ),
         "toUInt32(cc_draws)".to_owned(),
-        format!("toUInt8({} = 1 OR cc_special = 1)", sh(shape::STUCK)),
+        format!(
+            "toUInt8({} = 1 OR cc_special = 1 OR cc_disturbed = 1)",
+            sh(shape::STUCK)
+        ),
         format!(
             "toInt32(if(cc_attacked = 1, mobj_missilestate[1 + {}], -1))",
             at(state.m_type)

@@ -64,7 +64,7 @@ struct Fell {
     floorz: i32,
     ceilingz: i32,
     height: i32,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 #[tokio::test]

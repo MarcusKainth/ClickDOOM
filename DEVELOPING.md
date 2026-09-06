@@ -126,6 +126,15 @@ is how the renderer is driven before the simulation is complete
 (`native demo demo3 --from probe`). `native diff` runs the simulation and
 reports the first tic and field on which it and the probe disagree.
 
+A load against a database `native/schema.sql` already created empties every
+table's rows and leaves its columns as they were, because `CREATE TABLE IF
+NOT EXISTS` does not alter an existing table. A change to a column's type,
+such as `native_state.unresolved` widening from `UInt8` to `UInt64`, needs
+`--fresh` against a database an older schema loaded. Nothing checks for
+this, and ClickHouse does not fail the load either: an `INSERT` narrows a
+wider value to fit a stale column's type by truncating it, silently, so a
+value like `unresolved`'s bits wraps modulo 256 rather than erroring.
+
 The two resident statements stay open for a session and stream one row per
 tic; the server settings they need are mounted from
 `docker/clickhouse/users.d/` and `docker/clickhouse/config.d/`. A statement

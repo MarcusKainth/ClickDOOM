@@ -56,7 +56,7 @@ struct Listed {
     above_x: i32,
     moved_x: i32,
     next_seq: u32,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 async fn run() -> (Listed, Listed) {

@@ -9,7 +9,7 @@ use crate::sql::{Statement, bind, fixed};
 
 use super::map::World;
 use super::mobj::{self, Mover, Pickups};
-use super::{State, inter, maputl, noise, pspr};
+use super::{State, inter, maputl, mask, noise, pspr, unresolved};
 
 /// `p_local.h`
 const VIEWHEIGHT: i64 = 41 << 16;
@@ -754,10 +754,13 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         // Every thing the shots added took one of each counter.
         (
             "now_unresolved".to_owned(),
-            format!(
-                "toUInt8(use_unresolved = 1 OR gs_unresolved = 1 OR pk.{} = 1 \
-                 OR px_crossed = 1 OR pl_hurts = 1)",
-                inter::STUCK
+            mask(
+                "bitOr(use_unresolved, gs_unresolved)",
+                &[
+                    (unresolved::PK_STUCK, &format!("pk.{} = 1", inter::STUCK)),
+                    (unresolved::PX_CROSSED, "px_crossed = 1"),
+                    (unresolved::PL_HURTS, "pl_hurts = 1"),
+                ],
             ),
         ),
         (
@@ -878,7 +881,14 @@ mod tests {
             .find(|(name, _)| name == "now_unresolved")
             .map(|(_, expr)| expr.clone())
             .expect("the stage writes now_unresolved");
-        assert!(expr.contains(&format!("pk.{} = 1", inter::STUCK)), "{expr}");
+        assert!(
+            expr.contains(&format!(
+                "if(pk.{} = 1, toUInt64({}), toUInt64(0))",
+                inter::STUCK,
+                unresolved::PK_STUCK
+            )),
+            "{expr}"
+        );
     }
 
     /// A move that lists a special line, or a sector that damages the
@@ -892,8 +902,20 @@ mod tests {
             .find(|(name, _)| name == "now_unresolved")
             .map(|(_, expr)| expr.clone())
             .expect("the stage writes now_unresolved");
-        assert!(expr.contains("px_crossed = 1"), "{expr}");
-        assert!(expr.contains("pl_hurts = 1"), "{expr}");
+        assert!(
+            expr.contains(&format!(
+                "if(px_crossed = 1, toUInt64({}), toUInt64(0))",
+                unresolved::PX_CROSSED
+            )),
+            "{expr}"
+        );
+        assert!(
+            expr.contains(&format!(
+                "if(pl_hurts = 1, toUInt64({}), toUInt64(0))",
+                unresolved::PL_HURTS
+            )),
+            "{expr}"
+        );
     }
 
     #[test]

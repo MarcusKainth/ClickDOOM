@@ -45,7 +45,7 @@ struct Ran {
     status: i32,
     count: i32,
     thinkers: u64,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 #[tokio::test]

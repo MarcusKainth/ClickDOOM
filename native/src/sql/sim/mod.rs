@@ -44,22 +44,180 @@ pub mod unimplemented {
 /// Every bit `unimplemented` names, in ascending order.
 const UNIMPLEMENTED_BITS: [(u64, &str); 1] = [(unimplemented::SECTOR_DOOR, "SECTOR_DOOR")];
 
-/// The names of the bits `bits` sets, for a message naming why a run
-/// stopped. A bit no name covers stands for itself, as its hex value.
-pub fn unimplemented_names(bits: u64) -> String {
-    let mut names: Vec<String> = UNIMPLEMENTED_BITS
-        .into_iter()
+/// Bits of `native_state.unresolved`. A tic that reaches one of these
+/// paths sets its bit rather than guessing past it; the bit says which
+/// path, and the tic is decided fresh again next time.
+pub mod unresolved {
+    /// `P_TouchSpecialThing`: the pickup's sprite names no arm.
+    pub const PK_STUCK: u64 = 1 << 0;
+    /// `P_XYMovement`/`P_SlideMove`: the player's own move crosses a line
+    /// `P_CrossSpecialLine`'s switch names.
+    pub const PX_CROSSED: u64 = 1 << 1;
+    /// `P_PlayerInSpecialSector`: the player stands in a sector that
+    /// damages it.
+    pub const PL_HURTS: u64 = 1 << 2;
+    /// `P_DamageMobj`: the hit lands on a player, or the frame it enters
+    /// carries an action other than none, `A_Pain` or `A_Scream`.
+    pub const DM_STUCK: u64 = 1 << 3;
+    /// `P_GunShot`'s own fold: a shot's damage call hits a player or an
+    /// unimplemented post-hit routine, or a shot crosses a special line
+    /// (`P_ShootSpecialLine`, which this does not run).
+    pub const GS_STUCK: u64 = 1 << 4;
+    /// A player weapon frame's own cycle: an action other than
+    /// `A_WeaponReady`, `A_Lower`, `A_Raise`, `A_Light0/1/2`, an
+    /// `A_WeaponReady` with no ammunition to fire, a fired round whose
+    /// flash frame this cannot carry through, or `A_Lower` finishing while
+    /// the player is dead.
+    pub const PSP_STUCK: u64 = 1 << 5;
+    /// A player weapon frame's own cycle enters more states in one tic
+    /// than its budget allows.
+    pub const PSP_PENDING: u64 = 1 << 6;
+    /// `P_XYMovement`/`P_SlideMove`: the player's own move fold runs out
+    /// of steps before the move is done.
+    pub const MV_UNFINISHED: u64 = 1 << 7;
+    /// The player's own body frame carries an action, or waits no tics,
+    /// once its cycle has run.
+    pub const PL_ACTION_NEEDED: u64 = 1 << 8;
+    /// `P_UseSpecialLine`: a used line's special is not one of the manual
+    /// door types this runs.
+    pub const USE_UNHANDLED_SPECIAL: u64 = 1 << 9;
+    /// `EV_VerticalDoor`: the line's special is locked, or the line has no
+    /// back sector.
+    pub const DOOR_OPEN_STUCK: u64 = 1 << 10;
+    /// A thing's own state cycle carries an unwritten action, or wants
+    /// more states than its own budget allows.
+    pub const CYCLE_STUCK: u64 = 1 << 11;
+    /// `A_Chase`: entered twice in one tic, no target, an unshootable or
+    /// fuzzy target, a target it just attacked or one that floats, in
+    /// melee range of its target, or a move that reaches a special line.
+    pub const CHASE_STUCK: u64 = 1 << 12;
+    /// Two movers this tic stand close enough that running one after the
+    /// other would not read the world the other one left, where at least
+    /// one carries its own momentum rather than only a chase step. A pair
+    /// chasing on both sides with no momentum of its own is `A_Chase`'s
+    /// own fold to decide (`CHASE_STUCK`), since the fold already knows
+    /// which of its own destinations the other's move actually reached.
+    pub const TX_CROWDED: u64 = 1 << 13;
+    /// `P_XYMovement`: a missile or a skull in flight is not a mover this
+    /// runs.
+    pub const TX_UNRUN: u64 = 1 << 14;
+    /// `P_TryMove`: a landed move crosses a line the non-player allow-list
+    /// lets a monster's own crossing reach `P_CrossSpecialLine`'s switch
+    /// for.
+    pub const TX_CROSSED: u64 = 1 << 15;
+    /// `P_ZMovement`: a skull in flight, a floating thing chasing its
+    /// target's height, or a missile reaching the floor or the ceiling,
+    /// is not a mover this runs.
+    pub const TZ_UNRUN: u64 = 1 << 16;
+    /// A melee attack lands on more than one thing in the same tic.
+    pub const AT_ATTACKERS: u64 = 1 << 17;
+    /// A melee attack's own frame carries a routine other than
+    /// `A_TroopAttack` or `A_SargAttack`.
+    pub const AT_ROUTINE_STUCK: u64 = 1 << 18;
+    /// A melee attack's kill counts toward the level's kill total.
+    pub const AT_KILL_COUNTED: u64 = 1 << 19;
+    /// A melee attack's kill drops an item.
+    pub const AT_KILL_DROP: u64 = 1 << 20;
+    /// `A_TroopAttack`: the fireball it spawns hits an unwritten path of
+    /// its own.
+    pub const AT_THROWN_STUCK: u64 = 1 << 21;
+    /// A thrown missile's own thinking, the tic after it spawns, hits an
+    /// unwritten path.
+    pub const TK_STUCK: u64 = 1 << 22;
+    /// `P_ChangeSector`: two plane thinkers claim the same sector this
+    /// tic, and the order they would run in decides which one it holds.
+    pub const PLANE_SHARED: u64 = 1 << 23;
+    /// `P_ChangeSector`'s clip: a thing stands near more than one moving
+    /// sector this tic, or no longer fits and is not a shootable thing the
+    /// engine would turn to gibs or drop from the list.
+    pub const PLANE_CLIP_STUCK: u64 = 1 << 24;
+    /// A floor thinker finishes on a type that changes the sector's
+    /// picture and special.
+    pub const PLANE_FLOOR_CHANGER: u64 = 1 << 25;
+    /// `T_MovePlane`: a running thinker's plane had to move back to where
+    /// it stood, because the new height did not fit.
+    pub const PLANE_REVERTED: u64 = 1 << 26;
+    /// `T_VerticalDoor`: a running door thinker hits a path this does not
+    /// run.
+    pub const DOOR_RUN_STUCK: u64 = 1 << 27;
+    /// A running plane thinker crushes, which keeps moving into what is
+    /// stuck rather than stopping for it.
+    pub const PLANE_CRUSH: u64 = 1 << 28;
+    /// A melee attack's worst-case draw count could still undercount: a
+    /// demon's claw connects, its target's health sits under the fall
+    /// damage, and the height between them clears the fall check, so a
+    /// real roll under the worst case might still draw the extra number.
+    pub const AT_DRAW_UNSURE: u64 = 1 << 29;
+}
+
+/// Every bit `unresolved` names, in ascending order.
+const UNRESOLVED_BITS: [(u64, &str); 30] = [
+    (unresolved::PK_STUCK, "PK_STUCK"),
+    (unresolved::PX_CROSSED, "PX_CROSSED"),
+    (unresolved::PL_HURTS, "PL_HURTS"),
+    (unresolved::DM_STUCK, "DM_STUCK"),
+    (unresolved::GS_STUCK, "GS_STUCK"),
+    (unresolved::PSP_STUCK, "PSP_STUCK"),
+    (unresolved::PSP_PENDING, "PSP_PENDING"),
+    (unresolved::MV_UNFINISHED, "MV_UNFINISHED"),
+    (unresolved::PL_ACTION_NEEDED, "PL_ACTION_NEEDED"),
+    (unresolved::USE_UNHANDLED_SPECIAL, "USE_UNHANDLED_SPECIAL"),
+    (unresolved::DOOR_OPEN_STUCK, "DOOR_OPEN_STUCK"),
+    (unresolved::CYCLE_STUCK, "CYCLE_STUCK"),
+    (unresolved::CHASE_STUCK, "CHASE_STUCK"),
+    (unresolved::TX_CROWDED, "TX_CROWDED"),
+    (unresolved::TX_UNRUN, "TX_UNRUN"),
+    (unresolved::TX_CROSSED, "TX_CROSSED"),
+    (unresolved::TZ_UNRUN, "TZ_UNRUN"),
+    (unresolved::AT_ATTACKERS, "AT_ATTACKERS"),
+    (unresolved::AT_ROUTINE_STUCK, "AT_ROUTINE_STUCK"),
+    (unresolved::AT_KILL_COUNTED, "AT_KILL_COUNTED"),
+    (unresolved::AT_KILL_DROP, "AT_KILL_DROP"),
+    (unresolved::AT_THROWN_STUCK, "AT_THROWN_STUCK"),
+    (unresolved::TK_STUCK, "TK_STUCK"),
+    (unresolved::PLANE_SHARED, "PLANE_SHARED"),
+    (unresolved::PLANE_CLIP_STUCK, "PLANE_CLIP_STUCK"),
+    (unresolved::PLANE_FLOOR_CHANGER, "PLANE_FLOOR_CHANGER"),
+    (unresolved::PLANE_REVERTED, "PLANE_REVERTED"),
+    (unresolved::DOOR_RUN_STUCK, "DOOR_RUN_STUCK"),
+    (unresolved::PLANE_CRUSH, "PLANE_CRUSH"),
+    (unresolved::AT_DRAW_UNSURE, "AT_DRAW_UNSURE"),
+];
+
+/// The names of the bits `bits` sets, most significant last, for a message
+/// naming why a run stopped. A bit no name covers stands for itself, as
+/// its hex value.
+fn bit_names(bits: u64, table: &[(u64, &str)]) -> String {
+    let mut names: Vec<String> = table
+        .iter()
         .filter(|(bit, _)| bits & bit != 0)
-        .map(|(_, name)| name.to_owned())
+        .map(|(_, name)| (*name).to_owned())
         .collect();
-    let known = UNIMPLEMENTED_BITS
-        .into_iter()
-        .fold(0, |acc, (bit, _)| acc | bit);
+    let known = table.iter().fold(0, |acc, (bit, _)| acc | bit);
     let unnamed = bits & !known;
     if unnamed != 0 {
         names.push(format!("{unnamed:#x}"));
     }
     names.join(", ")
+}
+
+/// The names of the bits `bits` sets in `native_state.unimplemented`.
+pub fn unimplemented_names(bits: u64) -> String {
+    bit_names(bits, &UNIMPLEMENTED_BITS)
+}
+
+/// The names of the bits `bits` sets in `native_state.unresolved`.
+pub fn unresolved_names(bits: u64) -> String {
+    bit_names(bits, &UNRESOLVED_BITS)
+}
+
+/// Folds `prev` (an earlier stage's own `unresolved` mask, or a fresh
+/// `toUInt64(0)` for the first stage to write it this tic) with one bit
+/// per `(bit, condition)` pair in `terms`.
+pub fn mask(prev: &str, terms: &[(u64, &str)]) -> String {
+    terms.iter().fold(prev.to_owned(), |acc, (bit, cond)| {
+        format!("bitOr({acc}, if({cond}, toUInt64({bit}), toUInt64(0)))")
+    })
 }
 
 /// Every statement a loaded level needs before its first tic: the guards
@@ -474,6 +632,47 @@ mod tests {
             unimplemented_names(unimplemented::SECTOR_DOOR | 1 << 5),
             "SECTOR_DOOR, 0x20"
         );
+        assert_eq!(unresolved_names(unresolved::TX_CROWDED), "TX_CROWDED");
+        assert_eq!(
+            unresolved_names(unresolved::TX_CROWDED | unresolved::TX_UNRUN),
+            "TX_CROWDED, TX_UNRUN"
+        );
+    }
+
+    #[test]
+    fn every_unresolved_bit_is_named_once() {
+        let mut bits = UNRESOLVED_BITS
+            .iter()
+            .map(|(bit, _)| *bit)
+            .collect::<Vec<_>>();
+        bits.sort_unstable();
+        let mut unique_bits = bits.clone();
+        unique_bits.dedup();
+        assert_eq!(bits, unique_bits, "a bit position is reused");
+
+        let mut names = UNRESOLVED_BITS
+            .iter()
+            .map(|(_, name)| *name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut unique_names = names.clone();
+        unique_names.dedup();
+        assert_eq!(names, unique_names, "a name is reused");
+    }
+
+    /// Every bit `sim::unresolved` names is actually set somewhere in the
+    /// tic, through `mask`'s own `if(cond, toUInt64(bit), toUInt64(0))`
+    /// shape: a bit with nothing behind it would never tell a caller why a
+    /// run stopped.
+    #[test]
+    fn every_unresolved_bit_is_set_somewhere_in_the_tic() {
+        let sql = tick::resident_statement("db");
+        for (bit, name) in UNRESOLVED_BITS {
+            assert!(
+                sql.contains(&format!("toUInt64({bit}), toUInt64(0))")),
+                "{name} ({bit:#x}) is named but never set"
+            );
+        }
     }
 
     fn values(pairs: &[(&str, &str)]) -> Vec<(String, String)> {

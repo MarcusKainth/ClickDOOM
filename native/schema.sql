@@ -831,11 +831,12 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
     -- Interactive input carry
     turnheld  Int32,
 
-    -- A tic the simulation could not produce in full. `unresolved` is 1
-    -- when any field is a placeholder; `unimplemented` names which paths
-    -- the tic reached but did not run, one bit each. Both are zero on a
-    -- tic that ran completely.
-    unresolved     UInt8,
+    -- A tic the simulation could not produce in full. `unresolved` names
+    -- which paths this tic reached but could not run, one bit each;
+    -- `unimplemented` names which paths the level itself carries that
+    -- native mode does not model at all, also one bit each. Both are zero
+    -- on a tic that ran completely.
+    unresolved     UInt64,
     unimplemented  UInt64,
 
     -- What the tic drew from the random tables, in draw order: `dbg_ran`

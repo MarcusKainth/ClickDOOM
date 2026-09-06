@@ -11,6 +11,7 @@ use super::doors::{self, Door, Opening};
 use super::map::World;
 use super::plane::{self, Plane, Things};
 use super::plats::{self, Plat};
+use super::{mask, unresolved};
 use crate::sql::bind;
 
 /// `p_floor.c`: the `floor_e` values whose arrival changes the sector's
@@ -155,8 +156,8 @@ fn spawn_planes(rows: &str, held: impl Fn(&str) -> String) -> Vec<(String, Strin
 ///
 /// Only the doors are here. A press that reaches any other special leaves
 /// the tic unresolved, which is what `mv_useline` already does. `also` is
-/// the caller's own answer to whether the tic finished, which this is the
-/// last stage of `P_PlayerThink` to be able to name.
+/// the caller's own `unresolved` mask so far, which this is the last stage
+/// of `P_PlayerThink` to be able to add to.
 pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let line = "mv_useline";
@@ -277,10 +278,20 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
         // reason to leave the tic unresolved and one stage writes it once.
         (
             "use_unresolved".to_owned(),
-            format!(
-                "toUInt8({also} = 1 OR mv_unfinished = 1 OR pl_action_needed = 1 \
-                 OR ({line} >= 0 AND use_handles = 0) OR use_opened.{} = 1)",
-                doors::opened::UNRESOLVED
+            mask(
+                also,
+                &[
+                    (unresolved::MV_UNFINISHED, "mv_unfinished = 1"),
+                    (unresolved::PL_ACTION_NEEDED, "pl_action_needed = 1"),
+                    (
+                        unresolved::USE_UNHANDLED_SPECIAL,
+                        &format!("({line} >= 0 AND use_handles = 0)"),
+                    ),
+                    (
+                        unresolved::DOOR_OPEN_STUCK,
+                        &format!("use_opened.{} = 1", doors::opened::UNRESOLVED),
+                    ),
+                ],
             ),
         ),
     ]);
@@ -659,20 +670,52 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     // A plane that crushes keeps moving into what is stuck, which the
     // clip here does not do, so a running thinker with crush set leaves
     // the tic unresolved.
-    let unresolved = format!(
-        "toUInt8({} = 1 OR plane_shared = 1 OR plane_clip.{} = 1 \
-         OR arrayExists(j -> plane_done[j] = 1 AND {k2} = {FLOOR2} \
-         AND plane_type[j] IN ({CHANGERS}), arrayEnumerate({k})) \
-         OR arrayExists(j -> plane_runs[j] = 1 AND (plane_moved[j].{} = 1 OR plane_door[j].{} = 1 \
-         OR plane_crush[j] = 1), arrayEnumerate({k})))",
-        s("unresolved"),
-        plane::clipped::UNRESOLVED,
-        plane::moved::REVERTED,
-        doors::ran::UNRESOLVED,
-        k2 = at("s_kind"),
-        FLOOR2 = kind::FLOOR,
-        CHANGERS = CHANGES_TEXTURE,
-        k = s("s_kind"),
+    let plane_unresolved = mask(
+        &s("unresolved"),
+        &[
+            (unresolved::PLANE_SHARED, "plane_shared = 1"),
+            (
+                unresolved::PLANE_CLIP_STUCK,
+                &format!("plane_clip.{} = 1", plane::clipped::UNRESOLVED),
+            ),
+            (
+                unresolved::PLANE_FLOOR_CHANGER,
+                &format!(
+                    "arrayExists(j -> plane_done[j] = 1 AND {k2} = {FLOOR2} \
+                     AND plane_type[j] IN ({CHANGERS}), arrayEnumerate({k}))",
+                    k2 = at("s_kind"),
+                    FLOOR2 = kind::FLOOR,
+                    CHANGERS = CHANGES_TEXTURE,
+                    k = s("s_kind"),
+                ),
+            ),
+            (
+                unresolved::PLANE_REVERTED,
+                &format!(
+                    "arrayExists(j -> plane_runs[j] = 1 AND plane_moved[j].{} = 1, \
+                     arrayEnumerate({k}))",
+                    plane::moved::REVERTED,
+                    k = s("s_kind"),
+                ),
+            ),
+            (
+                unresolved::DOOR_RUN_STUCK,
+                &format!(
+                    "arrayExists(j -> plane_runs[j] = 1 AND plane_door[j].{} = 1, \
+                     arrayEnumerate({k}))",
+                    doors::ran::UNRESOLVED,
+                    k = s("s_kind"),
+                ),
+            ),
+            (
+                unresolved::PLANE_CRUSH,
+                &format!(
+                    "arrayExists(j -> plane_runs[j] = 1 AND plane_crush[j] = 1, \
+                     arrayEnumerate({k}))",
+                    k = s("s_kind"),
+                ),
+            ),
+        ],
     );
     // Each member of the pass's answer, as what it computes and what the
     // same field holds on a tic the pass does not run. The two are written
@@ -692,7 +735,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
         (floorz, s("m_floorz")),
         (ceilingz, s("m_ceilingz")),
         (specialdata, s("sec_specialdata")),
-        (unresolved, format!("toUInt8({})", s("unresolved"))),
+        (plane_unresolved, format!("toUInt64({})", s("unresolved"))),
         (floor, s("sec_floorheight")),
         (status, s("s_status")),
     ];

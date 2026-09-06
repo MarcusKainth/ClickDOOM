@@ -63,7 +63,7 @@ struct Cycled {
     tics: i32,
     flags: i32,
     prndindex: u8,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 /// A column of one slot replaced, leaving every other slot alone.

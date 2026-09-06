@@ -9,7 +9,7 @@
 use crate::sql::bind;
 use crate::sql::fixed;
 
-use super::{State, inter, maputl, mobj, shoot};
+use super::{State, inter, maputl, mask, mobj, shoot, unresolved};
 
 /// `p_pspr.c`
 const LOWERSPEED: i64 = 6 << 16;
@@ -543,10 +543,21 @@ pub fn move_psprites(
         ),
         (
             "psp_unresolved".to_owned(),
-            format!(
-                "toUInt8({} = 1 OR arrayExists(k -> {p}[k] != {NO_STATE}, arrayEnumerate({p})))",
-                held(held::UNRESOLVED),
-                p = held(held::PENDING)
+            mask(
+                "toUInt64(0)",
+                &[
+                    (
+                        unresolved::PSP_STUCK,
+                        &format!("{} = 1", held(held::UNRESOLVED)),
+                    ),
+                    (
+                        unresolved::PSP_PENDING,
+                        &format!(
+                            "arrayExists(k -> {p}[k] != {NO_STATE}, arrayEnumerate({p}))",
+                            p = held(held::PENDING)
+                        ),
+                    ),
+                ],
             ),
         ),
         (
@@ -1014,7 +1025,13 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         "now_p_killcount",
         format!("toInt32({} + {})", s("p_killcount"), ran(firing::KILLS)),
     );
-    bind("gs_unresolved", format!("toUInt8({})", ran(firing::STUCK)));
+    bind(
+        "gs_unresolved",
+        mask(
+            "toUInt64(0)",
+            &[(unresolved::GS_STUCK, &format!("{} = 1", ran(firing::STUCK)))],
+        ),
+    );
     bindings
 }
 

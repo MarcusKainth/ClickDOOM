@@ -333,7 +333,7 @@ struct Walked {
     y: i32,
     momx: i32,
     momy: i32,
-    unresolved: u8,
+    unresolved: u64,
     buttons: u8,
     thinkers: u64,
     ceiling: i32,
@@ -483,8 +483,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     }
     assert_eq!(
         at(FIRST_MISSILE_IN_FLIGHT).unresolved,
-        1,
-        "a missile already in flight says the tic could not be produced"
+        sim::unresolved::TX_CROWDED | sim::unresolved::TX_UNRUN | sim::unresolved::TZ_UNRUN,
+        "a missile already in flight says the tic could not be produced, \
+         and stands close enough to another momentum mover to crowd it too"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

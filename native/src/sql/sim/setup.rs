@@ -642,7 +642,7 @@ fn row(db: &str) -> Vec<(&'static str, String)> {
         ("totalkills", "mobjs.totalkills".to_owned()),
         ("totalitems", "mobjs.totalitems".to_owned()),
         ("totalsecret", "sec.totalsecret".to_owned()),
-        ("unresolved", "toUInt8(0)".to_owned()),
+        ("unresolved", "toUInt64(0)".to_owned()),
         ("unimplemented", "sec.unimplemented".to_owned()),
         ("dbg_ran", "CAST([], 'Array(UInt32)')".to_owned()),
         ("dbg_prnd", "CAST([], 'Array(UInt8)')".to_owned()),

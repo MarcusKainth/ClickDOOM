@@ -109,7 +109,7 @@ struct Tic {
     p_message: u64,
     hu_message: u64,
     mobjs: u64,
-    unresolved: u8,
+    unresolved: u64,
     forwardmove: i8,
     sidemove: i8,
     angleturn: i16,

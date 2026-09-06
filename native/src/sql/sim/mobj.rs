@@ -989,10 +989,6 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
 /// `thinkers`'s own stage leaves: the compaction has already appended it,
 /// so it runs last, at the end of the list, exactly where `P_AddThinker`
 /// put it.
-///
-/// A separate stage rather than part of `thinkers`'s own: the compaction
-/// has to finish choosing every other thing's final slot before this one
-/// has a slot of its own to run at.
 pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();

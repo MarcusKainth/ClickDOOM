@@ -161,10 +161,8 @@ fn bindings(db: &str) -> Tic {
     let things = mobj::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, things);
-    // The compaction inside `things` has already appended the tic's own
-    // throw at the end of the mobj arrays; running its thinker is a
-    // separate stage because it needs every other thing's final slot
-    // settled first.
+    // Runs the tic's own throw's thinker, at the slot the compaction
+    // inside `things` appended it to.
     let thrown = mobj::thrown_thinks(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thrown);

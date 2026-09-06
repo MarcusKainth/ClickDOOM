@@ -867,6 +867,21 @@ pub fn thinks_fold(
     )
 }
 
+/// The line `P_ExplodeMissile`'s sky check reads for a blocked move.
+///
+/// `P_CheckPosition` resets `ceilingline` to none at its own start, walks
+/// things before lines, and returns the moment one blocks, so the line
+/// walk that sets `ceilingline` never runs when a thing is what stopped
+/// the move: a missile a thing blocked always reaches the sky check with
+/// none. `blocked` names the impact's own `struck::BLOCKED` field and
+/// `try_answer` the move test's own answer tuple.
+fn move_ceilingline(blocked: &str, try_answer: &str) -> String {
+    format!(
+        "toInt32(if({blocked} = 1, -1, {try_answer}.{}))",
+        answer::CEILINGLINE
+    )
+}
+
 /// What one thing's `P_MobjThinker` works out, as the values a body reads
 /// and the [`thought`] tuple it answers with.
 ///
@@ -886,13 +901,18 @@ fn thought_of(
 ) -> (Vec<(String, String)>, String) {
     let a = |field: usize| format!("tk_ask.{field}");
     let at = |array: &str| format!("{array}[mn_slot]");
-    let info = |table: &str| format!("{table}[1 + mn_type]");
     let mut values: Vec<(String, String)> = Vec::new();
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
     value("mn_slot", format!("toUInt32({})", a(thinking::SLOT)));
     value("mn_base", format!("toUInt32({})", a(thinking::BASE)));
     value("mn_type", format!("toInt32({})", at(flying.m_type)));
+    // `P_TryMove` and `P_ZMovement` read `thing->radius` and
+    // `thing->height`, the mobj's own columns, not the type's info-table
+    // entry: the two agree for a missile today, and a mover the thinker
+    // runs for later may not keep them in step.
+    value("mn_radius", format!("toInt64({})", at(map.m_radius)));
+    value("mn_height", format!("toInt64({})", at(flying.m_height)));
     value("mn_x0", format!("toInt64({})", at(map.m_x)));
     value("mn_y0", format!("toInt64({})", at(map.m_y)));
     value("mn_z0", format!("toInt64({})", at(flying.m_z)));
@@ -960,8 +980,8 @@ fn thought_of(
                 "mn_slot",
                 "mn_ptryx",
                 "mn_ptryy",
-                &info("mobj_radius"),
-                &info("mobj_height"),
+                "mn_radius",
+                "mn_height",
                 "mn_z0",
                 "toInt32(mn_flags0)",
                 "0",
@@ -979,15 +999,14 @@ fn thought_of(
         "mn_fits",
         format!(
             "toUInt8(mn_ran = 1 \
-             AND toInt64(mn_xy_try.{ceil}) - toInt64(mn_xy_try.{floor}) >= toInt64({height}) \
-             AND toInt64(mn_xy_try.{ceil}) - mn_z0 >= toInt64({height}) \
+             AND toInt64(mn_xy_try.{ceil}) - toInt64(mn_xy_try.{floor}) >= mn_height \
+             AND toInt64(mn_xy_try.{ceil}) - mn_z0 >= mn_height \
              AND toInt64(mn_xy_try.{floor}) - mn_z0 <= {maxstep} \
              AND (bitAnd(mn_flags0, {dropoff}) != 0 \
              OR toInt64(mn_xy_try.{floor}) - toInt64(mn_xy_try.{dropoffz}) <= {maxstep}))",
             ceil = answer::CEILINGZ,
             floor = answer::FLOORZ,
             dropoffz = answer::DROPOFFZ,
-            height = info("mobj_height"),
             dropoff = MF_DROPOFF,
             maxstep = MAXSTEP,
         ),
@@ -1029,7 +1048,10 @@ fn thought_of(
     );
     // A special line the move crosses is `P_CrossSpecialLine`'s to run,
     // which is a no-op for the types in `NO_SPECIAL` and unresolved for
-    // anything else this throws.
+    // anything else this throws. Crossing is read from `SPECHIT`
+    // membership rather than the side test `P_TryMove` itself uses, which
+    // over-refuses for a type outside `NO_SPECIAL`; the side test is
+    // `P_CrossSpecialLine`'s own PR to write.
     value(
         "mn_crossed",
         format!(
@@ -1049,12 +1071,15 @@ fn thought_of(
         ),
     );
     value(
+        "mn_xy_ceilingline",
+        move_ceilingline(&format!("mn_hit.{}", struck::BLOCKED), "mn_xy_try"),
+    );
+    value(
         "mn_xy_explode_asks",
         format!(
-            "if(mn_xy_blocked = 1, [(mn_slot, mn_xy_try.{ceilingline}, \
+            "if(mn_xy_blocked = 1, [(mn_slot, mn_xy_ceilingline, \
              mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws})], \
              CAST([] AS Array(Tuple(UInt32, Int32, UInt32))))",
-            ceilingline = answer::CEILINGLINE,
             hit_draws = struck::DRAWS,
             hurt_draws = inter::hurt::DRAWS,
         ),
@@ -1167,11 +1192,9 @@ fn thought_of(
     );
     value(
         "mn_z_hits_ceiling",
-        format!(
-            "toUInt8(mn_z_gate = 1 AND mn_z_floor_explodes = 0 \
-             AND mn_z_landed + toInt64({height}) > mn_after_xy_ceilingz)",
-            height = info("mobj_height"),
-        ),
+        "toUInt8(mn_z_gate = 1 AND mn_z_floor_explodes = 0 \
+         AND mn_z_landed + mn_height > mn_after_xy_ceilingz)"
+            .to_owned(),
     );
     value(
         "mn_z_momz_ceiling",
@@ -1179,10 +1202,7 @@ fn thought_of(
     );
     value(
         "mn_z_z_ceiling",
-        format!(
-            "if(mn_z_hits_ceiling = 1, mn_after_xy_ceilingz - toInt64({height}), mn_z_landed)",
-            height = info("mobj_height"),
-        ),
+        "if(mn_z_hits_ceiling = 1, mn_after_xy_ceilingz - mn_height, mn_z_landed)".to_owned(),
     );
     value(
         "mn_z_ceiling_explodes",
@@ -1278,10 +1298,15 @@ fn thought_of(
     // The state cycle. `P_MobjThinker` runs this whether or not the steps
     // above just set a fresh death frame, so a missile that explodes this
     // tic has that frame's own tics decremented once more immediately.
-    value("mn_cycle_tics", "mn_pre_tics - 1".to_owned());
+    // `tics = -1` never decrements and never transitions; no missile
+    // carries it, but the mover this runs for later might.
+    value(
+        "mn_cycle_tics",
+        "if(mn_pre_tics = -1, -1, mn_pre_tics - 1)".to_owned(),
+    );
     value(
         "mn_cycle_transitions",
-        "toUInt8(mn_cycle_tics = 0)".to_owned(),
+        "toUInt8(mn_pre_tics != -1 AND mn_cycle_tics = 0)".to_owned(),
     );
     value(
         "mn_next_state",
@@ -1709,5 +1734,15 @@ mod tests {
         for name in NO_SPECIAL {
             assert!(sql.contains(&name.to_lowercase()), "{name}: {sql}");
         }
+    }
+
+    /// A thing-blocked move reaches the sky check with no ceilingline, and
+    /// one blocked by geometry or a line reads the move test's own.
+    #[test]
+    fn a_thing_blocked_move_reaches_no_ceilingline() {
+        assert_eq!(
+            move_ceilingline("h.1", "t"),
+            format!("toInt32(if(h.1 = 1, -1, t.{}))", answer::CEILINGLINE)
+        );
     }
 }

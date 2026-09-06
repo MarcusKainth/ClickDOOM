@@ -899,6 +899,11 @@ pub mod hurt {
     pub const STUCK: usize = 16;
 }
 
+/// The ClickHouse type of a [`hurt`] tuple, for a caller that carries one
+/// through a fold or a wider tuple of its own.
+pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
+                             Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8)";
+
 /// A call nobody made, for a caller that reads the first answer of a list
 /// that may be empty.
 pub fn no_hurt() -> String {

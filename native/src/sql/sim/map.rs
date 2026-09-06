@@ -60,6 +60,13 @@ pub mod answer {
     /// everything else: it passes over and under things a solid one would
     /// have stopped, so the list is not cut at the first that blocks.
     pub const TOUCHED: usize = 9;
+    /// Whether a one-sided line, or one `ML_BLOCKING`/`ML_BLOCKMONSTERS`
+    /// stops a non-missile mover, was in the way. [`OK`] already folds this
+    /// in for an ordinary mover; a missile's own blocking decision comes
+    /// from `PIT_CheckThing`'s missile branch instead of the generic
+    /// solid test `OK` makes, so a caller driving a missile's own move
+    /// reads this separately and recombines it with that decision.
+    pub const LINE_BLOCKED: usize = 10;
 }
 
 /// One pending move, as the tuple [`try_moves`] reads.
@@ -84,7 +91,7 @@ pub fn asking(
 pub fn no_answer() -> String {
     "(toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
      CAST([], 'Array(UInt32)'), CAST([], 'Array(Int32)'), toInt32(-1), \
-     CAST([], 'Array(UInt32)'))"
+     CAST([], 'Array(UInt32)'), toUInt8(0))"
         .to_owned()
 }
 
@@ -266,7 +273,7 @@ pub fn try_moves(moves: &str, world: &World<'_>) -> String {
         "(toUInt8(tm_thing_stop = 0 AND tm_line_stop = 0 AND ({fits})), \
          tm_floorz, tm_ceilingz, tm_dropoffz, tm_subsector, tm_picked, \
          arrayFilter(l -> {}[1 + l] != 0, tm_line_open), tm_ceilingline, \
-         arrayMap(k -> toUInt32(k), tm_thing_touch))",
+         arrayMap(k -> toUInt32(k), tm_thing_touch), toUInt8(tm_line_stop != 0))",
         world.line_special
     );
     format!("arrayMap(mv -> {}, {moves})", bind::chain(&values, &body))

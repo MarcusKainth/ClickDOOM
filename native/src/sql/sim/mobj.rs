@@ -973,12 +973,224 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         "at_unrun",
         format!(
             "toUInt8(length(mt_attackers) > 1 OR at_struck.{stuck} = 1 \
-             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1 \
+             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1 OR mt_hurt.{hurt_stuck} = 1 \
              OR arrayExists(t -> t.{thrown} = 1, mt_thrown))",
             stuck = attacks::attacked::STUCK,
             counted = inter::hurt::COUNTED,
             drop = inter::hurt::DROP,
+            hurt_stuck = inter::hurt::STUCK,
             thrown = missile::thrown::STUCK,
+        ),
+    );
+    bindings
+}
+
+/// `P_MobjThinker` for the thing the tic just threw, run over the arrays
+/// `thinkers`'s own stage leaves: the compaction has already appended it,
+/// so it runs last, at the end of the list, exactly where `P_AddThinker`
+/// put it.
+pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+
+    bind(
+        "tk_alive",
+        format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
+    );
+    let map = World {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_radius: &s("m_radius"),
+        m_flags: &s("m_flags"),
+        m_linkseq: &s("m_linkseq"),
+        alive: "tk_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    let flying = missile::Flying {
+        m_z: &s("m_z"),
+        m_height: &s("m_height"),
+        m_type: &s("m_type"),
+        m_state: &s("m_state"),
+        m_tics: &s("m_tics"),
+        m_flags: &s("m_flags"),
+        m_target: &s("m_target"),
+        m_momx: &s("m_momx"),
+        m_momy: &s("m_momy"),
+        m_momz: &s("m_momz"),
+        m_floorz: &s("m_floorz"),
+        m_ceilingz: &s("m_ceilingz"),
+        m_subsector: &s("m_subsector"),
+        prndindex: &s("prndindex"),
+    };
+    let hurting = inter::Hurting {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_z: &s("m_z"),
+        m_momx: &s("m_momx"),
+        m_momy: &s("m_momy"),
+        m_momz: &s("m_momz"),
+        m_reactiontime: &s("m_reactiontime"),
+        m_type: &s("m_type"),
+        m_state: &s("m_state"),
+        m_tics: &s("m_tics"),
+        m_flags: &s("m_flags"),
+        m_health: &s("m_health"),
+        m_height: &s("m_height"),
+        m_target: &s("m_target"),
+        m_threshold: &s("m_threshold"),
+        m_player: &s("m_player"),
+        prndindex: &s("prndindex"),
+        readyweapon: &s("p_readyweapon"),
+    };
+
+    // The compaction appends one slot per thing `mt_thrown` carries, in
+    // order, right after what it kept.
+    bind(
+        "tk_asks",
+        format!(
+            "arrayMap((t, i) -> (toUInt32(length(mt_kept) + i), toUInt32(t.{draws})), \
+             mt_thrown, arrayEnumerate(mt_thrown))",
+            draws = missile::thrown::DRAWS,
+        ),
+    );
+    bind(
+        "tk_thoughts",
+        missile::thinks_fold("tk_asks", &map, &flying, &hurting),
+    );
+    bind("tk_slots", "arrayMap(a -> a.1, tk_asks)".to_owned());
+    bind(
+        "tk_at",
+        format!(
+            "arrayMap(k -> indexOf(tk_slots, k), arrayEnumerate({}))",
+            s("m_x")
+        ),
+    );
+    bind(
+        "tk_hurt_targets",
+        format!(
+            "arrayMap(t -> t.{}, tk_thoughts)",
+            missile::thought::HURT_TARGET
+        ),
+    );
+    bind(
+        "tk_hurt_at",
+        format!(
+            "arrayMap(k -> indexOf(tk_hurt_targets, k), arrayEnumerate({}))",
+            s("m_x")
+        ),
+    );
+
+    // What the missile's own thinker leaves at its own slot. `m_flags`,
+    // `m_state` and `m_tics` also move for a hit's target, so those three
+    // are bound once each below instead, over both slots together.
+    for (column, member) in [
+        ("m_x", missile::thought::X),
+        ("m_y", missile::thought::Y),
+        ("m_z", missile::thought::Z),
+        ("m_floorz", missile::thought::FLOORZ),
+        ("m_ceilingz", missile::thought::CEILINGZ),
+        ("m_subsector", missile::thought::SUBSECTOR),
+        ("m_momx", missile::thought::MOMX),
+        ("m_momy", missile::thought::MOMY),
+        ("m_momz", missile::thought::MOMZ),
+    ] {
+        let held = s(column);
+        bind(
+            &format!("now_{column}"),
+            format!(
+                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tk_thoughts[i].{member})), \
+                 arrayEnumerate({held}), tk_at)"
+            ),
+        );
+    }
+    for (column, cast, hurt_member) in [
+        ("m_health", "toInt32", inter::hurt::HEALTH),
+        ("m_reactiontime", "toInt32", inter::hurt::REACTIONTIME),
+        ("m_target", "toUInt32", inter::hurt::TARGET),
+        ("m_threshold", "toInt32", inter::hurt::THRESHOLD),
+    ] {
+        let held = s(column);
+        bind(
+            &format!("now_{column}"),
+            format!(
+                "arrayMap((k, h) -> {cast}(if(h = 0, {held}[k], \
+                 tk_thoughts[h].{hurt}.{hurt_member})), arrayEnumerate({held}), tk_hurt_at)",
+                hurt = missile::thought::HURT,
+            ),
+        );
+    }
+    // `m_flags`, `m_state` and `m_tics` a hit reaches take the hurt
+    // answer's own; the thrower's own slot takes its thinker's, and
+    // nothing else moves.
+    bind(
+        "now_m_tics",
+        format!(
+            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{tics}, \
+             h != 0, tk_thoughts[h].{hurt}.{hurt_tics}, {held}[k])), \
+             arrayEnumerate({held}), tk_at, tk_hurt_at)",
+            held = s("m_tics"),
+            tics = missile::thought::TICS,
+            hurt = missile::thought::HURT,
+            hurt_tics = inter::hurt::TICS,
+        ),
+    );
+    bind(
+        "now_m_flags",
+        format!(
+            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{flags}, \
+             h != 0, tk_thoughts[h].{hurt}.{hurt_flags}, {held}[k])), \
+             arrayEnumerate({held}), tk_at, tk_hurt_at)",
+            held = s("m_flags"),
+            flags = missile::thought::FLAGS,
+            hurt = missile::thought::HURT,
+            hurt_flags = inter::hurt::FLAGS,
+        ),
+    );
+    bind(
+        "now_m_state",
+        format!(
+            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{state}, \
+             h != 0, tk_thoughts[h].{hurt}.{hurt_state}, {held}[k])), \
+             arrayEnumerate({held}), tk_at, tk_hurt_at)",
+            held = s("m_state"),
+            state = missile::thought::STATE,
+            hurt = missile::thought::HURT,
+            hurt_state = inter::hurt::STATE,
+        ),
+    );
+    // The state cycle moves the picture; a hit reaches no sprite or frame
+    // of its own, matching the claw's damage fold.
+    for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
+        let held = s(column);
+        bind(
+            &format!("now_{column}"),
+            format!(
+                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {table}[1 + now_m_state[k]])), \
+                 arrayEnumerate({held}), tk_at)"
+            ),
+        );
+    }
+
+    bind(
+        "now_prndindex",
+        format!(
+            "toUInt8(bitAnd(toUInt32({}) \
+             + arraySum(arrayMap((a, t) -> toUInt32(t.{draws}) - a.{base}, tk_asks, tk_thoughts)), \
+             255))",
+            s("prndindex"),
+            draws = missile::thought::DRAWS,
+            base = missile::thinking::BASE,
+        ),
+    );
+    bind(
+        "now_unresolved",
+        format!(
+            "toUInt8({} = 1 OR arrayExists(t -> t.{stuck} = 1, tk_thoughts))",
+            s("unresolved"),
+            stuck = missile::thought::STUCK,
         ),
     );
     bindings
@@ -2332,6 +2544,23 @@ mod tests {
         assert!(
             index.contains(&format!("c.{}, cw_chased", enemy::chased::DRAWS)),
             "the chase's own draws are counted too: {index}"
+        );
+    }
+
+    /// `damaged` leaves a hit on the player unresolved, because the armour,
+    /// the damage tint and the weapon it drops are the player's own
+    /// columns. The claw's own damage fold has to be read the same way.
+    #[test]
+    fn a_claw_that_lands_on_the_player_is_unresolved() {
+        let bindings = thinkers(&State::default());
+        let at_unrun = bindings
+            .iter()
+            .find(|(binding, _)| binding == "at_unrun")
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("at_unrun is bound"));
+        assert!(
+            at_unrun.contains(&format!("mt_hurt.{} = 1", inter::hurt::STUCK)),
+            "{at_unrun}"
         );
     }
 

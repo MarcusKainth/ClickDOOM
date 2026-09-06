@@ -867,6 +867,176 @@ pub fn thinks_fold(
     )
 }
 
+/// `p_inter.c`: how far below the thing that hit it a target has to stand
+/// to be knocked over, and the most damage that can do it.
+const FALL_HEIGHT: i64 = 64 * FRACUNIT;
+const FALL_DAMAGE: i64 = 40;
+
+/// How many numbers [`thinks_fold`] draws for one ask in `asks`, worked
+/// out before any of them runs.
+///
+/// Whether the missile's move lands and whether it damages something is
+/// decided by geometry alone, so `impact_fold`'s own answer for it does
+/// not depend on where in the tic's draws this call starts; only the
+/// damage itself does, so this reads the missile's own worst case
+/// instead, the same tic-start-only reading a claw's own count already
+/// makes of its target's health and flags.
+pub fn draws(
+    asks: &str,
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> String {
+    let (values, body) = missile_draws(map, flying, hurting);
+    format!(
+        "arrayMap(mkd_ask -> {}, {asks})",
+        bind::chain_in("mkd", &values, &body)
+    )
+}
+
+/// Whether [`draws`]'s worst-case reading of one ask in `asks` could
+/// undercount it: the move lands on something, its target's health sits
+/// under the missile's own worst-case damage, and the height between
+/// them clears the fall check.
+///
+/// `P_DamageMobj` draws the extra fall-over number only where a real
+/// roll under the worst case still exceeds the target's health, and that
+/// roll is not known until it runs.
+pub fn unsure(
+    asks: &str,
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> String {
+    format!(
+        "arrayMap(mkd_ask -> {}, {asks})",
+        bind::chain_in(
+            "mkd",
+            &missile_shape(map, flying, hurting),
+            "toUInt8(mkd_unsure)"
+        )
+    )
+}
+
+/// What one ask's shape decides before any random number runs: whether
+/// the move lands, whether it reaches something, and whether a real
+/// damage roll under [`draws`]'s worst-case reading could still knock
+/// its target down.
+fn missile_shape(
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> Vec<(String, String)> {
+    let a = |field: usize| format!("mkd_ask.{field}");
+    let at = |array: &str| format!("{array}[mkd_slot]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("mkd_slot", format!("toUInt32({})", a(thinking::SLOT)));
+    value("mkd_type", format!("toInt32({})", at(flying.m_type)));
+    value("mkd_radius", format!("toInt64({})", at(map.m_radius)));
+    value("mkd_height", format!("toInt64({})", at(flying.m_height)));
+    value("mkd_x0", format!("toInt64({})", at(map.m_x)));
+    value("mkd_y0", format!("toInt64({})", at(map.m_y)));
+    value("mkd_z0", format!("toInt64({})", at(flying.m_z)));
+    value("mkd_flags0", format!("toInt32({})", at(flying.m_flags)));
+    value("mkd_momx0", format!("toInt64({})", at(flying.m_momx)));
+    value("mkd_momy0", format!("toInt64({})", at(flying.m_momy)));
+    value(
+        "mkd_moving",
+        "toUInt8(mkd_momx0 != 0 OR mkd_momy0 != 0)".to_owned(),
+    );
+    value("mkd_cx", clamp("mkd_momx0"));
+    value("mkd_cy", clamp("mkd_momy0"));
+    value(
+        "mkd_split",
+        format!(
+            "toUInt8(mkd_cx > {half} OR mkd_cy > {half})",
+            half = MAXMOVE / 2
+        ),
+    );
+    value(
+        "mkd_ran",
+        "toUInt8(mkd_moving = 1 AND mkd_split = 0)".to_owned(),
+    );
+    value("mkd_ptryx", "mkd_x0 + toInt64(mkd_cx)".to_owned());
+    value("mkd_ptryy", "mkd_y0 + toInt64(mkd_cy)".to_owned());
+    value(
+        "mkd_xy_asks",
+        format!(
+            "if(mkd_ran = 1, [{}], CAST([] AS Array(Tuple(UInt32, Int32, Int32, Int32, Int32, \
+             Int32, Int32, UInt8))))",
+            map::asking(
+                "mkd_slot",
+                "mkd_ptryx",
+                "mkd_ptryy",
+                "mkd_radius",
+                "mkd_height",
+                "mkd_z0",
+                "toInt32(mkd_flags0)",
+                "0",
+            )
+        ),
+    );
+    value(
+        "mkd_xy_try",
+        format!("{}[1]", map::try_moves("mkd_xy_asks", map)),
+    );
+    value(
+        "mkd_xy_touch_asks",
+        format!(
+            "if(mkd_ran = 1, [(mkd_slot, mkd_xy_try.{touched}, toUInt32(0))], \
+             CAST([] AS Array(Tuple(UInt32, Array(UInt32), UInt32))))",
+            touched = answer::TOUCHED,
+        ),
+    );
+    value("mkd_hit", impact_fold("mkd_xy_touch_asks", flying));
+    value(
+        "mkd_worst",
+        "toInt32(8 * mobj_damage[1 + mkd_type])".to_owned(),
+    );
+    let on = |array: &str| format!("{array}[mkd_hit.{}]", struck::HIT);
+    value(
+        "mkd_unsure",
+        format!(
+            "toUInt8(mkd_hit.{draws} != 0 AND toInt32({health}) < {FALL_DAMAGE} \
+             AND toInt64({tz}) - mkd_z0 > {FALL_HEIGHT})",
+            draws = struck::DRAWS,
+            health = on(hurting.m_health),
+            tz = on(hurting.m_z),
+        ),
+    );
+    values
+}
+
+fn missile_draws(
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let mut values = missile_shape(map, flying, hurting);
+    let source = format!("{}[mkd_slot]", hurting.m_target);
+    values.push((
+        "mkd_hurt_asks".to_owned(),
+        format!(
+            "if(mkd_hit.{draws} != 0, [(mkd_hit.{hit}, mkd_slot, toUInt32({source}), \
+             mkd_worst, toUInt32(0))], CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, \
+             UInt32))))",
+            draws = struck::DRAWS,
+            hit = struck::HIT,
+        ),
+    ));
+    values.push((
+        "mkd_hurt_draws".to_owned(),
+        format!("arraySum({})", inter::draws("mkd_hurt_asks", hurting)),
+    ));
+    let body = format!(
+        "toUInt32(mkd_hit.{draws} + mkd_hurt_draws)",
+        draws = struck::DRAWS,
+    );
+    (values, body)
+}
+
 /// The line `P_ExplodeMissile`'s sky check reads for a blocked move.
 ///
 /// `P_CheckPosition` resets `ceilingline` to none at its own start, walks

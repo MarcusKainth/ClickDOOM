@@ -228,6 +228,16 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "mt_alive",
         format!("arrayMap(v -> toUInt8(1), {})", s("m_x")),
     );
+    // A missile already on the list runs its own thinker below, in full,
+    // including its own state cycle, so it is not this stage's to cycle
+    // too.
+    bind(
+        "mt_missiles",
+        format!(
+            "arrayFilter(k -> bitAnd({}[k], {MF_MISSILE}) != 0, mt_slots)",
+            s("m_flags")
+        ),
+    );
     let standing = World {
         m_x: &s("m_x"),
         m_y: &s("m_y"),
@@ -248,8 +258,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_cycles",
         format!(
-            "arrayMap((k, tc) -> toUInt8(k != {slot} AND tc != -1 AND tc - 1 = 0), \
-             mt_slots, {})",
+            "arrayMap((k, tc) -> toUInt8(k != {slot} AND indexOf(mt_missiles, k) = 0 \
+             AND tc != -1 AND tc - 1 = 0), mt_slots, {})",
             s("m_tics")
         ),
     );
@@ -577,15 +587,74 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             ty_arr = s("m_type"),
         ),
     );
+    // A missile already in flight runs its own thinker below, over the
+    // tic-start world: `missile::draws` reads the same worst-case damage
+    // a claw's own count already makes of its target's health, since the
+    // roll it draws for is not known until the thinker runs.
+    let flying_map = World {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_radius: &s("m_radius"),
+        m_flags: &s("m_flags"),
+        m_linkseq: &s("m_linkseq"),
+        alive: "mt_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    let flying = missile::Flying {
+        m_z: &s("m_z"),
+        m_height: &s("m_height"),
+        m_type: &s("m_type"),
+        m_state: &s("m_state"),
+        m_tics: &s("m_tics"),
+        m_flags: &s("m_flags"),
+        m_target: &s("m_target"),
+        m_momx: &s("m_momx"),
+        m_momy: &s("m_momy"),
+        m_momz: &s("m_momz"),
+        m_floorz: &s("m_floorz"),
+        m_ceilingz: &s("m_ceilingz"),
+        m_subsector: &s("m_subsector"),
+        prndindex: &s("prndindex"),
+    };
+    bind(
+        "mt_missile_draws_asks",
+        "arrayMap(k -> (toUInt32(k), toUInt32(0)), mt_missiles)".to_owned(),
+    );
+    bind(
+        "mt_missile_draws",
+        missile::draws(
+            "mt_missile_draws_asks",
+            &flying_map,
+            &flying,
+            &draws_hurting,
+        ),
+    );
+    bind(
+        "mt_missile_unsure",
+        missile::unsure(
+            "mt_missile_draws_asks",
+            &flying_map,
+            &flying,
+            &draws_hurting,
+        ),
+    );
+    bind(
+        "mt_missile_pure_draws",
+        "arrayMap(k -> toUInt32(if(indexOf(mt_missiles, k) = 0, 0, \
+         mt_missile_draws[indexOf(mt_missiles, k)])), mt_slots)"
+            .to_owned(),
+    );
     // Every routine whose own draw count does not depend on a number it
-    // has itself just read: a shout, a scream and an attack, in slot
-    // order. The chase fold below is the one exception, because whether
-    // it draws past its own missile check depends on that check's own
-    // draw.
+    // has itself just read: a shout, a scream, an attack and a missile's
+    // own impact, in slot order. The chase fold below is the one
+    // exception, because whether it draws past its own missile check
+    // depends on that check's own draw.
     bind(
         "mt_pure_draws",
-        "arrayMap((sh, sc, at) -> toUInt32(sh) + sc + at, mt_shouts, mt_scream_draws, \
-         mt_attack_draws)"
+        "arrayMap((sh, sc, at, mi) -> toUInt32(sh) + sc + at + mi, mt_shouts, mt_scream_draws, \
+         mt_attack_draws, mt_missile_pure_draws)"
             .to_owned(),
     );
 
@@ -790,6 +859,82 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             attacks::attacked::FLAGS
         ),
     );
+    // A missile already on the list runs its own thinker in full, in
+    // slot order with the other movers, over what the chase and the
+    // attack above already left: a missile's own move can reach a
+    // target either just moved.
+    bind(
+        "mt_missile_asks",
+        format!(
+            "arrayMap(k -> (toUInt32(k), toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
+             + arraySum(arrayMap(c -> toUInt32(c.{draws}), arraySlice(cw_slot, 1, k))))), \
+             mt_missiles)",
+            draws = enemy::chased::DRAWS,
+        ),
+    );
+    let struck_map = World {
+        m_x: "mk_m_x",
+        m_y: "mk_m_y",
+        m_radius: &s("m_radius"),
+        m_flags: "mk_m_flags",
+        m_linkseq: &s("m_linkseq"),
+        alive: "mt_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    let struck_flying = missile::Flying {
+        m_z: "mk_m_z",
+        m_height: &s("m_height"),
+        m_type: &s("m_type"),
+        m_state: "mk_m_state",
+        m_tics: "mk_m_tics",
+        m_flags: "mk_m_flags",
+        m_target: "mk_m_target",
+        m_momx: "mk_m_momx",
+        m_momy: "mk_m_momy",
+        m_momz: "mk_m_momz",
+        m_floorz: "mk_m_floorz",
+        m_ceilingz: "mk_m_ceilingz",
+        m_subsector: "mk_m_subsector",
+        prndindex: &s("prndindex"),
+    };
+    let struck_hurting = inter::Hurting {
+        m_x: "mk_m_x",
+        m_y: "mk_m_y",
+        m_z: "mk_m_z",
+        m_momx: "mk_m_momx",
+        m_momy: "mk_m_momy",
+        m_momz: "mk_m_momz",
+        m_reactiontime: "mk_m_reactiontime",
+        m_type: &s("m_type"),
+        m_state: "mk_m_state",
+        m_tics: "mk_m_tics",
+        m_flags: "mk_m_flags",
+        m_health: &s("m_health"),
+        m_height: &s("m_height"),
+        m_target: "mk_m_target",
+        m_threshold: "mk_m_threshold",
+        m_player: &s("m_player"),
+        prndindex: &s("prndindex"),
+        readyweapon: &s("p_readyweapon"),
+    };
+    bind(
+        "mt_missile_thoughts",
+        missile::thinks_fold(
+            "mt_missile_asks",
+            &struck_map,
+            &struck_flying,
+            &struck_hurting,
+        ),
+    );
+    bind(
+        "mt_missile_hurt_targets",
+        format!(
+            "arrayMap(t -> t.{}, mt_missile_thoughts)",
+            missile::thought::HURT_TARGET
+        ),
+    );
     bind(
         "now_prndindex",
         format!(
@@ -827,6 +972,17 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                     (
                         unresolved::AT_DRAW_UNSURE,
                         "arrayExists(u -> u = 1, mt_attacker_unsure)",
+                    ),
+                    (
+                        unresolved::MISSILE_DRAW_UNSURE,
+                        "arrayExists(u -> u = 1, mt_missile_unsure)",
+                    ),
+                    (
+                        unresolved::MISSILE_STUCK,
+                        &format!(
+                            "arrayExists(t -> t.{} = 1, mt_missile_thoughts)",
+                            missile::thought::STUCK
+                        ),
                     ),
                 ],
             )
@@ -885,6 +1041,38 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             Some(member) => format!(
                 "arrayMap((k, v) -> toInt32(if(at_clawed = 1 AND k = at_target, \
                  mt_hurt.{member}, v)), mt_slots, {held})"
+            ),
+            None => held,
+        };
+        // What a missile already on the list moves for its own slot, and
+        // for a target its impact reached.
+        let held = match flown(column) {
+            Some(member) => format!(
+                "arrayMap((k, v) -> toInt32(if(indexOf(mt_missiles, k) != 0, \
+                 mt_missile_thoughts[indexOf(mt_missiles, k)].{member}, v)), mt_slots, {held})"
+            ),
+            None => held,
+        };
+        let held = match column {
+            "m_sprite" | "m_frame" => format!(
+                "arrayMap((k, v) -> toInt32(if(indexOf(mt_missiles, k) != 0, \
+                 state_{table}[1 + mt_missile_thoughts[indexOf(mt_missiles, k)].{state}], v)), \
+                 mt_slots, {held})",
+                table = if column == "m_sprite" {
+                    "sprite"
+                } else {
+                    "frame"
+                },
+                state = missile::thought::STATE,
+            ),
+            _ => held,
+        };
+        let held = match clawed(column) {
+            Some(member) => format!(
+                "arrayMap((k, v) -> toInt32(if(indexOf(mt_missile_hurt_targets, k) != 0, \
+                 mt_missile_thoughts[indexOf(mt_missile_hurt_targets, k)].{hurt}.{member}, v)), \
+                 mt_slots, {held})",
+                hurt = missile::thought::HURT,
             ),
             None => held,
         };
@@ -952,6 +1140,26 @@ fn clawed(column: &str) -> Option<usize> {
         "m_reactiontime" => inter::hurt::REACTIONTIME,
         "m_target" => inter::hurt::TARGET,
         "m_threshold" => inter::hurt::THRESHOLD,
+        _ => return None,
+    })
+}
+
+/// Where a column a missile already on the list moves sits in its own
+/// thinker's answer.
+fn flown(column: &str) -> Option<usize> {
+    Some(match column {
+        "m_x" => missile::thought::X,
+        "m_y" => missile::thought::Y,
+        "m_z" => missile::thought::Z,
+        "m_floorz" => missile::thought::FLOORZ,
+        "m_ceilingz" => missile::thought::CEILINGZ,
+        "m_subsector" => missile::thought::SUBSECTOR,
+        "m_momx" => missile::thought::MOMX,
+        "m_momy" => missile::thought::MOMY,
+        "m_momz" => missile::thought::MOMZ,
+        "m_state" => missile::thought::STATE,
+        "m_tics" => missile::thought::TICS,
+        "m_flags" => missile::thought::FLAGS,
         _ => return None,
     })
 }
@@ -1382,10 +1590,11 @@ fn entry_one(slot: &str, state: &State) -> String {
     let members = [
         format!("toInt32(if({enters}, n, st))"),
         // `P_MobjThinker` drops the count, and `P_SetMobjState` writes the
-        // entered state's own over it.
+        // entered state's own over it. A missile already on the list
+        // drops its own count itself, inside its own thinker below.
         format!(
             "toInt32(multiIf({enters}, state_tics[1 + n], \
-             k = {slot} OR tc = -1, tc, tc - 1))"
+             k = {slot} OR indexOf(mt_missiles, k) != 0 OR tc = -1, tc, tc - 1))"
         ),
         "toUInt32(tt)".to_owned(),
         "toInt32(if(l = 1, 0, th))".to_owned(),
@@ -1613,10 +1822,11 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
     bind(
         "tx_moving",
         format!(
-            "arrayMap((k, mx, my) -> toUInt8(k != {player} AND (mx != 0 OR my != 0)), \
-             mt_slots, {}, {})",
+            "arrayMap((k, mx, my, fl) -> toUInt8(k != {player} AND (mx != 0 OR my != 0) \
+             AND bitAnd(fl, {MF_MISSILE}) = 0), mt_slots, {}, {}, {})",
             s("m_momx"),
             s("m_momy"),
+            s("m_flags"),
         ),
     );
     bind(
@@ -1868,16 +2078,16 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
         "toUInt8(arrayExists(v -> v = 1, tx_special))".to_owned(),
     );
 
-    // Neither a missile nor a skull in flight is a thing this moves. A
-    // move a missile cannot make ends it, and one a skull cannot make
-    // slams it back into its spawn frames, where this would take friction
-    // off both.
+    // A skull in flight is not a thing this moves: one this cannot make
+    // slams it back into its spawn frames, where this would take
+    // friction off it. A missile already carries `missile::thinks_fold`
+    // for its own move, so `tx_moving` never puts one on this list.
     bind(
         "tx_unrun",
         format!(
             "toUInt8(arrayExists(k -> bitAnd({}, {}) != 0, tx_movers))",
             at("m_flags"),
-            MF_MISSILE | MF_SKULLFLY,
+            MF_SKULLFLY,
         ),
     );
     bindings
@@ -1949,11 +2159,12 @@ pub fn thing_falls(state: &State) -> Vec<(String, String)> {
     bind(
         "tz_falling",
         format!(
-            "arrayMap((k, z, fz, mz) -> toUInt8(k != {} AND (z != fz OR mz != 0)), \
-             mt_slots, {}, tx_m_floorz, {})",
+            "arrayMap((k, z, fz, mz, fl) -> toUInt8(k != {} AND (z != fz OR mz != 0) \
+             AND bitAnd(fl, {MF_MISSILE}) = 0), mt_slots, {}, tx_m_floorz, {}, {})",
             s("p_mo"),
             s("m_z"),
             s("m_momz"),
+            s("m_flags"),
         ),
     );
     bind(
@@ -2036,15 +2247,17 @@ pub fn thing_falls(state: &State) -> Vec<(String, String)> {
     }
     bind("mk_m_momz", "tz_m_momz".to_owned());
 
-    // What `P_ZMovement` does that this does not: a skull in flight bounces
-    // off what it reaches, a floating thing rises and sinks towards its
-    // target, and a missile that reaches the floor or the ceiling goes off.
+    // What `P_ZMovement` does that this does not: a skull in flight
+    // bounces off what it reaches, and a floating thing rises and sinks
+    // towards its target. A missile that reaches the floor or the
+    // ceiling already carries `missile::thinks_fold` for its own move,
+    // so `tz_falling` never puts one on this list.
     bind(
         "tz_unrun",
         format!(
             "toUInt8(arrayExists(k -> bitAnd({flags}, {}) != 0 \
              OR (bitAnd({flags}, {MF_FLOAT}) != 0 AND {} != 0), tz_fallers))",
-            MF_SKULLFLY | MF_MISSILE,
+            MF_SKULLFLY,
             at("m_target"),
             flags = at("m_flags"),
         ),
@@ -2860,6 +3073,25 @@ mod tests {
             named("cq_m_flags").contains("mc_m_flags"),
             "a slot no mover holds keeps what the cycle left it: {}",
             named("cq_m_flags")
+        );
+    }
+
+    /// A missile already in flight runs its own thinker below, which
+    /// drops its own tics count itself; the generic cycle above must not
+    /// also drop it, or a missile whose tics landed on zero this tic
+    /// reads as `-1`, the sentinel that never decrements, and its state
+    /// never cycles again.
+    #[test]
+    fn the_generic_cycle_does_not_also_drop_a_missile_s_own_count() {
+        let bindings = thinkers(&State::default());
+        let mt_one = bindings
+            .iter()
+            .find(|(binding, _)| binding == "mt_one")
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("mt_one is bound"));
+        assert!(
+            mt_one.contains("indexOf(mt_missiles, k) != 0 OR tc = -1, tc, tc - 1"),
+            "{mt_one}"
         );
     }
 

@@ -6,11 +6,31 @@
 //! which tic each frame was drawn from, and `melt_schedule` how far the
 //! wipe had got. One query pairs them, so the driver streams rows it read
 //! rather than rows it worked out.
+//!
+//! A run over the simulation has no `probe_state` to read a frame's tic
+//! from, so [`sim_tic`] works it out: `melt_schedule` still says how many
+//! frames the wipe covers and how far it had got at each one, and every
+//! frame after the wipe reads the next tic the simulation commits.
 
 use crate::client::{self, Db};
 use crate::native::melt;
 use crate::native::probe;
 use crate::native::session::FRAMES_TABLE;
+
+/// `D_DoomLoop` runs `TryRunTics` once before its main loop starts, then
+/// `doomgeneric_Tick`'s first call runs it again before the first
+/// `D_Display`, so two tics are already committed before any frame is
+/// drawn. The wipe holds the screen there: every melt frame reads the tic
+/// this leaves.
+const HIDDEN_TICS: u32 = 2;
+
+/// One frame of the melt, as `melt_schedule` holds it: how far the wipe had
+/// advanced once this frame was drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeltFrame {
+    pub frame: u32,
+    pub melt_step: u8,
+}
 
 /// Anything that stops a run from knowing which frames to render.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +59,12 @@ pub enum Error {
         probe::STAGING_TABLE
     )]
     NoPreviousFrame { database: String, frame: u32 },
+    #[error(
+        "{database}.{} holds no melt schedule. Load a level first: \
+         clickdoom native load",
+        melt::TABLE
+    )]
+    NoMeltSchedule { database: String },
 }
 
 /// One row of the renderer's input, with the hash the probe recorded for
@@ -123,6 +149,45 @@ fn contiguous(database: &str, plan: &[FrameRow]) -> Result<(), Error> {
     Ok(())
 }
 
+/// The wipe's recorded schedule, one row per frame it covers, in order.
+///
+/// `native load` fills `melt_schedule` from the committed file under
+/// `driver/melt/` whether or not a probe is loaded, because the wipe's pass
+/// count per frame is a property of the reference run's own timing and not
+/// something either source derives.
+pub async fn melt_frames(db: &Db, database: &str) -> Result<Vec<MeltFrame>, Error> {
+    let rows: Vec<(u32, u8)> = db
+        .fetch_all(&format!(
+            "SELECT frame, melt_step FROM {database}.{} ORDER BY frame",
+            melt::TABLE
+        ))
+        .await?;
+    if rows.is_empty() {
+        return Err(Error::NoMeltSchedule {
+            database: database.to_owned(),
+        });
+    }
+    Ok(rows
+        .into_iter()
+        .map(|(frame, melt_step)| MeltFrame { frame, melt_step })
+        .collect())
+}
+
+/// The tic frame `frame` draws from, over a wipe that covers `melt_frames`
+/// frames.
+///
+/// Every melt frame reads the tic the two hidden priming tics leave; the
+/// wipe runs on its own clock and advances no further tic. The frame right
+/// after it reads the tic after that, and every frame from there on reads
+/// the next tic in turn, one each, the way the reference run's own schedule
+/// does (`driver/melt/README.md`).
+pub fn sim_tic(frame: u32, melt_frames: u32) -> u32 {
+    match frame < melt_frames {
+        true => HIDDEN_TICS,
+        false => frame - melt_frames + HIDDEN_TICS + 1,
+    }
+}
+
 /// Empties the frames table.
 ///
 /// `native_frames` keys on the frame, so a second run over the same frames
@@ -162,6 +227,37 @@ async fn highest_frame(db: &Db, database: &str) -> Result<u32, Error> {
 /// error this client hands back.
 fn table_is_missing(error: &client::Error) -> bool {
     error.to_string().contains("UNKNOWN_TABLE")
+}
+
+/// The reference emulator's own hash for every frame it recorded, keyed by
+/// frame.
+///
+/// A run over the simulation takes its frame-to-tic pairing from
+/// [`sim_tic`] rather than from the probe, but `--expect-probe-fbhash`
+/// still checks each frame it draws against what the probe recorded for
+/// it, when the probe covers that frame.
+pub async fn probe_fb_hashes(
+    db: &Db,
+    database: &str,
+) -> Result<std::collections::HashMap<u32, String>, Error> {
+    let rows: Vec<(u32, String)> = db
+        .fetch_all(&format!(
+            "SELECT frame_index, lower(fb_hash) FROM {database}.{}",
+            probe::STAGING_TABLE
+        ))
+        .await
+        .map_err(|source| match table_is_missing(&source) {
+            true => Error::NoProbe {
+                database: database.to_owned(),
+            },
+            false => Error::Db(source),
+        })?;
+    if rows.is_empty() {
+        return Err(Error::NoProbe {
+            database: database.to_owned(),
+        });
+    }
+    Ok(rows.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -214,6 +310,19 @@ mod tests {
             .expect_err("frame 1000 has nothing to draw over");
         assert!(error.to_string().contains("frame 1000"), "{error}");
         assert!(error.to_string().contains("frame 999"), "{error}");
+    }
+
+    /// The reference run's own probe fixture: frame 0 and frame 39 both
+    /// read the wipe's held tic, frame 40 reads the tic right after it, and
+    /// frame 1000 is 960 frames past that at the same one-tic-per-frame
+    /// rate.
+    #[test]
+    fn the_sim_tic_matches_the_probes_own_gametic() {
+        assert_eq!(sim_tic(0, 40), 2);
+        assert_eq!(sim_tic(39, 40), 2);
+        assert_eq!(sim_tic(40, 40), 3);
+        assert_eq!(sim_tic(41, 40), 4);
+        assert_eq!(sim_tic(1000, 40), 963);
     }
 
     #[test]

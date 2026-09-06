@@ -27,10 +27,11 @@ use support::{committed_fixture, conn_args, repo_root};
 const FIRST_RECORDED_TIC: u32 = 2;
 
 /// The first tic DEMO3 on E1M7 leaves unresolved, read off a real run: a
-/// thing's state cycle enters a frame carrying a routine `entry_one`
-/// does not recognise. A fix that closes the gap behind it moves this
-/// later; update it in the same commit as that fix.
-const FIRST_REFUSED_TIC: u32 = 144;
+/// missile already in flight needs a move, and neither the general
+/// movers' own stage nor its Z-axis counterpart runs one for it. A fix
+/// that closes the gap behind it moves this later; update it in the same
+/// commit as that fix.
+const FIRST_REFUSED_TIC: u32 = 170;
 
 fn clickdoom(database: &str, args: &[&str]) -> (i32, String) {
     let conn = conn_args(database);

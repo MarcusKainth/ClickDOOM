@@ -111,6 +111,8 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         "A_Explode",
         "A_PosAttack",
         "A_SPosAttack",
+        "A_Fall",
+        "A_XScream",
     ] {
         constants.push((
             name.to_lowercase(),

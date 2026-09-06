@@ -3,7 +3,8 @@
 //! `P_TouchSpecialThing` is one switch on the thing's sprite, and each arm
 //! either takes the thing or leaves it lying there. A move can touch
 //! several things, so the switch is folded over what the move touched and
-//! appears once.
+//! appears once. A sprite no arm names is what the engine calls `I_Error`
+//! for, and it leaves the tic unresolved instead.
 //!
 //! `P_DamageMobj` and `P_KillMobj` are here too: what a shot or a monster's
 //! own attack does to what it reaches.
@@ -83,10 +84,15 @@ mod slot {
     pub const BONUSCOUNT: usize = 13;
     pub const SHADOW: usize = 14;
     pub const TAKEN: usize = 15;
+    /// 1 where the fold reached a sprite no arm names.
+    pub const STUCK: usize = 16;
 }
 
 /// Where the slots a fold took sit in its accumulator.
 pub const TAKEN: usize = slot::TAKEN;
+
+/// Where a sprite no arm names leaves its mark in the accumulator.
+pub const STUCK: usize = slot::STUCK;
 
 /// What the player carries into a move, as expressions.
 pub struct Player<'a> {
@@ -112,7 +118,7 @@ pub fn start(player: &Player<'_>) -> String {
     format!(
         "(toInt32({}), toInt32({}), toInt32({}), {}, {}, toUInt8({}), {}, {}, {}, \
          toInt32({}), toUInt64({}), toInt32({}), toInt32({}), \
-         toUInt8(bitAnd({}, {MF_SHADOW}) != 0), CAST([], 'Array(UInt32)'))",
+         toUInt8(bitAnd({}, {MF_SHADOW}) != 0), CAST([], 'Array(UInt32)'), toUInt8(0))",
         player.health,
         player.armorpoints,
         player.armortype,
@@ -162,7 +168,9 @@ mod give {
 /// `P_TouchSpecialThing` over the slots a move touched, in order.
 ///
 /// `touched` names the array of mobj slots, `into` the accumulator this
-/// starts from. `sprite`, `flags` and `z` are the mobj arrays.
+/// starts from. `sprite`, `flags` and `z` are the mobj arrays. A sprite no
+/// arm names sets [`STUCK`] in the accumulator rather than taking the
+/// thing.
 #[allow(clippy::too_many_arguments)]
 pub fn touch(
     touched: &str,
@@ -181,18 +189,23 @@ pub fn touch(
     );
     let values = vec![
         ("pk_gift".to_owned(), arms(sprite, flags)),
+        (
+            "pk_stuck".to_owned(),
+            format!(
+                "toUInt8(if(pk_gift.{} = {}, 1, acc.{}))",
+                gift::KIND,
+                give::NOTHING,
+                slot::STUCK
+            ),
+        ),
         ("pk_took".to_owned(), took()),
         ("pk_after".to_owned(), applied(skill)),
     ];
-    // The tail of the switch: the thing is counted, removed, and adds to
-    // the bonus flash.
-    let taken = format!(
-        "(pk_after.{h}, pk_after.{ap}, pk_after.{at}, pk_after.{am}, pk_after.{mx}, \
-         pk_after.{bp}, pk_after.{cd}, pk_after.{pw}, pk_after.{wo}, pk_after.{pd}, \
-         pk_after.{msg}, \
-         toInt32(pk_after.{ic} + if(bitAnd({flags}[k], {MF_COUNTITEM}) != 0, 1, 0)), \
-         toInt32(pk_after.{bc} + {BONUSADD}), pk_after.{sh}, \
-         arrayPushBack(pk_after.{tk}, toUInt32(k)))",
+    // The thing no arm named keeps its place in the accumulator otherwise
+    // unchanged, `pk_stuck` included.
+    let kept = format!(
+        "(acc.{h}, acc.{ap}, acc.{at}, acc.{am}, acc.{mx}, acc.{bp}, acc.{cd}, acc.{pw}, \
+         acc.{wo}, acc.{pd}, acc.{msg}, acc.{ic}, acc.{bc}, acc.{sh}, acc.{tk}, pk_stuck)",
         h = slot::HEALTH,
         ap = slot::ARMORPOINTS,
         at = slot::ARMORTYPE,
@@ -209,7 +222,32 @@ pub fn touch(
         sh = slot::SHADOW,
         tk = slot::TAKEN,
     );
-    let body = format!("if(pk_took = 0, acc, {taken})");
+    // The tail of the switch: the thing is counted, removed, and adds to
+    // the bonus flash.
+    let taken = format!(
+        "(pk_after.{h}, pk_after.{ap}, pk_after.{at}, pk_after.{am}, pk_after.{mx}, \
+         pk_after.{bp}, pk_after.{cd}, pk_after.{pw}, pk_after.{wo}, pk_after.{pd}, \
+         pk_after.{msg}, \
+         toInt32(pk_after.{ic} + if(bitAnd({flags}[k], {MF_COUNTITEM}) != 0, 1, 0)), \
+         toInt32(pk_after.{bc} + {BONUSADD}), pk_after.{sh}, \
+         arrayPushBack(pk_after.{tk}, toUInt32(k)), pk_stuck)",
+        h = slot::HEALTH,
+        ap = slot::ARMORPOINTS,
+        at = slot::ARMORTYPE,
+        am = slot::AMMO,
+        mx = slot::MAXAMMO,
+        bp = slot::BACKPACK,
+        cd = slot::CARDS,
+        pw = slot::POWERS,
+        wo = slot::WEAPONOWNED,
+        pd = slot::PENDINGWEAPON,
+        msg = slot::MESSAGE,
+        ic = slot::ITEMCOUNT,
+        bc = slot::BONUSCOUNT,
+        sh = slot::SHADOW,
+        tk = slot::TAKEN,
+    );
+    let body = format!("if(pk_took = 0, {kept}, {taken})");
     format!(
         "arrayFold((acc, k) -> if(NOT ({reach}) OR acc.{h} <= 0, acc, {}), {touched}, {into})",
         crate::sql::bind::chain(&values, &body),
@@ -218,8 +256,8 @@ pub fn touch(
 }
 
 /// The switch on the thing's sprite: which call to make, with what, and
-/// what to say. A sprite no arm names is what `P_SpecialThing` calls
-/// `I_Error` for, and it takes nothing.
+/// what to say. A sprite no arm names decides on [`give::NOTHING`], which
+/// [`touch`] turns into [`STUCK`] rather than a call.
 fn arms(sprite: &str, flags: &str) -> String {
     let s = format!("{sprite}[k]");
     let dropped = format!("if(bitAnd({flags}[k], {MF_DROPPED}) != 0, 1, 0)");
@@ -757,6 +795,20 @@ mod tests {
         // whole player.
         assert_eq!(text.matches("sprnum[").count(), 32);
         assert!(!text.contains("arrayMap"), "an arm builds no array");
+    }
+
+    /// A sprite no arm names decides on [`give::NOTHING`], which sets
+    /// [`STUCK`]; a named arm decides on its own kind, which carries the
+    /// accumulator's own [`STUCK`] through unchanged.
+    #[test]
+    fn a_sprite_no_arm_names_sets_stuck_and_a_named_one_carries_it_through() {
+        let text = touch(
+            "hit", "into", "m_sprite", "m_flags", "m_z", "tz", "th", "skill",
+        );
+        assert!(
+            text.contains(&format!("= {}, 1, acc.{}))", give::NOTHING, slot::STUCK)),
+            "{text}"
+        );
     }
 
     #[test]

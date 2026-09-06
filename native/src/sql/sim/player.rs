@@ -752,7 +752,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         // Every thing the shots added took one of each counter.
         (
             "now_unresolved".to_owned(),
-            "toUInt8(use_unresolved = 1 OR gs_unresolved = 1)".to_owned(),
+            format!(
+                "toUInt8(use_unresolved = 1 OR gs_unresolved = 1 OR pk.{} = 1)",
+                inter::STUCK
+            ),
         ),
         (
             "now_next_seq".to_owned(),
@@ -860,6 +863,19 @@ mod tests {
             assert!(named.contains(&column), "{column}");
         }
         assert!(named.contains(&"now_unresolved"));
+    }
+
+    /// A pickup no arm names leaves the tic unresolved rather than being
+    /// silently dropped.
+    #[test]
+    fn an_unnamed_pickup_leaves_the_tic_unresolved() {
+        let bindings = think(&State::default());
+        let expr = bindings
+            .iter()
+            .find(|(name, _)| name == "now_unresolved")
+            .map(|(_, expr)| expr.clone())
+            .expect("the stage writes now_unresolved");
+        assert!(expr.contains(&format!("pk.{} = 1", inter::STUCK)), "{expr}");
     }
 
     #[test]

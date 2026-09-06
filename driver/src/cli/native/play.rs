@@ -153,12 +153,10 @@ async fn play(
         let ran = ran.map_err(|err| failed(err.to_string()))?;
         let waited = waited.map_err(|err| failed(err.to_string()))?;
         // A tic the statement could not produce exactly is not one to feed
-        // forward, checked as soon as it commits.
-        if let Some(refusal) = session
-            .first_refusal(next)
-            .await
-            .map_err(|err| failed(err.to_string()))?
-        {
+        // forward. `wait_sim` already read this off the same row that
+        // confirmed the tic committed, so stopping costs no query of its
+        // own.
+        if let Some(refusal) = ran.refusal {
             return Err(gate(refusal.to_string()));
         }
 
@@ -170,7 +168,7 @@ async fn play(
         counters.frames += 1;
         counters.render += waited.waited;
         counters.poll += waited.read;
-        counters.sim = counters.sim.map(|total| total + ran);
+        counters.sim = counters.sim.map(|total| total + ran.elapsed);
         counters.tics += 1;
 
         counters.late = pace.late();
@@ -215,11 +213,7 @@ async fn warm(
     );
     let drawn = drawn.map_err(|err| failed(err.to_string()))?;
     let ran = ran.map_err(|err| failed(err.to_string()))?;
-    if let Some(refusal) = session
-        .first_refusal(first)
-        .await
-        .map_err(|err| failed(err.to_string()))?
-    {
+    if let Some(refusal) = ran.refusal {
         return Err(gate(refusal.to_string()));
     }
     window
@@ -230,7 +224,7 @@ async fn warm(
     counters.frames += 1;
     counters.render += drawn.waited;
     counters.poll += drawn.read;
-    counters.sim = Some(ran);
+    counters.sim = Some(ran.elapsed);
     Ok(())
 }
 

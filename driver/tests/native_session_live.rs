@@ -63,12 +63,13 @@ async fn setup(database: &str) -> ConnArgs {
         format!(
             "CREATE TABLE {database}.native_state \
              (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
-              mouse_dx Int16, mouse_dy Int16) \
+              mouse_dx Int16, mouse_dy Int16, unresolved UInt8, unimplemented UInt64) \
              ENGINE = Join(ANY, LEFT, tic)"
         ),
         format!(
             "CREATE TABLE {database}.native_frames \
-             (frame UInt32, fb String, palette String, rgb32 String, fb_hash UInt64) \
+             (frame UInt32, tic UInt32, fb String, palette String, rgb32 String, \
+              fb_hash UInt64) \
              ENGINE = Join(ANY, LEFT, frame)"
         ),
     ] {
@@ -96,7 +97,8 @@ fn sim_statement(database: &str) -> String {
          SELECT tic, \
                 tic + joinGet('{database}.native_state', 'leveltime', toUInt32(tic - 1)) \
                     AS leveltime, \
-                keys, source, mouse_dx, mouse_dy \
+                keys, source, mouse_dx, mouse_dy, \
+                toUInt8(0) AS unresolved, toUInt64(0) AS unimplemented \
          FROM input('{SIM_INPUT_SCHEMA}') WHERE tic > 0"
     )
 }
@@ -109,7 +111,7 @@ fn sim_statement(database: &str) -> String {
 fn render_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_frames \
-         SELECT frame, \
+         SELECT frame, tic, \
                 repeat(char(toUInt8(joinGet('{database}.native_state', 'keys', \
                     toUInt32(tic)) % 256)), {FB_BYTES}) AS fb, \
                 repeat(char(melt_step), {PALETTE_BYTES}) AS palette, \
@@ -146,7 +148,8 @@ async fn run_tic(session: &Session, tic: u32) -> (Duration, Duration, Frame) {
     let waited = session
         .wait_sim(tic, FIRST_ROW_TIMEOUT)
         .await
-        .unwrap_or_else(|e| panic!("waiting for tic {tic}: {e}"));
+        .unwrap_or_else(|e| panic!("waiting for tic {tic}: {e}"))
+        .elapsed;
 
     let started = Instant::now(); // purity-ok: measuring the frame wait, see the import
     session

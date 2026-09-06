@@ -242,12 +242,9 @@ async fn draw(
     };
     // A tic native_state marks unresolved or unimplemented drew whatever
     // was left of it rather than the tic itself, so the run stops before
-    // going on to the tics after it.
-    if let Some(refusal) = session
-        .first_refusal(row.tic)
-        .await
-        .map_err(|err| failed(err.to_string()))?
-    {
+    // going on to the tics after it. `wait_frame` already read this off
+    // the same row as the frame, so the stop costs no query of its own.
+    if let Some(refusal) = &waited.frame.refusal {
         return Err(gate(refusal.to_string()));
     }
 

@@ -25,9 +25,25 @@ impl fmt::Display for Refusal {
     }
 }
 
+impl Refusal {
+    /// `tic`, if `unresolved` or `unimplemented` says it could not be
+    /// produced exactly. A poll that already read both columns builds one
+    /// of these directly, rather than asking `native_state` a second time.
+    pub fn at(tic: u32, unresolved: u8, unimplemented: u64) -> Option<Refusal> {
+        if unresolved == 0 && unimplemented == 0 {
+            return None;
+        }
+        Some(Refusal {
+            tic,
+            reason: reason(unimplemented),
+        })
+    }
+}
+
 #[derive(Row, Deserialize)]
 struct RefusalRow {
     tic: u32,
+    unresolved: u8,
     unimplemented: u64,
 }
 
@@ -40,15 +56,15 @@ struct RefusalRow {
 /// be produced either.
 pub async fn first(db: &Db, database: &str, upto: u32) -> Result<Option<Refusal>, Error> {
     let sql = format!(
-        "SELECT tic, unimplemented FROM {database}.native_state \
+        "SELECT tic, unresolved, unimplemented FROM {database}.native_state \
          WHERE tic <= {upto} AND (unresolved = 1 OR unimplemented != 0) \
          ORDER BY tic LIMIT 1"
     );
     let rows: Vec<RefusalRow> = db.fetch_all(&sql).await?;
-    Ok(rows.into_iter().next().map(|row| Refusal {
-        tic: row.tic,
-        reason: reason(row.unimplemented),
-    }))
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|row| Refusal::at(row.tic, row.unresolved, row.unimplemented)))
 }
 
 fn reason(unimplemented: u64) -> String {
@@ -72,6 +88,15 @@ mod tests {
         assert_eq!(
             reason(clickdoom_native::sql::sim::unimplemented::SECTOR_DOOR),
             "unimplemented: SECTOR_DOOR"
+        );
+    }
+
+    #[test]
+    fn a_tic_that_set_neither_column_refuses_nothing() {
+        assert_eq!(Refusal::at(5, 0, 0), None);
+        assert!(Refusal::at(5, 1, 0).is_some());
+        assert!(
+            Refusal::at(5, 0, clickdoom_native::sql::sim::unimplemented::SECTOR_DOOR).is_some()
         );
     }
 

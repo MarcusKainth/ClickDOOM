@@ -117,6 +117,9 @@ pub struct Frame {
     pub rgb32: Bytes,
     /// `xxHash64(fb || palette)` as 16 lowercase hex digits.
     pub fb_hash: String,
+    /// Set when the state row this frame draws from left `unresolved` or
+    /// `unimplemented`, read in the same poll as the frame itself.
+    pub refusal: Option<super::Refusal>,
 }
 
 /// One frame, with what it cost to get it.
@@ -128,6 +131,15 @@ pub struct Waited {
     /// How long the poll that found it took, which is the round trip that
     /// carries the frame's bytes back.
     pub read: Duration,
+}
+
+/// One tic run, with how long it took and whether `native_state` left it
+/// unresolved or unimplemented, read in the same poll that found it
+/// committed.
+#[derive(Debug)]
+pub struct Ran {
+    pub elapsed: Duration,
+    pub refusal: Option<super::Refusal>,
 }
 
 /// What one call to [`Session::recover`] found.
@@ -150,6 +162,20 @@ struct FrameRow {
     fb: Bytes,
     palette: Bytes,
     rgb32: Bytes,
+    /// The frame's own tic, read out of `native_frames` so the same query
+    /// can look `native_state`'s refusal columns up by it.
+    tic: u32,
+    unresolved: u8,
+    unimplemented: u64,
+}
+
+/// The columns a poll of `native_state`'s highest committed tic reads
+/// back, in one row.
+#[derive(Row, Deserialize)]
+struct CommittedRow {
+    tic: u32,
+    unresolved: u8,
+    unimplemented: u64,
 }
 
 /// Both statements of one session, plus the connection that reads their
@@ -264,7 +290,9 @@ impl Session {
     }
 
     /// Waits for the simulation to write `tic`, and returns how long that
-    /// took. The caller sends the next tic only after this returns.
+    /// took, along with whether `native_state` left `tic` unresolved or
+    /// unimplemented. The caller sends the next tic only after this
+    /// returns, and stops rather than feeding or drawing past a refusal.
     ///
     /// The budget is the caller's, as it is for
     /// [`wait_frame`](Session::wait_frame) and for the same reason: the
@@ -272,11 +300,19 @@ impl Session {
     /// seconds, and every tic after it is milliseconds.
     /// [`TIC_TIMEOUT`] is the one a paced run uses once the statement is
     /// warm.
-    pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Duration, SessionError> {
+    pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Ran, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
         loop {
-            if self.committed_tic().await? >= tic {
-                return Ok(started.elapsed());
+            let committed = self.committed().await?;
+            if committed.tic >= tic {
+                return Ok(Ran {
+                    elapsed: started.elapsed(),
+                    refusal: super::Refusal::at(
+                        committed.tic,
+                        committed.unresolved,
+                        committed.unimplemented,
+                    ),
+                });
             }
             let waited = started.elapsed();
             if waited >= timeout {
@@ -284,18 +320,6 @@ impl Session {
             }
             tokio::time::sleep(POLL_SLEEP).await;
         }
-    }
-
-    /// The first tic up to and including `upto` that `native_state` marks
-    /// unresolved or unimplemented, if any.
-    ///
-    /// A caller checks this once [`wait_sim`](Session::wait_sim) confirms
-    /// the tic is committed, since a refused tic is not one to render or
-    /// feed forward.
-    pub async fn first_refusal(&self, upto: u32) -> Result<Option<super::Refusal>, SessionError> {
-        super::refusal::first(&self.db, &self.database, upto)
-            .await
-            .map_err(|source| self.read_error(STATE_TABLE, source))
     }
 
     /// Sends the input row for one frame. `melt_step` drives the screen
@@ -311,20 +335,27 @@ impl Session {
             .map_err(|source| SessionError::Render { source })
     }
 
-    /// Reads one frame if the renderer has written it, in one query.
+    /// Reads one frame if the renderer has written it, in one query,
+    /// together with whether `native_state` left the frame's own tic
+    /// unresolved or unimplemented.
     ///
     /// The read is retried on a fresh connection when the pooled one it
     /// went out on had been closed by the server, which
     /// [`Db::fetch_one_reconnecting`] decides.
     pub async fn poll_frame(&self, frame: u32) -> Result<Option<Frame>, SessionError> {
-        let table = format!("{}.{FRAMES_TABLE}", self.database);
+        let frames = format!("{}.{FRAMES_TABLE}", self.database);
+        let state = format!("{}.{STATE_TABLE}", self.database);
+        let tic = format!("joinGet('{frames}', 'tic', toUInt32({frame}))");
         let sql = format!(
             "SELECT {} AS fb_hash, \
-                    joinGet('{table}', 'fb', toUInt32({frame})) AS fb, \
-                    joinGet('{table}', 'palette', toUInt32({frame})) AS palette, \
-                    joinGet('{table}', 'rgb32', toUInt32({frame})) AS rgb32",
+                    joinGet('{frames}', 'fb', toUInt32({frame})) AS fb, \
+                    joinGet('{frames}', 'palette', toUInt32({frame})) AS palette, \
+                    joinGet('{frames}', 'rgb32', toUInt32({frame})) AS rgb32, \
+                    {tic} AS tic, \
+                    joinGet('{state}', 'unresolved', {tic}) AS unresolved, \
+                    joinGet('{state}', 'unimplemented', {tic}) AS unimplemented",
             hex64(&format!(
-                "joinGetOrNull('{table}', 'fb_hash', toUInt32({frame}))"
+                "joinGetOrNull('{frames}', 'fb_hash', toUInt32({frame}))"
             ))
         );
         let row = self
@@ -338,6 +369,7 @@ impl Session {
             palette: row.palette,
             rgb32: row.rgb32,
             fb_hash,
+            refusal: super::Refusal::at(row.tic, row.unresolved, row.unimplemented),
         }))
     }
 
@@ -371,7 +403,7 @@ impl Session {
     /// The tic a resumed session starts from: one past the highest tic
     /// `native_state` holds, and 1 when it holds none.
     pub async fn resume_point(&self) -> Result<u32, SessionError> {
-        Ok(self.committed_tic().await? + 1)
+        Ok(self.committed().await?.tic + 1)
     }
 
     /// Ends the statements and opens them again.
@@ -426,15 +458,21 @@ impl Session {
         }
     }
 
-    /// The highest tic `native_state` holds, 0 when it holds none. The
-    /// query reads the key column alone, so it does not touch the state
-    /// rows themselves.
+    /// The highest tic `native_state` holds, 0 when it holds none, with
+    /// what that row left in `unresolved` and `unimplemented`, in the one
+    /// query.
     ///
     /// Retried the same way [`Session::poll_frame`] is.
-    async fn committed_tic(&self) -> Result<u32, SessionError> {
-        let sql = format!("SELECT max(tic) FROM {}.{STATE_TABLE}", self.database);
+    async fn committed(&self) -> Result<CommittedRow, SessionError> {
+        let table = format!("{}.{STATE_TABLE}", self.database);
+        let sql = format!(
+            "SELECT tic, \
+                    joinGet('{table}', 'unresolved', tic) AS unresolved, \
+                    joinGet('{table}', 'unimplemented', tic) AS unimplemented \
+             FROM (SELECT max(tic) AS tic FROM {table})"
+        );
         self.db
-            .fetch_one_reconnecting::<u32>(&sql)
+            .fetch_one_reconnecting::<CommittedRow>(&sql)
             .await
             .map_err(|source| self.read_error(STATE_TABLE, source))
     }

@@ -61,12 +61,13 @@ async fn setup(database: &str) -> ConnArgs {
         format!(
             "CREATE TABLE {database}.native_state \
              (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
-              mouse_dx Int16, mouse_dy Int16) \
+              mouse_dx Int16, mouse_dy Int16, unresolved UInt8, unimplemented UInt64) \
              ENGINE = Join(ANY, LEFT, tic)"
         ),
         format!(
             "CREATE TABLE {database}.native_frames \
-             (frame UInt32, fb String, palette String, rgb32 String, fb_hash UInt64) \
+             (frame UInt32, tic UInt32, fb String, palette String, rgb32 String, \
+              fb_hash UInt64) \
              ENGINE = Join(ANY, LEFT, frame)"
         ),
     ] {
@@ -81,7 +82,8 @@ async fn setup(database: &str) -> ConnArgs {
 fn sim_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_state \
-         SELECT tic, tic * 2 AS leveltime, keys, source, mouse_dx, mouse_dy \
+         SELECT tic, tic * 2 AS leveltime, keys, source, mouse_dx, mouse_dy, \
+                toUInt8(0) AS unresolved, toUInt64(0) AS unimplemented \
          FROM input('{SIM_INPUT_SCHEMA}') WHERE tic > 0"
     )
 }
@@ -89,7 +91,7 @@ fn sim_statement(database: &str) -> String {
 fn render_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_frames \
-         SELECT frame, repeat('x', 8) AS fb, repeat('y', 4) AS palette, \
+         SELECT frame, tic, repeat('x', 8) AS fb, repeat('y', 4) AS palette, \
                 repeat('z', 4) AS rgb32, toUInt64(tic + melt_step) AS fb_hash \
          FROM input('{RENDER_INPUT_SCHEMA}') WHERE frame > 0"
     )

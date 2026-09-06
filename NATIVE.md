@@ -125,7 +125,7 @@ statement is measured with `QueryAnalysisMicroseconds` from
 A body that has to be one binding, such as a fold whose steps each read what
 the step before wrote, is kept to what the dependency forces inside it. The
 driver's budget for the first tic (`FIRST_TIC_TIMEOUT` in
-`driver/src/cli/native/diff.rs`) is sized for this analysis on a CI runner,
+`driver/src/native/session.rs`) is sized for this analysis on a CI runner,
 which is about four times slower than a development machine.
 
 Rows reach the statement one block each. Rows written into a statement from a

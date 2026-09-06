@@ -15,7 +15,7 @@ use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::pace::{Pace, TIC};
 use crate::native::schedule::MeltFrame;
-use crate::native::session::{STATE_TABLE, SessionError, TIC_TIMEOUT};
+use crate::native::session::{FIRST_TIC_TIMEOUT, STATE_TABLE, SessionError, TIC_TIMEOUT};
 use crate::native::window::{Scale, Window};
 use crate::native::{Refusal, Session, plan, schedule};
 use crate::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
@@ -25,11 +25,6 @@ use crate::stats::{Clock, Monotonic, NativeCounters, NativeStatsLine};
 /// first frame of a session pays for the statement's analysis and its
 /// scalar constants, which is seconds; every frame after it is milliseconds.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long the first tic the simulation runs may take, which is the
-/// statement being analysed. `NATIVE.md` sizes this for a CI runner, about
-/// four times slower than a development machine.
-const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How often the progress line comes out.
 const STATS_INTERVAL: Duration = Duration::from_secs(1);

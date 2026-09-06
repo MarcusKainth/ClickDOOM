@@ -50,9 +50,14 @@ pub const FRAMES_TABLE: &str = "native_frames";
 /// How long a paced run waits for one tic of a warm statement before it
 /// calls the statement dead. A tic's budget is 28.6 ms, so this is a wide
 /// margin over the slowest tic and not a target. The first tic of a session
-/// is not one of these: it pays for the statement's analysis, and a caller
-/// passes its own budget for that.
+/// is not one of these: it pays for the statement's analysis, and
+/// [`FIRST_TIC_TIMEOUT`] is the budget for that.
 pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the first tic a session runs may take, which is the simulation
+/// statement being analysed. Sized for a CI runner, about four times
+/// slower than a development machine.
+pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long a wait pauses between polls. The poll is a query round trip,
 /// which paces the loop on its own; this keeps a slow tic from turning into

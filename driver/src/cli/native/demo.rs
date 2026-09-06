@@ -467,9 +467,13 @@ async fn advance_to(
     tic: u32,
     run: &mut Run,
 ) -> Result<(), Stop> {
-    while highest.load(Ordering::Relaxed) < tic {
+    loop {
+        drain_ready(rx, run)?;
+        if highest.load(Ordering::Relaxed) >= tic {
+            return Ok(());
+        }
         match rx.recv().await {
-            Some(TicOutcome::Committed { elapsed, .. }) => {
+            Some(TicOutcome::Committed { elapsed }) => {
                 run.counters.tics += 1;
                 if let Some(sim) = &mut run.counters.sim {
                     *sim += elapsed;
@@ -483,7 +487,35 @@ async fn advance_to(
             }
         }
     }
-    Ok(())
+}
+
+/// Folds every tic the feeder has already committed into the run's
+/// counters, without waiting for one that has not arrived yet.
+///
+/// The feeder can run up to `--lookahead` tics ahead of what a frame
+/// needs, and each of those sits in the channel uncounted until something
+/// drains it: without this, `run.counters.tics` and the simulation time
+/// only catch up whenever a later frame happens to need a tic far enough
+/// ahead to drain past them, and the run's very last tics never get
+/// credited at all.
+fn drain_ready(rx: &mut mpsc::Receiver<TicOutcome>, run: &mut Run) -> Result<(), Stop> {
+    loop {
+        match rx.try_recv() {
+            Ok(TicOutcome::Committed { elapsed }) => {
+                run.counters.tics += 1;
+                if let Some(sim) = &mut run.counters.sim {
+                    *sim += elapsed;
+                }
+            }
+            Ok(TicOutcome::Stopped(stop)) => return Err(stop),
+            Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                return Err(Stop::Failed(
+                    "the simulation feeder ended without a result".to_owned(),
+                ));
+            }
+        }
+    }
 }
 
 /// The paced loop over the simulation's own output: a feeder runs the demo
@@ -625,6 +657,11 @@ async fn drawing_loop(
         frame += 1;
     }
 
+    // Whatever the feeder had already committed beyond what the last frame
+    // needed, so the closing line counts every tic it actually ran ahead
+    // to. A stop past the last frame this run asked for is not this run's
+    // to report.
+    let _ = drain_ready(rx, run);
     run.counters.late = pace.late();
     eprintln!("{}", stats.finish(run.counters));
     Ok(Played {

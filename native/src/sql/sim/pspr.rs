@@ -80,6 +80,15 @@ mod held {
     /// What the light routines have left, which the status bar and the
     /// renderer read as the flash's brightness.
     pub const EXTRALIGHT: usize = 15;
+    /// `player->refire`: how many tics running `A_ReFire` has fired again
+    /// on, read by `A_FirePistol` and `A_FireCGun` for their own accuracy.
+    /// Held here rather than read straight from the state row because a
+    /// tic that redirects from `A_ReFire` into one of them reads the
+    /// count `A_ReFire`'s own entry just left, not the tic's starting one.
+    pub const REFIRE: usize = 16;
+    /// Whether an entry ran `A_Punch`, which [`punch`] reads outside this
+    /// fold to know whether to run at all.
+    pub const PUNCHED: usize = 17;
 }
 
 /// The constants the sprites read: the weapon table and the action
@@ -101,6 +110,9 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         ("a_raise".to_owned(), action("A_Raise")),
         ("a_firepistol".to_owned(), action("A_FirePistol")),
         ("a_fireshotgun".to_owned(), action("A_FireShotgun")),
+        ("a_firecgun".to_owned(), action("A_FireCGun")),
+        ("a_refire".to_owned(), action("A_ReFire")),
+        ("a_punch".to_owned(), action("A_Punch")),
         ("a_light0".to_owned(), action("A_Light0")),
         ("a_light1".to_owned(), action("A_Light1")),
         ("a_light2".to_owned(), action("A_Light2")),
@@ -253,34 +265,71 @@ pub fn move_psprites(
             ammo = s("p_ammo")
         ),
     );
+    // `A_ReFire` fires again on its own, without `A_WeaponReady`'s change
+    // and missile/BFG checks: held trigger, no weapon change pending, and
+    // alive.
+    value(
+        "psp_refire_fires",
+        format!(
+            "toUInt8(psp_action = a_refire AND psp_attack_held = 1 \
+             AND {p} = {WP_NOCHANGE} AND {h} != 0)",
+            p = w(held::PENDINGWEAPON),
+            h = s("p_health")
+        ),
+    );
     value(
         "psp_fires",
-        "toUInt8(psp_ready_fires = 1 AND psp_has_ammo = 1)".to_owned(),
+        "toUInt8((psp_ready_fires = 1 OR psp_refire_fires = 1) AND psp_has_ammo = 1)".to_owned(),
     );
-    // `A_FireShotgun` sends seven shots down the barrel and `A_FirePistol`
-    // one, which goes where the weapon points unless the trigger was held.
-    // Both spend a round and put the flash sprite in the weapon's own
-    // flash frame.
+    // `A_FireShotgun` sends seven shots down the barrel, `A_FirePistol`
+    // one and `A_FireCGun` one, which go where the weapon points unless
+    // the trigger was held. Each spends a round and puts the flash sprite
+    // in the weapon's own flash frame, but the chaingun's own two firing
+    // frames share one action and only the first is behind `P_CheckAmmo`,
+    // so its second shot returns without any of that where the clip ran
+    // out in between.
+    value(
+        "psp_cgun_has_ammo",
+        format!(
+            "toUInt8({ammo}[1 + weapon_ammo[1 + {r}]] != 0)",
+            r = w(held::READYWEAPON),
+            ammo = s("p_ammo")
+        ),
+    );
     value(
         "psp_fires_shots",
-        "toUInt8(psp_action = a_fireshotgun OR psp_action = a_firepistol)".to_owned(),
+        "toUInt8(psp_action = a_fireshotgun OR psp_action = a_firepistol \
+         OR (psp_action = a_firecgun AND psp_cgun_has_ammo = 1))"
+            .to_owned(),
     );
     value(
         "psp_shot_count",
-        "toUInt32(multiIf(psp_action = a_fireshotgun, 7, psp_action = a_firepistol, 1, 0))"
+        "toUInt32(multiIf(psp_action = a_fireshotgun, 7, \
+         psp_action = a_firepistol OR psp_action = a_firecgun, 1, 0))"
             .to_owned(),
     );
     value(
         "psp_shot_accurate",
         format!(
-            "toUInt8(psp_action = a_firepistol AND {} = 0)",
-            s("p_refire")
+            "toUInt8((psp_action = a_firepistol OR psp_action = a_firecgun) AND {} = 0)",
+            w(held::REFIRE)
         ),
     );
+    // The pistol and the shotgun each fire from one state, one past their
+    // own `weapon_atkstate`, which carries no action of its own, so the
+    // flash they enter is `weapon_flashstate` outright. The chaingun's own
+    // atkstate carries `A_FireCGun` itself, and its second firing frame
+    // runs the same routine again, so the offset between whichever this
+    // entered and `weapon_atkstate` carries over to the flash frame the
+    // same way.
     value(
         "psp_flash_entered",
         format!(
-            "toInt32(if(psp_fires_shots = 1, weapon_flashstate[1 + {r}], {NO_STATE}))",
+            "toInt32(multiIf(\
+             psp_action = a_firecgun AND psp_cgun_has_ammo = 1, \
+             weapon_flashstate[1 + {r}] + (psp_entering - weapon_atkstate[1 + {r}]), \
+             psp_fires_shots = 1, weapon_flashstate[1 + {r}], \
+             {NO_STATE}))",
             r = w(held::READYWEAPON)
         ),
     );
@@ -338,8 +387,11 @@ pub fn move_psprites(
              (psp_action != 0 AND psp_action != a_weaponready \
              AND psp_action != a_lower AND psp_action != a_raise \
              AND psp_action != a_light0 AND psp_action != a_light1 \
-             AND psp_action != a_light2 AND psp_fires_shots = 0) \
-             OR (psp_ready_fires = 1 AND psp_has_ammo = 0) \
+             AND psp_action != a_light2 AND psp_action != a_refire \
+             AND psp_action != a_punch AND psp_action != a_firecgun \
+             AND psp_fires_shots = 0) \
+             OR ((psp_ready_fires = 1 OR psp_refire_fires = 1) AND psp_has_ammo = 0) \
+             OR (psp_action = a_refire AND psp_refire_fires = 0 AND psp_has_ammo = 0) \
              OR (psp_fires_shots = 1 AND (psp_flash_entered = 0 \
              OR (state_action[1 + psp_flash_entered] != a_light0 \
              AND state_action[1 + psp_flash_entered] != a_light1 \
@@ -424,6 +476,14 @@ pub fn move_psprites(
         light("psp_flash_entered", &w(held::EXTRALIGHT)),
         light("greatest(psp_entering, 0)", &w(held::EXTRALIGHT)),
     );
+    // `A_ReFire` counts up while it keeps firing and drops back to 0 the
+    // tic it does not, whether that is because the trigger let go or
+    // because it ran `P_CheckAmmo` instead.
+    let refire_now = format!(
+        "toInt32(if(psp_action = a_refire, if(psp_refire_fires = 1, {held} + 1, 0), {held}))",
+        held = w(held::REFIRE)
+    );
+    let punched_now = format!("toUInt8(if(psp_action = a_punch, 1, {}))", w(held::PUNCHED));
     let members = [
         put(w(held::STATE), &state_now),
         put(w(held::TICS), &tics_now),
@@ -440,6 +500,8 @@ pub fn move_psprites(
         accurate_now,
         flash_now,
         extralight_now,
+        refire_now,
+        punched_now,
     ];
     let body = format!("if(psp_runs = 0, psp_at, ({}))", members.join(", "));
 
@@ -454,13 +516,14 @@ pub fn move_psprites(
     let start = format!(
         "({}, {dropped}, {}, {}, toInt32({}), toInt32({pendingweapon}), toUInt8({}), \
          CAST([{NO_STATE}, {NO_STATE}], 'Array(Int32)'), toUInt8(0), toUInt8(0), toUInt8(0), \
-         toUInt32(0), toUInt8(0), toInt32({NO_STATE}), toInt32({}))",
+         toUInt32(0), toUInt8(0), toInt32({NO_STATE}), toInt32({}), toInt32({}), toUInt8(0))",
         s("psp_state"),
         s("psp_sx"),
         s("psp_sy"),
         s("p_readyweapon"),
         s("p_attackdown"),
         s("p_extralight"),
+        s("p_refire"),
     );
     // One step per entry each cycling sprite is given, in sprite order.
     // A sprite whose count did not run out contributes none, so a tic that
@@ -540,6 +603,14 @@ pub fn move_psprites(
         (
             "now_p_attackdown".to_owned(),
             format!("toUInt8({})", held(held::ATTACKDOWN)),
+        ),
+        (
+            "now_p_refire".to_owned(),
+            format!("toInt32({})", held(held::REFIRE)),
+        ),
+        (
+            "psp_punched".to_owned(),
+            format!("toUInt8({})", held(held::PUNCHED)),
         ),
         (
             "psp_unresolved".to_owned(),

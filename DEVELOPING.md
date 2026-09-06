@@ -116,6 +116,7 @@ from the WAD. Its contract is `NATIVE.md`; its commands live under
     make gen-probe-trace  # the reference emulator's per-frame game state for demo3, not committed
     make native-load      # decode the WAD into the native database, plus the probe trace when it exists
     make native-demo      # demo3 at 35 Hz in a window, from the probed states
+    make native-demo-sim  # demo3 at 35 Hz in a window, from the simulation's own commands
     make native-play      # the loaded level from the keyboard and mouse
     make native-parity    # every demo3 frame and tic against the reference emulator; exit 3 on the first that differs
 
@@ -123,8 +124,13 @@ The root `README.md` walks the commands from a fresh checkout. `native load` wri
 rest of the database alone, so it is safe against the shared `clickdoom`
 database. `--probe PATH` also loads the reference emulator's state rows, which
 is how the renderer is driven before the simulation is complete
-(`native demo demo3 --from probe`). `native diff` runs the simulation and
-reports the first tic and field on which it and the probe disagree.
+(`native demo demo3 --from probe`). `--from sim` instead opens the
+simulation statement and runs it from the demo lump's own commands, the way
+`native diff` does, and draws each frame from the tic the simulation just
+wrote; the screen melt still follows the reference run's own recorded
+schedule under `driver/melt/`, since the wipe's timing is not something a
+tic count derives. `native diff` runs the simulation and reports the first
+tic and field on which it and the probe disagree.
 
 A load against a database `native/schema.sql` already created empties every
 table's rows and leaves its columns as they were, because `CREATE TABLE IF

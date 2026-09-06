@@ -14,7 +14,12 @@
 //!   * `rgb32`, which is what reaches the screen, is the palette applied to
 //!     the framebuffer, laid out as the window wants it. The frame hash
 //!     covers `fb` and the palette and not `rgb32`, so nothing else would
-//!     notice those words packed the other way round.
+//!     notice those words packed the other way round;
+//!   * `--from sim` draws each frame from the tic
+//!     [`schedule::sim_tic`](clickdoom_driver::native::schedule::sim_tic)
+//!     says it should, `--expect-probe-fbhash` and `--hash-out` work the
+//!     same as they do over the probe, and a tic `native_state` refuses
+//!     stops the run at exit 3.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -202,5 +207,103 @@ async fn rgb32_is_the_word_the_window_blits() {
         );
     }
 
+    drop_database(&admin, &database).await;
+}
+
+/// `--from sim` runs the simulation itself rather than reading probed
+/// state, so what this covers is the frame-to-tic pairing
+/// [`schedule::sim_tic`] works out, and that a tic the simulation refuses
+/// stops the run the same way a probed one does.
+#[tokio::test]
+async fn a_sim_run_draws_frames_from_the_tics_it_commits() {
+    let database = format!("clickdoom_native_demo_sim_{}", std::process::id());
+    let out = std::env::temp_dir().join(&database);
+    let hashes = out.join("hashes.tsv");
+    std::fs::create_dir_all(&out).expect("a temporary directory");
+
+    let (code, printed) = clickdoom(&database, &["native", "load", "--fresh"]);
+    assert_eq!(code, 0, "{printed}");
+    let fixture = committed_fixture();
+    let (code, printed) = clickdoom(
+        &database,
+        &[
+            "native",
+            "load",
+            "--probe",
+            fixture.to_str().expect("a path"),
+        ],
+    );
+    assert_eq!(code, 0, "{printed}");
+
+    // Past the melt and a few tics into gameplay, short of wherever the
+    // simulation refuses today, with the probe loaded so
+    // --expect-probe-fbhash has something to check the drawn frames
+    // against.
+    let (code, printed) = clickdoom(
+        &database,
+        &[
+            "native",
+            "demo",
+            "demo3",
+            "--from",
+            "sim",
+            "--no-window",
+            "--stop-at-frame",
+            "41",
+            "--hash-out",
+            hashes.to_str().expect("a path"),
+            "--expect-probe-fbhash",
+        ],
+    );
+    assert_eq!(code, 0, "{printed}");
+
+    let admin = conn_args("default").connect();
+    let melt_frames: u64 = admin
+        .fetch_one(&format!("SELECT count() FROM {database}.melt_schedule"))
+        .await
+        .expect("the melt schedule loaded");
+
+    let written = std::fs::read_to_string(&hashes).expect("the hash file");
+    let mut lines = written.lines();
+    assert_eq!(lines.next(), Some("frame\ttic\tfb_hash"));
+    let rows: Vec<(u32, u32)> = lines
+        .map(|line| {
+            let mut columns = line.split('\t');
+            let frame: u32 = columns.next().expect("a frame").parse().expect("a number");
+            let tic: u32 = columns.next().expect("a tic").parse().expect("a number");
+            (frame, tic)
+        })
+        .collect();
+    assert_eq!(rows.len(), 42, "frames 0 through 41");
+    for (frame, tic) in rows {
+        assert_eq!(
+            tic,
+            schedule::sim_tic(frame, melt_frames as u32),
+            "frame {frame} drew from a tic other than sim_tic says it should"
+        );
+    }
+
+    // Comfortably past wherever the simulation refuses today: the run
+    // stops there rather than drawing on past it.
+    let (code, printed) = clickdoom(
+        &database,
+        &[
+            "native",
+            "demo",
+            "demo3",
+            "--from",
+            "sim",
+            "--no-window",
+            "--stop-at-frame",
+            "500",
+        ],
+    );
+    assert_eq!(code, 3, "{printed}");
+    assert!(
+        printed.contains("unresolved") || printed.contains("unimplemented"),
+        "{printed}"
+    );
+
+    std::fs::remove_dir_all(&out).ok();
     drop_database(&admin, &database).await;
 }

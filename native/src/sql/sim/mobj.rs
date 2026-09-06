@@ -491,6 +491,10 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         attacks::draws("mt_attacker_draws_asks", &draws_attacking, &draws_hurting),
     );
     bind(
+        "mt_attacker_unsure",
+        attacks::unsure("mt_attacker_draws_asks", &draws_attacking),
+    );
+    bind(
         "mt_attack_draws",
         "arrayMap(k -> toUInt32(if(indexOf(mt_attackers, k) = 0, 0, \
          mt_attacker_draws[indexOf(mt_attackers, k)])), mt_slots)"
@@ -724,7 +728,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
              OR arrayExists(c -> c.{} = 1, cw_chased) OR cw_crowded = 1 \
              OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1 \
-             OR tz_unrun = 1 OR at_unrun = 1)",
+             OR tz_unrun = 1 OR at_unrun = 1 \
+             OR arrayExists(u -> u = 1, mt_attacker_unsure))",
             s("unresolved"),
             cycled::STUCK,
             enemy::chased::STUCK

@@ -29,6 +29,10 @@ const DEBRIS_DRAWS: i64 = 4;
 /// `p_local.h`: the furthest a thing's edge reaches from the cell its
 /// origin sits in.
 const MAXRADIUS: i64 = 32 * FRACUNIT;
+/// `p_inter.c`: how far below the thing that hit it a target has to stand
+/// to be knocked over, and the most damage that can do it.
+const FALL_HEIGHT: i64 = 64 * FRACUNIT;
+const FALL_DAMAGE: i64 = 40;
 /// `p_enemy.c`: what `A_Explode` asks `P_RadiusAttack` for, and nothing
 /// else in the engine calls it.
 const BOMBDAMAGE: i64 = 128;
@@ -341,9 +345,9 @@ fn attacks(world: &Attacking<'_>) -> (Vec<(String, String)>, String) {
 /// not known until the roll runs; this reads the routine's own worst case
 /// instead, the same tic-start-only reading the blast's own count already
 /// makes of its target's health and flags. A troop's claw never reaches 40,
-/// so its count is exact; a demon's claw can, and a roll under the worst
-/// case that would have knocked its target down where the worst case does
-/// not is not counted here.
+/// so its count is exact; a demon's claw can, and [`unsure`] flags the ask
+/// where a lower roll could still trigger the fall-over draw this reading
+/// misses.
 pub fn draws(asks: &str, world: &Attacking<'_>, hurting: &inter::Hurting<'_>) -> String {
     let (values, body) = attack_draws(world, hurting);
     format!(
@@ -352,12 +356,25 @@ pub fn draws(asks: &str, world: &Attacking<'_>, hurting: &inter::Hurting<'_>) ->
     )
 }
 
-/// What one ask draws, as the values a body reads and the count it answers
-/// with.
-fn attack_draws(
-    world: &Attacking<'_>,
-    hurting: &inter::Hurting<'_>,
-) -> (Vec<(String, String)>, String) {
+/// Whether [`draws`]'s worst-case reading of one ask in `asks` could
+/// undercount it: a demon's claw connects, its target's health sits under
+/// the fall damage, and the height between them clears the fall check.
+///
+/// `P_DamageMobj` draws the extra fall-over number only where a real roll
+/// under the worst case still exceeds the target's health, and that roll
+/// is not known until it runs.
+pub fn unsure(asks: &str, world: &Attacking<'_>) -> String {
+    format!(
+        "arrayMap(ak_ask -> {}, {asks})",
+        bind::chain_in("akd", &attack_shape(world), "toUInt8(akd_unsure)")
+    )
+}
+
+/// What one ask's shape decides before any hurting-specific work runs:
+/// whether it draws at all, whether its claw reaches, and whether a real
+/// damage roll under [`draws`]'s worst-case reading could still knock its
+/// target down.
+fn attack_shape(world: &Attacking<'_>) -> Vec<(String, String)> {
     let a = |field: usize| format!("ak_ask.{field}");
     let at = |array: &str| format!("{array}[akd_slot]");
     let on = |array: &str| format!("{array}[akd_target]");
@@ -398,15 +415,34 @@ fn attack_draws(
             .to_owned(),
     );
     value(
-        "akd_claw_asks",
+        "akd_unsure",
+        format!(
+            "toUInt8(akd_near = 1 AND akd_routine = a_sargattack \
+             AND toInt32({}) < {FALL_DAMAGE} AND {} > {FALL_HEIGHT})",
+            on(world.m_health),
+            across(world.m_z),
+        ),
+    );
+    values
+}
+
+/// What one ask draws, as the values a body reads and the count it answers
+/// with.
+fn attack_draws(
+    world: &Attacking<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let mut values = attack_shape(world);
+    values.push((
+        "akd_claw_asks".to_owned(),
         "if(akd_near = 1, [(akd_target, akd_slot, akd_slot, akd_worst, toUInt32(0))], \
          CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32))))"
             .to_owned(),
-    );
-    value(
-        "akd_claw_draws",
+    ));
+    values.push((
+        "akd_claw_draws".to_owned(),
         format!("arraySum({})", inter::draws("akd_claw_asks", hurting)),
-    );
+    ));
     let body = "toUInt32(if(akd_runs = 0, 0, 2 * toUInt32(akd_fuzzy) + toUInt32(akd_near) \
                  + akd_claw_draws + if(akd_throws = 1, toUInt32(2 + 2 * toUInt32(akd_fuzzy)), \
                  toUInt32(0))))"
@@ -1049,6 +1085,27 @@ mod tests {
             "{sql}"
         );
         assert!(scream_draws("s").contains("a_scream_sounds"));
+    }
+
+    fn shaped(name: &str) -> String {
+        attack_shape(&world())
+            .into_iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, expr)| expr)
+            .unwrap_or_else(|| panic!("attack_shape names {name}"))
+    }
+
+    /// A demon's claw can roll under `draws`'s worst-case reading and
+    /// still clear `P_DamageMobj`'s fall-over check, so `unsure` flags a
+    /// connecting `A_SargAttack` whose target sits under the fall damage
+    /// and the fall height below it.
+    #[test]
+    fn a_demon_s_claw_under_the_worst_case_can_still_fall_its_target() {
+        let unsure = shaped("akd_unsure");
+        assert!(unsure.contains("akd_near = 1"), "{unsure}");
+        assert!(unsure.contains("akd_routine = a_sargattack"), "{unsure}");
+        assert!(unsure.contains(&FALL_DAMAGE.to_string()), "{unsure}");
+        assert!(unsure.contains(&FALL_HEIGHT.to_string()), "{unsure}");
     }
 
     fn blast() -> Blast<'static> {

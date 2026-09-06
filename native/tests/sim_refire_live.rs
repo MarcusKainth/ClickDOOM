@@ -197,7 +197,9 @@ async fn a_refire_counts_while_the_trigger_stays_down() {
 }
 
 /// `A_FirePistol`'s own accuracy: `!player->refire`, read from the count
-/// `A_ReFire`'s own entry left rather than from the tic's starting row.
+/// `A_ReFire`'s own entry left rather than from the tic's starting row. A
+/// third held shot spreads exactly as the second does and leaves the
+/// count where it found it, since only `A_ReFire` ever writes it.
 #[tokio::test]
 async fn a_held_pistols_second_shot_spreads() {
     let bytes = support::doom1();
@@ -214,10 +216,12 @@ async fn a_held_pistols_second_shot_spreads() {
     }
 
     // Seeded at `S_PISTOL1` so the tic advances into `S_PISTOL2`, where
-    // `A_FirePistol` itself runs; `p_refire` is the one field the two
-    // arms differ by.
+    // `A_FirePistol` itself runs; `p_refire` is the one field the arms
+    // differ by. The third arm is a second held shot in a row rather than
+    // the first: `A_FirePistol` never touches `player->refire` itself, so
+    // nothing here is expected to move it from 2.
     let mut statements: Vec<sql::Statement> = Vec::new();
-    for (refire, at) in [(0, 200), (1, 300)] {
+    for (refire, at) in [(0, 200), (1, 300), (2, 500)] {
         let overrides: Vec<(&str, String)> = vec![
             ("p_readyweapon", format!("toInt32({WP_PISTOL})")),
             ("p_pendingweapon", format!("toInt32({WP_NOCHANGE})")),
@@ -281,37 +285,55 @@ async fn a_held_pistols_second_shot_spreads() {
         unresolved: u64,
         next_seq: u32,
         mobj_count: u64,
+        refire: i32,
     }
     let rows: Vec<Fired> = fixture
         .rows(&format!(
             "SELECT psp_state, prndindex, unresolved, next_seq, \
-             length(m_state) AS mobj_count \
-             FROM {db}.native_state WHERE tic IN (201, 301) ORDER BY tic"
+             length(m_state) AS mobj_count, p_refire AS refire \
+             FROM {db}.native_state WHERE tic IN (201, 301, 501) ORDER BY tic"
         ))
         .await;
     fixture.finish().await;
 
-    assert_eq!(rows.len(), 2, "both arms ran");
+    assert_eq!(rows.len(), 3, "every arm ran");
     let accurate = &rows[0];
     let spread = &rows[1];
+    let third = &rows[2];
 
-    assert_eq!(accurate.psp_state[0], S_PISTOL2, "the first arm fired");
-    assert_eq!(spread.psp_state[0], S_PISTOL2, "the second arm fired too");
-    assert_eq!(accurate.unresolved, 0);
-    assert_eq!(spread.unresolved, 0);
-    // Both arms are seeded from the same row and fire at the same wall or
-    // thing, so whatever the shot itself reaches is identical between them;
-    // only the two extra numbers a spread angle draws tell the two apart.
+    for row in [accurate, spread, third] {
+        assert_eq!(row.psp_state[0], S_PISTOL2, "the shot fires");
+        assert_eq!(row.unresolved, 0);
+    }
+    // Every arm is seeded from the same row and fires at the same wall or
+    // thing, so whatever the shot itself reaches is identical between
+    // them; only the two extra numbers a spread angle draws tell an
+    // accurate shot from a spread one.
     assert_eq!(
         (accurate.next_seq, accurate.mobj_count),
         (spread.next_seq, spread.mobj_count),
-        "both arms fire the same shot into the same spot"
+        "every arm fires the same shot into the same spot"
+    );
+    assert_eq!(
+        (accurate.next_seq, accurate.mobj_count),
+        (third.next_seq, third.mobj_count),
+        "the third arm too"
     );
     assert_eq!(
         spread.prndindex.wrapping_sub(accurate.prndindex),
         2,
         "a held trigger's second shot spreads and draws the angle's own two numbers, \
          which an unheld trigger's first shot does not"
+    );
+    assert_eq!(
+        third.prndindex.wrapping_sub(accurate.prndindex),
+        2,
+        "a third shot in a row spreads exactly the same as the second does"
+    );
+    assert_eq!(
+        third.refire, 2,
+        "A_FirePistol never touches player->refire itself, so a third \
+         held shot leaves the count exactly where A_ReFire left it"
     );
 }
 

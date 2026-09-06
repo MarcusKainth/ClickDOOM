@@ -201,6 +201,11 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
             "line_side0".to_owned(),
             table_column(db, "lv_lines", "side0"),
         ),
+        ("line_tag".to_owned(), table_column(db, "lv_lines", "tag")),
+        (
+            "sec_tag".to_owned(),
+            table_column(db, "lv_sectors_static", "tag"),
+        ),
         ("state_tics".to_owned(), table_column(db, "states", "tics")),
         (
             "state_sprite".to_owned(),

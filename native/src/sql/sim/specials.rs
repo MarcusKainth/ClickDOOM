@@ -49,6 +49,58 @@ const THINKER_COLUMNS: [&str; 23] = [
     "s_activeceil_slot",
 ];
 
+/// `THINKER_COLUMNS`' element types, field for field, for the empty array
+/// a spawn with nothing to append casts itself to.
+const THINKER_TYPES: [&str; 23] = [
+    "UInt32", "UInt8", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
+    "Int32", "Int32", "UInt8", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
+    "UInt8", "Int32", "Int32",
+];
+
+/// `P_FindSectorFromLineTag`: every sector whose tag matches `tag`, in
+/// sector order, which is the order the engine's own linear scan finds
+/// them in.
+pub fn sectors_by_tag(tag: &str) -> String {
+    format!("arrayFilter(sec -> sec_tag[sec] = ({tag}), arrayEnumerate(sec_tag))")
+}
+
+/// One new thinker's fields, in `THINKER_COLUMNS`' order, as one tuple
+/// [`spawn_planes`] appends.
+pub fn new_plane(fields: &[String]) -> String {
+    format!("({})", fields.join(", "))
+}
+
+/// An array of [`new_plane`] tuples, for a caller spawning none this tic.
+pub fn no_planes() -> String {
+    format!("CAST([], 'Array(Tuple({}))')", THINKER_TYPES.join(", "))
+}
+
+/// Appends one row per tuple `rows` carries onto every column
+/// `THINKER_COLUMNS` names, in the order a new thinker occupies them.
+///
+/// `rows` is an array of [`new_plane`] tuples, one per sector an `EV_*`
+/// spawns a thinker for this tic; [`no_planes`] costs the concat nothing.
+/// `held` is the value each column carries before the append: `state.get`
+/// for every column but one a caller has already changed on its own, the
+/// way a use press turns an existing door's `s_direction` around instead
+/// of appending to it.
+fn spawn_planes(rows: &str, held: impl Fn(&str) -> String) -> Vec<(String, String)> {
+    THINKER_COLUMNS
+        .iter()
+        .enumerate()
+        .map(|(i, column)| {
+            (
+                format!("now_{column}"),
+                format!(
+                    "arrayConcat({}, arrayMap(t -> t.{}, {rows}))",
+                    held(column),
+                    i + 1
+                ),
+            )
+        })
+        .collect()
+}
+
 /// `P_UseSpecialLine` for the manual door specials, and the thinker it
 /// appends.
 ///
@@ -95,7 +147,7 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
         ),
     ];
     // The new thinker's fields, in the order `THINKER_COLUMNS` names them.
-    let appended: Vec<String> = vec![
+    let fields = [
         format!("toUInt32({})", s("next_seq")),
         format!("toUInt8({})", kind::DOOR),
         format!("toInt32(use_opened.{})", doors::opened::SECTOR),
@@ -120,24 +172,27 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
         "toInt32(0)".to_owned(),
         "toInt32(0)".to_owned(),
     ];
-    for (column, value) in THINKER_COLUMNS.iter().zip(&appended) {
-        let held = s(column);
-        // A press that turns an existing door around writes its direction
-        // rather than appending anything.
-        let held = if *column == "s_direction" {
-            format!(
-                "arrayMap((v, j) -> toInt32(if(use_reopens != 0 AND {}[j] = use_reopens, \
-                 if(v = -1, 1, -1), v)), {held}, arrayEnumerate({held}))",
-                s("s_seq")
-            )
+    let rows = format!(
+        "if(use_makes = 1, [{}], {})",
+        new_plane(&fields),
+        no_planes()
+    );
+    // A press that turns an existing door around writes its direction
+    // rather than appending to it.
+    let held_direction = format!(
+        "arrayMap((v, j) -> toInt32(if(use_reopens != 0 AND {}[j] = use_reopens, \
+         if(v = -1, 1, -1), v)), {}, arrayEnumerate({}))",
+        s("s_seq"),
+        s("s_direction"),
+        s("s_direction"),
+    );
+    bindings.extend(spawn_planes(&rows, |column| {
+        if column == "s_direction" {
+            held_direction.clone()
         } else {
-            held
-        };
-        bindings.push((
-            format!("now_{column}"),
-            format!("if(use_makes = 1, arrayPushBack({held}, {value}), {held})"),
-        ));
-    }
+            s(column)
+        }
+    }));
     bindings.extend([
         // `specialdata` names the thinker by its place on the list, which
         // is the slot the append just took.
@@ -709,6 +764,64 @@ mod tests {
             .find(|(name, _)| name == "planes")
             .map(|(_, expr)| expr)
             .expect("the pass is one binding")
+    }
+
+    #[test]
+    fn sectors_by_tag_filters_sec_tag_by_the_tag_given() {
+        let sql = sectors_by_tag("line_tag[1 + l]");
+        assert!(sql.contains("sec_tag[sec] = (line_tag[1 + l])"), "{sql}");
+        assert!(sql.contains("arrayEnumerate(sec_tag)"), "{sql}");
+    }
+
+    #[test]
+    fn no_planes_casts_to_an_array_of_one_tuple_per_thinker_column() {
+        let sql = no_planes();
+        assert!(sql.starts_with("CAST([], 'Array(Tuple("), "{sql}");
+        let types = sql
+            .trim_start_matches("CAST([], 'Array(Tuple(")
+            .trim_end_matches("))')")
+            .split(", ")
+            .count();
+        assert_eq!(types, THINKER_COLUMNS.len(), "{sql}");
+    }
+
+    #[test]
+    fn spawn_planes_concats_one_row_per_column_in_order() {
+        let rows = "my_rows";
+        let bindings = spawn_planes(rows, |column| format!("held_{column}"));
+        assert_eq!(bindings.len(), THINKER_COLUMNS.len());
+        for (i, (column, expr)) in bindings.iter().enumerate() {
+            assert_eq!(*column, format!("now_{}", THINKER_COLUMNS[i]));
+            assert_eq!(
+                *expr,
+                format!(
+                    "arrayConcat(held_{}, arrayMap(t -> t.{}, {rows}))",
+                    THINKER_COLUMNS[i],
+                    i + 1
+                )
+            );
+        }
+    }
+
+    /// A caller that has already changed one column's held value ahead of
+    /// the append, the way a use press turns a door's `s_direction`
+    /// around, reads back through the same override rather than the
+    /// column's own state.
+    #[test]
+    fn spawn_planes_reads_an_overridden_column_through_the_override() {
+        let bindings = spawn_planes("my_rows", |column| {
+            if column == "s_direction" {
+                "turned".to_owned()
+            } else {
+                format!("held_{column}")
+            }
+        });
+        let direction = bindings
+            .iter()
+            .find(|(name, _)| name == "now_s_direction")
+            .map(|(_, expr)| expr.clone())
+            .expect("s_direction is one of the columns");
+        assert!(direction.starts_with("arrayConcat(turned, "), "{direction}");
     }
 
     #[test]

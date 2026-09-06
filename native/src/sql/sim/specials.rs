@@ -57,11 +57,60 @@ const THINKER_TYPES: [&str; 23] = [
     "UInt8", "Int32", "Int32",
 ];
 
+/// `P_CrossSpecialLine`'s own switch (`p_spec.c`), every special it names,
+/// TRIGGERS and RETRIGGERS together. A crossed line whose special is not
+/// here does nothing, exactly as the switch falls through with no case
+/// for it. None of these run yet, so a crossing that reaches one leaves
+/// the tic unresolved rather than being guessed.
+pub const CROSSABLE_SPECIALS: [i64; 72] = [
+    2, 3, 4, 5, 6, 8, 10, 12, 13, 16, 17, 19, 22, 25, 30, 35, 36, 37, 38, 39, 40, 44, 52, 53, 54,
+    56, 57, 58, 59, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 93,
+    94, 95, 96, 97, 98, 100, 104, 105, 106, 107, 108, 109, 110, 119, 120, 121, 124, 125, 126, 128,
+    129, 130, 141,
+];
+
+/// `P_CrossSpecialLine`'s non-player allow-list (`p_spec.c`): the only
+/// specials a monster's crossing ever reaches the switch for at all.
+/// Every other special returns before the switch runs, whether or not the
+/// switch itself would have a case for it.
+pub const MONSTER_CROSSABLE_SPECIALS: [i64; 7] = [4, 10, 39, 88, 97, 125, 126];
+
 /// `P_FindSectorFromLineTag`: every sector whose tag matches `tag`, in
 /// sector order, which is the order the engine's own linear scan finds
 /// them in.
 pub fn sectors_by_tag(tag: &str) -> String {
     format!("arrayFilter(sec -> sec_tag[sec] = ({tag}), arrayEnumerate(sec_tag))")
+}
+
+/// `specials` as a SQL `IN` list.
+fn special_list(specials: &[i64]) -> String {
+    specials
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether a landed move crosses a line whose special `specials` names,
+/// by `P_TryMove`'s own test: the side flips between where the move
+/// started and where it lands. `spechit` is walked last-added first,
+/// matching `P_TryMove`'s `while (numspechit--)`.
+#[allow(clippy::too_many_arguments)]
+pub fn crosses_special(
+    old_x: &str,
+    old_y: &str,
+    new_x: &str,
+    new_y: &str,
+    spechit: &str,
+    line_special: &str,
+    specials: &[i64],
+) -> String {
+    format!(
+        "arrayExists(l -> {line_special}[1 + l] IN ({}) AND {} != {}, arrayReverse({spechit}))",
+        special_list(specials),
+        super::map::point_on_line_side(new_x, new_y, "l"),
+        super::map::point_on_line_side(old_x, old_y, "l"),
+    )
 }
 
 /// One new thinker's fields, in `THINKER_COLUMNS`' order, as one tuple
@@ -771,6 +820,64 @@ mod tests {
         let sql = sectors_by_tag("line_tag[1 + l]");
         assert!(sql.contains("sec_tag[sec] = (line_tag[1 + l])"), "{sql}");
         assert!(sql.contains("arrayEnumerate(sec_tag)"), "{sql}");
+    }
+
+    /// `CROSSABLE_SPECIALS` names no special twice; `p_spec.c`'s own
+    /// switch does not either, checked by reading `case N:` out of the
+    /// vendored source for `P_CrossSpecialLine`'s TRIGGERS and RETRIGGERS
+    /// blocks together (lines 549 to 960).
+    #[test]
+    fn every_crossable_special_is_named_once() {
+        let mut sorted = CROSSABLE_SPECIALS.to_vec();
+        sorted.sort_unstable();
+        let mut unique = sorted.clone();
+        unique.dedup();
+        assert_eq!(sorted.len(), unique.len());
+    }
+
+    /// 31 is `EV_VerticalDoor`'s manual "open" special, not one
+    /// `P_CrossSpecialLine`'s switch names anywhere (`p_spec.c`, both
+    /// blocks): a demo3 player who brushes a type-31 line's box without
+    /// truly crossing it, or a monster who does cross it, reaches no
+    /// case and does nothing, which is why this leaves neither list.
+    #[test]
+    fn a_manual_only_special_crosses_neither_list() {
+        assert!(!CROSSABLE_SPECIALS.contains(&31));
+        assert!(!MONSTER_CROSSABLE_SPECIALS.contains(&31));
+    }
+
+    /// 88 (PlatDownWaitUp, retriggerable) is the one special on both
+    /// lists: `P_CrossSpecialLine`'s own non-player pre-check names it
+    /// (`p_spec.c` lines 530-542) and its main switch's RETRIGGERS block
+    /// also has a case for it, so a monster reaches the same dispatch a
+    /// player does.
+    #[test]
+    fn the_monster_triggered_plat_is_on_both_lists() {
+        assert!(CROSSABLE_SPECIALS.contains(&88));
+        assert!(MONSTER_CROSSABLE_SPECIALS.contains(&88));
+    }
+
+    /// `p_spec.c`'s non-player pre-check (lines 530-542) names exactly
+    /// these seven: two teleport triggers, their monster-only pair, one
+    /// door and one plat, both by their WR/retrigger number.
+    #[test]
+    fn the_monster_allow_list_is_the_seven_p_spec_c_names() {
+        let mut sorted = MONSTER_CROSSABLE_SPECIALS;
+        sorted.sort_unstable();
+        assert_eq!(sorted, [4, 10, 39, 88, 97, 125, 126]);
+    }
+
+    /// Every special the monster allow-list names is also one
+    /// `P_CrossSpecialLine`'s main switch has a case for, since that is
+    /// the switch a monster reaches once the pre-check passes it through.
+    #[test]
+    fn the_monster_allow_list_is_a_subset_of_the_full_switch() {
+        for special in MONSTER_CROSSABLE_SPECIALS {
+            assert!(
+                CROSSABLE_SPECIALS.contains(&special),
+                "{special} is not one of P_CrossSpecialLine's own cases"
+            );
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, attacks, enemy, inter, maputl, missile, sight};
+use super::{State, attacks, enemy, inter, maputl, missile, sight, specials};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -1354,6 +1354,8 @@ pub mod moving {
     pub const SLIDEX: usize = 14;
     pub const SLIDEY: usize = 15;
     pub const USELINE: usize = 16;
+    /// 1 where a step's landed move listed a special line.
+    pub const CROSSED: usize = 17;
 }
 
 /// The thing whose momentum is being spent, as expressions.
@@ -1702,16 +1704,34 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
         );
     }
 
-    // `P_TryMove` runs `P_CrossSpecialLine` for the special lines a move
-    // that landed crossed, which a thrust can push a monster over. A move
-    // the walk refused crosses nothing, so only a part that landed counts.
+    // `P_TryMove` runs `P_CrossSpecialLine` for a special line a move that
+    // landed crosses, which a thrust can push a monster over. A move the
+    // walk refused crosses nothing, so only a part that landed counts.
+    // `P_CrossSpecialLine` returns before its switch for anything but its
+    // own non-player allow-list, so a monster's crossing never reaches a
+    // special that list does not name.
     bind(
         "tx_special",
         by_place(&format!(
-            "toUInt8((tx_ok_one[i] = 1 AND notEmpty(tx_one[i].{spechit})) \
-             OR (tx_ok_two[i] = 1 \
-             AND notEmpty(tx_two[greatest(tx_two_at[i], 1)].{spechit})))",
-            spechit = answer::SPECHIT,
+            "toUInt8((tx_ok_one[i] = 1 AND {cross_one}) OR (tx_ok_two[i] = 1 AND {cross_two}))",
+            cross_one = specials::crosses_special(
+                "tx_hold_x[i]",
+                "tx_hold_y[i]",
+                "tx_x_one[i]",
+                "tx_y_one[i]",
+                &format!("tx_one[i].{}", answer::SPECHIT),
+                world.line_special,
+                &specials::MONSTER_CROSSABLE_SPECIALS,
+            ),
+            cross_two = specials::crosses_special(
+                "tx_x_one[i]",
+                "tx_y_one[i]",
+                "tx_x[i]",
+                "tx_y[i]",
+                &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
+                world.line_special,
+                &specials::MONSTER_CROSSABLE_SPECIALS,
+            ),
         )),
     );
     bind(
@@ -2232,13 +2252,34 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
             held(moving::USELINE),
             r#use = at(phase::USE)
         ),
+        // `P_TryMove` walks `spechit` and calls `P_CrossSpecialLine` for a
+        // line whose side flips between the step's start point and the
+        // point it lands at; a line the move's box only brushed keeps its
+        // side. `P_CrossSpecialLine`'s own switch decides what runs; none
+        // of its specials run yet, so a step that crosses one it names
+        // keeps the mark rather than losing it to the step after it. A
+        // line the switch does not name is not marked at all, the same
+        // way the switch falls through it doing nothing.
+        format!(
+            "toUInt8({crossed} = 1 OR (st_ok = 1 AND {crosses}))",
+            crossed = held(moving::CROSSED),
+            crosses = specials::crosses_special(
+                &held(moving::X),
+                &held(moving::Y),
+                "st_tryx",
+                "st_tryy",
+                &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
+                world.line_special,
+                &specials::CROSSABLE_SPECIALS,
+            ),
+        ),
     ];
     let body = format!("({})", members.join(", "));
     let start = format!(
         "(toInt32({x}), toInt32({y}), {xmove}, {ymove}, \
          toInt64(multiIf({uses} = 1, {USE}, {momx} != 0 OR {momy} != 0, {STEP}, {DONE})), \
          toInt32({floorz}), toInt32({ceilingz}), toInt32({subsector}), toInt64(0), {pk}, {alive}, \
-         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1))",
+         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1), toUInt8(0))",
         USE = phase::USE,
         STEP = phase::STEP,
         DONE = phase::DONE,
@@ -2742,6 +2783,67 @@ mod tests {
     fn the_loop_is_one_fold() {
         let sql = xy_movement(&mover(), &world(), &pickups());
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
+    }
+
+    /// A line the move's box only brushed sits in `spechit` without being
+    /// crossed; only a line whose side flips between where the step
+    /// started and where it lands, and whose special
+    /// `P_CrossSpecialLine`'s own switch names, marks the move crossed.
+    /// `spechit` is walked last-added first, the way `P_TryMove`'s own
+    /// `while (numspechit--)` does.
+    #[test]
+    fn a_landed_move_marks_a_line_crossed_only_where_its_side_flips() {
+        let sql = xy_movement(&mover(), &world(), &pickups());
+        assert!(
+            sql.contains(&format!("toUInt8(move_at.{} = 1 OR (", moving::CROSSED)),
+            "{sql}"
+        );
+        assert!(sql.contains("AND arrayExists(l -> "), "{sql}");
+        assert!(sql.contains("arrayReverse(arrayFirst(a -> 1, "), "{sql}");
+        // The side test against the step's start point reads the
+        // accumulator directly, so it keeps its own name rather than one a
+        // chain gives it.
+        let old_side = map::point_on_line_side(
+            &format!("move_at.{}", moving::X),
+            &format!("move_at.{}", moving::Y),
+            "l",
+        );
+        assert!(sql.contains(&old_side), "{sql}");
+        assert!(sql.contains(&format!(").{}))))", answer::SPECHIT)), "{sql}");
+        // Only a line `P_CrossSpecialLine`'s own switch names can mark the
+        // move crossed; the reach test runs on top of that, not instead
+        // of it.
+        assert!(
+            sql.contains(&format!(
+                "w_special[1 + l] IN ({}",
+                specials::CROSSABLE_SPECIALS[0]
+            )),
+            "{sql}"
+        );
+    }
+
+    /// A monster only ever reaches `P_CrossSpecialLine`'s switch for its
+    /// own non-player allow-list, never the full switch a player's own
+    /// crossing checks.
+    #[test]
+    fn a_monster_s_landed_move_is_marked_crossed_only_for_the_non_player_allow_list() {
+        let bindings = thing_moves(&State::default(), &world(), "0");
+        let special = bindings
+            .iter()
+            .find(|(name, _)| name == "tx_special")
+            .map(|(_, expr)| expr.clone())
+            .expect("thing_moves names tx_special");
+        assert!(special.contains("arrayReverse("), "{special}");
+        let monster_list = specials::MONSTER_CROSSABLE_SPECIALS
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            special.matches(&format!("IN ({monster_list})")).count(),
+            2,
+            "one check per part of a split move: {special}"
+        );
     }
 
     #[test]

@@ -52,9 +52,7 @@ const NARROW: i64 = 65_536;
 
 /// Eight units under line 50, which runs level along `y` for two hundred
 /// and fifty units with the same floor and ceiling either side of it and
-/// nothing blocking. A thrust of those eight units lands the thing on the
-/// line itself, so its box straddles the line and `P_CheckPosition` counts
-/// the line as crossed.
+/// nothing blocking.
 const BELOW_A_LINE: (i64, i64) = (12_582_912, -1_048_576 - 8 * 65_536);
 
 /// `p_mobj.c`
@@ -74,12 +72,18 @@ const SPLIT_MOMX: i64 = -3;
 /// else reads it.
 const OVER_MOMY: i64 = MAXMOVE + 100_000;
 
-/// The thrust the crossing arms use, which is the distance from where the
-/// thing stands to the line.
-const CROSSING: i64 = 8 * 65536;
+/// The thrust the crossing arms use: the distance from where the thing
+/// stands to the line, plus one fixed-point unit. `P_TryMove` only calls
+/// `P_CrossSpecialLine` for a line whose side actually flips, so landing
+/// exactly on the line would not be a crossing. The extra unit has to
+/// stay well under the thing's own radius of one map unit, or its box
+/// clears the line instead of straddling it.
+const CROSSING: i64 = 8 * 65536 + 1;
 
-/// `p_spec.c`: what the seeded lines are given, which opens a door.
-const DOOR_OPEN: i64 = 2;
+/// `p_spec.c`: what the seeded lines are given. A WR plat
+/// (down-wait-up-stay), one of the specials a monster's own crossing can
+/// reach `P_CrossSpecialLine`'s switch for.
+const MONSTER_PLAT: i64 = 88;
 
 /// One arm per seeded row: its name and where the copy of `BEFORE` lands.
 /// The tics are far apart so the arms cannot read each other's rows.
@@ -183,7 +187,7 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             // putting a special where the thrust happens to go.
             overrides.push((
                 "line_special",
-                format!("arrayMap(v -> toInt16({DOOR_OPEN}), p.line_special)"),
+                format!("arrayMap(v -> toInt16({MONSTER_PLAT}), p.line_special)"),
             ));
         }
         statements.extend(

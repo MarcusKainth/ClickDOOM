@@ -1025,6 +1025,8 @@ pub mod moving {
     pub const SLIDEX: usize = 14;
     pub const SLIDEY: usize = 15;
     pub const USELINE: usize = 16;
+    /// 1 where a step's landed move listed a special line.
+    pub const CROSSED: usize = 17;
 }
 
 /// The thing whose momentum is being spent, as expressions.
@@ -1903,13 +1905,22 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
             held(moving::USELINE),
             r#use = at(phase::USE)
         ),
+        // `P_TryMove` runs `P_CrossSpecialLine` for every line a landed
+        // move lists in `spechit`; this does not run it yet, so a step
+        // that lists one keeps the mark rather than losing it to the step
+        // after it.
+        format!(
+            "toUInt8({} = 1 OR (st_ok = 1 AND notEmpty(arrayFirst(a -> 1, st_answers).{})))",
+            held(moving::CROSSED),
+            answer::SPECHIT
+        ),
     ];
     let body = format!("({})", members.join(", "));
     let start = format!(
         "(toInt32({x}), toInt32({y}), {xmove}, {ymove}, \
          toInt64(multiIf({uses} = 1, {USE}, {momx} != 0 OR {momy} != 0, {STEP}, {DONE})), \
          toInt32({floorz}), toInt32({ceilingz}), toInt32({subsector}), toInt64(0), {pk}, {alive}, \
-         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1))",
+         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1), toUInt8(0))",
         USE = phase::USE,
         STEP = phase::STEP,
         DONE = phase::DONE,
@@ -2369,6 +2380,20 @@ mod tests {
     fn the_loop_is_one_fold() {
         let sql = xy_movement(&mover(), &world(), &pickups());
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
+    }
+
+    /// `P_TryMove` runs `P_CrossSpecialLine` for every line a landed move
+    /// lists in `spechit`; this does not run it yet, so a step that lists
+    /// one keeps the mark rather than losing it to the step after it.
+    #[test]
+    fn a_landed_move_that_lists_a_special_line_marks_it_crossed() {
+        let sql = xy_movement(&mover(), &world(), &pickups());
+        assert!(
+            sql.contains(&format!("toUInt8(move_at.{} = 1 OR (", moving::CROSSED)),
+            "{sql}"
+        );
+        assert!(sql.contains("AND notEmpty(arrayFirst(a -> 1, "), "{sql}");
+        assert!(sql.contains(&format!(").{}))", answer::SPECHIT)), "{sql}");
     }
 
     #[test]

@@ -283,8 +283,9 @@ fn calc_height(state: &State) -> Vec<(String, String)> {
     ]
 }
 
-/// `P_PlayerInSpecialSector`: only the secret this level can reach, and
-/// the damaging floors it also carries.
+/// `P_PlayerInSpecialSector`: the secret this level can reach. A sector
+/// that damages the player (`pl_hurts`) leaves the tic unresolved rather
+/// than running `P_DamageMobj` for it.
 fn special_sector(state: &State) -> Vec<(String, String)> {
     let sector = "1 + ssec_sector[1 + pl_subsector]";
     let special = format!("{}[{sector}]", state.get("sec_special"));
@@ -576,6 +577,7 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         ("mv_leftx".to_owned(), held(mobj::moving::MOMX)),
         ("mv_lefty".to_owned(), held(mobj::moving::MOMY)),
         ("pk_alive".to_owned(), held(mobj::moving::ALIVE)),
+        ("px_crossed".to_owned(), held(mobj::moving::CROSSED)),
     ];
     bindings.extend(mobj::friction(
         "mv_leftx",
@@ -752,7 +754,9 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         // Every thing the shots added took one of each counter.
         (
             "now_unresolved".to_owned(),
-            "toUInt8(use_unresolved = 1 OR gs_unresolved = 1)".to_owned(),
+            "toUInt8(use_unresolved = 1 OR gs_unresolved = 1 \
+             OR px_crossed = 1 OR pl_hurts = 1)"
+                .to_owned(),
         ),
         (
             "now_next_seq".to_owned(),
@@ -860,6 +864,21 @@ mod tests {
             assert!(named.contains(&column), "{column}");
         }
         assert!(named.contains(&"now_unresolved"));
+    }
+
+    /// A move that lists a special line, or a sector that damages the
+    /// player, leaves the tic unresolved rather than being run or
+    /// silently dropped.
+    #[test]
+    fn a_crossed_line_or_a_damaging_sector_leaves_the_tic_unresolved() {
+        let bindings = think(&State::default());
+        let expr = bindings
+            .iter()
+            .find(|(name, _)| name == "now_unresolved")
+            .map(|(_, expr)| expr.clone())
+            .expect("the stage writes now_unresolved");
+        assert!(expr.contains("px_crossed = 1"), "{expr}");
+        assert!(expr.contains("pl_hurts = 1"), "{expr}");
     }
 
     #[test]

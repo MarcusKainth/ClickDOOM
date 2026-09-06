@@ -831,9 +831,12 @@ fn strikes(state: &State) -> Vec<(String, String)> {
     let world = attacks::Attacking {
         m_x: &s("m_x"),
         m_y: &s("m_y"),
+        m_z: "mk_m_z",
         m_angle: "cq_m_angle",
+        m_height: &s("m_height"),
         m_flags: "cq_m_flags",
         m_type: &s("m_type"),
+        m_health: &s("m_health"),
         m_target: "mk_m_target",
         prndindex: &s("prndindex"),
     };

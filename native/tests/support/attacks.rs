@@ -277,3 +277,98 @@ impl Blasting<'_> {
         (asks, drawn)
     }
 }
+
+// ---------------------------------------------------------------------------
+// A_PosAttack and A_SPosAttack
+// ---------------------------------------------------------------------------
+
+/// `p_enemy.c`: what the fuzz a shot's own angle takes is shifted by.
+const SPREAD_SHIFT: u32 = 20;
+/// `p_mobj.c`: how many numbers a puff or a blood spot draws.
+const DEBRIS_DRAWS: i64 = 4;
+
+/// What the reader takes off the answer rather than working out: the walk
+/// and the damage are what their own suites check.
+pub struct Answered<'a> {
+    /// What each shot reached, 0 nothing.
+    pub kinds: &'a [i64],
+    /// How many numbers each shot's damage call drew.
+    pub hurt: &'a [i64],
+    /// The slope the one `P_AimLineAttack` found.
+    pub slope: i32,
+}
+
+/// What one `A_PosAttack` or `A_SPosAttack` leaves.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Gunned {
+    pub angle: i64,
+    pub flags: i64,
+    /// The slope the one `P_AimLineAttack` found, which the reader takes
+    /// off the answer rather than working out.
+    pub slope: i32,
+    pub damage: Vec<i64>,
+    pub spawn_base: Vec<i64>,
+    pub hurt_base: Vec<i64>,
+    pub draws: i64,
+}
+
+impl World {
+    /// `A_PosAttack` for one shot and `A_SPosAttack` for three.
+    ///
+    /// `kinds` says what each shot reached, 0 nothing, and `hurt` how many
+    /// numbers each shot's damage call drew. Both are read off the answer,
+    /// because `P_LineAttack`'s walk and `P_DamageMobj` are what their own
+    /// suites check; what this follows is `A_FaceTarget`, the spread, the
+    /// damage roll and the order the three run in.
+    pub fn gunshot(&self, slot: usize, shots: usize, base: i64, from: &Answered) -> Gunned {
+        let (kinds, hurt) = (from.kinds, from.hurt);
+        let it = &self.fighters[slot - 1];
+        let mut answer = Gunned {
+            angle: it.angle,
+            flags: it.flags,
+            slope: from.slope,
+            damage: Vec::new(),
+            spawn_base: Vec::new(),
+            hurt_base: Vec::new(),
+            draws: 0,
+        };
+        if it.target == 0 {
+            return answer;
+        }
+        let at = &self.fighters[it.target - 1];
+
+        // `A_FaceTarget`.
+        answer.flags = it.flags & !MF_AMBUSH;
+        let mut angle = point_to_angle(at.x - it.x, at.y - it.y);
+        if at.flags & MF_SHADOW != 0 {
+            angle += (self.draw(base, 1) - self.draw(base, 2)) << FACE_SHIFT;
+            answer.draws += 2;
+        }
+        answer.angle = angle.rem_euclid(ANGLE_WRAP);
+
+        // `P_AimLineAttack` draws nothing, so the first shot's numbers sit
+        // right behind the face's.
+        for shot in 0..shots {
+            let drawn = answer.draws;
+            let _spread = (self.draw(base, drawn + 1) - self.draw(base, drawn + 2)) << SPREAD_SHIFT;
+            answer.damage.push((self.draw(base, drawn + 3) % 5 + 1) * 3);
+            answer.spawn_base.push(drawn + 3);
+            let spawn = if kinds[shot] == 0 { 0 } else { DEBRIS_DRAWS };
+            answer.hurt_base.push(drawn + 3 + spawn);
+            answer.draws = drawn + 3 + spawn + hurt[shot];
+        }
+        answer
+    }
+
+    /// The angle one shot leaves at, which the answer does not carry.
+    pub fn shot_angle(&self, slot: usize, base: i64, drawn: i64) -> i64 {
+        let it = &self.fighters[slot - 1];
+        let at = &self.fighters[it.target - 1];
+        let mut angle = point_to_angle(at.x - it.x, at.y - it.y);
+        if at.flags & MF_SHADOW != 0 {
+            angle += (self.draw(base, 1) - self.draw(base, 2)) << FACE_SHIFT;
+        }
+        let spread = (self.draw(base, drawn + 1) - self.draw(base, drawn + 2)) << SPREAD_SHIFT;
+        (angle + spread).rem_euclid(ANGLE_WRAP)
+    }
+}

@@ -79,6 +79,11 @@ pub mod reached {
     pub const WIDTH: usize = 8;
 }
 
+/// The ClickHouse type of a [`reached`] answer, for a caller that carries
+/// a list of them through a fold.
+pub const REACHED_TYPE: &str =
+    "Tuple(Int32, Int32, UInt8, Int32, Int32, Int32, Int32, Array(Int32))";
+
 /// One aim, as the tuple [`traverse`] reads. An aim works its own slope
 /// out, so the one it carries is never read.
 pub fn asking(
@@ -633,6 +638,12 @@ mod tests {
             ceilingheight: "ceilingheight",
             line_special: "line_special",
         }
+    }
+
+    /// The declared type lists one member per field the answer keeps.
+    #[test]
+    fn the_answer_type_has_one_member_per_field() {
+        assert_eq!(REACHED_TYPE.matches(", ").count() + 1, reached::WIDTH);
     }
 
     /// One walk serves an aim and a shot, so the blockmap walk, the

@@ -270,13 +270,20 @@ async fn ask_with(
     let (m_x, m_y, m_angle) = (of(&|f| f.x), of(&|f| f.y), of(&|f| f.angle));
     let (m_flags, m_type) = (of(&|f| f.flags), of(&|f| f.kind));
     let m_target = of(&|f| f.target as i64);
+    // The claw reads none of these; the gunshot beside it does.
+    let m_z = of(&|_| 0);
+    let m_height = of(&|_| 56 * FRACUNIT);
+    let m_health = of(&|_| 100);
     let prndindex = prnd.to_string();
     let world = attacks::Attacking {
         m_x: &m_x,
         m_y: &m_y,
+        m_z: &m_z,
         m_angle: &m_angle,
+        m_height: &m_height,
         m_flags: &m_flags,
         m_type: &m_type,
+        m_health: &m_health,
         m_target: &m_target,
         prndindex: &prndindex,
     };

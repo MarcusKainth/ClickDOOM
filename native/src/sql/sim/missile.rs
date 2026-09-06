@@ -6,7 +6,7 @@
 //! sets it off where that step is refused.
 
 use super::map::{self, World, answer};
-use super::{maputl, mobj};
+use super::{inter, maputl, mobj};
 use crate::sql::Statement;
 use crate::sql::{bind, fixed};
 
@@ -27,6 +27,26 @@ const MF_SHOOTABLE: i64 = 4;
 const MF_NOCLIP: i64 = 0x1000;
 const MF_MISSILE: i64 = 0x1_0000;
 const MF_SHADOW: i64 = 0x4_0000;
+const MF_NOGRAVITY: i64 = 0x200;
+const MF_FLOAT: i64 = 0x4000;
+const MF_DROPOFF: i64 = 0x400;
+const MF_SKULLFLY: i64 = 0x100_0000;
+/// `p_mobj.c`: the fastest one step carries, when the move is split.
+const MAXMOVE: i64 = 30 << 16;
+/// `p_map.c`: how far a thing steps up, and how far it stands over a
+/// dropoff.
+const MAXSTEP: i64 = 24 << 16;
+/// `p_spec.c`: `P_CrossSpecialLine` returns at once for a non-player thing
+/// of one of these types, so a special line the tic's own thrown missile
+/// crosses is a no-op for it and unresolved for anything else.
+const NO_SPECIAL: [&str; 6] = [
+    "MT_ROCKET",
+    "MT_PLASMA",
+    "MT_BFG",
+    "MT_TROOPSHOT",
+    "MT_HEADSHOT",
+    "MT_BRUISERSHOT",
+];
 
 /// Where each field of a missile ask sits in its tuple.
 pub mod throwing {
@@ -456,12 +476,25 @@ pub fn born_column(column: &str, spawn: &str) -> Option<String> {
 const SPECIES: [&str; 3] = ["MT_KNIGHT", "MT_BRUISER", "MT_PLAYER"];
 
 /// The engine tables a missile in flight reads that no other stage does.
+///
+/// `MT_TROOPSHOT` is not here: `mobj::constants` already binds it, and a
+/// name bound twice in one `WITH` list is one whose value depends on which
+/// binding the server keeps.
 pub fn constants(db: &str) -> Vec<(String, String)> {
     let mut constants = vec![(
         "mobj_damage".to_owned(),
         super::table_column(db, "mobjinfo", "damage"),
     )];
     for name in SPECIES {
+        constants.push((
+            name.to_lowercase(),
+            format!("assumeNotNull((SELECT toInt32(id) FROM {db}.mobjtype WHERE name = '{name}'))"),
+        ));
+    }
+    for name in NO_SPECIAL {
+        if name == "MT_TROOPSHOT" {
+            continue;
+        }
         constants.push((
             name.to_lowercase(),
             format!("assumeNotNull((SELECT toInt32(id) FROM {db}.mobjtype WHERE name = '{name}'))"),
@@ -508,6 +541,12 @@ pub struct Flying<'a> {
     pub m_tics: &'a str,
     pub m_flags: &'a str,
     pub m_target: &'a str,
+    pub m_momx: &'a str,
+    pub m_momy: &'a str,
+    pub m_momz: &'a str,
+    pub m_floorz: &'a str,
+    pub m_ceilingz: &'a str,
+    pub m_subsector: &'a str,
     pub prndindex: &'a str,
 }
 
@@ -526,6 +565,29 @@ pub fn explode(asks: &str, world: &Flying<'_>) -> String {
     format!(
         "arrayMap(ex_ask -> {}, {asks})",
         bind::chain_in("exa", &values, &body)
+    )
+}
+
+/// A call nobody made, for a caller that folds over a list that carries at
+/// most one.
+pub fn no_stopped() -> String {
+    "(toInt32(0), toInt32(0), toInt32(0), toUInt8(0), toUInt32(0), toUInt8(0))".to_owned()
+}
+
+/// [`explode`] over an ask list that carries at most one, folded rather
+/// than mapped.
+///
+/// A map runs every function in its body once even on an empty list, and
+/// this body is the whole routine. A fold runs its body only where the list
+/// has an element, so a caller with nothing to explode pays for the fold
+/// and nothing under it. The answer is the last ask in the list, and
+/// [`no_stopped`] is what an empty one gives.
+pub fn explode_fold(asks: &str, world: &Flying<'_>) -> String {
+    let (values, body) = exploded(world);
+    format!(
+        "arrayFold((ex_held, ex_ask) -> {}, {asks}, {})",
+        bind::chain_in("exa", &values, &body),
+        no_stopped(),
     )
 }
 
@@ -622,6 +684,29 @@ pub fn impact(asks: &str, world: &Flying<'_>) -> String {
     )
 }
 
+/// A call nobody made, for a caller that folds over a list that carries at
+/// most one.
+pub fn no_struck() -> String {
+    "(toUInt32(0), toUInt8(0), toInt32(0), toUInt32(0))".to_owned()
+}
+
+/// [`impact`] over an ask list that carries at most one, folded rather than
+/// mapped.
+///
+/// A map runs every function in its body once even on an empty list, and
+/// this body is the whole routine. A fold runs its body only where the list
+/// has an element, so a caller with nothing to hit pays for the fold and
+/// nothing under it. The answer is the last ask in the list, and
+/// [`no_struck`] is what an empty one gives.
+pub fn impact_fold(asks: &str, world: &Flying<'_>) -> String {
+    let (values, body) = strikes(world);
+    format!(
+        "arrayFold((st_held, st_ask) -> {}, {asks}, {})",
+        bind::chain_in("sta", &values, &body),
+        no_struck(),
+    )
+}
+
 /// What one impact works out, as the values a body reads and the
 /// [`struck`] tuple it answers with.
 fn strikes(world: &Flying<'_>) -> (Vec<(String, String)>, String) {
@@ -712,6 +797,561 @@ pub fn damage_ask(struck: &str, slot: &str, m_target: &str, base: &str) -> Strin
         damage = struck::DAMAGE,
         draws = struck::DRAWS,
     )
+}
+
+// ---------------------------------------------------------------------------
+// P_MobjThinker
+// ---------------------------------------------------------------------------
+
+/// Where each field of a `thinks` ask sits in its tuple.
+pub mod thinking {
+    /// The slot to run `P_MobjThinker` for.
+    pub const SLOT: usize = 1;
+    /// How many numbers the tic drew before this call's own.
+    pub const BASE: usize = 2;
+}
+
+/// Where each field of a `thinks` answer sits in its tuple.
+pub mod thought {
+    pub const X: usize = 1;
+    pub const Y: usize = 2;
+    pub const Z: usize = 3;
+    pub const FLOORZ: usize = 4;
+    pub const CEILINGZ: usize = 5;
+    pub const SUBSECTOR: usize = 6;
+    pub const MOMX: usize = 7;
+    pub const MOMY: usize = 8;
+    pub const MOMZ: usize = 9;
+    pub const STATE: usize = 10;
+    pub const TICS: usize = 11;
+    pub const FLAGS: usize = 12;
+    /// The slot `PIT_CheckThing`'s missile branch damaged, 0 for none.
+    pub const HURT_TARGET: usize = 13;
+    /// What `P_DamageMobj` leaves the slot above with, read where it is
+    /// not 0.
+    pub const HURT: usize = 14;
+    /// How many numbers the call drew.
+    pub const DRAWS: usize = 15;
+    /// 1 where the call reached a path this does not write.
+    pub const STUCK: usize = 16;
+}
+
+/// `P_XYMovement` clamps each axis to `MAXMOVE` before it starts.
+fn clamp(mom: &str) -> String {
+    format!("toInt32(least(greatest(toInt64({mom}), -{MAXMOVE}), {MAXMOVE}))")
+}
+
+/// The ClickHouse type of a [`thought`] tuple, for a caller that carries a
+/// list of them through a fold.
+pub const THOUGHT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
+                                Int32, Int32, Int32, Int32, UInt32, Tuple(Int32, Int32, Int32, \
+                                Int32, Int32, Int32, Int32, Int32, Int32, UInt32, Int32, UInt8, \
+                                UInt8, Int32, UInt32, UInt8), UInt32, UInt8)";
+
+/// The mobj arrays a missile already on the list reads for its own move,
+/// its own fall and its own state cycle, plus what a thing it damages
+/// reads. `slot` names which mobj in these `flying` and `hurting` reads
+/// the missile itself, over the same arrays a caller driving anything
+/// else's move already holds.
+pub fn thinks_fold(
+    asks: &str,
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> String {
+    let (values, body) = thought_of(map, flying, hurting);
+    format!(
+        "arrayFold((tk_held, tk_ask) -> arrayPushBack(tk_held, {}), {asks}, \
+         CAST([] AS Array({THOUGHT_TYPE})))",
+        bind::chain_in("tka", &values, &body)
+    )
+}
+
+/// What one thing's `P_MobjThinker` works out, as the values a body reads
+/// and the [`thought`] tuple it answers with.
+///
+/// `P_XYMovement` moves the thing where its momentum carries it and, on a
+/// blocked move, sets it off unless a sky hack takes it instead.
+/// `P_ZMovement` clips the height the same way, run whether or not the XY
+/// step already exploded it, because `P_MobjThinker` runs it whenever the
+/// thing stands off its floor or carries momentum on it, and momentum a
+/// blocked XY step zeroed still leaves `z != floorz` where the throw put it
+/// above ground. The state cycle runs last and unconditionally, so a
+/// missile the XY step just set off has its fresh death-frame tics
+/// decremented again the same tic.
+fn thought_of(
+    map: &World<'_>,
+    flying: &Flying<'_>,
+    hurting: &inter::Hurting<'_>,
+) -> (Vec<(String, String)>, String) {
+    let a = |field: usize| format!("tk_ask.{field}");
+    let at = |array: &str| format!("{array}[mn_slot]");
+    let info = |table: &str| format!("{table}[1 + mn_type]");
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    value("mn_slot", format!("toUInt32({})", a(thinking::SLOT)));
+    value("mn_base", format!("toUInt32({})", a(thinking::BASE)));
+    value("mn_type", format!("toInt32({})", at(flying.m_type)));
+    value("mn_x0", format!("toInt64({})", at(map.m_x)));
+    value("mn_y0", format!("toInt64({})", at(map.m_y)));
+    value("mn_z0", format!("toInt64({})", at(flying.m_z)));
+    value("mn_flags0", format!("toInt32({})", at(flying.m_flags)));
+    value("mn_momx0", format!("toInt64({})", at(flying.m_momx)));
+    value("mn_momy0", format!("toInt64({})", at(flying.m_momy)));
+    value("mn_momz0", format!("toInt64({})", at(flying.m_momz)));
+    value("mn_state0", format!("toInt32({})", at(flying.m_state)));
+    value("mn_tics0", format!("toInt32({})", at(flying.m_tics)));
+    value(
+        "mn_subsector0",
+        format!("toInt32({})", at(flying.m_subsector)),
+    );
+    value("mn_floorz0", format!("toInt64({})", at(flying.m_floorz)));
+    value(
+        "mn_ceilingz0",
+        format!("toInt64({})", at(flying.m_ceilingz)),
+    );
+
+    // A thing this does not model: floating towards its target, a charging
+    // skull, or one gravity pulls on. Every missile type the tree ships
+    // carries `MF_NOGRAVITY`, so `P_ZMovement`'s gravity branch is not
+    // written here.
+    value(
+        "mn_guard",
+        format!(
+            "toUInt8(bitAnd(mn_flags0, {}) != 0 OR bitAnd(mn_flags0, {}) = 0)",
+            MF_FLOAT | MF_SKULLFLY,
+            MF_NOGRAVITY,
+        ),
+    );
+
+    // P_XYMovement. MF_SKULLFLY is guarded above, so the early return is
+    // just nothing to spend.
+    value(
+        "mn_moving",
+        "toUInt8(mn_momx0 != 0 OR mn_momy0 != 0)".to_owned(),
+    );
+    value("mn_cx", clamp("mn_momx0"));
+    value("mn_cy", clamp("mn_momy0"));
+    // The engine spends a clamped move in at most two parts when either
+    // axis is over half of MAXMOVE, and a blocked first part can still
+    // spend the second against the corpse it just turned the mobj into.
+    // A fresh missile's own first move is refused rather than walked to
+    // that second call.
+    value(
+        "mn_split",
+        format!(
+            "toUInt8(mn_cx > {half} OR mn_cy > {half})",
+            half = MAXMOVE / 2
+        ),
+    );
+    value(
+        "mn_ran",
+        "toUInt8(mn_moving = 1 AND mn_split = 0)".to_owned(),
+    );
+    value("mn_ptryx", "mn_x0 + toInt64(mn_cx)".to_owned());
+    value("mn_ptryy", "mn_y0 + toInt64(mn_cy)".to_owned());
+    value(
+        "mn_xy_asks",
+        format!(
+            "if(mn_ran = 1, [{}], CAST([] AS Array(Tuple(UInt32, Int32, Int32, Int32, Int32, \
+             Int32, Int32, UInt8))))",
+            map::asking(
+                "mn_slot",
+                "mn_ptryx",
+                "mn_ptryy",
+                &info("mobj_radius"),
+                &info("mobj_height"),
+                "mn_z0",
+                "toInt32(mn_flags0)",
+                "0",
+            )
+        ),
+    );
+    value(
+        "mn_xy_try",
+        format!("{}[1]", map::try_moves("mn_xy_asks", map)),
+    );
+    // P_CheckPosition's own geometry test, recomputed from the primitive's
+    // floor, ceiling and dropoff: a missile's blocking decision is not the
+    // primitive's generic solid test, so `answer::OK` is not read here.
+    value(
+        "mn_fits",
+        format!(
+            "toUInt8(mn_ran = 1 \
+             AND toInt64(mn_xy_try.{ceil}) - toInt64(mn_xy_try.{floor}) >= toInt64({height}) \
+             AND toInt64(mn_xy_try.{ceil}) - mn_z0 >= toInt64({height}) \
+             AND toInt64(mn_xy_try.{floor}) - mn_z0 <= {maxstep} \
+             AND (bitAnd(mn_flags0, {dropoff}) != 0 \
+             OR toInt64(mn_xy_try.{floor}) - toInt64(mn_xy_try.{dropoffz}) <= {maxstep}))",
+            ceil = answer::CEILINGZ,
+            floor = answer::FLOORZ,
+            dropoffz = answer::DROPOFFZ,
+            height = info("mobj_height"),
+            dropoff = MF_DROPOFF,
+            maxstep = MAXSTEP,
+        ),
+    );
+    value(
+        "mn_xy_touch_asks",
+        format!(
+            "if(mn_ran = 1, [(mn_slot, mn_xy_try.{touched}, mn_base)], \
+             CAST([] AS Array(Tuple(UInt32, Array(UInt32), UInt32))))",
+            touched = answer::TOUCHED,
+        ),
+    );
+    value("mn_hit", impact_fold("mn_xy_touch_asks", flying));
+    value(
+        "mn_damage_asks",
+        format!(
+            "if(mn_hit.{damage} != 0, [{}], \
+             CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32))))",
+            damage_ask("mn_hit", "mn_slot", hurting.m_target, "mn_base"),
+            damage = struck::DAMAGE,
+        ),
+    );
+    value("mn_hurt", inter::damage_fold("mn_damage_asks", hurting));
+    value(
+        "mn_hurt_target",
+        format!(
+            "toUInt32(if(mn_hit.{damage} != 0, mn_hit.{hit}, 0))",
+            damage = struck::DAMAGE,
+            hit = struck::HIT,
+        ),
+    );
+    value(
+        "mn_xy_blocked",
+        format!(
+            "toUInt8(mn_ran = 1 AND (mn_fits = 0 OR mn_xy_try.{line} = 1 OR mn_hit.{blocked} = 1))",
+            line = answer::LINE_BLOCKED,
+            blocked = struck::BLOCKED,
+        ),
+    );
+    // A special line the move crosses is `P_CrossSpecialLine`'s to run,
+    // which is a no-op for the types in `NO_SPECIAL` and unresolved for
+    // anything else this throws.
+    value(
+        "mn_crossed",
+        format!(
+            "toUInt8(mn_ran = 1 AND mn_xy_blocked = 0 AND notEmpty(mn_xy_try.{spechit}))",
+            spechit = answer::SPECHIT,
+        ),
+    );
+    value(
+        "mn_crossed_ok",
+        format!(
+            "toUInt8({})",
+            NO_SPECIAL
+                .iter()
+                .map(|name| format!("mn_type = {}", name.to_lowercase()))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        ),
+    );
+    value(
+        "mn_xy_explode_asks",
+        format!(
+            "if(mn_xy_blocked = 1, [(mn_slot, mn_xy_try.{ceilingline}, \
+             mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws})], \
+             CAST([] AS Array(Tuple(UInt32, Int32, UInt32))))",
+            ceilingline = answer::CEILINGLINE,
+            hit_draws = struck::DRAWS,
+            hurt_draws = inter::hurt::DRAWS,
+        ),
+    );
+    value("mn_xy_exploded", explode_fold("mn_xy_explode_asks", flying));
+    value(
+        "mn_after_xy_removed",
+        format!(
+            "toUInt8(mn_xy_blocked = 1 AND mn_xy_exploded.{removed} = 1)",
+            removed = stopped::REMOVED,
+        ),
+    );
+    value(
+        "mn_landed",
+        "toUInt8(mn_ran = 1 AND mn_xy_blocked = 0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_x",
+        "if(mn_landed = 1, mn_ptryx, mn_x0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_y",
+        "if(mn_landed = 1, mn_ptryy, mn_y0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_floorz",
+        format!(
+            "if(mn_landed = 1, toInt64(mn_xy_try.{floorz}), mn_floorz0)",
+            floorz = answer::FLOORZ,
+        ),
+    );
+    value(
+        "mn_after_xy_ceilingz",
+        format!(
+            "if(mn_landed = 1, toInt64(mn_xy_try.{ceilingz}), mn_ceilingz0)",
+            ceilingz = answer::CEILINGZ,
+        ),
+    );
+    value(
+        "mn_after_xy_subsector",
+        format!(
+            "if(mn_landed = 1, toInt32(mn_xy_try.{subsector}), mn_subsector0)",
+            subsector = answer::SUBSECTOR,
+        ),
+    );
+    value(
+        "mn_after_xy_momx",
+        "if(mn_xy_blocked = 1, toInt64(0), mn_momx0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_momy",
+        "if(mn_xy_blocked = 1, toInt64(0), mn_momy0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_momz",
+        "if(mn_xy_blocked = 1, toInt64(0), mn_momz0)".to_owned(),
+    );
+    value(
+        "mn_after_xy_state",
+        format!(
+            "if(mn_xy_blocked = 1, toInt32(mn_xy_exploded.{state}), mn_state0)",
+            state = stopped::STATE,
+        ),
+    );
+    value(
+        "mn_after_xy_tics",
+        format!(
+            "if(mn_xy_blocked = 1, toInt32(mn_xy_exploded.{tics}), mn_tics0)",
+            tics = stopped::TICS,
+        ),
+    );
+    value(
+        "mn_after_xy_flags",
+        format!(
+            "if(mn_xy_blocked = 1, toInt32(mn_xy_exploded.{flags}), mn_flags0)",
+            flags = stopped::FLAGS,
+        ),
+    );
+
+    // P_ZMovement, run whenever the thing stands off its floor or still
+    // carries momentum on it, whether or not the XY step above already
+    // set it off.
+    value(
+        "mn_z_gate",
+        "toUInt8(mn_after_xy_removed = 0 \
+         AND (mn_z0 != mn_after_xy_floorz OR mn_after_xy_momz != 0))"
+            .to_owned(),
+    );
+    value("mn_z_stepped", "mn_z0 + mn_after_xy_momz".to_owned());
+    value(
+        "mn_z_onfloor",
+        "toUInt8(mn_z_gate = 1 AND mn_z_stepped <= mn_after_xy_floorz)".to_owned(),
+    );
+    value(
+        "mn_z_landed",
+        "if(mn_z_onfloor = 1, mn_after_xy_floorz, mn_z_stepped)".to_owned(),
+    );
+    value(
+        "mn_z_momz_floor",
+        "if(mn_z_onfloor = 1 AND mn_after_xy_momz < 0, toInt64(0), mn_after_xy_momz)".to_owned(),
+    );
+    value(
+        "mn_z_floor_explodes",
+        format!(
+            "toUInt8(mn_z_onfloor = 1 AND bitAnd(mn_after_xy_flags, {missile}) != 0 \
+             AND bitAnd(mn_after_xy_flags, {noclip}) = 0)",
+            missile = MF_MISSILE,
+            noclip = MF_NOCLIP,
+        ),
+    );
+    value(
+        "mn_z_hits_ceiling",
+        format!(
+            "toUInt8(mn_z_gate = 1 AND mn_z_floor_explodes = 0 \
+             AND mn_z_landed + toInt64({height}) > mn_after_xy_ceilingz)",
+            height = info("mobj_height"),
+        ),
+    );
+    value(
+        "mn_z_momz_ceiling",
+        "if(mn_z_hits_ceiling = 1 AND mn_z_momz_floor > 0, toInt64(0), mn_z_momz_floor)".to_owned(),
+    );
+    value(
+        "mn_z_z_ceiling",
+        format!(
+            "if(mn_z_hits_ceiling = 1, mn_after_xy_ceilingz - toInt64({height}), mn_z_landed)",
+            height = info("mobj_height"),
+        ),
+    );
+    value(
+        "mn_z_ceiling_explodes",
+        format!(
+            "toUInt8(mn_z_hits_ceiling = 1 AND bitAnd(mn_after_xy_flags, {missile}) != 0 \
+             AND bitAnd(mn_after_xy_flags, {noclip}) = 0)",
+            missile = MF_MISSILE,
+            noclip = MF_NOCLIP,
+        ),
+    );
+    value(
+        "mn_z_explode_needed",
+        "toUInt8(mn_z_floor_explodes = 1 OR mn_z_ceiling_explodes = 1)".to_owned(),
+    );
+    value(
+        "mn_z_explode_asks",
+        format!(
+            "if(mn_z_explode_needed = 1, [(toUInt32(1), toInt32(-1), \
+             mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws})], \
+             CAST([] AS Array(Tuple(UInt32, Int32, UInt32))))",
+            hit_draws = struck::DRAWS,
+            hurt_draws = inter::hurt::DRAWS,
+        ),
+    );
+    // `explode_fold` reads a missile's own fields at a slot into an array.
+    // The Z step's fields are what the XY step above already left rather
+    // than the mobj arrays' own, so each is wrapped as the one-element
+    // array a slot of 1 reads back.
+    let after_xy = Flying {
+        m_z: flying.m_z,
+        m_height: flying.m_height,
+        m_type: "[mn_type]",
+        m_state: "[mn_after_xy_state]",
+        m_tics: "[mn_after_xy_tics]",
+        m_flags: "[mn_after_xy_flags]",
+        m_target: flying.m_target,
+        m_momx: flying.m_momx,
+        m_momy: flying.m_momy,
+        m_momz: flying.m_momz,
+        m_floorz: flying.m_floorz,
+        m_ceilingz: flying.m_ceilingz,
+        m_subsector: flying.m_subsector,
+        prndindex: flying.prndindex,
+    };
+    value(
+        "mn_z_exploded",
+        explode_fold("mn_z_explode_asks", &after_xy),
+    );
+
+    value(
+        "mn_pre_momx",
+        "if(mn_z_explode_needed = 1, toInt64(0), mn_after_xy_momx)".to_owned(),
+    );
+    value(
+        "mn_pre_momy",
+        "if(mn_z_explode_needed = 1, toInt64(0), mn_after_xy_momy)".to_owned(),
+    );
+    value(
+        "mn_pre_momz",
+        "if(mn_z_explode_needed = 1, toInt64(0), \
+         if(mn_z_gate = 1, if(mn_z_hits_ceiling = 1, mn_z_momz_ceiling, mn_z_momz_floor), \
+         mn_after_xy_momz))"
+            .to_owned(),
+    );
+    value(
+        "mn_pre_z",
+        "if(mn_z_gate = 1, \
+         if(mn_z_floor_explodes = 1, mn_z_landed, mn_z_z_ceiling), mn_z0)"
+            .to_owned(),
+    );
+    value(
+        "mn_pre_state",
+        format!(
+            "if(mn_z_explode_needed = 1, toInt32(mn_z_exploded.{state}), mn_after_xy_state)",
+            state = stopped::STATE,
+        ),
+    );
+    value(
+        "mn_pre_tics",
+        format!(
+            "if(mn_z_explode_needed = 1, toInt32(mn_z_exploded.{tics}), mn_after_xy_tics)",
+            tics = stopped::TICS,
+        ),
+    );
+    value(
+        "mn_pre_flags",
+        format!(
+            "if(mn_z_explode_needed = 1, toInt32(mn_z_exploded.{flags}), mn_after_xy_flags)",
+            flags = stopped::FLAGS,
+        ),
+    );
+
+    // The state cycle. `P_MobjThinker` runs this whether or not the steps
+    // above just set a fresh death frame, so a missile that explodes this
+    // tic has that frame's own tics decremented once more immediately.
+    value("mn_cycle_tics", "mn_pre_tics - 1".to_owned());
+    value(
+        "mn_cycle_transitions",
+        "toUInt8(mn_cycle_tics = 0)".to_owned(),
+    );
+    value(
+        "mn_next_state",
+        "toInt32(state_nextstate[1 + mn_pre_state])".to_owned(),
+    );
+    value(
+        "mn_cycle_removes",
+        "toUInt8(mn_cycle_transitions = 1 AND mn_next_state = 0)".to_owned(),
+    );
+    value(
+        "mn_cycle_action_guard",
+        "toUInt8(mn_cycle_transitions = 1 AND mn_next_state != 0 \
+         AND state_action[1 + mn_next_state] != 0)"
+            .to_owned(),
+    );
+    value(
+        "mn_final_state",
+        "if(mn_cycle_transitions = 1 AND mn_next_state != 0, mn_next_state, mn_pre_state)"
+            .to_owned(),
+    );
+    value(
+        "mn_final_tics",
+        "if(mn_cycle_transitions = 1 AND mn_next_state != 0, \
+         toInt32(state_tics[1 + mn_next_state]), mn_cycle_tics)"
+            .to_owned(),
+    );
+
+    value(
+        "mn_stuck",
+        format!(
+            "toUInt8(mn_guard = 1 OR (mn_moving = 1 AND mn_split = 1) \
+             OR mn_after_xy_removed = 1 OR (mn_crossed = 1 AND mn_crossed_ok = 0) \
+             OR (mn_xy_blocked = 1 AND mn_xy_exploded.{stuck} = 1) \
+             OR (mn_z_explode_needed = 1 AND mn_z_exploded.{stuck} = 1) \
+             OR mn_hurt.{hurt_stuck} = 1 OR mn_cycle_removes = 1 OR mn_cycle_action_guard = 1)",
+            stuck = stopped::STUCK,
+            hurt_stuck = inter::hurt::STUCK,
+        ),
+    );
+    value(
+        "mn_draws",
+        format!(
+            "toUInt32(mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws} \
+             + mn_xy_exploded.{xy_draws} + mn_z_exploded.{z_draws})",
+            hit_draws = struck::DRAWS,
+            hurt_draws = inter::hurt::DRAWS,
+            xy_draws = stopped::DRAWS,
+            z_draws = stopped::DRAWS,
+        ),
+    );
+
+    let members = [
+        "toInt32(mn_after_xy_x)".to_owned(),
+        "toInt32(mn_after_xy_y)".to_owned(),
+        "toInt32(mn_pre_z)".to_owned(),
+        "toInt32(mn_after_xy_floorz)".to_owned(),
+        "toInt32(mn_after_xy_ceilingz)".to_owned(),
+        "toInt32(mn_after_xy_subsector)".to_owned(),
+        "toInt32(mn_pre_momx)".to_owned(),
+        "toInt32(mn_pre_momy)".to_owned(),
+        "toInt32(mn_pre_momz)".to_owned(),
+        "toInt32(mn_final_state)".to_owned(),
+        "toInt32(mn_final_tics)".to_owned(),
+        "toInt32(mn_pre_flags)".to_owned(),
+        "mn_hurt_target".to_owned(),
+        "mn_hurt".to_owned(),
+        "mn_draws".to_owned(),
+        "mn_stuck".to_owned(),
+    ];
+    (values, format!("({})", members.join(", ")))
 }
 
 #[cfg(test)]
@@ -862,6 +1502,12 @@ mod tests {
             m_tics: "m_tics",
             m_flags: "m_flags",
             m_target: "m_target",
+            m_momx: "m_momx",
+            m_momy: "m_momy",
+            m_momz: "m_momz",
+            m_floorz: "m_floorz",
+            m_ceilingz: "m_ceilingz",
+            m_subsector: "m_subsector",
             prndindex: "prndindex",
         }
     }
@@ -922,15 +1568,28 @@ mod tests {
     /// inside the statement rather than out of the generator.
     #[test]
     fn every_type_the_impact_names_comes_from_the_table() {
-        let names: Vec<String> = constants("nat")
-            .into_iter()
-            .map(|(name, _)| name)
-            .filter(|name| name.starts_with("mt_"))
-            .collect();
-        assert_eq!(names.len(), SPECIES.len());
+        let names: Vec<String> = SPECIES.iter().map(|name| name.to_lowercase()).collect();
+        let bound: Vec<String> = constants("nat").into_iter().map(|(name, _)| name).collect();
         let sql = impact("asks", &flying());
         for name in names {
+            assert!(bound.contains(&name), "{name}");
             assert!(sql.contains(&name), "{name}");
+        }
+    }
+
+    /// `P_CrossSpecialLine` returns at once for a non-player thing of one
+    /// of [`NO_SPECIAL`]'s types, and each of those comes from `mobjtype`
+    /// the same way. `MT_TROOPSHOT` is `mobj::constants`'s own binding.
+    #[test]
+    fn every_type_p_cross_special_line_exempts_comes_from_the_table() {
+        let mut bound: Vec<String> = constants("nat").into_iter().map(|(name, _)| name).collect();
+        bound.extend(
+            super::super::mobj::constants("nat")
+                .into_iter()
+                .map(|(name, _)| name),
+        );
+        for name in NO_SPECIAL {
+            assert!(bound.contains(&name.to_lowercase()), "{name}");
         }
     }
 
@@ -954,5 +1613,101 @@ mod tests {
             _ => d,
         });
         assert_eq!(depth, 0);
+    }
+
+    fn hurting() -> inter::Hurting<'static> {
+        inter::Hurting {
+            m_x: "m_x",
+            m_y: "m_y",
+            m_z: "m_z",
+            m_momx: "m_momx",
+            m_momy: "m_momy",
+            m_momz: "m_momz",
+            m_reactiontime: "m_reactiontime",
+            m_type: "m_type",
+            m_state: "m_state",
+            m_tics: "m_tics",
+            m_flags: "m_flags",
+            m_health: "m_health",
+            m_height: "m_height",
+            m_target: "m_target",
+            m_threshold: "m_threshold",
+            m_player: "m_player",
+            prndindex: "prndindex",
+            readyweapon: "readyweapon",
+        }
+    }
+
+    fn thinks_sql() -> String {
+        thinks_fold("asks", &map(), &flying(), &hurting())
+    }
+
+    #[test]
+    fn the_thinks_expression_balances_its_parentheses() {
+        let sql = thinks_sql();
+        let depth = sql.chars().fold(0i32, |d, c| match c {
+            '(' => d + 1,
+            ')' => d - 1,
+            _ => d,
+        });
+        assert_eq!(depth, 0, "{sql}");
+    }
+
+    /// The move, the impact and the explosion each appear once however
+    /// many missiles the fold is given.
+    #[test]
+    fn each_primitive_in_the_thinker_appears_once() {
+        let sql = thinks_sql();
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 1, "{sql}");
+        assert_eq!(
+            sql.matches("arrayFold((st_held, st_ask) ->").count(),
+            1,
+            "{sql}"
+        );
+        // Once for the XY-blocked explosion, once for the Z-stage one.
+        assert_eq!(
+            sql.matches("arrayFold((ex_held, ex_ask) ->").count(),
+            2,
+            "{sql}"
+        );
+        assert_eq!(
+            sql.matches("arrayFold((dm_held, dm_ask) ->").count(),
+            1,
+            "{sql}"
+        );
+    }
+
+    /// `bind::chain_in` turns every named value into a position in a
+    /// tuple, so the state cycle's own names do not survive into the
+    /// generated text; what does is the one state table lookup its single
+    /// transition makes.
+    #[test]
+    fn the_state_cycle_makes_one_transition() {
+        let sql = thinks_sql();
+        assert_eq!(sql.matches("state_nextstate[1 + ").count(), 1, "{sql}");
+    }
+
+    /// A split move, a crossed special line a type does not clear, and a
+    /// missile with no `MF_NOGRAVITY` are all refused rather than guessed.
+    /// The names are gone by the time `bind::chain_in` is done with them,
+    /// so this reads the constants and the table names that survive.
+    #[test]
+    fn the_thinker_refuses_what_it_does_not_model() {
+        let sql = thinks_sql();
+        assert!(
+            sql.contains(&(MF_FLOAT | MF_SKULLFLY).to_string()),
+            "the float/skullfly guard: {sql}"
+        );
+        assert!(
+            sql.contains(&MF_NOGRAVITY.to_string()),
+            "the no-gravity guard: {sql}"
+        );
+        assert!(
+            sql.contains(&(MAXMOVE / 2).to_string()),
+            "the split guard: {sql}"
+        );
+        for name in NO_SPECIAL {
+            assert!(sql.contains(&name.to_lowercase()), "{name}: {sql}");
+        }
     }
 }

@@ -200,7 +200,14 @@ async fn a_tic_carries_the_imps_attack_through() {
         "the seeded row is a tic from the routine"
     );
     assert_eq!(after.state, ATTACK, "and the cycle reaches it");
-    assert_eq!(after.unresolved, 0, "the claw is a branch this runs");
+    // The target stands in its spawnstate and the pain roll misses, so
+    // `P_DamageMobj` wakes it with `P_SetMobjState(seestate)`, which runs
+    // `A_Chase` inside the damage call. `damaged` does not run that, so
+    // the tic is unresolved even though the claw's own effect is exact.
+    assert_eq!(
+        after.unresolved, 1,
+        "the claw wakes its target into a chase"
+    );
     let taken = before.health - after.health;
     assert!(
         (3..=24).contains(&taken) && taken % 3 == 0,
@@ -265,6 +272,11 @@ async fn a_tic_carries_the_imps_attack_through() {
         0,
         "and the routine takes it off"
     );
-    assert_eq!(after.unresolved, 0, "on a tic that runs");
+    // The same wake-into-chase the near arm hits: the target's pain roll
+    // misses and `P_DamageMobj` runs `A_Chase` for it via `P_SetMobjState`.
+    assert_eq!(
+        after.unresolved, 1,
+        "the claw wakes its target into a chase"
+    );
     assert!(before.health - after.health > 0, "and the claw still lands");
 }

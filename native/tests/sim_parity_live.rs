@@ -243,10 +243,9 @@ const FIREBALL: u32 = 169;
 ///
 /// `P_AddThinker` puts a new thing on the end of the list and
 /// `P_RunThinkers` walks that list to its end, so the engine runs the
-/// fireball's own thinker on the tic it was thrown. The `x`, `y` and
-/// `tics` here are what that thinker left. What `P_SpawnMissile` and
-/// `P_CheckMissileSpawn` leave is one momentum step behind it, with one
-/// tic more on the clock.
+/// fireball's own thinker on the tic it was thrown: the `x`, `y` and
+/// `tics` here are what that thinker left, one momentum step and one tic
+/// past what `P_SpawnMissile` and `P_CheckMissileSpawn` alone leave.
 const THROWN: [i64; 12] = [
     31,
     21_353_709,
@@ -628,10 +627,13 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         "and the throw puts one more thing on it"
     );
     let shot = &at(FIREBALL).shot;
-    let (x, y, momx, momy) = (shot[1], shot[2], shot[4], shot[5]);
-    // Everything the spawn itself decides.
+    // The spawn, and the fireball's own thinker on the tic it was thrown:
+    // every field the probe holds, not just what `P_SpawnMissile` and
+    // `P_CheckMissileSpawn` leave.
     for (at, name) in [
         (0, "type"),
+        (1, "x"),
+        (2, "y"),
         (3, "z"),
         (4, "momx"),
         (5, "momy"),
@@ -639,23 +641,11 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         (7, "angle"),
         (8, "target"),
         (9, "state"),
+        (10, "tics"),
         (11, "flags"),
     ] {
         assert_eq!(shot[at], THROWN[at], "the fireball's {name}");
     }
-    // The engine runs the fireball's own thinker on the tic it was thrown
-    // and this does not, so the point is one momentum step short of the
-    // probe's and the wait is one tic longer.
-    assert_eq!(
-        (x + momx, y + momy),
-        (THROWN[1], THROWN[2]),
-        "the fireball stands one step behind where the engine left it"
-    );
-    assert_eq!(
-        shot[10],
-        THROWN[10] + 1,
-        "and one tic behind on its own clock"
-    );
     // Every number the throw draws is counted, which is what moved the
     // first divergence off `prndindex`.
     assert_eq!(

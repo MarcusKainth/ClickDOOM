@@ -161,6 +161,13 @@ fn bindings(db: &str) -> Tic {
     let things = mobj::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, things);
+    // The compaction inside `things` has already appended the tic's own
+    // throw at the end of the mobj arrays; running its thinker is a
+    // separate stage because it needs every other thing's final slot
+    // settled first.
+    let thrown = mobj::thrown_thinks(&tic.state);
+    let running = game::running(&tic.state);
+    tic.stage_when(&running, thrown);
     let thinkers = lights::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thinkers);
@@ -275,7 +282,10 @@ mod tests {
     #[test]
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 5);
+        // The player's own step, the general movers' two parts, the
+        // chase, the spawn's own half step and the tic's own throw's move
+        // each hold one.
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 6);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
         assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);

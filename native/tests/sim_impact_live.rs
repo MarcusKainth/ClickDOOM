@@ -660,6 +660,9 @@ struct Arrays {
     m_tics: String,
     m_flags: String,
     m_target: String,
+    /// `impact` and `explode` read none of these: nothing here throws or
+    /// falls, so the zero one row apiece is never read.
+    zero: String,
 }
 
 impl Arrays {
@@ -682,6 +685,7 @@ impl Arrays {
             m_tics: of(&|e| e.tics),
             m_flags: of(&|e| e.flags),
             m_target: of(&|e| e.target as i64),
+            zero: of(&|_| 0),
         }
     }
 
@@ -694,6 +698,12 @@ impl Arrays {
             m_tics: &self.m_tics,
             m_flags: &self.m_flags,
             m_target: &self.m_target,
+            m_momx: &self.zero,
+            m_momy: &self.zero,
+            m_momz: &self.zero,
+            m_floorz: &self.zero,
+            m_ceilingz: &self.zero,
+            m_subsector: &self.zero,
             prndindex,
         }
     }

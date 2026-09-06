@@ -100,6 +100,7 @@ pub fn think(state: &State) -> Vec<(String, String)> {
         "pl_pendingweapon",
     ));
     bindings.extend(pspr::fire_shots(state));
+    bindings.extend(pspr::punch(state));
     bindings.extend(fire_weapon(state));
     bindings.extend(powers(state));
     bindings.extend(mobj_thinker(state));
@@ -655,7 +656,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         ("m_x", "toInt32(mv_x)"),
         ("m_y", "toInt32(mv_y)"),
         ("m_z", "toInt32(mv_z)"),
-        ("m_angle", "toUInt32(pl_new_angle)"),
+        (
+            "m_angle",
+            "toUInt32(if(psp_punch_hit = 1, psp_punch_angle, pl_new_angle))",
+        ),
         ("m_momx", "toInt32(mv_momx)"),
         ("m_momy", "toInt32(mv_momy)"),
         ("m_momz", "toInt32(mv_momz)"),
@@ -677,7 +681,7 @@ fn writeback(state: &State) -> Vec<(String, String)> {
     // column is what the tic came in with.
     let base = |column: &str| {
         if SHOT_COLUMNS.contains(&column) {
-            format!("gs_{column}")
+            format!("pn_{column}")
         } else {
             state.get(column)
         }
@@ -700,10 +704,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         let held = state.get(column);
         let was = state.get("m_state");
         bindings.push((
-            format!("gs_{column}"),
+            format!("pn_{column}"),
             format!(
                 "arrayMap((v, st, wa) -> toInt32(if(st != wa, {table}[1 + st], v)), \
-                 {held}, gs_m_state, {was})"
+                 {held}, pn_m_state, {was})"
             ),
         ));
     }
@@ -755,7 +759,7 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         (
             "now_unresolved".to_owned(),
             mask(
-                "bitOr(use_unresolved, gs_unresolved)",
+                "bitOr(use_unresolved, pn_unresolved)",
                 &[
                     (unresolved::PK_STUCK, &format!("pk.{} = 1", inter::STUCK)),
                     (unresolved::PX_CROSSED, "px_crossed = 1"),

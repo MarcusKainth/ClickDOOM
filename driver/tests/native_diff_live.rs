@@ -5,7 +5,9 @@
 //!   * a run over tics the probe does record reports the first field that
 //!     differs, with the tic and both values, and exits 3;
 //!   * the probe rows land in `probe_state` and not in `native_state`,
-//!     because the two are the sides of the comparison.
+//!     because the two are the sides of the comparison;
+//!   * a tic `native_state` marks unresolved stops the run there, before
+//!     any field is compared.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -23,6 +25,11 @@ use support::{committed_fixture, conn_args, repo_root};
 /// The gametics the committed fixture records: the melt's, the first
 /// gameplay tic, the one after it, and one from the middle of the demo.
 const FIRST_RECORDED_TIC: u32 = 2;
+
+/// The first tic DEMO3 on E1M7 leaves unresolved, read off a real run. A
+/// fix that closes the gap behind it moves this later; update it in the
+/// same commit as that fix.
+const FIRST_REFUSED_TIC: u32 = 82;
 
 fn clickdoom(database: &str, args: &[&str]) -> (i32, String) {
     let conn = conn_args(database);
@@ -112,6 +119,40 @@ async fn a_differential_run_reports_the_first_field_that_differs() {
     assert_eq!(code, 3, "{printed}");
     assert!(printed.contains("first_tic="), "{printed}");
     std::fs::remove_file(&moved).ok();
+
+    conn_args("default")
+        .connect()
+        .run(&format!("DROP DATABASE IF EXISTS {database}"))
+        .await
+        .expect("the database is dropped");
+}
+
+/// A tic `native_state` marks unresolved stops the run there, with exit 3
+/// and a message naming the tic and the column, before any field is
+/// compared against the probe.
+///
+/// The committed fixture covers only a handful of gametics, far short of
+/// `FIRST_REFUSED_TIC`, but the refusal is checked before the comparison
+/// needs the probe to cover anything, so it does not need a fuller one.
+#[tokio::test]
+async fn a_tic_that_refuses_stops_before_the_field_comparison() {
+    let database = format!("clickdoom_native_diff_refusal_{}", std::process::id());
+    let (code, printed) = clickdoom(&database, &["native", "load", "--fresh"]);
+    assert_eq!(code, 0, "{printed}");
+
+    let fixture = committed_fixture();
+    let probe = fixture.to_str().expect("a path");
+    let tics = (FIRST_REFUSED_TIC + 8).to_string();
+    let (code, printed) = clickdoom(&database, &["native", "diff", &tics, "--probe", probe]);
+    assert_eq!(code, 3, "{printed}");
+    assert!(
+        printed.contains(&format!("tic {FIRST_REFUSED_TIC} unresolved")),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains("no divergence") && !printed.contains("against the probe's"),
+        "a refused tic is reported before any field is compared: {printed}"
+    );
 
     conn_args("default")
         .connect()

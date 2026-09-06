@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::session::TIC_TIMEOUT;
-use crate::native::{Session, plan, probe};
+use crate::native::{Session, plan, probe, refusal};
 use crate::stats::{Clock, Monotonic};
 
 /// How often the progress line comes out.
@@ -40,8 +40,12 @@ The tic commands come from the demo lump, so the run is the one the probe
 recorded. --summary also lists every field that ever differs, with the tic
 each first did.
 
-Exit codes: 0 the two agree over TICS tics, 1 the run failed, 3 they
-diverged."
+A tic native_state marks unresolved or unimplemented is checked before any
+field is, since a tic the statement could not produce exactly is not one
+to compare.
+
+Exit codes: 0 the two agree over TICS tics, 1 the run failed, 3 a tic
+refused or the two diverged."
 )]
 pub struct DiffCmd {
     /// Tics to run and compare
@@ -110,6 +114,16 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
         (Ok(()), Ok(())) => {}
         (_, Err(err)) => return Err(failed(format!("the simulation statement failed: {err}"))),
         (Err(failure), Ok(())) => return Err(failure),
+    }
+
+    // A refused tic is checked before the fields are, because a tic the
+    // statement itself could not produce is not one to compare field by
+    // field against the probe.
+    if let Some(refusal) = refusal::first(&db, database, cmd.tics)
+        .await
+        .map_err(|err| failed(format!("reading whether a tic refused: {err}")))?
+    {
+        return Err(gate(refusal.to_string()));
     }
 
     report(cmd, &db).await

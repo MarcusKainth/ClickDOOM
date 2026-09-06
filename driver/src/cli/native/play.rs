@@ -5,7 +5,7 @@ use std::time::Duration; // purity-ok: the frame budget and the timings the sess
 use clap::Args;
 use clickdoom_native::sql::sim::tick;
 
-use crate::cli::{Exit, Failure, failed};
+use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::ConnArgs;
 use crate::native::pace::{Pace, TIC};
 use crate::native::session::TIC_TIMEOUT;
@@ -41,7 +41,10 @@ Click in the window to take the mouse: the pointer is held and hidden, and
 turning follows the mouse however far it moves. Escape frees the mouse, and
 Escape again ends the run.
 
-Exit codes: 0 the run finished, 1 it failed."
+A tic native_state marks unresolved or unimplemented stops the run rather
+than being drawn.
+
+Exit codes: 0 the run finished, 1 it failed, 3 a tic refused."
 )]
 pub struct PlayCmd {
     #[command(flatten)]
@@ -149,6 +152,13 @@ async fn play(
         );
         let ran = ran.map_err(|err| failed(err.to_string()))?;
         let waited = waited.map_err(|err| failed(err.to_string()))?;
+        // A tic the statement could not produce exactly is not one to feed
+        // forward. `wait_sim` already read this off the same row that
+        // confirmed the tic committed, so stopping costs no query of its
+        // own.
+        if let Some(refusal) = ran.refusal {
+            return Err(gate(refusal.to_string()));
+        }
 
         let before = clock.elapsed();
         window
@@ -158,7 +168,7 @@ async fn play(
         counters.frames += 1;
         counters.render += waited.waited;
         counters.poll += waited.read;
-        counters.sim = counters.sim.map(|total| total + ran);
+        counters.sim = counters.sim.map(|total| total + ran.elapsed);
         counters.tics += 1;
 
         counters.late = pace.late();
@@ -203,6 +213,9 @@ async fn warm(
     );
     let drawn = drawn.map_err(|err| failed(err.to_string()))?;
     let ran = ran.map_err(|err| failed(err.to_string()))?;
+    if let Some(refusal) = ran.refusal {
+        return Err(gate(refusal.to_string()));
+    }
     window
         .draw(&drawn.frame.rgb32)
         .map_err(|err| failed(err.to_string()))?;
@@ -211,7 +224,7 @@ async fn warm(
     counters.frames += 1;
     counters.render += drawn.waited;
     counters.poll += drawn.read;
-    counters.sim = Some(ran);
+    counters.sim = Some(ran.elapsed);
     Ok(())
 }
 

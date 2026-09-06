@@ -115,30 +115,87 @@ pub async fn check_columns(db: &Db, database: &str) -> Result<Option<Mismatch>, 
 ///
 /// A database an older binary loaded, before `schema_hash` existed, reads
 /// back as a mismatch too: nothing here can tell that database's schema
-/// from a stale one, so it is treated as one.
-pub async fn check_hash(db: &Db, database: &str) -> Option<Mismatch> {
+/// from a stale one, so a missing table is treated as one, and so is a
+/// `schema_hash` table with no row in it, which is what a load leaves
+/// behind if it is interrupted before writing its own hash as its last
+/// phase. Any other read failure (a dropped connection, a permission the
+/// caller does not carry) is not: it is not evidence of a stale schema,
+/// so it propagates as the read error it is rather than being reported
+/// as one.
+pub async fn check_hash(db: &Db, database: &str) -> Result<Option<Mismatch>, Error> {
     let want = clickdoom_native::sql::schema_hash();
-    match db
+    let read = db
         .fetch_one::<u64>(&format!("SELECT hash FROM {database}.schema_hash"))
-        .await
-    {
-        Ok(got) if got == want => None,
-        Ok(got) => Some(Mismatch::Stale {
+        .await;
+    hash_mismatch(database, want, read)
+}
+
+/// [`check_hash`]'s own decision, taking the read's outcome directly
+/// rather than making it, so the split between a stale schema and an
+/// unrelated read failure is a plain function a test can drive without a
+/// server.
+fn hash_mismatch(
+    database: &str,
+    want: u64,
+    read: Result<u64, Error>,
+) -> Result<Option<Mismatch>, Error> {
+    match read {
+        Ok(got) if got == want => Ok(None),
+        Ok(got) => Ok(Some(Mismatch::Stale {
             database: database.to_owned(),
             want,
             got: got.to_string(),
-        }),
-        Err(_) => Some(Mismatch::Stale {
-            database: database.to_owned(),
-            want,
-            got: "not set".to_owned(),
-        }),
+        })),
+        Err(err) if super::schedule::table_is_missing(&err) || err.is_row_not_found() => {
+            Ok(Some(Mismatch::Stale {
+                database: database.to_owned(),
+                want,
+                got: "not set".to_owned(),
+            }))
+        }
+        Err(err) => Err(err),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn missing_table() -> Error {
+        Error::from(clickhouse::error::Error::BadResponse(
+            "Code: 60. DB::Exception: Table nat.schema_hash doesn't exist. (UNKNOWN_TABLE)"
+                .to_owned(),
+        ))
+    }
+
+    fn no_row() -> Error {
+        Error::from(clickhouse::error::Error::RowNotFound)
+    }
+
+    fn some_other_failure() -> Error {
+        Error::from(clickhouse::error::Error::BadResponse(
+            "Code: 516. DB::Exception: default: Authentication failed. (AUTHENTICATION_FAILED)"
+                .to_owned(),
+        ))
+    }
+
+    #[test]
+    fn a_missing_table_or_an_empty_one_is_stale_and_any_other_failure_is_not() {
+        assert!(matches!(hash_mismatch("nat", 42, Ok(42)), Ok(None)));
+        assert!(matches!(
+            hash_mismatch("nat", 42, Ok(7)),
+            Ok(Some(Mismatch::Stale { want: 42, .. }))
+        ));
+        assert!(matches!(
+            hash_mismatch("nat", 42, Err(missing_table())),
+            Ok(Some(Mismatch::Stale { .. }))
+        ));
+        assert!(matches!(
+            hash_mismatch("nat", 42, Err(no_row())),
+            Ok(Some(Mismatch::Stale { .. }))
+        ));
+        assert!(hash_mismatch("nat", 42, Err(some_other_failure())).is_err());
+    }
 
     #[test]
     fn the_message_names_the_database_the_table_and_the_column() {

@@ -60,7 +60,10 @@ pub struct PlayCmd {
 pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
-    if let Some(mismatch) = schema::check_hash(&db, database).await {
+    if let Some(mismatch) = schema::check_hash(&db, database)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
         return Err(failed(mismatch.to_string()));
     }
     let mut window = Window::open("ClickDOOM", cmd.scale).map_err(|err| failed(err.to_string()))?;

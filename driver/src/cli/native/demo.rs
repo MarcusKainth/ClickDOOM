@@ -125,7 +125,10 @@ pub(crate) async fn run(cmd: &DemoCmd) -> Result<Exit, Failure> {
 async fn run_probe(cmd: &DemoCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
-    if let Some(mismatch) = schema::check_hash(&db, database).await {
+    if let Some(mismatch) = schema::check_hash(&db, database)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
         return Err(failed(mismatch.to_string()));
     }
     let plan = schedule::from_probe(&db, database, cmd.stop_at_frame)

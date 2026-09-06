@@ -396,6 +396,7 @@ async fn a_database_a_narrower_schema_loaded_is_refused_by_load_and_by_open() {
     // `schema_hash` carries no row for a session to agree with.
     let stale = schema::check_hash(&fixture.db, &fixture.database)
         .await
+        .expect("the read succeeds")
         .unwrap_or_else(|| panic!("a database with no schema hash was not caught"));
     assert!(
         matches!(&stale, schema::Mismatch::Stale { database, .. } if database == &fixture.database),

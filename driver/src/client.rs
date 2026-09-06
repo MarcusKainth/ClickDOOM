@@ -93,6 +93,11 @@ impl Error {
             .downcast_ref::<hyper_util::client::legacy::Error>()
             .is_some_and(|network| !network.is_connect())
     }
+
+    /// Whether a `fetch_one` found the table but no row in it.
+    pub fn is_row_not_found(&self) -> bool {
+        matches!(self.0, clickhouse::error::Error::RowNotFound)
+    }
 }
 
 /// One ClickHouse connection, reused for every statement issued through it.

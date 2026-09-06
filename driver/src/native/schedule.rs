@@ -225,7 +225,7 @@ async fn highest_frame(db: &Db, database: &str) -> Result<u32, Error> {
 /// Whether the server refused a query because the table is not there.
 /// ClickHouse says so in the message; the code it carries is not on the
 /// error this client hands back.
-fn table_is_missing(error: &client::Error) -> bool {
+pub(crate) fn table_is_missing(error: &client::Error) -> bool {
     error.to_string().contains("UNKNOWN_TABLE")
 }
 

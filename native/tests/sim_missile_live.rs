@@ -46,7 +46,7 @@ const ARMS: [(&str, u32); 3] = [("untouched", 200), ("reactiontime", 300), ("jus
 struct Ran {
     tic: u32,
     prndindex: u8,
-    unresolved: u8,
+    unresolved: u64,
     flags: i32,
 }
 

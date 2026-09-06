@@ -149,13 +149,14 @@ zone allocator returned it until the door reaches the top and writes it. So
 comparison, and every other element of every other field is compared.
 
 A tic the statement could not produce exactly is not compared at all.
-`native_state.unresolved` says so for one tic, decided fresh each tic;
-`native_state.unimplemented` says the level itself carries a path native mode
-does not model, decided once when the level loads, with its bits named in
-`sim::unimplemented`. `native diff` reads both columns for every tic it ran
-and stops at the first tic either sets, before any field is compared, with
-exit 3 and a message naming the tic and the column. `native demo` and
-`native play` stop at the same tic rather than drawing past it.
+`native_state.unresolved` says so for one tic, decided fresh each tic, with
+its bits named in `sim::unresolved`; `native_state.unimplemented` says the
+level itself carries a path native mode does not model, decided once when
+the level loads, with its bits named in `sim::unimplemented`. `native diff`
+reads both columns for every tic it ran and stops at the first tic either
+sets, before any field is compared, with exit 3 and a message naming the tic
+and the bits. `native demo` and `native play` stop at the same tic rather
+than drawing past it.
 
 ## 8. Determinism
 

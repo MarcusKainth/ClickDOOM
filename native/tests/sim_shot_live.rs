@@ -61,7 +61,7 @@ struct Ran {
     pl_tics: i32,
     attackdown: u8,
     heard: u64,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 #[tokio::test]
@@ -164,7 +164,8 @@ async fn the_weapon_fires_only_where_the_engine_fires_it() {
     );
     assert_eq!(noammo.heard, 0, "and nothing hears it");
     assert_eq!(
-        noammo.unresolved, 1,
+        noammo.unresolved,
+        sim::unresolved::PSP_STUCK,
         "and the weapon it would pick instead says the tic could not be produced"
     );
 

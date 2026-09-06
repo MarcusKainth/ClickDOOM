@@ -70,7 +70,7 @@ struct Counts {
     totalitems: i32,
     totalsecret: i32,
     p_mo: u32,
-    unresolved: u8,
+    unresolved: u64,
     unimplemented: u64,
 }
 

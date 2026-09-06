@@ -90,7 +90,7 @@ struct Clawed {
     hunts: u32,
     threshold: i32,
     prndindex: u8,
-    unresolved: u8,
+    unresolved: u64,
     things: u64,
     last_type: i32,
     last_target: u32,
@@ -205,7 +205,8 @@ async fn a_tic_carries_the_imps_attack_through() {
     // `A_Chase` inside the damage call. `damaged` does not run that, so
     // the tic is unresolved even though the claw's own effect is exact.
     assert_eq!(
-        after.unresolved, 1,
+        after.unresolved,
+        sim::unresolved::DM_STUCK,
         "the claw wakes its target into a chase"
     );
     let taken = before.health - after.health;
@@ -275,7 +276,8 @@ async fn a_tic_carries_the_imps_attack_through() {
     // The same wake-into-chase the near arm hits: the target's pain roll
     // misses and `P_DamageMobj` runs `A_Chase` for it via `P_SetMobjState`.
     assert_eq!(
-        after.unresolved, 1,
+        after.unresolved,
+        sim::unresolved::DM_STUCK,
         "the claw wakes its target into a chase"
     );
     assert!(before.health - after.health > 0, "and the claw still lands");

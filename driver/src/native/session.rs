@@ -165,7 +165,7 @@ struct FrameRow {
     /// The frame's own tic, read out of `native_frames` so the same query
     /// can look `native_state`'s refusal columns up by it.
     tic: u32,
-    unresolved: u8,
+    unresolved: u64,
     unimplemented: u64,
 }
 
@@ -174,7 +174,7 @@ struct FrameRow {
 #[derive(Row, Deserialize)]
 struct CommittedRow {
     tic: u32,
-    unresolved: u8,
+    unresolved: u64,
     unimplemented: u64,
 }
 

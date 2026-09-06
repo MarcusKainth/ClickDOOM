@@ -1,7 +1,7 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, attacks, enemy, inter, maputl, missile, sight, specials};
+use super::{State, attacks, enemy, inter, maputl, mask, missile, sight, specials, unresolved};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -805,14 +805,31 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "now_unresolved",
         format!(
-            "toUInt8({} = 1 OR arrayExists(a -> a.{} = 1, mt_two) \
-             OR arrayExists(c -> c.{} = 1, cw_chased) \
-             OR tx_crowded = 1 OR tx_unrun = 1 OR tx_crossed = 1 \
-             OR tz_unrun = 1 OR at_unrun = 1 \
-             OR arrayExists(u -> u = 1, mt_attacker_unsure))",
-            s("unresolved"),
-            cycled::STUCK,
-            enemy::chased::STUCK
+            "bitOr({}, at_unrun)",
+            mask(
+                &s("unresolved"),
+                &[
+                    (
+                        unresolved::CYCLE_STUCK,
+                        &format!("arrayExists(a -> a.{} = 1, mt_two)", cycled::STUCK),
+                    ),
+                    (
+                        unresolved::CHASE_STUCK,
+                        &format!(
+                            "arrayExists(c -> c.{} = 1, cw_chased)",
+                            enemy::chased::STUCK
+                        ),
+                    ),
+                    (unresolved::TX_CROWDED, "tx_crowded = 1"),
+                    (unresolved::TX_UNRUN, "tx_unrun = 1"),
+                    (unresolved::TX_CROSSED, "tx_crossed = 1"),
+                    (unresolved::TZ_UNRUN, "tz_unrun = 1"),
+                    (
+                        unresolved::AT_DRAW_UNSURE,
+                        "arrayExists(u -> u = 1, mt_attacker_unsure)",
+                    ),
+                ],
+            )
         ),
     );
     bindings
@@ -1109,15 +1126,34 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     );
     bind(
         "at_unrun",
-        format!(
-            "toUInt8(length(mt_attackers) > 1 OR at_struck.{stuck} = 1 \
-             OR mt_hurt.{counted} = 1 OR mt_hurt.{drop} != -1 OR mt_hurt.{hurt_stuck} = 1 \
-             OR arrayExists(t -> t.{thrown} = 1, mt_thrown))",
-            stuck = attacks::attacked::STUCK,
-            counted = inter::hurt::COUNTED,
-            drop = inter::hurt::DROP,
-            hurt_stuck = inter::hurt::STUCK,
-            thrown = missile::thrown::STUCK,
+        mask(
+            "toUInt64(0)",
+            &[
+                (unresolved::AT_ATTACKERS, "length(mt_attackers) > 1"),
+                (
+                    unresolved::AT_ROUTINE_STUCK,
+                    &format!("at_struck.{} = 1", attacks::attacked::STUCK),
+                ),
+                (
+                    unresolved::AT_KILL_COUNTED,
+                    &format!("mt_hurt.{} = 1", inter::hurt::COUNTED),
+                ),
+                (
+                    unresolved::AT_KILL_DROP,
+                    &format!("mt_hurt.{} != -1", inter::hurt::DROP),
+                ),
+                (
+                    unresolved::DM_STUCK,
+                    &format!("mt_hurt.{} = 1", inter::hurt::STUCK),
+                ),
+                (
+                    unresolved::AT_THROWN_STUCK,
+                    &format!(
+                        "arrayExists(t -> t.{} = 1, mt_thrown)",
+                        missile::thrown::STUCK
+                    ),
+                ),
+            ],
         ),
     );
     bindings
@@ -1325,10 +1361,15 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
     );
     bind(
         "now_unresolved",
-        format!(
-            "toUInt8({} = 1 OR arrayExists(t -> t.{stuck} = 1, tk_thoughts))",
-            s("unresolved"),
-            stuck = missile::thought::STUCK,
+        mask(
+            &s("unresolved"),
+            &[(
+                unresolved::TK_STUCK,
+                &format!(
+                    "arrayExists(t -> t.{} = 1, tk_thoughts)",
+                    missile::thought::STUCK
+                ),
+            )],
         ),
     );
     bindings

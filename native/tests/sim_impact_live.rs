@@ -589,7 +589,7 @@ async fn a_missile_that_went_off_runs_out_its_death_frames() {
         tic: u32,
         at: u64,
         state: i32,
-        unresolved: u8,
+        unresolved: u64,
     }
     let rows: Vec<Cycle> = fixture
         .rows(&format!(

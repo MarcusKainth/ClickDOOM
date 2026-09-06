@@ -40,7 +40,7 @@ struct Compacted {
     tracer: Vec<u32>,
     soundtarget: Vec<u32>,
     attacker: u32,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 #[tokio::test]

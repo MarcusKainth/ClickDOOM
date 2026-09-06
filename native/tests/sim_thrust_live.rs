@@ -101,7 +101,7 @@ struct Moved {
     y: i32,
     momx: i32,
     momy: i32,
-    unresolved: u8,
+    unresolved: u64,
 }
 
 /// `FixedMul` against `FRICTION`, which is what `P_XYMovement` leaves on a
@@ -311,7 +311,8 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     );
     assert_eq!(crossed.y, plain.y, "and moved it to the same place");
     assert_eq!(
-        crossed.unresolved, 1,
+        crossed.unresolved,
+        sim::unresolved::TX_CROSSED,
         "the special line the move crossed is not run, so the tic says so"
     );
 }

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::session::{FIRST_TIC_TIMEOUT, TIC_TIMEOUT};
-use crate::native::{Session, plan, probe, refusal};
+use crate::native::{Session, plan, probe, refusal, schema};
 use crate::stats::{Clock, Monotonic};
 
 /// How often the progress line comes out.
@@ -84,6 +84,9 @@ struct FieldRow {
 pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
+    if let Some(mismatch) = schema::check_hash(&db, database).await {
+        return Err(failed(mismatch.to_string()));
+    }
 
     restart(&db, database).await?;
     let staged = probe::stage(&db, database, &cmd.probe)

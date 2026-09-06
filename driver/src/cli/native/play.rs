@@ -10,7 +10,7 @@ use crate::client::ConnArgs;
 use crate::native::pace::{Pace, TIC};
 use crate::native::session::TIC_TIMEOUT;
 use crate::native::window::{Scale, Window};
-use crate::native::{Session, schedule};
+use crate::native::{Session, schedule, schema};
 use crate::stats::{Clock, Monotonic, NativeCounters, NativeStatsLine};
 
 /// How long one tic or one frame may take before the run calls the
@@ -60,6 +60,9 @@ pub struct PlayCmd {
 pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
+    if let Some(mismatch) = schema::check_hash(&db, database).await {
+        return Err(failed(mismatch.to_string()));
+    }
     let mut window = Window::open("ClickDOOM", cmd.scale).map_err(|err| failed(err.to_string()))?;
 
     schedule::clear_frames(&db, database)

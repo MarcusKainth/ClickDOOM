@@ -1,7 +1,7 @@
 //! Live proof for `clickdoom native load`, run against a real ClickHouse
 //! server.
 //!
-//! Three things, all of which need a server to show:
+//! Four things, all of which need a server to show:
 //!
 //!   * a level load fills the tables the renderer reads, and loading twice
 //!     leaves the same row counts as loading once;
@@ -9,7 +9,9 @@
 //!     renderer takes as `melt_step`;
 //!   * a probe file loads through the staging table into `native_state`,
 //!     including the -1 the probe writes into a column the schema declares
-//!     unsigned, and the committed fixture is the file it is shown on.
+//!     unsigned, and the committed fixture is the file it is shown on;
+//!   * a database a narrower schema loaded is refused, both by a load
+//!     without `--fresh` and by the hash check a session opens with.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`).
@@ -17,7 +19,7 @@
 #![cfg(feature = "clickhouse-tests")]
 
 use clickdoom_driver::client::Db;
-use clickdoom_driver::native::{melt, plan, probe};
+use clickdoom_driver::native::{melt, plan, probe, schema};
 use clickdoom_native::sql::{self, Statement, probe as shape};
 use clickdoom_native::wad::Wad;
 
@@ -320,4 +322,79 @@ fn swapped_columns() -> Vec<&'static str> {
     let mut names = shape::names();
     names.swap(3, 4);
     names
+}
+
+/// `native_state`'s own columns, `unresolved` narrowed to `UInt8`: the
+/// shape a database an older schema loaded would have left.
+///
+/// `Join` does not support `ALTER ... MODIFY COLUMN`, so this rebuilds the
+/// table from `schema_columns` rather than narrowing one in place.
+fn native_state_ddl_with_narrow_unresolved(database: &str) -> String {
+    let columns: Vec<String> = clickdoom_native::sql::schema_columns()
+        .into_iter()
+        .filter(|(table, _, _)| *table == "native_state")
+        .map(|(_, name, kind)| {
+            let kind = if name == "unresolved" { "UInt8" } else { kind };
+            format!("{name} {kind}")
+        })
+        .collect();
+    format!(
+        "CREATE TABLE {database}.native_state ({}) ENGINE = Join(ANY, LEFT, tic)",
+        columns.join(", ")
+    )
+}
+
+/// A database this binary's own schema loaded, but with `unresolved` left
+/// at the width an older schema would have declared it, and never given
+/// this binary's own schema hash: the shape both `native load` (without
+/// `--fresh`) and a session opened later have to refuse rather than read.
+///
+/// `check_columns` and `check_hash` are the driver's own functions, called
+/// directly here rather than through the `clickdoom` binary: what this
+/// covers is that each one actually reaches this database and reports the
+/// mismatch, not the CLI plumbing around them.
+#[tokio::test]
+async fn a_database_a_narrower_schema_loaded_is_refused_by_load_and_by_open() {
+    let fixture = Fixture::create("stale_schema").await;
+    fixture
+        .run_plan(&[plan::Phase::new(
+            "schema",
+            sql::schema_statements(&fixture.database),
+        )])
+        .await;
+    fixture
+        .db
+        .run(&format!("DROP TABLE {}.native_state", fixture.database))
+        .await
+        .expect("dropping the table to rebuild it narrower");
+    fixture
+        .db
+        .run(&native_state_ddl_with_narrow_unresolved(&fixture.database))
+        .await
+        .expect("recreating native_state with a narrow unresolved");
+
+    let mismatch = schema::check_columns(&fixture.db, &fixture.database)
+        .await
+        .expect("the read succeeds")
+        .unwrap_or_else(|| panic!("a narrowed unresolved was not caught"));
+    assert!(
+        matches!(
+            &mismatch,
+            schema::Mismatch::Changed { table, column, want, got, .. }
+                if table == "native_state" && column == "unresolved" && want == "UInt64" && got == "UInt8"
+        ),
+        "{mismatch}"
+    );
+
+    // The schema was never loaded through `clickdoom native load`, so
+    // `schema_hash` carries no row for a session to agree with.
+    let stale = schema::check_hash(&fixture.db, &fixture.database)
+        .await
+        .unwrap_or_else(|| panic!("a database with no schema hash was not caught"));
+    assert!(
+        matches!(&stale, schema::Mismatch::Stale { database, .. } if database == &fixture.database),
+        "{stale}"
+    );
+
+    fixture.finish().await;
 }

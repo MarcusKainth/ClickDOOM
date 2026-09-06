@@ -134,12 +134,20 @@ tic and field on which it and the probe disagree.
 
 A load against a database `native/schema.sql` already created empties every
 table's rows and leaves its columns as they were, because `CREATE TABLE IF
-NOT EXISTS` does not alter an existing table. A change to a column's type,
-such as `native_state.unresolved` widening from `UInt8` to `UInt64`, needs
-`--fresh` against a database an older schema loaded. Nothing checks for
-this, and ClickHouse does not fail the load either: an `INSERT` narrows a
-wider value to fit a stale column's type by truncating it, silently, so a
-value like `unresolved`'s bits wraps modulo 256 rather than erroring.
+NOT EXISTS` does not alter an existing table. A load without `--fresh`
+reads every declared table's actual columns back from `system.columns`
+first and refuses, naming the first table and column that differ, rather
+than emptying a table whose schema moved out from under it: ClickHouse
+does not fail that insert on its own, it narrows a wider value to fit a
+stale column's type by truncating it, silently. `--fresh` drops the
+tables instead, so the check has nothing stale left to find.
+
+A load that finishes writes this binary's own schema hash into
+`schema_hash`. `native diff`, `native demo` and `native play` read it back
+before doing anything else and refuse a database whose hash is not this
+binary's own, naming both, since a column reordered or a table the load
+check does not reach can move the schema in ways the column check alone
+would not catch.
 
 The two resident statements stay open for a session and stream one row per
 tic; the server settings they need are mounted from

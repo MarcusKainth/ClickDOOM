@@ -9,7 +9,7 @@ use clickdoom_native::wad::Wad;
 
 use crate::cli::{Exit, Failure, failed};
 use crate::client::{ConnArgs, Db};
-use crate::native::{melt, plan, probe};
+use crate::native::{melt, plan, probe, schema};
 
 /// The map `doom1.wad` ships a demo for, and the demo that plays it.
 const MAP_DEFAULT: &str = "E1M7";
@@ -85,6 +85,13 @@ pub(crate) async fn run(cmd: &LoadCmd) -> Result<Exit, Failure> {
 /// The level, from the WAD's bytes to the renderer's tables.
 async fn load_level(cmd: &LoadCmd, db: &Db) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
+    if !cmd.fresh
+        && let Some(mismatch) = schema::check_columns(db, database)
+            .await
+            .map_err(|err| failed(err.to_string()))?
+    {
+        return Err(failed(mismatch.to_string()));
+    }
     let bytes = std::fs::read(&cmd.wad)
         .map_err(|err| failed(format!("reading {}: {err}", cmd.wad.display())))?;
     let wad = Wad::parse(&bytes).map_err(|err| {
@@ -111,14 +118,23 @@ async fn load_level(cmd: &LoadCmd, db: &Db) -> Result<Exit, Failure> {
     Ok(Exit::Ok)
 }
 
-/// What the load issues: its own tables emptied, then the phases that fill
-/// them.
+/// What the load issues: its own tables emptied, the phases that fill
+/// them, then this binary's own schema hash written last, so a load that
+/// fails partway never leaves a hash claiming a schema it did not finish
+/// writing.
 fn phases(cmd: &LoadCmd, wad: &Wad<'_>) -> Result<Vec<plan::Phase>, melt::UnknownDemo> {
     let database = &cmd.conn.database;
     let mut phases = vec![plan::Phase::new("empty", empty(database, cmd.fresh))];
     phases.extend(plan::level_phases(
         database, wad, &cmd.map, &cmd.demo, &cmd.sky,
     )?);
+    phases.push(plan::Phase::new(
+        "schema-hash",
+        vec![Statement::sql(format!(
+            "INSERT INTO {database}.schema_hash (hash) SELECT {}",
+            sql::schema_hash()
+        ))],
+    ));
     Ok(phases)
 }
 

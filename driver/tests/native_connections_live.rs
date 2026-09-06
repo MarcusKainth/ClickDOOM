@@ -52,7 +52,23 @@ fn conn_args(database: &str) -> ConnArgs {
     }
 }
 
+/// The type `native/schema.sql` gives one of `native_state`'s own columns,
+/// read from the schema rather than named here, so a column this test
+/// gives its own type to cannot drift from the real one silently.
+fn state_type(column: &str) -> &'static str {
+    clickdoom_native::sql::schema_columns()
+        .into_iter()
+        .find(|(table, name, _)| *table == "native_state" && *name == column)
+        .map(|(_, _, kind)| kind)
+        .unwrap_or_else(|| panic!("native_state declares no column {column}"))
+}
+
 /// A private database holding the two tables a session writes.
+///
+/// The columns are this test's own, and only `unresolved` and
+/// `unimplemented` take their type from `native/schema.sql`: reading the
+/// session's own poll depends on it, and a widened `unresolved` broke this
+/// suite once already by silently disagreeing with a hand-picked `UInt8`.
 async fn setup(database: &str) -> ConnArgs {
     let admin = conn_args("default").connect();
     for sql in [
@@ -61,9 +77,12 @@ async fn setup(database: &str) -> ConnArgs {
         format!(
             "CREATE TABLE {database}.native_state \
              (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
-              mouse_dx Int16, mouse_dy Int16, unresolved UInt64, unimplemented UInt64, \
-              demo_end UInt8) \
-             ENGINE = Join(ANY, LEFT, tic)"
+              mouse_dx Int16, mouse_dy Int16, unresolved {}, unimplemented {}, \
+              demo_end {}) \
+             ENGINE = Join(ANY, LEFT, tic)",
+            state_type("unresolved"),
+            state_type("unimplemented"),
+            state_type("demo_end"),
         ),
         format!(
             "CREATE TABLE {database}.native_frames \
@@ -84,9 +103,12 @@ fn sim_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_state \
          SELECT tic, tic * 2 AS leveltime, keys, source, mouse_dx, mouse_dy, \
-                toUInt64(0) AS unresolved, toUInt64(0) AS unimplemented, \
-                toUInt8(0) AS demo_end \
-         FROM input('{SIM_INPUT_SCHEMA}') WHERE tic > 0"
+                CAST(0, '{}') AS unresolved, CAST(0, '{}') AS unimplemented, \
+                CAST(0, '{}') AS demo_end \
+         FROM input('{SIM_INPUT_SCHEMA}') WHERE tic > 0",
+        state_type("unresolved"),
+        state_type("unimplemented"),
+        state_type("demo_end"),
     )
 }
 

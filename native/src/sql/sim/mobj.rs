@@ -2168,7 +2168,47 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
             MF_SKULLFLY,
         ),
     );
+    bind("tx_disturbed_at", tx_disturbed(state));
+    bind(
+        "tx_disturbed",
+        "toUInt8(arrayExists(d -> d = 1, tx_disturbed_at))".to_owned(),
+    );
     bindings
+}
+
+/// Whether an earlier thrust mover's own move could have changed what a
+/// later one's own asked destination, or destinations where the move
+/// split, would have found, the same way [`enemy::disturbs`] covers a
+/// chase's own search: a destination close enough to another mover's old
+/// or new position, on both axes, could have read a different answer had
+/// it run after that move landed.
+fn tx_disturbed(state: &State) -> String {
+    let s = |column: &str| state.get(column);
+    let radius = format!("{}[tx_movers[i]]", s("m_radius"));
+    let close = |x: &str, y: &str| {
+        format!(
+            "arrayExists(m -> (abs(toInt64({x}) - toInt64(m.1)) < toInt64({radius}) + \
+             toInt64(m.5) AND abs(toInt64({y}) - toInt64(m.2)) < toInt64({radius}) + \
+             toInt64(m.5)) OR (abs(toInt64({x}) - toInt64(m.3)) < toInt64({radius}) + \
+             toInt64(m.5) AND abs(toInt64({y}) - toInt64(m.4)) < toInt64({radius}) + \
+             toInt64(m.5)), fb.2)"
+        )
+    };
+    let one = close(
+        &format!("tx_asks_one[i].{}", map::ask::X),
+        &format!("tx_asks_one[i].{}", map::ask::Y),
+    );
+    let two = close(
+        &format!("tx_asks_two[greatest(tx_two_at[i], 1)].{}", map::ask::X),
+        &format!("tx_asks_two[greatest(tx_two_at[i], 1)].{}", map::ask::Y),
+    );
+    format!(
+        "arrayFold((fb, i) -> (arrayPushBack(fb.1, toUInt8({one} OR (tx_splits[i] = 1 AND {two}))), \
+         if(tx_x[i] != tx_hold_x[i] OR tx_y[i] != tx_hold_y[i], arrayPushBack(fb.2, \
+         (toInt32(tx_hold_x[i]), toInt32(tx_hold_y[i]), toInt32(tx_x[i]), toInt32(tx_y[i]), \
+         toUInt32({radius}))), fb.2)), arrayEnumerate(tx_movers), \
+         (CAST([], 'Array(UInt8)'), CAST([], 'Array(Tuple(Int32, Int32, Int32, Int32, UInt32))'))).1"
+    )
 }
 
 /// Whether two of the things moving this tic stand close enough that one's
@@ -2178,12 +2218,14 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
 /// takes, whichever it is doing, so one test covers both lists. A pair
 /// that is chasing on both sides with no momentum of its own is the chase
 /// fold's own `cc_disturbed` to decide, since the fold already knows
-/// which of its own destinations the other's move actually reached; this
-/// still covers every other pair, because the momentum stage and the
-/// chase fold run as separate stages while the engine interleaves the two
-/// kinds of move by slot, and that ordering gap is not something either
-/// stage's own fold sees on its own. A chaser a shot has thrust carries
-/// momentum, so it stays a momentum mover here for the pairs it is in.
+/// which of its own destinations the other's move actually reached, and a
+/// pair that is thrust on both sides is [`tx_disturbed`]'s own consulted
+/// set to decide, for the same reason. This still covers every other
+/// pair, because the momentum stage and the chase fold run as separate
+/// stages while the engine interleaves the two kinds of move by slot, and
+/// that ordering gap is not something either stage's own fold sees on its
+/// own. A chaser a shot has thrust carries momentum, so it stays a
+/// momentum mover here for the pairs it is in.
 fn shifted(state: &State, movers: &str) -> String {
     let s = |column: &str| state.get(column);
     let reach = |slot: &str| {
@@ -2206,8 +2248,10 @@ fn shifted(state: &State, movers: &str) -> String {
     let chases_only = |slot: &str| {
         format!("(indexOf(mt_movers, {slot}) != 0 AND indexOf(tx_movers, {slot}) = 0)")
     };
+    let both_thrust = "(indexOf(tx_movers, a) != 0 AND indexOf(tx_movers, b) != 0)";
     format!(
-        "toUInt8(arrayExists((a, i) -> arrayExists(b -> NOT ({} AND {}) AND {} AND {}, \
+        "toUInt8(tx_disturbed = 1 OR arrayExists((a, i) -> arrayExists(b -> \
+         NOT ({} AND {}) AND NOT {both_thrust} AND {} AND {}, \
          arraySlice({movers}, i + 1)), {movers}, arrayEnumerate({movers})))",
         chases_only("a"),
         chases_only("b"),

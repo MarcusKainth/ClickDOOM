@@ -48,7 +48,10 @@ async fn a_key_the_driver_streams_reaches_the_tic_command() {
     let session = Session::open(
         &conn,
         &database,
-        Some(&tick::resident_statement(&database)),
+        Some((
+            &tick::resident_statement_stage1(&database),
+            &tick::resident_statement_stage2(&database),
+        )),
         Some(&sql::render::frame_transform(&database)),
     )
     .await

@@ -74,7 +74,10 @@ pub(crate) async fn run(cmd: &PlayCmd) -> Result<Exit, Failure> {
     let session = Session::open(
         &cmd.conn,
         database,
-        Some(&tick::resident_statement(database)),
+        Some((
+            &tick::resident_statement_stage1(database),
+            &tick::resident_statement_stage2(database),
+        )),
         Some(&clickdoom_native::sql::render::frame_transform(database)),
     )
     .await

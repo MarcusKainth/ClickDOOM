@@ -1,10 +1,18 @@
-//! The two resident statements of one native-mode session, driven together.
+//! The three resident statements of one native-mode session, driven
+//! together.
 //!
-//! The simulation writes one row per tic into `native_state`, the renderer
-//! one row per frame into `native_frames`, and the renderer reads the state
-//! row the simulation just wrote. So the order is fixed: feed a tic, wait
-//! for it, feed the frame that reads it. The statement text belongs to
-//! whoever generates the SQL; this drives whatever it is given.
+//! The simulation is two statements chained through `native_stage`: the
+//! first writes one row per tic there, through the player and the
+//! thinkers, and the second reads that same row back and writes
+//! `native_state`, through the specials and `G_Ticker`. [`Session::open`]
+//! sends both at once, so their analyses overlap rather than adding up,
+//! and [`Session::wait_sim`] feeds the second the moment the first's own
+//! row is there, so a caller that only calls [`Session::feed_sim`] and
+//! [`Session::wait_sim`] sees no difference from one statement. The
+//! renderer writes one row per frame into `native_frames`, and reads the
+//! state row the simulation just wrote. So the order is fixed: feed a tic,
+//! wait for it, feed the frame that reads it. The statement text belongs
+//! to whoever generates the SQL; this drives whatever it is given.
 //!
 //! A session opens the components it needs. With no simulation,
 //! `native_state` holds rows something else wrote, the reference emulator's
@@ -15,9 +23,11 @@
 //!
 //! A statement the server has abandoned goes on taking rows without
 //! committing them, so a session finds out from [`Session::wait_sim`]
-//! timing out. [`Session::recover`] is what follows: it ends both
-//! statements, reports what each said, opens them again and gives back the
-//! tic to resume from.
+//! timing out. [`Session::recover`] is what follows: it ends every
+//! statement, reports what each said, opens them again and gives back the
+//! tic to resume from. Both simulation statements restart from the same
+//! tic, since a `native_stage` row a recovered run cannot show was ever
+//! read is not one to trust.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration; // purity-ok: a timeout and a measured wait in the driver loop, never a value a statement reads
@@ -34,15 +44,25 @@ use clickdoom_native::resident::{
 use crate::checkpoint::hex64;
 use crate::client::{self, ConnArgs, Db};
 
-/// The columns the simulation statement reads, in wire order. `pad` carries
-/// the padding row the transport writes behind the statement.
+/// The columns the simulation's first statement reads, in wire order.
+/// `pad` carries the padding row the transport writes behind the
+/// statement.
 pub const SIM_INPUT_SCHEMA: &str =
     "tic UInt32, source UInt8, keys UInt32, mouse_dx Int16, mouse_dy Int16, pad String";
+
+/// The columns the simulation's second statement reads: a tic number
+/// alone, since everything else it needs is already in the row the first
+/// statement left for that tic.
+pub const SIM_STAGE2_INPUT_SCHEMA: &str = "tic UInt32, pad String";
 
 /// The columns the renderer statement reads, in wire order.
 pub const RENDER_INPUT_SCHEMA: &str = "frame UInt32, tic UInt32, melt_step UInt8, pad String";
 
-/// The table the simulation writes, keyed by tic.
+/// The table the simulation's first statement writes, keyed by tic, and
+/// the second reads back the same way `native_state` reads the tic before.
+pub const STAGE_TABLE: &str = "native_stage";
+
+/// The table the simulation's second statement writes, keyed by tic.
 pub const STATE_TABLE: &str = "native_state";
 
 /// The table the renderer writes, keyed by frame.
@@ -76,10 +96,30 @@ pub enum SessionError {
         #[source]
         source: ResidentError,
     },
+    /// The same, but naming which of the simulation's own two statements:
+    /// [`Session::close`] ends both, so a caller debugging one that hangs
+    /// needs to know which. `diagnostic` carries what `system.processes`
+    /// and `system.query_log` say about that statement's own query id when
+    /// the close timed out, empty otherwise.
+    #[error("the simulation's own {stage} statement: {source}{diagnostic}")]
+    SimClose {
+        stage: &'static str,
+        #[source]
+        source: ResidentError,
+        diagnostic: Diagnostic,
+    },
     #[error("the renderer statement: {source}")]
     Render {
         #[source]
         source: ResidentError,
+    },
+    /// The same, but for [`Session::close`] specifically, carrying the same
+    /// diagnostic a timed-out close reads for the simulation.
+    #[error("the renderer statement, closing: {source}{diagnostic}")]
+    RenderClose {
+        #[source]
+        source: ResidentError,
+        diagnostic: Diagnostic,
     },
     #[error("reading {database}.{table}: {source}")]
     Read {
@@ -109,6 +149,44 @@ pub enum SessionError {
          statement has stopped; recover the session and feed the frame again"
     )]
     FrameTimeout { frame: u32, waited: Duration },
+    #[error("emptying {database}.{STAGE_TABLE}: {source}")]
+    Reset {
+        database: String,
+        #[source]
+        source: client::Error,
+    },
+}
+
+/// What a timed-out close found reading `system.processes` and
+/// `system.query_log` for the statement's own query id, for
+/// [`SessionError::SimClose`] and [`SessionError::RenderClose`]. Empty for
+/// every other error, and for a close that answered before
+/// [`CLOSE_TIMEOUT`].
+#[derive(Debug)]
+pub struct Diagnostic(Option<String>);
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(text) => write!(f, " ({text})"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// One row of `system.processes`, for a statement still running when its
+/// close timed out.
+#[derive(Row, Deserialize)]
+struct ProcessRow {
+    elapsed: f64,
+}
+
+/// One row of `system.query_log`, for a statement that had already
+/// finished when its close timed out.
+#[derive(Row, Deserialize)]
+struct QueryLogRow {
+    query_duration_ms: u64,
+    exception: String,
 }
 
 /// One frame as `native_frames` holds it.
@@ -176,6 +254,15 @@ struct FrameRow {
     unimplemented: u64,
 }
 
+/// One poll of whether `native_stage` holds a given tic. A `Join` engine
+/// table refuses `joinGet` on its own key column, so this reads a
+/// contract column back through `joinGetOrNull` instead, which answers
+/// `NULL` for a key that is not there.
+#[derive(Row, Deserialize)]
+struct StagedRow {
+    present: u8,
+}
+
 /// The columns a poll of `native_state`'s highest committed tic reads
 /// back, in one row.
 #[derive(Row, Deserialize)]
@@ -186,15 +273,17 @@ struct CommittedRow {
     demo_end: u8,
 }
 
-/// Both statements of one session, plus the connection that reads their
+/// Every statement of one session, plus the connection that reads their
 /// output back.
 pub struct Session {
     database: String,
-    sim_statement: Option<String>,
+    sim_statement: Option<(String, String)>,
     render_statement: Option<String>,
     sim: Option<Resident>,
+    sim2: Option<Resident>,
     render: Option<Resident>,
     sim_query_id: String,
+    sim2_query_id: String,
     render_query_id: String,
     db: Db,
 }
@@ -202,47 +291,77 @@ pub struct Session {
 impl Session {
     /// Opens the statements against `database`.
     ///
-    /// `sim_statement` is `None` for a session that renders from state rows
-    /// already in the database, and `render_statement` is `None` for one
-    /// that runs tics and looks at what they wrote. The statements are
-    /// kept, because recovery reopens them unchanged. Each runs under its
-    /// own `query_id`, so it can be found in `system.query_log` and killed
-    /// by name.
+    /// `sim_statement` is the simulation's own two, first and second, and
+    /// is `None` for a session that renders from state rows already in the
+    /// database; `render_statement` is `None` for one that runs tics and
+    /// looks at what they wrote. Every statement opens at once, not one
+    /// after another, so a tic that pays for two analyses pays for the
+    /// larger of them rather than their sum. The statements are kept,
+    /// because recovery reopens them unchanged. Each runs under its own
+    /// `query_id`, so it can be found in `system.query_log` and killed by
+    /// name.
     pub async fn open(
         conn: &ConnArgs,
         database: &str,
-        sim_statement: Option<&str>,
+        sim_statement: Option<(&str, &str)>,
         render_statement: Option<&str>,
     ) -> Result<Session, SessionError> {
         let mut at = conn.clone();
         at.database = database.to_owned();
+        let db = at.connect_uncompressed();
+        if sim_statement.is_some() {
+            reset_stage(&db, database).await?;
+        }
         let sim_query_id = query_id(database, "sim");
+        let sim2_query_id = query_id(database, "sim2");
         let render_query_id = query_id(database, "render");
-        let sim = match sim_statement {
-            Some(statement) => Some(
-                open_one(&at, statement, SIM_INPUT_SCHEMA, &sim_query_id)
-                    .await
-                    .map_err(|source| SessionError::Sim { source })?,
-            ),
-            None => None,
+
+        let open_sim = async {
+            match sim_statement {
+                Some((stage1, _)) => {
+                    Some(open_one(&at, stage1, SIM_INPUT_SCHEMA, &sim_query_id).await)
+                }
+                None => None,
+            }
         };
-        let render = match render_statement {
-            Some(statement) => Some(
-                open_one(&at, statement, RENDER_INPUT_SCHEMA, &render_query_id)
-                    .await
-                    .map_err(|source| SessionError::Render { source })?,
-            ),
-            None => None,
+        let open_sim2 = async {
+            match sim_statement {
+                Some((_, stage2)) => {
+                    Some(open_one(&at, stage2, SIM_STAGE2_INPUT_SCHEMA, &sim2_query_id).await)
+                }
+                None => None,
+            }
         };
+        let open_render = async {
+            match render_statement {
+                Some(statement) => {
+                    Some(open_one(&at, statement, RENDER_INPUT_SCHEMA, &render_query_id).await)
+                }
+                None => None,
+            }
+        };
+        let (sim, sim2, render) = tokio::join!(open_sim, open_sim2, open_render);
+        let sim = sim
+            .transpose()
+            .map_err(|source| SessionError::Sim { source })?;
+        let sim2 = sim2
+            .transpose()
+            .map_err(|source| SessionError::Sim { source })?;
+        let render = render
+            .transpose()
+            .map_err(|source| SessionError::Render { source })?;
+
         Ok(Session {
             database: database.to_owned(),
-            sim_statement: sim_statement.map(str::to_owned),
+            sim_statement: sim_statement.map(|(a, b)| (a.to_owned(), b.to_owned())),
             render_statement: render_statement.map(str::to_owned),
             sim,
+            sim2,
             render,
             sim_query_id,
+            sim2_query_id,
             render_query_id,
-            db: at.connect_uncompressed(),
+            db,
         })
     }
 
@@ -256,10 +375,15 @@ impl Session {
         self.render_statement.is_some()
     }
 
-    /// The `query_id` the simulation statement runs under. A fresh one is
-    /// taken on every [`recover`](Session::recover).
+    /// The `query_id` the simulation's first statement runs under. A fresh
+    /// one is taken on every [`recover`](Session::recover).
     pub fn sim_query_id(&self) -> &str {
         &self.sim_query_id
+    }
+
+    /// The `query_id` the simulation's second statement runs under.
+    pub fn sim2_query_id(&self) -> &str {
+        &self.sim2_query_id
     }
 
     /// The `query_id` the renderer statement runs under.
@@ -302,15 +426,26 @@ impl Session {
     /// unimplemented. The caller sends the next tic only after this
     /// returns, and stops rather than feeding or drawing past a refusal.
     ///
+    /// The two statements are one simulation to a caller: this feeds the
+    /// second the moment `native_stage` holds the first's own row for
+    /// `tic`, and only then goes on polling `native_state` for the tic to
+    /// land there, so a caller that never looks past [`feed_sim`] and this
+    /// sees no difference from a single statement.
+    ///
     /// The budget is the caller's, as it is for
     /// [`wait_frame`](Session::wait_frame) and for the same reason: the
-    /// first tic of a session pays for the statement's analysis, which is
-    /// seconds, and every tic after it is milliseconds.
-    /// [`TIC_TIMEOUT`] is the one a paced run uses once the statement is
-    /// warm.
+    /// first tic of a session pays for the statements' own analysis, the
+    /// larger of the two since both are sent at once, which is seconds,
+    /// and every tic after it is milliseconds. [`TIC_TIMEOUT`] is the one a
+    /// paced run uses once the statements are warm, and covers both hops.
     pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Ran, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
+        let mut fed_second = false;
         loop {
+            if !fed_second && self.staged(tic).await? {
+                self.feed_sim2(tic)?;
+                fed_second = true;
+            }
             let committed = self.committed().await?;
             if committed.tic >= tic {
                 return Ok(Ran {
@@ -329,6 +464,37 @@ impl Session {
             }
             tokio::time::sleep(POLL_SLEEP).await;
         }
+    }
+
+    /// Whether `native_stage` holds the first statement's own row for
+    /// `tic` yet.
+    ///
+    /// The table is empty whenever this is first asked: [`Session::open`]
+    /// and [`Session::recover`] both truncate it before either simulation
+    /// statement opens, so a row this call finds can only be the reopened
+    /// first statement's own.
+    async fn staged(&self, tic: u32) -> Result<bool, SessionError> {
+        let table = format!("{}.{STAGE_TABLE}", self.database);
+        let sql = format!(
+            "SELECT toUInt8(joinGetOrNull('{table}', 'leveltime', toUInt32({tic})) \
+             IS NOT NULL) AS present"
+        );
+        let row = self
+            .db
+            .fetch_one_reconnecting::<StagedRow>(&sql)
+            .await
+            .map_err(|source| self.read_error(STAGE_TABLE, source))?;
+        Ok(row.present != 0)
+    }
+
+    /// Sends the input row that runs the second statement's own transform
+    /// for `tic`, reading everything it needs back out of `native_stage`.
+    fn feed_sim2(&self, tic: u32) -> Result<(), SessionError> {
+        let mut row = rowbinary::Row::with_capacity(8);
+        row.u32(tic).bytes(b"");
+        self.statement(Role::Sim2)?
+            .send(row.finish())
+            .map_err(|source| SessionError::Sim { source })
     }
 
     /// Sends the input row for one frame. `melt_step` drives the screen
@@ -426,27 +592,56 @@ impl Session {
         let mut at = conn.clone();
         at.database = self.database.clone();
 
-        let sim = end(self.sim.take()).await;
-        let render = end(self.render.take()).await;
+        let (sim, sim2, render) = tokio::join!(
+            end(self.sim.take()),
+            end(self.sim2.take()),
+            end(self.render.take())
+        );
+        let sim = sim.or(sim2);
+
+        if self.sim_statement.is_some() {
+            reset_stage(&self.db, &self.database).await?;
+        }
 
         self.sim_query_id = query_id(&self.database, "sim");
+        self.sim2_query_id = query_id(&self.database, "sim2");
         self.render_query_id = query_id(&self.database, "render");
-        self.sim = match &self.sim_statement {
-            Some(statement) => Some(
-                open_one(&at, statement, SIM_INPUT_SCHEMA, &self.sim_query_id)
-                    .await
-                    .map_err(|source| SessionError::Sim { source })?,
-            ),
-            None => None,
+
+        let open_sim = async {
+            match &self.sim_statement {
+                Some((stage1, _)) => {
+                    Some(open_one(&at, stage1, SIM_INPUT_SCHEMA, &self.sim_query_id).await)
+                }
+                None => None,
+            }
         };
-        self.render = match &self.render_statement {
-            Some(statement) => Some(
-                open_one(&at, statement, RENDER_INPUT_SCHEMA, &self.render_query_id)
-                    .await
-                    .map_err(|source| SessionError::Render { source })?,
-            ),
-            None => None,
+        let open_sim2 = async {
+            match &self.sim_statement {
+                Some((_, stage2)) => {
+                    Some(open_one(&at, stage2, SIM_STAGE2_INPUT_SCHEMA, &self.sim2_query_id).await)
+                }
+                None => None,
+            }
         };
+        let open_render = async {
+            match &self.render_statement {
+                Some(statement) => {
+                    Some(open_one(&at, statement, RENDER_INPUT_SCHEMA, &self.render_query_id).await)
+                }
+                None => None,
+            }
+        };
+        let (opened_sim, opened_sim2, opened_render) =
+            tokio::join!(open_sim, open_sim2, open_render);
+        self.sim = opened_sim
+            .transpose()
+            .map_err(|source| SessionError::Sim { source })?;
+        self.sim2 = opened_sim2
+            .transpose()
+            .map_err(|source| SessionError::Sim { source })?;
+        self.render = opened_render
+            .transpose()
+            .map_err(|source| SessionError::Render { source })?;
 
         Ok(Recovery {
             resume_tic: self.resume_point().await?,
@@ -455,15 +650,39 @@ impl Session {
         })
     }
 
-    /// Ends both statements and reports what each said, giving each
+    /// Ends every statement and reports what each said, giving each
     /// [`CLOSE_TIMEOUT`] to answer.
     pub async fn close(mut self) -> Result<(), SessionError> {
-        let sim = end(self.sim.take()).await;
-        let render = end(self.render.take()).await;
-        match (sim, render) {
-            (Some(source), _) => Err(SessionError::Sim { source }),
-            (None, Some(source)) => Err(SessionError::Render { source }),
-            (None, None) => Ok(()),
+        // Sequential, not concurrent: closing drops the sender and waits
+        // for the server to drain the body and answer, and the second
+        // statement's own body includes rows that read the first's, so
+        // ending them at once risked the second waiting on a commit the
+        // first's own close had not yet forced.
+        if let Some(source) = end(self.sim.take()).await {
+            end(self.sim2.take()).await;
+            end(self.render.take()).await;
+            let diagnostic = diagnose(&self.db, &source, &self.sim_query_id).await;
+            return Err(SessionError::SimClose {
+                stage: "first",
+                source,
+                diagnostic,
+            });
+        }
+        if let Some(source) = end(self.sim2.take()).await {
+            end(self.render.take()).await;
+            let diagnostic = diagnose(&self.db, &source, &self.sim2_query_id).await;
+            return Err(SessionError::SimClose {
+                stage: "second",
+                source,
+                diagnostic,
+            });
+        }
+        match end(self.render.take()).await {
+            Some(source) => {
+                let diagnostic = diagnose(&self.db, &source, &self.render_query_id).await;
+                Err(SessionError::RenderClose { source, diagnostic })
+            }
+            None => Ok(()),
         }
     }
 
@@ -498,6 +717,7 @@ impl Session {
     fn statement(&self, role: Role) -> Result<&Resident, SessionError> {
         let (slot, wrap): (&Option<Resident>, fn(ResidentError) -> SessionError) = match role {
             Role::Sim => (&self.sim, |source| SessionError::Sim { source }),
+            Role::Sim2 => (&self.sim2, |source| SessionError::Sim { source }),
             Role::Render => (&self.render, |source| SessionError::Render { source }),
         };
         slot.as_ref().ok_or_else(|| {
@@ -509,10 +729,11 @@ impl Session {
     }
 }
 
-/// Which of the two statements a call is about.
+/// Which statement a call is about.
 #[derive(Copy, Clone)]
 enum Role {
     Sim,
+    Sim2,
     Render,
 }
 
@@ -527,6 +748,22 @@ pub(crate) fn endpoint(conn: &ConnArgs) -> Endpoint {
         database: conn.database.clone(),
         password: conn.password.clone(),
     }
+}
+
+/// Empties `native_stage` before the simulation's first statement opens or
+/// reopens. The table never carries anything past the tic in flight when its
+/// own writer last ran, so a session pays for one recomputed tic rather than
+/// risk a row a prior run left behind answering [`Session::staged`] for a tic
+/// the reopened statement has not written itself.
+async fn reset_stage(db: &Db, database: &str) -> Result<(), SessionError> {
+    db.run(&format!(
+        "TRUNCATE TABLE IF EXISTS {database}.{STAGE_TABLE}"
+    ))
+    .await
+    .map_err(|source| SessionError::Reset {
+        database: database.to_owned(),
+        source,
+    })
 }
 
 /// Opens one statement under `id`, with the settings a resident statement
@@ -550,6 +787,48 @@ async fn end(statement: Option<Resident>) -> Option<ResidentError> {
     }
 }
 
+/// What `system.processes` and `system.query_log` say about `query_id`,
+/// for a close that missed [`CLOSE_TIMEOUT`]. Empty for any other error,
+/// since a statement that answered with its own error already said what
+/// happened.
+async fn diagnose(db: &Db, error: &ResidentError, query_id: &str) -> Diagnostic {
+    if !matches!(error, ResidentError::Unanswered { .. }) {
+        return Diagnostic(None);
+    }
+    let processes = format!("SELECT elapsed FROM system.processes WHERE query_id = '{query_id}'");
+    match db.fetch_all::<ProcessRow>(&processes).await {
+        Ok(rows) if !rows.is_empty() => {
+            return Diagnostic(Some(format!(
+                "system.processes still lists it, {:.1}s elapsed",
+                rows[0].elapsed
+            )));
+        }
+        Ok(_) => {}
+        Err(source) => return Diagnostic(Some(format!("reading system.processes: {source}"))),
+    }
+    if let Err(source) = db.run("SYSTEM FLUSH LOGS").await {
+        return Diagnostic(Some(format!("flushing system.query_log: {source}")));
+    }
+    let query_log = format!(
+        "SELECT query_duration_ms, exception FROM system.query_log \
+         WHERE query_id = '{query_id}' AND type != 'QueryStart' \
+         ORDER BY event_time DESC LIMIT 1"
+    );
+    match db.fetch_one::<QueryLogRow>(&query_log).await {
+        Ok(row) if row.exception.is_empty() => Diagnostic(Some(format!(
+            "system.query_log shows it finished in {}ms with no exception",
+            row.query_duration_ms
+        ))),
+        Ok(row) => Diagnostic(Some(format!(
+            "system.query_log shows it finished in {}ms: {}",
+            row.query_duration_ms, row.exception
+        ))),
+        Err(source) => Diagnostic(Some(format!(
+            "not in system.processes, and not yet in system.query_log: {source}"
+        ))),
+    }
+}
+
 /// A `query_id` no other statement in this process shares.
 fn query_id(database: &str, role: &str) -> String {
     let sequence = QUERY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -561,8 +840,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_input_schemas_carry_a_padding_column() {
-        for schema in [SIM_INPUT_SCHEMA, RENDER_INPUT_SCHEMA] {
+    fn every_input_schema_carries_a_padding_column() {
+        for schema in [
+            SIM_INPUT_SCHEMA,
+            SIM_STAGE2_INPUT_SCHEMA,
+            RENDER_INPUT_SCHEMA,
+        ] {
             rowbinary::padding_row(schema)
                 .unwrap_or_else(|e| panic!("{schema} cannot carry a padding row: {e}"));
         }

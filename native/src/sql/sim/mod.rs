@@ -163,10 +163,14 @@ pub mod unresolved {
     /// The same, for a monster's own move. A monster's own crossing never
     /// reaches a door special, so only `PLAT_TRIGGER_SPECIALS` applies.
     pub const TX_MULTI_CROSSED: u64 = 1 << 33;
+    /// `P_FindNextHighestFloor`'s own 22 slot buffer: a raiseToNearestAndChange
+    /// plat whose sector has a 23rd qualifying neighbor would crash Vanilla,
+    /// so this leaves the tic unresolved instead.
+    pub const PLAT_NEXT_HIGHEST_OVERFLOW: u64 = 1 << 34;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 34] = [
+const UNRESOLVED_BITS: [(u64, &str); 35] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -201,6 +205,10 @@ const UNRESOLVED_BITS: [(u64, &str); 34] = [
     (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
     (unresolved::PX_MULTI_CROSSED, "PX_MULTI_CROSSED"),
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
+    (
+        unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
+        "PLAT_NEXT_HIGHEST_OVERFLOW",
+    ),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

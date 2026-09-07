@@ -3,10 +3,15 @@
 //! `demo3` reaches its first plat at gametic 603, past the point where the
 //! monsters this lane has not written change where the player goes, so the
 //! reference trace cannot arbitrate one yet. One test seeds a plat into a
-//! state row directly and runs the tic transform over it; another seeds a
-//! crossing of the line that spawns one instead. Both check the floor the
-//! run leaves against `native/tests/support/plat.rs`, a reader written from
-//! `p_plats.c` and `p_floor.c`.
+//! state row directly and runs the tic transform over it; three others seed
+//! a crossing of a line that spawns one instead: a `downWaitUpStay` WR
+//! line, the same line with its own special set to the W1 case, and a
+//! `raiseToNearestAndChange` line. All four check the floor the run leaves
+//! against `native/tests/support/plat.rs`, a reader written from
+//! `p_plats.c` and `p_floor.c`; the W1 crossings also check that the line's
+//! own special clears, and the `raiseToNearestAndChange` crossing also
+//! checks the floor picture and the sector special the spawn itself
+//! writes, both read from `p_plats.c`'s own `EV_DoPlat`.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -388,6 +393,188 @@ async fn a_crossing_of_a_one_shot_line_spawns_the_plat_and_clears_the_line() {
         assert_eq!(row.special, 0, "tic {}: the line stays cleared", row.tic);
     }
     assert!(want.reached_bottom, "the run reaches the bottom");
+}
+
+/// Line 511 (`lv_lines`), a W1 special 22 tagged 7, and a point five map
+/// units to each side of its own midpoint, the same way line 396's own
+/// crossing above is seeded.
+const RAISE_OLD_X: i32 = -9_230_792;
+const RAISE_OLD_Y: i32 = -115_263_886;
+const RAISE_MOMX: i32 = 635_793;
+const RAISE_MOMY: i32 = -158_948;
+/// Sector 122, line 511's own front (side 655): floor 5242880, ceiling
+/// 16252928, floor picture 47.
+const RAISE_FLOORZ: i32 = 5_242_880;
+const RAISE_CEILINGZ: i32 = 16_252_928;
+const RAISE_FLOORPIC: i16 = 47;
+
+/// Sector 120, tagged 7: what `P_FindSectorFromLineTag` finds for line
+/// 511's crossing. Its own floor stands at 0. Two of its two-sided
+/// neighbors (sectors 121 and 122, over lines 564 and 539) share one
+/// floor, 5242880, above it; the third (sector 119, over line 566) stands
+/// level with it and so does not qualify. `P_FindNextHighestFloor` is the
+/// least qualifying floor, so it answers the one height both give.
+const RAISED_SECTOR: usize = 120;
+const RAISED_FLOOR: i32 = 0;
+const RAISED_HIGH: i32 = 5_242_880;
+
+/// `RAISED_HIGH` divides evenly by half `PLATSPEED`, so the run needs 160
+/// steps to reach it and one more to register `pastdest`; 170 covers the
+/// crossing itself and leaves a few tics of margin past the removal.
+const RAISE_TICS: u32 = 170;
+
+#[derive(Row, Deserialize)]
+struct Raised {
+    tic: u32,
+    slot: u32,
+    floor: i32,
+    status: i32,
+    count: i32,
+    floorpic: i16,
+    special: i16,
+    unresolved: u64,
+}
+
+/// A crossing of a W1 special 22 line tagged 7 spawns the plat `EV_DoPlat`
+/// spawns for `raiseToNearestAndChange`: the spawn itself copies line
+/// 511's own front sector's floor picture onto sector 120 and clears
+/// sector 120's own special, and `T_PlatRaise` then runs the plat the
+/// same way the `downWaitUpStay` crossing above is checked, except that it
+/// comes off the list the same tic it reaches the top rather than
+/// entering `waiting` first.
+#[tokio::test]
+async fn a_crossing_of_the_type_22_line_spawns_the_raise_to_nearest_and_change_plat() {
+    let bytes = support::doom1();
+    let wad = Wad::parse(&bytes).unwrap();
+    let fixture = Fixture::create("sim_plat_raise").await;
+    let db = fixture.database.clone();
+
+    let mut plan = load::plan(&db, &wad);
+    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
+    plan.extend(sim::load_statements(&db));
+    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    fn put(column: &'static str, value: String) -> (&'static str, String) {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> if(k = p.p_mo, {value}, v), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    }
+    let overrides = [
+        put("m_x", format!("toInt32({RAISE_OLD_X})")),
+        put("m_y", format!("toInt32({RAISE_OLD_Y})")),
+        put("m_momx", format!("toInt32({RAISE_MOMX})")),
+        put("m_momy", format!("toInt32({RAISE_MOMY})")),
+        put("m_z", format!("toInt32({RAISE_FLOORZ})")),
+        put("m_floorz", format!("toInt32({RAISE_FLOORZ})")),
+        put("m_ceilingz", format!("toInt32({RAISE_CEILINGZ})")),
+    ];
+    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+        .into_iter()
+        .map(sql::Statement::sql)
+        .collect();
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + RAISE_TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    statements.push(sim::tick::run_statement(&db, &inputs));
+    if let Err(error) = fixture.execute(&statements).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    let rows: Vec<Raised> = fixture
+        .rows(&format!(
+            "SELECT tic, \
+             arrayFirstIndex((k, t) -> k = {PLAT} AND t = 7, s_kind, s_tag) AS slot, \
+             sec_floorheight[{sector}] AS floor, \
+             if(slot = 0, -1, s_status[slot]) AS status, \
+             if(slot = 0, -1, s_count[slot]) AS count, \
+             sec_floorpic[{sector}] AS floorpic, \
+             sec_special[{sector}] AS special, \
+             unresolved \
+             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
+            PLAT = sector_thinker_kind::PLAT,
+            sector = RAISED_SECTOR + 1,
+        ))
+        .await;
+    fixture.finish().await;
+
+    assert_eq!(rows.len(), RAISE_TICS as usize, "every tic ran");
+    let crossed_bits = sim::unresolved::PX_CROSSED
+        | sim::unresolved::TX_CROSSED
+        | sim::unresolved::PX_MULTI_CROSSED
+        | sim::unresolved::TX_MULTI_CROSSED;
+    for row in &rows {
+        assert_eq!(
+            row.unresolved & crossed_bits,
+            0,
+            "tic {} left a crossing unresolved",
+            row.tic
+        );
+        assert_eq!(
+            row.unresolved & sim::unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
+            0,
+            "tic {} overflowed P_FindNextHighestFloor's own buffer",
+            row.tic
+        );
+    }
+    let spawned = rows
+        .iter()
+        .find(|row| row.slot != 0)
+        .unwrap_or_else(|| panic!("no tic after the crossing spawns the plat"));
+
+    assert_eq!(
+        spawned.floorpic, RAISE_FLOORPIC,
+        "the spawn copies the front sector's own floor picture"
+    );
+    assert_eq!(
+        spawned.special, 0,
+        "the spawn clears the target sector's own special"
+    );
+
+    // `T_PlatRaise` runs the same tic `EV_DoPlat` spawns the plat, the way
+    // the `downWaitUpStay` crossing above is checked: the spawn tic's own
+    // row is already one step up from the sector's own floor.
+    let mut want = plat::Plat::raise_to_nearest_and_change(RAISED_FLOOR, RAISED_HIGH);
+    let first = want.tic();
+    assert_eq!(
+        (spawned.floor, spawned.status, spawned.count),
+        (first.floorheight, first.status, first.count),
+        "the spawn tic's own first move"
+    );
+    for row in rows.iter().filter(|row| row.tic > spawned.tic) {
+        if want.done {
+            // The thinker came off the list the tic it arrived, so no
+            // later row carries its slot.
+            assert_eq!(row.slot, 0, "tic {} keeps the plat gone", row.tic);
+            assert_eq!(
+                row.floor, RAISED_HIGH,
+                "tic {} holds the arrived floor",
+                row.tic
+            );
+            continue;
+        }
+        let step = want.tic();
+        if want.done {
+            assert_eq!(row.slot, 0, "tic {} removes the plat", row.tic);
+            assert_eq!(row.floor, step.floorheight, "tic {}", row.tic);
+        } else {
+            assert_eq!(
+                (row.floor, row.status, row.count),
+                (step.floorheight, step.status, step.count),
+                "tic {}",
+                row.tic
+            );
+        }
+    }
+    assert!(want.done, "the run reaches the top and comes off the list");
 }
 
 /// `p_spec.h`: how long a switch stays pressed.

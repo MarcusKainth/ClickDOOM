@@ -80,9 +80,11 @@ pub const CROSSABLE_SPECIALS: [i64; 72] = [
 /// never reaches a door or a floor.
 pub const MONSTER_CROSSABLE_SPECIALS: [i64; 7] = [4, 10, 39, 88, 97, 125, 126];
 
-/// `EV_DoPlat`'s downWaitUpStay: both `P_CrossSpecialLine` cases that spawn
-/// it, one W1 (10, one-shot) and one WR (88, a retrigger).
-pub const PLAT_TRIGGER_SPECIALS: [i64; 2] = [10, 88];
+/// `EV_DoPlat`'s downWaitUpStay and raiseToNearestAndChange:
+/// `P_CrossSpecialLine`'s cases 10 (downWaitUpStay, W1, one-shot), 88
+/// (downWaitUpStay, WR, a retrigger) and 22 (raiseToNearestAndChange, W1,
+/// one-shot).
+pub const PLAT_TRIGGER_SPECIALS: [i64; 3] = [10, 88, 22];
 
 /// `EV_DoDoor`'s open and normal: `P_CrossSpecialLine` cases 2 (`vld_open`,
 /// W1, one-shot) and 90 (`vld_normal`, WR, a retrigger).
@@ -373,15 +375,19 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     bindings
 }
 
-/// `EV_DoPlat`'s downWaitUpStay, `EV_DoDoor`'s open and normal, and
-/// `EV_DoFloor`'s raiseFloor and turboLower, over every mover that crossed
-/// a handled special this tic.
+/// `EV_DoPlat`'s downWaitUpStay and raiseToNearestAndChange, `EV_DoDoor`'s
+/// open and normal, and `EV_DoFloor`'s raiseFloor and turboLower, over
+/// every mover that crossed a handled special this tic.
 ///
 /// `P_FindSectorFromLineTag`'s walk runs once per tag a crossing named,
-/// skipping a sector the matching `EV_*` finds already busy. Case 10 (W1)
-/// and case 2 (W1) clear their line's special once their thinker spawns;
-/// case 88, case 90, case 91 and case 98 (all WR) leave it, so a later
-/// crossing can retrigger them once the sector frees up.
+/// skipping a sector the matching `EV_*` finds already busy. Case 10 (W1),
+/// case 2 (W1) and case 22 (W1) clear their line's special once their
+/// thinker spawns; case 88, case 90, case 91 and case 98 (all WR) leave it,
+/// so a later crossing can retrigger them once the sector frees up.
+/// raiseToNearestAndChange also copies the triggering line's own front
+/// sector's floor picture onto the target sector and clears the target
+/// sector's own special, both at the moment the plat spawns rather than
+/// when it arrives.
 ///
 /// `px_crossed_line` and `tx_crossed_line` each name at most one line, the
 /// first `P_TryMove`'s own spechit walk finds; a move whose spechit holds
@@ -390,7 +396,9 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
 /// and dropping the second. `MONSTER_CROSSABLE_SPECIALS` names neither
 /// `DOOR_TRIGGER_SPECIALS` nor `FLOOR_TRIGGER_SPECIALS`, so
 /// `tx_crossed_line` never carries a door or a floor, and `cx_door_lines`
-/// and `cx_floor_lines` below are each a single line or none.
+/// and `cx_floor_lines` below are each a single line or none; the same
+/// holds for `cx_plat_lines`, so `cx_plat_type` reads only its first line's
+/// special.
 ///
 /// The busy check reads `sec_specialdata` as `use_special_line` already
 /// left it, since that stage runs first: a sector a press claims this tic
@@ -450,21 +458,61 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
         ),
     );
 
+    bind(
+        "cx_plat_type",
+        format!(
+            "toInt64(if(empty(cx_plat_lines), 0, \
+             if({ls}[1 + cx_plat_lines[1]] = 22, {}, {})))",
+            plats::kind::RAISE_TO_NEAREST_AND_CHANGE,
+            plats::kind::DOWN_WAIT_UP_STAY,
+        ),
+    );
+    // One `P_FindNextHighestFloor` per sector `cx_plat_sectors` names,
+    // computed once and read back by position from `plat_fields` below,
+    // since `cx_plat_type` is the same for both.
+    bind(
+        "cx_plat_next",
+        format!(
+            "arrayMap(sec -> {}, cx_plat_sectors)",
+            plats::next_highest_floor("(sec - 1)", &s("sec_floorheight"))
+        ),
+    );
+
     let plat_floor = format!("toInt64({}[sec])", s("sec_floorheight"));
     let plat_low = plane::lowest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
+    let plat_next_high = format!(
+        "if(cx_plat_next[i].{COUNT} = 0, {plat_floor}, cx_plat_next[i].{MIN})",
+        COUNT = plats::next_highest::COUNT,
+        MIN = plats::next_highest::MIN,
+    );
+    let raises = format!(
+        "cx_plat_type = {}",
+        plats::kind::RAISE_TO_NEAREST_AND_CHANGE
+    );
     // The new plat's fields, in the order `THINKER_COLUMNS` names them.
     let plat_fields = [
         format!("toUInt32({} + i - 1)", s("next_seq")),
         format!("toUInt8({})", kind::PLAT),
         "toInt32(sec - 1)".to_owned(),
-        format!("toInt32({})", plats::kind::DOWN_WAIT_UP_STAY),
+        "toInt32(cx_plat_type)".to_owned(),
         "toInt32(0)".to_owned(),
-        format!("toInt32({})", plats::PLATSPEED * 4),
-        format!("toInt32(least({plat_low}, {plat_floor}))"),
-        format!("toInt32({plat_floor})"),
+        format!(
+            "toInt32(if({raises}, {}, {}))",
+            plats::PLATSPEED / 2,
+            plats::PLATSPEED * 4
+        ),
+        format!("toInt32(if({raises}, 0, least({plat_low}, {plat_floor})))"),
+        format!("toInt32(if({raises}, {plat_next_high}, {plat_floor}))"),
         "toInt32(0)".to_owned(),
-        format!("toInt32({})", plats::TICRATE * plats::PLATWAIT),
-        format!("toInt32({})", plats::status::DOWN),
+        format!(
+            "toInt32(if({raises}, 0, {}))",
+            plats::TICRATE * plats::PLATWAIT
+        ),
+        format!(
+            "toInt32(if({raises}, {}, {}))",
+            plats::status::UP,
+            plats::status::DOWN
+        ),
         "toInt32(0)".to_owned(),
         "toUInt8(0)".to_owned(),
         // `sec_tag` is loaded fresh from `lv_sectors_static` every tic
@@ -645,9 +693,45 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     bindings.push((
         "now_line_special".to_owned(),
         format!(
-            "arrayMap((v, i) -> toInt16(if(v IN (10, 2) AND has(cx_lines, i - 1), 0, v)), \
+            "arrayMap((v, i) -> toInt16(if(v IN (10, 2, 22) AND has(cx_lines, i - 1), 0, v)), \
              {held}, arrayEnumerate({held}))",
             held = s("line_special"),
+        ),
+    ));
+    // `EV_DoPlat`'s raiseToNearestAndChange copies the triggering line's
+    // own front sector's floor picture onto every sector it spawns into,
+    // and clears each one's own special, both the moment the plat spawns.
+    let plat_floorpic_source = format!(
+        "toInt16({floorpic}[1 + line_front[1 + cx_plat_lines[1]]])",
+        floorpic = s("sec_floorpic"),
+    );
+    bindings.push((
+        "now_sec_floorpic".to_owned(),
+        format!(
+            "arrayMap((v, i) -> toInt16(if({raises} AND indexOf(cx_plat_sectors, i) != 0, \
+             {plat_floorpic_source}, v)), {held}, arrayEnumerate({held}))",
+            held = s("sec_floorpic"),
+        ),
+    ));
+    bindings.push((
+        "now_sec_special".to_owned(),
+        format!(
+            "arrayMap((v, i) -> toInt16(if({raises} AND indexOf(cx_plat_sectors, i) != 0, \
+             0, v)), {held}, arrayEnumerate({held}))",
+            held = s("sec_special"),
+        ),
+    ));
+    bindings.push((
+        "now_unresolved".to_owned(),
+        mask(
+            &s("unresolved"),
+            &[(
+                unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
+                &format!(
+                    "{raises} AND arrayExists(t -> t.{OVERFLOW} = 1, cx_plat_next)",
+                    OVERFLOW = plats::next_highest::OVERFLOW,
+                ),
+            )],
         ),
     ));
     bindings
@@ -1238,6 +1322,7 @@ mod tests {
             "cx_plat_lines",
             "cx_door_lines",
             "cx_floor_lines",
+            "cx_plat_type",
             "cx_door_type",
             "cx_floor_special",
         ] {

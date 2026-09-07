@@ -21,7 +21,6 @@
 use clickdoom_native::sql::sim;
 use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::{load, sql, wad::Wad};
-use clickdoom_spec::native_state::sector_thinker_kind;
 use clickhouse::Row;
 use serde::Deserialize;
 
@@ -104,19 +103,6 @@ const CROSSING: i64 = 8 * 65536 + 1;
 /// runs sidesteps that rather than proving anything about it.
 const MONSTER_UNHANDLED: i64 = 97;
 
-/// A tag no line or sector in E1M7 carries on its own. `P_FindSectorFromLineTag`
-/// compares tags as plain numbers, so every line left at its own tag of 0
-/// matches every untagged sector in the map, not "no sector": giving
-/// every line this tag instead, and giving one sector the same tag, is
-/// what keeps the crossing arm's own plat to the one sector this reads
-/// rather than spawning it on every untagged sector at once.
-const CROSSING_TAG: i64 = 12_345;
-
-/// The sector the crossing arm's own plat spawns in, chosen because
-/// nothing in E1M7 gives it a thinker of its own by `BEFORE`, so the
-/// spawn here cannot collide with one the level already runs.
-const CROSSING_SECTOR: u32 = 0;
-
 /// One arm per seeded row: its name and where the copy of `BEFORE` lands.
 /// The tics are far apart so the arms cannot read each other's rows.
 const ARMS: [(&str, u32); 4] = [
@@ -134,7 +120,6 @@ struct Moved {
     momx: i32,
     momy: i32,
     unresolved: u64,
-    plat_at_crossing_sector: u8,
 }
 
 /// `FixedMul` against `FRICTION`, which is what `P_XYMovement` leaves on a
@@ -218,26 +203,11 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
         if specials {
             // Every line made to carry one, so what the move crosses is
             // whatever it crosses and the arm does not depend on the map
-            // putting a special where the thrust happens to go. Every
-            // line and one sector are also given `CROSSING_TAG`, so the
-            // dispatch this reaches lands on `CROSSING_SECTOR` alone.
+            // putting a special where the thrust happens to go.
             overrides.push((
                 "line_special",
                 format!("arrayMap(v -> toInt16({MONSTER_UNHANDLED}), p.line_special)"),
             ));
-            statements.push(
-                sql::Statement::sql(format!(
-                    "ALTER TABLE {db}.lv_lines UPDATE tag = {CROSSING_TAG} WHERE 1"
-                ))
-                .with(&[("mutations_sync", "1")]),
-            );
-            statements.push(
-                sql::Statement::sql(format!(
-                    "ALTER TABLE {db}.lv_sectors_static UPDATE tag = {CROSSING_TAG} \
-                     WHERE id = {CROSSING_SECTOR}"
-                ))
-                .with(&[("mutations_sync", "1")]),
-            );
         }
         statements.extend(
             seed::row(&db, at, BEFORE, &overrides)
@@ -298,12 +268,9 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     let rows: Vec<Moved> = fixture
         .rows(&format!(
             "SELECT tic, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
-             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, unresolved, \
-             toUInt8(arrayExists((k, s) -> k = {PLAT} AND s = {CROSSING_SECTOR}, \
-             s_kind, s_sector)) AS plat_at_crossing_sector \
+             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, unresolved \
              FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", "),
-            PLAT = sector_thinker_kind::PLAT,
+            wanted.join(", ")
         ))
         .await;
     #[derive(Row, Deserialize)]
@@ -408,15 +375,11 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
 
     // `P_CrossSpecialLine` is what a move that landed owes the special
     // lines it crossed, and a thrust can push a monster's own move across
-    // one. 88 is in `specials::PLAT_TRIGGER_SPECIALS`, one of the specials
-    // a monster's own crossing reaches the switch for and this engine
-    // dispatches, so the crossing spawns the plat and leaves nothing
-    // unresolved. Every line is given the special and `CROSSING_TAG`
-    // rather than depending on the map putting one where the thrust
-    // happens to go; `CROSSING_TAG` also isolates the spawn to
-    // `CROSSING_SECTOR`, since a tag of 0 would otherwise match every
-    // untagged sector in the map (`P_FindSectorFromLineTag` compares tags
-    // as plain numbers).
+    // one. `MONSTER_UNHANDLED` is a special a monster's own crossing
+    // reaches the switch for and this engine does not dispatch, so the
+    // crossing leaves the tic unresolved rather than running or dropping
+    // it silently. Every line is given the special rather than depending
+    // on the map putting one where the thrust happens to go.
     //
     // The two arms are the test. They are the same thrust from the same
     // place and differ only in whether the lines carry a special, so a tic
@@ -432,18 +395,9 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     );
     assert_eq!(crossed.y, plain.y, "and moved it to the same place");
     assert_eq!(
-        crossed.unresolved, 0,
-        "the special line the move crossed is a plat trigger, and runs"
-    );
-    assert_eq!(
-        at(500).plat_at_crossing_sector,
-        0,
-        "the seeded row spawns nothing on its own"
-    );
-    assert_eq!(
-        at(501).plat_at_crossing_sector,
-        1,
-        "the crossing spawns the plat on CROSSING_SECTOR alone"
+        crossed.unresolved,
+        sim::unresolved::TX_CROSSED,
+        "the special line the move crossed is not run, so the tic says so"
     );
 
     // Two things thrust the same way, close enough that the general

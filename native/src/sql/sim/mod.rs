@@ -115,10 +115,6 @@ pub mod unresolved {
     /// A melee attack's own frame carries a routine other than
     /// `A_TroopAttack` or `A_SargAttack`.
     pub const AT_ROUTINE_STUCK: u64 = 1 << 18;
-    /// A melee attack's kill counts toward the level's kill total.
-    pub const AT_KILL_COUNTED: u64 = 1 << 19;
-    /// A melee attack's kill drops an item.
-    pub const AT_KILL_DROP: u64 = 1 << 20;
     /// `A_TroopAttack`: the fireball it spawns hits an unwritten path of
     /// its own.
     pub const AT_THROWN_STUCK: u64 = 1 << 21;
@@ -179,7 +175,7 @@ pub mod unresolved {
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 38] = [
+const UNRESOLVED_BITS: [(u64, &str); 36] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -199,8 +195,6 @@ const UNRESOLVED_BITS: [(u64, &str); 38] = [
     (unresolved::TZ_UNRUN, "TZ_UNRUN"),
     (unresolved::AT_ATTACKERS, "AT_ATTACKERS"),
     (unresolved::AT_ROUTINE_STUCK, "AT_ROUTINE_STUCK"),
-    (unresolved::AT_KILL_COUNTED, "AT_KILL_COUNTED"),
-    (unresolved::AT_KILL_DROP, "AT_KILL_DROP"),
     (unresolved::AT_THROWN_STUCK, "AT_THROWN_STUCK"),
     (unresolved::TK_STUCK, "TK_STUCK"),
     (unresolved::PLANE_SHARED, "PLANE_SHARED"),

@@ -1153,8 +1153,9 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             held
         };
         // `P_AddThinker` puts a new thing on the end of the list, so a
-        // fireball the tic threw goes behind what survived the compaction.
-        let born = match missile::born_column(column, "t") {
+        // fireball the tic threw and whatever a kill this tic dropped go
+        // behind what survived the compaction, the fireball first.
+        let thrown_born = match missile::born_column(column, "t") {
             Some(value) => {
                 let value = if POINTERS.contains(&column) {
                     moved_slot(&value)
@@ -1168,6 +1169,22 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
                 s("next_linkseq")
             ),
         };
+        let dropped_born = match born_column(column, "d") {
+            Some(value) => {
+                let value = if POINTERS.contains(&column) {
+                    moved_slot(&value)
+                } else {
+                    value
+                };
+                format!("arrayMap(d -> {value}, mt_drops)")
+            }
+            None => format!(
+                "arrayMap((d, i) -> toUInt32({} + length(mt_thrown) + i - 1), \
+                 mt_drops, arrayEnumerate(mt_drops))",
+                s("next_linkseq")
+            ),
+        };
+        let born = format!("arrayConcat({thrown_born}, {dropped_born})");
         bind(
             &format!("now_{column}"),
             format!("arrayConcat(arrayFilter((v, a) -> a = 1, {held}, mt_kept), {born})"),
@@ -1187,11 +1204,14 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     );
     bind("now_p_attacker", moved_slot(&s("p_attacker")));
     bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
-    // Every thing the tic threw took one of each counter.
+    // Every thing the tic threw or dropped took one of each counter.
     for column in ["next_seq", "next_linkseq"] {
         bind(
             &format!("now_{column}"),
-            format!("toUInt32({} + length(mt_thrown))", s(column)),
+            format!(
+                "toUInt32({} + length(mt_thrown) + length(mt_drops))",
+                s(column)
+            ),
         );
     }
     bindings
@@ -1423,6 +1443,21 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         "at_target",
         "toUInt32(if(at_clawed = 1, mk_m_target[greatest(at_one, 1)], 0))".to_owned(),
     );
+    // `P_KillMobj`'s own drop, for the claw's own target. `draws` already
+    // reserves this call's own last draw for it, so the spawn's own base
+    // is one short of what the call as a whole drew.
+    bind(
+        "mt_drop_asks",
+        format!(
+            "if(mt_hurt.{drop} != -1, [(mt_hurt.{drop}, \
+             toInt32(mk_m_x[greatest(at_target, 1)]), \
+             toInt32(mk_m_y[greatest(at_target, 1)]), toInt32({ONFLOORZ}), \
+             toUInt32(at_base + mt_hurt.{draws} - 1))], [])",
+            drop = inter::hurt::DROP,
+            draws = inter::hurt::DRAWS,
+        ),
+    );
+    bind("mt_drops", spawn_mobj("mt_drop_asks", &spawning));
     bind(
         "at_unrun",
         mask(
@@ -1432,14 +1467,6 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
                 (
                     unresolved::AT_ROUTINE_STUCK,
                     &format!("at_struck.{} = 1", attacks::attacked::STUCK),
-                ),
-                (
-                    unresolved::AT_KILL_COUNTED,
-                    &format!("mt_hurt.{} = 1", inter::hurt::COUNTED),
-                ),
-                (
-                    unresolved::AT_KILL_DROP,
-                    &format!("mt_hurt.{} != -1", inter::hurt::DROP),
                 ),
                 (
                     unresolved::DM_STUCK,
@@ -1708,6 +1735,23 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
                     ),
                 ),
             ],
+        ),
+    );
+    // `P_KillMobj`'s own count is source-agnostic in single-player, so a
+    // claw, an in-flight missile and a thrown missile's own first tic each
+    // add whatever kills they land. `now_p_killcount` already carries the
+    // player's own gunshot kills from `fire_shots`, the stage this reads
+    // ahead of.
+    bind(
+        "now_p_killcount",
+        format!(
+            "toInt32(toInt32({prev}) + toInt32(mt_hurt.{counted}) \
+             + toInt32(arraySum(arrayMap(t -> toInt32(t.{hurt}.{counted}), \
+             mt_missile_thoughts))) \
+             + toInt32(arraySum(arrayMap(t -> toInt32(t.{hurt}.{counted}), tk_thoughts))))",
+            prev = s("p_killcount"),
+            hurt = missile::thought::HURT,
+            counted = inter::hurt::COUNTED,
         ),
     );
     bindings

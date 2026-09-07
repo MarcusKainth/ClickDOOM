@@ -61,8 +61,8 @@ const THINKER_TYPES: [&str; 23] = [
 /// `P_CrossSpecialLine`'s own switch (`p_spec.c`), every special it names,
 /// TRIGGERS and RETRIGGERS together. A crossed line whose special is not
 /// here does nothing, exactly as the switch falls through with no case
-/// for it. None of these run yet, so a crossing that reaches one leaves
-/// the tic unresolved rather than being guessed.
+/// for it. [`PLAT_TRIGGER_SPECIALS`] run; a crossing that reaches any
+/// other one still leaves the tic unresolved rather than being guessed.
 pub const CROSSABLE_SPECIALS: [i64; 72] = [
     2, 3, 4, 5, 6, 8, 10, 12, 13, 16, 17, 19, 22, 25, 30, 35, 36, 37, 38, 39, 40, 44, 52, 53, 54,
     56, 57, 58, 59, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 93,
@@ -75,6 +75,20 @@ pub const CROSSABLE_SPECIALS: [i64; 72] = [
 /// Every other special returns before the switch runs, whether or not the
 /// switch itself would have a case for it.
 pub const MONSTER_CROSSABLE_SPECIALS: [i64; 7] = [4, 10, 39, 88, 97, 125, 126];
+
+/// `EV_DoPlat`'s downWaitUpStay: both `P_CrossSpecialLine` cases that spawn
+/// it, one W1 (10, one-shot) and one WR (88, a retrigger).
+pub const PLAT_TRIGGER_SPECIALS: [i64; 2] = [10, 88];
+
+/// `specials` minus [`PLAT_TRIGGER_SPECIALS`]: what still leaves a
+/// crossing unresolved once `cross_plats` runs the rest of them.
+pub fn unhandled_crossable(specials: &[i64]) -> Vec<i64> {
+    specials
+        .iter()
+        .copied()
+        .filter(|special| !PLAT_TRIGGER_SPECIALS.contains(special))
+        .collect()
+}
 
 /// `P_FindSectorFromLineTag`: every sector whose tag matches `tag`, in
 /// sector order, which is the order the engine's own linear scan finds
@@ -108,6 +122,28 @@ pub fn crosses_special(
 ) -> String {
     format!(
         "arrayExists(l -> {line_special}[1 + l] IN ({}) AND {} != {}, arrayReverse({spechit}))",
+        special_list(specials),
+        super::map::point_on_line_side(new_x, new_y, "l"),
+        super::map::point_on_line_side(old_x, old_y, "l"),
+    )
+}
+
+/// The last-added (`P_TryMove`'s own `while (numspechit--)` order) `spechit`
+/// line whose special is one of `specials` and whose side flips between
+/// where the move started and where it lands, or -1 if none does.
+#[allow(clippy::too_many_arguments)]
+pub fn crossed_line(
+    old_x: &str,
+    old_y: &str,
+    new_x: &str,
+    new_y: &str,
+    spechit: &str,
+    line_special: &str,
+    specials: &[i64],
+) -> String {
+    format!(
+        "arrayFold((acc, l) -> toInt64(if(acc = -1 AND {line_special}[1 + l] IN ({}) \
+         AND {} != {}, l, acc)), arrayReverse({spechit}), toInt64(-1))",
         special_list(specials),
         super::map::point_on_line_side(new_x, new_y, "l"),
         super::map::point_on_line_side(old_x, old_y, "l"),
@@ -295,6 +331,99 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
             ),
         ),
     ]);
+    bindings
+}
+
+/// `EV_DoPlat`'s downWaitUpStay, over every mover that crossed a special 10
+/// or 88 line this tic.
+///
+/// `P_FindSectorFromLineTag`'s walk runs once per tag a crossing named,
+/// skipping a sector `EV_DoPlat` finds already busy. Case 10 (W1) clears
+/// the line's special once its plat is spawned; case 88 (WR) leaves it, so
+/// a later crossing can retrigger it once the sector frees up.
+pub fn cross_plats(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+
+    bind(
+        "cx_lines",
+        "arrayFilter(l -> l != -1, arrayConcat([px_crossed_line], tx_crossed_line))".to_owned(),
+    );
+    // `line_tag` is loaded fresh from `lv_lines` every tic rather than
+    // carried in `native_state`, so it is read by its own name rather than
+    // through `state`.
+    bind(
+        "cx_tags",
+        "arrayDistinct(arrayMap(l -> toInt64(line_tag[1 + l]), cx_lines))".to_owned(),
+    );
+    bind(
+        "cx_sectors",
+        format!(
+            "arrayFilter(sec -> {}[sec] = 0, \
+             arrayDistinct(arrayFlatten(arrayMap(tag -> {}, cx_tags))))",
+            s("sec_specialdata"),
+            sectors_by_tag("tag"),
+        ),
+    );
+    let floor = format!("toInt64({}[sec])", s("sec_floorheight"));
+    let low = plane::lowest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
+    // The new plat's fields, in the order `THINKER_COLUMNS` names them.
+    let fields = [
+        format!("toUInt32({} + i - 1)", s("next_seq")),
+        format!("toUInt8({})", kind::PLAT),
+        "toInt32(sec - 1)".to_owned(),
+        format!("toInt32({})", plats::kind::DOWN_WAIT_UP_STAY),
+        "toInt32(0)".to_owned(),
+        format!("toInt32({})", plats::PLATSPEED * 4),
+        format!("toInt32(least({low}, {floor}))"),
+        format!("toInt32({floor})"),
+        "toInt32(0)".to_owned(),
+        format!("toInt32({})", plats::TICRATE * plats::PLATWAIT),
+        format!("toInt32({})", plats::status::DOWN),
+        "toInt32(0)".to_owned(),
+        "toUInt8(0)".to_owned(),
+        // `sec_tag` is loaded fresh from `lv_sectors_static` every tic
+        // rather than carried in `native_state`, so it is read by its own
+        // name rather than through `state`.
+        "toInt32(sec_tag[sec])".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(1)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+    ];
+    bind(
+        "cx_rows",
+        format!(
+            "arrayMap((sec, i) -> {}, cx_sectors, arrayEnumerate(cx_sectors))",
+            new_plane(&fields)
+        ),
+    );
+    bindings.extend(spawn_planes("cx_rows", |column| s(column)));
+    // `specialdata` names the thinker by its place on the list, which is
+    // the slot the append just took.
+    let base = format!("length({})", s("s_kind"));
+    bindings.push((
+        "now_sec_specialdata".to_owned(),
+        format!(
+            "arrayMap((v, i) -> toUInt32(if(indexOf(cx_sectors, i) != 0, \
+             toUInt32({base} + indexOf(cx_sectors, i)), v)), {held}, arrayEnumerate({held}))",
+            held = s("sec_specialdata"),
+        ),
+    ));
+    bindings.push((
+        "now_line_special".to_owned(),
+        format!(
+            "arrayMap((v, i) -> toInt16(if(v = 10 AND has(cx_lines, i - 1), 0, v)), \
+             {held}, arrayEnumerate({held}))",
+            held = s("line_special"),
+        ),
+    ));
     bindings
 }
 
@@ -863,6 +992,22 @@ mod tests {
         let sql = sectors_by_tag("line_tag[1 + l]");
         assert!(sql.contains("sec_tag[sec] = (line_tag[1 + l])"), "{sql}");
         assert!(sql.contains("arrayEnumerate(sec_tag)"), "{sql}");
+    }
+
+    /// `cross_plats` runs both of `PLAT_TRIGGER_SPECIALS`, so a crossing
+    /// unresolved bit built from `unhandled_crossable` no longer names
+    /// either, and names nothing else it did not already.
+    #[test]
+    fn unhandled_crossable_takes_out_exactly_the_plat_triggers() {
+        let unhandled = unhandled_crossable(&CROSSABLE_SPECIALS);
+        for special in PLAT_TRIGGER_SPECIALS {
+            assert!(!unhandled.contains(&special), "{special}");
+        }
+        for special in CROSSABLE_SPECIALS {
+            if !PLAT_TRIGGER_SPECIALS.contains(&special) {
+                assert!(unhandled.contains(&special), "{special}");
+            }
+        }
     }
 
     /// `CROSSABLE_SPECIALS` names no special twice; `p_spec.c`'s own

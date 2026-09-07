@@ -1694,6 +1694,8 @@ pub mod moving {
     pub const USELINE: usize = 16;
     /// 1 where a step's landed move listed a special line.
     pub const CROSSED: usize = 17;
+    /// The first special line a step's landed move crossed, or -1.
+    pub const CROSSED_LINE: usize = 18;
 }
 
 /// The thing whose momentum is being spent, as expressions.
@@ -2048,7 +2050,9 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
     // walk refused crosses nothing, so only a part that landed counts.
     // `P_CrossSpecialLine` returns before its switch for anything but its
     // own non-player allow-list, so a monster's crossing never reaches a
-    // special that list does not name.
+    // special that list does not name. `cross_plats` already runs the ones
+    // `unhandled_crossable` takes out, below.
+    let monster_unhandled = specials::unhandled_crossable(&specials::MONSTER_CROSSABLE_SPECIALS);
     bind(
         "tx_special",
         by_place(&format!(
@@ -2060,7 +2064,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
                 "tx_y_one[i]",
                 &format!("tx_one[i].{}", answer::SPECHIT),
                 world.line_special,
-                &specials::MONSTER_CROSSABLE_SPECIALS,
+                &monster_unhandled,
             ),
             cross_two = specials::crosses_special(
                 "tx_x_one[i]",
@@ -2069,13 +2073,46 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
                 "tx_y[i]",
                 &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
                 world.line_special,
-                &specials::MONSTER_CROSSABLE_SPECIALS,
+                &monster_unhandled,
             ),
         )),
     );
     bind(
         "tx_crossed",
         "toUInt8(arrayExists(v -> v = 1, tx_special))".to_owned(),
+    );
+    // `EV_DoPlat`'s downWaitUpStay: the first special-10 or -88 line a
+    // monster's own move crosses this tic, or -1.
+    bind(
+        "tx_cross_one",
+        by_place(&specials::crossed_line(
+            "tx_hold_x[i]",
+            "tx_hold_y[i]",
+            "tx_x_one[i]",
+            "tx_y_one[i]",
+            &format!("tx_one[i].{}", answer::SPECHIT),
+            world.line_special,
+            &specials::PLAT_TRIGGER_SPECIALS,
+        )),
+    );
+    bind(
+        "tx_cross_two",
+        by_place(&specials::crossed_line(
+            "tx_x_one[i]",
+            "tx_y_one[i]",
+            "tx_x[i]",
+            "tx_y[i]",
+            &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
+            world.line_special,
+            &specials::PLAT_TRIGGER_SPECIALS,
+        )),
+    );
+    bind(
+        "tx_crossed_line",
+        by_place(
+            "toInt64(multiIf(tx_ok_one[i] = 1 AND tx_cross_one[i] != -1, tx_cross_one[i], \
+             tx_ok_two[i] = 1 AND tx_cross_two[i] != -1, tx_cross_two[i], toInt64(-1)))",
+        ),
     );
 
     // A skull in flight is not a thing this moves: one this cannot make
@@ -2610,11 +2647,13 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         // `P_TryMove` walks `spechit` and calls `P_CrossSpecialLine` for a
         // line whose side flips between the step's start point and the
         // point it lands at; a line the move's box only brushed keeps its
-        // side. `P_CrossSpecialLine`'s own switch decides what runs; none
-        // of its specials run yet, so a step that crosses one it names
-        // keeps the mark rather than losing it to the step after it. A
-        // line the switch does not name is not marked at all, the same
-        // way the switch falls through it doing nothing.
+        // side. `P_CrossSpecialLine`'s own switch decides what runs;
+        // `cross_plats` already runs the specials `unhandled_crossable`
+        // takes out, so a step that crosses one of those does not mark
+        // this. A step that crosses any other one it names keeps the mark
+        // rather than losing it to the step after it. A line the switch
+        // does not name is not marked at all, the same way the switch
+        // falls through it doing nothing.
         format!(
             "toUInt8({crossed} = 1 OR (st_ok = 1 AND {crosses}))",
             crossed = held(moving::CROSSED),
@@ -2625,7 +2664,20 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
                 "st_tryy",
                 &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
                 world.line_special,
-                &specials::CROSSABLE_SPECIALS,
+                &specials::unhandled_crossable(&specials::CROSSABLE_SPECIALS),
+            ),
+        ),
+        format!(
+            "toInt64(if({held} != -1, {held}, if(st_ok = 1, {line}, toInt64(-1))))",
+            held = held(moving::CROSSED_LINE),
+            line = specials::crossed_line(
+                &held(moving::X),
+                &held(moving::Y),
+                "st_tryx",
+                "st_tryy",
+                &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
+                world.line_special,
+                &specials::PLAT_TRIGGER_SPECIALS,
             ),
         ),
     ];
@@ -2634,7 +2686,8 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         "(toInt32({x}), toInt32({y}), {xmove}, {ymove}, \
          toInt64(multiIf({uses} = 1, {USE}, {momx} != 0 OR {momy} != 0, {STEP}, {DONE})), \
          toInt32({floorz}), toInt32({ceilingz}), toInt32({subsector}), toInt64(0), {pk}, {alive}, \
-         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1), toUInt8(0))",
+         toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1), toUInt8(0), \
+         toInt64(-1))",
         USE = phase::USE,
         STEP = phase::STEP,
         DONE = phase::DONE,
@@ -2667,6 +2720,11 @@ pub fn use_line(loop_state: &str) -> String {
 
 pub fn unfinished(loop_state: &str) -> String {
     format!("toUInt8({loop_state}.{} != {})", moving::PHASE, phase::DONE)
+}
+
+/// The special line the move crossed, or -1.
+pub fn crossed_line(loop_state: &str) -> String {
+    format!("toInt64({loop_state}.{})", moving::CROSSED_LINE)
 }
 
 /// `PTR_SlideTraverse`: the first line of each trace that stops the thing,
@@ -3256,7 +3314,7 @@ mod tests {
             .map(|(_, expr)| expr.clone())
             .expect("thing_moves names tx_special");
         assert!(special.contains("arrayReverse("), "{special}");
-        let monster_list = specials::MONSTER_CROSSABLE_SPECIALS
+        let monster_list = specials::unhandled_crossable(&specials::MONSTER_CROSSABLE_SPECIALS)
             .iter()
             .map(i64::to_string)
             .collect::<Vec<_>>()

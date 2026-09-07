@@ -8,6 +8,7 @@ use clickdoom_spec::native_state::sector_thinker_kind as kind;
 
 use super::State;
 use super::doors::{self, Door, Opening};
+use super::floor;
 use super::map::World;
 use super::plane::{self, Plane, Things};
 use super::plats::{self, Plat};
@@ -61,9 +62,9 @@ const THINKER_TYPES: [&str; 23] = [
 /// `P_CrossSpecialLine`'s own switch (`p_spec.c`), every special it names,
 /// TRIGGERS and RETRIGGERS together. A crossed line whose special is not
 /// here does nothing, exactly as the switch falls through with no case
-/// for it. [`PLAT_TRIGGER_SPECIALS`] and [`DOOR_TRIGGER_SPECIALS`] run; a
-/// crossing that reaches any other one still leaves the tic unresolved
-/// rather than being guessed.
+/// for it. [`PLAT_TRIGGER_SPECIALS`], [`DOOR_TRIGGER_SPECIALS`] and
+/// [`FLOOR_TRIGGER_SPECIALS`] run; a crossing that reaches any other one
+/// still leaves the tic unresolved rather than being guessed.
 pub const CROSSABLE_SPECIALS: [i64; 72] = [
     2, 3, 4, 5, 6, 8, 10, 12, 13, 16, 17, 19, 22, 25, 30, 35, 36, 37, 38, 39, 40, 44, 52, 53, 54,
     56, 57, 58, 59, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 93,
@@ -74,9 +75,9 @@ pub const CROSSABLE_SPECIALS: [i64; 72] = [
 /// `P_CrossSpecialLine`'s non-player allow-list (`p_spec.c`): the only
 /// specials a monster's crossing ever reaches the switch for at all.
 /// Every other special returns before the switch runs, whether or not the
-/// switch itself would have a case for it. Neither of
-/// [`DOOR_TRIGGER_SPECIALS`] is here, so a monster's own crossing never
-/// reaches a door.
+/// switch itself would have a case for it. None of [`DOOR_TRIGGER_SPECIALS`]
+/// or [`FLOOR_TRIGGER_SPECIALS`] is here, so a monster's own crossing
+/// never reaches a door or a floor.
 pub const MONSTER_CROSSABLE_SPECIALS: [i64; 7] = [4, 10, 39, 88, 97, 125, 126];
 
 /// `EV_DoPlat`'s downWaitUpStay: both `P_CrossSpecialLine` cases that spawn
@@ -87,15 +88,21 @@ pub const PLAT_TRIGGER_SPECIALS: [i64; 2] = [10, 88];
 /// W1, one-shot) and 90 (`vld_normal`, WR, a retrigger).
 pub const DOOR_TRIGGER_SPECIALS: [i64; 2] = [2, 90];
 
-/// `specials` minus [`PLAT_TRIGGER_SPECIALS`] and [`DOOR_TRIGGER_SPECIALS`]:
-/// what still leaves a crossing unresolved once `cross_dispatch` runs the
-/// rest of them.
+/// `EV_DoFloor`'s raiseFloor and turboLower: `P_CrossSpecialLine` cases 91
+/// and 98, both WR (retriggers; neither clears the line's special).
+pub const FLOOR_TRIGGER_SPECIALS: [i64; 2] = [91, 98];
+
+/// `specials` minus [`PLAT_TRIGGER_SPECIALS`], [`DOOR_TRIGGER_SPECIALS`]
+/// and [`FLOOR_TRIGGER_SPECIALS`]: what still leaves a crossing unresolved
+/// once `cross_dispatch` runs the rest of them.
 pub fn unhandled_crossable(specials: &[i64]) -> Vec<i64> {
     specials
         .iter()
         .copied()
         .filter(|special| {
-            !PLAT_TRIGGER_SPECIALS.contains(special) && !DOOR_TRIGGER_SPECIALS.contains(special)
+            !PLAT_TRIGGER_SPECIALS.contains(special)
+                && !DOOR_TRIGGER_SPECIALS.contains(special)
+                && !FLOOR_TRIGGER_SPECIALS.contains(special)
         })
         .collect()
 }
@@ -366,22 +373,24 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     bindings
 }
 
-/// `EV_DoPlat`'s downWaitUpStay and `EV_DoDoor`'s open and normal, over
-/// every mover that crossed a handled special this tic.
+/// `EV_DoPlat`'s downWaitUpStay, `EV_DoDoor`'s open and normal, and
+/// `EV_DoFloor`'s raiseFloor and turboLower, over every mover that crossed
+/// a handled special this tic.
 ///
 /// `P_FindSectorFromLineTag`'s walk runs once per tag a crossing named,
 /// skipping a sector the matching `EV_*` finds already busy. Case 10 (W1)
 /// and case 2 (W1) clear their line's special once their thinker spawns;
-/// case 88 and case 90 (both WR) leave it, so a later crossing can
-/// retrigger them once the sector frees up.
+/// case 88, case 90, case 91 and case 98 (all WR) leave it, so a later
+/// crossing can retrigger them once the sector frees up.
 ///
 /// `px_crossed_line` and `tx_crossed_line` each name at most one line, the
 /// first `P_TryMove`'s own spechit walk finds; a move whose spechit holds
 /// two lines this dispatch would otherwise run leaves the tic unresolved
 /// (`PX_MULTI_CROSSED`, `TX_MULTI_CROSSED`) rather than running the first
-/// and dropping the second. `MONSTER_CROSSABLE_SPECIALS` names neither of
-/// `DOOR_TRIGGER_SPECIALS`, so `tx_crossed_line` never carries a door and
-/// `cx_door_lines` below is a single line or none.
+/// and dropping the second. `MONSTER_CROSSABLE_SPECIALS` names neither
+/// `DOOR_TRIGGER_SPECIALS` nor `FLOOR_TRIGGER_SPECIALS`, so
+/// `tx_crossed_line` never carries a door or a floor, and `cx_door_lines`
+/// and `cx_floor_lines` below are each a single line or none.
 ///
 /// The busy check reads `sec_specialdata` as `use_special_line` already
 /// left it, since that stage runs first: a sector a press claims this tic
@@ -523,13 +532,96 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     );
 
     bind(
+        "cx_floor_lines",
+        format!(
+            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            special_list(&FLOOR_TRIGGER_SPECIALS)
+        ),
+    );
+    // A sector either of the other two kinds already claimed this tic is
+    // not claimed again.
+    bind(
+        "cx_floor_sectors",
+        format!(
+            "arrayFilter(sec -> indexOf(cx_plat_sectors, sec) = 0 \
+             AND indexOf(cx_door_sectors, sec) = 0, {})",
+            sectors_for("cx_floor_lines")
+        ),
+    );
+
+    // Case 91 (raiseFloor) and case 98 (turboLower) are the only two
+    // `FLOOR_TRIGGER_SPECIALS` names, and `px_crossed_line` carries at
+    // most one line, so `cx_floor_lines` is a single line or none, the
+    // same as `cx_door_lines`.
+    bind(
+        "cx_floor_special",
+        "toInt64(if(empty(cx_floor_lines), 0, line_special[1 + cx_floor_lines[1]]))".to_owned(),
+    );
+    let raise_ceiling = plane::lowest_ceiling_surrounding("(sec - 1)", &s("sec_ceilingheight"));
+    let turbo_floor = floor::highest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
+    let floor_own_floor = format!("toInt64({}[sec])", s("sec_floorheight"));
+    let floor_own_ceiling = format!("toInt64({}[sec])", s("sec_ceilingheight"));
+    let floor_dest = format!(
+        "toInt64(multiIf(\
+         cx_floor_special = 91, least(toInt64({raise_ceiling}), {floor_own_ceiling}), \
+         cx_floor_special = 98 AND toInt64({turbo_floor}) != {floor_own_floor}, \
+         toInt64({turbo_floor}) + {eight}, \
+         toInt64({turbo_floor})))",
+        eight = 8 * (1i64 << 16),
+    );
+    // The new floor's fields, in the order `THINKER_COLUMNS` names them.
+    let floor_fields = [
+        format!(
+            "toUInt32({} + length(cx_plat_sectors) + length(cx_door_sectors) + i - 1)",
+            s("next_seq")
+        ),
+        format!("toUInt8({})", kind::FLOOR),
+        "toInt32(sec - 1)".to_owned(),
+        format!(
+            "toInt32(if(cx_floor_special = 98, {}, {}))",
+            floor::kind::TURBO_LOWER,
+            floor::kind::RAISE_FLOOR
+        ),
+        "toInt32(if(cx_floor_special = 98, -1, 1))".to_owned(),
+        format!(
+            "toInt32(if(cx_floor_special = 98, {}, {}))",
+            floor::FLOORSPEED * 4,
+            floor::FLOORSPEED
+        ),
+        format!("toInt32({floor_dest})"),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(0)".to_owned(),
+        "toInt32(sec_tag[sec])".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(1)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+    ];
+    bind(
+        "cx_floor_rows",
+        format!(
+            "arrayMap((sec, i) -> {}, cx_floor_sectors, arrayEnumerate(cx_floor_sectors))",
+            new_plane(&floor_fields)
+        ),
+    );
+
+    bind(
         "cx_rows",
-        "arrayConcat(cx_plat_rows, cx_door_rows)".to_owned(),
+        "arrayConcat(cx_plat_rows, cx_door_rows, cx_floor_rows)".to_owned(),
     );
     bindings.extend(spawn_planes("cx_rows", |column| s(column)));
     // `specialdata` names the thinker by its place on the list, which is
     // the slot the append just took: the plat rows first, then the door
-    // rows, in the order `cx_rows` concatenates them.
+    // rows, then the floor rows, in the order `cx_rows` concatenates them.
     let base = format!("length({})", s("s_kind"));
     bindings.push((
         "now_sec_specialdata".to_owned(),
@@ -538,6 +630,9 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
              indexOf(cx_plat_sectors, i) != 0, {base} + indexOf(cx_plat_sectors, i), \
              indexOf(cx_door_sectors, i) != 0, \
              {base} + length(cx_plat_sectors) + indexOf(cx_door_sectors, i), \
+             indexOf(cx_floor_sectors, i) != 0, \
+             {base} + length(cx_plat_sectors) + length(cx_door_sectors) \
+             + indexOf(cx_floor_sectors, i), \
              v)), {held}, arrayEnumerate({held}))",
             held = s("sec_specialdata"),
         ),
@@ -1141,12 +1236,14 @@ mod tests {
         for special in PLAT_TRIGGER_SPECIALS
             .into_iter()
             .chain(DOOR_TRIGGER_SPECIALS)
+            .chain(FLOOR_TRIGGER_SPECIALS)
         {
             assert!(!unhandled.contains(&special), "{special}");
         }
         for special in CROSSABLE_SPECIALS {
             if !PLAT_TRIGGER_SPECIALS.contains(&special)
                 && !DOOR_TRIGGER_SPECIALS.contains(&special)
+                && !FLOOR_TRIGGER_SPECIALS.contains(&special)
             {
                 assert!(unhandled.contains(&special), "{special}");
             }

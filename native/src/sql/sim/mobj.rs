@@ -2640,11 +2640,13 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
     let clipped = |kept: usize, when: &str, from: usize| {
         format!("toInt64(if({when}, {}, {}))", held(from), held(kept))
     };
-    // Only the player's own crossing ever reaches a door special, so this
-    // move's own dispatch list is wider than a monster's.
+    // Only the player's own crossing ever reaches a door or a floor
+    // special, so this move's own dispatch list is wider than a
+    // monster's.
     let dispatch_specials: Vec<i64> = specials::PLAT_TRIGGER_SPECIALS
         .into_iter()
         .chain(specials::DOOR_TRIGGER_SPECIALS)
+        .chain(specials::FLOOR_TRIGGER_SPECIALS)
         .collect();
     let members = [
         keep(moving::X, "st_tryx".to_owned()),

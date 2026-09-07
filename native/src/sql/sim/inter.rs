@@ -920,13 +920,24 @@ pub mod hurt {
     /// 1 where the target's sector special is 11 and the damage reaches
     /// the clamp that keeps a hit there from killing outright.
     pub const PL_SECTOR11: usize = 23;
+    /// 1 where this call's own target is already in
+    /// [`hurt::HIT_TARGETS`]: the mobj fields a call answers with
+    /// (`HEALTH`, `FLAGS` and the rest) read the tic-start arrays
+    /// directly rather than an accumulator, so a second hit on a target
+    /// this tic has already hit once, in the same `damage_fold` list or a
+    /// later one chained after it, would overwrite the first's own
+    /// answer rather than build on it.
+    pub const SAME_TARGET: usize = 24;
+    /// Every target a hit has landed on this tic, threaded the same way
+    /// the player's own fields are.
+    pub const HIT_TARGETS: usize = 25;
 }
 
 /// The ClickHouse type of a [`hurt`] tuple, for a caller that carries one
 /// through a fold or a wider tuple of its own.
 pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
                              Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8, Int32, \
-                             Int32, Int32, Int32, UInt32, UInt8, UInt8)";
+                             Int32, Int32, Int32, UInt32, UInt8, UInt8, UInt8, Array(UInt32))";
 
 /// A call nobody made, for a caller that reads the first answer of a list
 /// that may be empty.
@@ -934,14 +945,15 @@ pub fn no_hurt() -> String {
     "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
      toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
      toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
-     toUInt8(0), toUInt8(0))"
+     toUInt8(0), toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'))"
         .to_owned()
 }
 
 /// The tic's own player fields, wrapped as a [`hurt`] tuple for the first
 /// [`damage_fold`] of the tic to start from: every other field the same as
 /// [`no_hurt`], since nothing but [`hurt::PL_HEALTH`] through
-/// [`hurt::PL_ATTACKER`] is ever read off a fold's own seed.
+/// [`hurt::PL_ATTACKER`] is ever read off a fold's own seed, and
+/// [`hurt::HIT_TARGETS`] starts the tic empty.
 pub fn player_start(
     p_health: &str,
     p_armorpoints: &str,
@@ -954,7 +966,7 @@ pub fn player_start(
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32({p_health}), toInt32({p_armorpoints}), \
          toInt32({p_armortype}), toInt32({p_damagecount}), toUInt32({p_attacker}), toUInt8(0), \
-         toUInt8(0))"
+         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'))"
     )
 }
 
@@ -1037,7 +1049,8 @@ pub fn damage_constants(db: &str) -> Vec<(String, String)> {
 /// A player's own health, armour, damage tint and attacker do not thread
 /// here the way [`damage_fold`]'s own accumulator threads them: nothing
 /// this runs for asks the player itself, so [`no_hurt`] stands in for the
-/// player fields a body reads and never answers with.
+/// player fields a body reads and never answers with, its own empty
+/// [`hurt::HIT_TARGETS`] included.
 pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
     let (values, body) = damaged(world, &no_hurt());
     format!(
@@ -1433,9 +1446,18 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         "dm_routine",
         "toInt32(if(dm_moves = 1, state_action[1 + dm_state], 0))".to_owned(),
     );
+    // A target this tic has already hit once, in this call's own list or
+    // an earlier one chained into it: the mobj fields below read the
+    // tic-start arrays rather than an accumulator, so a second hit here
+    // would overwrite the first's own answer rather than build on it.
+    value(
+        "dm_same_target",
+        format!("toUInt8(has({player}.{}, dm_target))", hurt::HIT_TARGETS),
+    );
     value(
         "dm_stuck",
         "toUInt8(dm_lands = 1 AND (dm_player_dies = 1 OR dm_sector11 = 1 \
+         OR dm_same_target = 1 \
          OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))"
             .to_owned(),
     );
@@ -1500,6 +1522,12 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         ),
         "toUInt8(dm_player_dies)".to_owned(),
         "toUInt8(dm_sector11)".to_owned(),
+        "toUInt8(dm_same_target)".to_owned(),
+        format!(
+            "if(dm_lands = 1, arrayPushBack({player}.{}, dm_target), {player}.{})",
+            hurt::HIT_TARGETS,
+            hurt::HIT_TARGETS,
+        ),
     ];
     (values, format!("({})", members.join(", ")))
 }
@@ -1585,6 +1613,37 @@ mod damage_tests {
             .expect("the call names what leaves it stuck");
         assert!(stuck.1.contains("dm_player_dies = 1"), "{stuck:?}");
         assert!(stuck.1.contains("dm_sector11 = 1"), "{stuck:?}");
+    }
+
+    /// A target this tic has already hit once leaves a later hit on it
+    /// stuck too, whether that earlier hit came from this call's own
+    /// list or an earlier one chained into it through `player`: both read
+    /// the same `hurt::HIT_TARGETS` off `player`.
+    #[test]
+    fn a_target_this_tic_has_already_hit_leaves_a_later_hit_stuck() {
+        let (values, body) = damaged(&world(), "dm_held");
+        let same_target = values
+            .iter()
+            .find(|(name, _)| name == "dm_same_target")
+            .expect("the call names what a repeat target is");
+        assert!(
+            same_target
+                .1
+                .contains(&format!("has(dm_held.{}, dm_target)", hurt::HIT_TARGETS)),
+            "{same_target:?}"
+        );
+        let stuck = values
+            .iter()
+            .find(|(name, _)| name == "dm_stuck")
+            .expect("the call names what leaves it stuck");
+        assert!(stuck.1.contains("dm_same_target = 1"), "{stuck:?}");
+        assert!(
+            body.contains(&format!(
+                "arrayPushBack(dm_held.{}, dm_target)",
+                hurt::HIT_TARGETS
+            )),
+            "{body}"
+        );
     }
 
     /// The routine reads no thing type it names by hand out of the

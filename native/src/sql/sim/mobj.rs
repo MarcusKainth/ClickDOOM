@@ -1022,6 +1022,15 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                             sec = inter::hurt::PL_SECTOR11,
                         ),
                     ),
+                    (
+                        unresolved::DM_SAME_TARGET,
+                        &format!(
+                            "arrayExists(t -> t.{hurt}.{same} = 1, mt_missile_thoughts) \
+                             OR mt_hurt.{same} = 1",
+                            hurt = missile::thought::HURT,
+                            same = inter::hurt::SAME_TARGET,
+                        ),
+                    ),
                 ],
             )
         ),
@@ -1664,6 +1673,14 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
                         "arrayExists(t -> t.{hurt}.{sec} = 1, tk_thoughts)",
                         hurt = missile::thought::HURT,
                         sec = inter::hurt::PL_SECTOR11,
+                    ),
+                ),
+                (
+                    unresolved::DM_SAME_TARGET,
+                    &format!(
+                        "arrayExists(t -> t.{hurt}.{same} = 1, tk_thoughts)",
+                        hurt = missile::thought::HURT,
+                        same = inter::hurt::SAME_TARGET,
                     ),
                 ),
             ],

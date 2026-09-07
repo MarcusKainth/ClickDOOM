@@ -599,19 +599,13 @@ async fn two_fireballs_in_one_tic_thread_the_player_through_both() {
         after.p_damagecount, taken,
         "the tint takes the sum of both, threaded through the same fold"
     );
-    // The mobj-generic fields a call answers with (`m_health` here) read
-    // the tic-start arrays directly rather than an accumulator, so the
-    // second missile's own call overwrites the first's own subtraction
-    // rather than building on it: the shared field only carries one
-    // hit's worth, not both. `DM_SAME_TARGET` refuses the tic for this
-    // rather than committing the wrong shared answer.
-    assert_ne!(
+    // The mobj-generic fields a call answers with (`m_health` here) thread
+    // the same way: the second missile's own call reads what the first
+    // left in `HIT_RESULTS` rather than the tic-start array, so the
+    // shared field carries both hits' worth too, and the tic resolves.
+    assert_eq!(
         after.player_health, after.p_health,
-        "the shared field does not thread the way the player's own does"
+        "the shared field threads the same way the player's own does"
     );
-    assert_ne!(
-        after.unresolved & sim::unresolved::DM_SAME_TARGET,
-        0,
-        "a second hit on the same target this tic leaves it stuck"
-    );
+    assert_eq!(after.unresolved, 0, "both hits resolve");
 }

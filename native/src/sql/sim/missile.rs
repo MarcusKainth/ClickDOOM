@@ -1055,10 +1055,14 @@ fn missile_draws(
         format!("arraySum({})", inter::draws("mkd_hurt_asks", hurting)),
     ));
     // `P_ExplodeMissile` draws once for the tics its own death frame
-    // shortens by, wherever the walk set the missile off - the worst
-    // case reserves it whenever that is true, whether or not the touch
-    // it stopped on was one this damages, since the sky hack this does
-    // not model only ever draws less.
+    // shortens by, wherever the walk set the missile off. This is exact
+    // rather than a worst case: `move_ceilingline` forces the ceiling
+    // line to none whenever a thing is what blocked the move, since
+    // `P_CheckPosition` reaches things before lines and stops at the
+    // first that answers no, so the sky hack - which reads that line -
+    // can never apply to a touch this walks. A missile a wall or a
+    // special line blocks instead is not a touch this reaches at all,
+    // and reserves nothing here either way.
     let body = format!(
         "toUInt32(mkd_hit.{draws} + mkd_hurt_draws + if(mkd_hit.{blocked} = 1, 1, 0))",
         draws = struck::DRAWS,
@@ -1781,12 +1785,12 @@ mod tests {
         assert!(body.contains("toUInt32(if(ex_sky = 1, 0, 1))"), "{body}");
     }
 
-    /// The worst case reserves the explosion's own draw wherever the walk
-    /// sets the missile off, not only where the touch it stopped on is
-    /// one this damages: `P_ExplodeMissile` draws whether or not
+    /// The count reserves the explosion's own draw wherever the walk sets
+    /// the missile off, not only where the touch it stopped on is one
+    /// this damages: `P_ExplodeMissile` draws whether or not
     /// `PIT_CheckThing` found anything to hurt.
     #[test]
-    fn the_worst_case_reserves_the_explosion_s_own_draw() {
+    fn the_count_reserves_the_explosion_s_own_draw_where_a_touch_blocks() {
         let (_, body) = missile_draws(&map(), &flying(), &hurting());
         assert!(
             body.contains(&format!(
@@ -1794,6 +1798,23 @@ mod tests {
                 struck::BLOCKED
             )),
             "{body}"
+        );
+    }
+
+    /// `move_ceilingline` is what feeds the sky check its own line, and it
+    /// answers none whenever a thing blocked the move - so [`missile_draws`]
+    /// reserving the explosion's own draw there, unconditionally, is the
+    /// real count and not a worst case: the sky hack this reads can never
+    /// take a missile a touch stopped, only one a wall or a special line
+    /// did, which this does not reach at all.
+    #[test]
+    fn a_touch_that_blocks_never_reaches_the_sky_hack() {
+        assert_eq!(
+            move_ceilingline("mkd_hit.2", "mkd_xy_try"),
+            format!(
+                "toInt32(if(mkd_hit.2 = 1, -1, mkd_xy_try.{}))",
+                answer::CEILINGLINE
+            )
         );
     }
 

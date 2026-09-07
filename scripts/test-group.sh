@@ -69,42 +69,44 @@ case "$group" in
             -E 'binary(reference_trace) | binary(demo3_parity) | binary(rom_symbols) | binary(probe_fixture)'
         ;;
     # A test that opens a session pays the tic statement's analysis, about
-    # five minutes on a runner, and the analysis runs on one thread, so the
-    # simulation groups run four tests at a time and the suites that open
-    # sessions are spread over the groups by their measured length.
+    # five minutes on a standard runner, and the analysis runs on one
+    # thread, so the simulation groups run TEST_THREADS tests at a time
+    # (four unless set, which a standard runner's four cores fill) and the
+    # suites that open sessions are spread over the groups by their
+    # measured length. A runner with more cores sets TEST_THREADS higher.
     native-sim-a)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live))'
         ;;
     native-sim-b)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live) | binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live) | binary(sim_shot_live) | binary(sim_fall_live) | binary(sim_thrust_live) | binary(sim_damage_live) | binary(sim_refire_live) | binary(sim_removed_live) | binary(sim_troop_live) | binary(sim_pain_live) | binary(sim_justattacked_live) | binary(sim_claw_live) | binary(sim_gunshot_live) | binary(sim_blast_live) | binary(sim_impact_live) | binary(sim_door_live) | binary(sim_floor_live))'
         ;;
     native-sim-c)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and (binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live))'
         ;;
     native-sim-d)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and binary(sim_fall_live)'
         ;;
     native-sim-e)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and binary(sim_thrust_live)'
         ;;
     native-sim-f)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and binary(sim_shot_live)'
         ;;
     native-sim-g)
         # shellcheck disable=SC2086
-        run $live --test-threads 4 \
+        run $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-native) and (binary(sim_damage_live) | binary(sim_refire_live) | binary(sim_removed_live) | binary(sim_troop_live) | binary(sim_pain_live) | binary(sim_justattacked_live) | binary(sim_claw_live) | binary(sim_gunshot_live) | binary(sim_blast_live) | binary(sim_impact_live) | binary(sim_door_live) | binary(sim_floor_live))'
         ;;
     native-rest)

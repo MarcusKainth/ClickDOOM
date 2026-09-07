@@ -307,7 +307,10 @@ fn asks(mobjs: &[Mobj], sources: &[i64]) -> Vec<Ask> {
     asks
 }
 
-/// One answer as the statement gives it, in [`inter::hurt`]'s order.
+/// One answer as the statement gives it, in [`inter::hurt`]'s order up to
+/// `STUCK`. The player fields past it are not this test's own concern: no
+/// ask here ever targets the player, so [`ask_server`]'s own SQL drops
+/// them before this reads the row.
 type HurtRow = (
     i32,
     i32,
@@ -348,6 +351,11 @@ async fn ask_server(fixture: &Fixture, db: &str, world: &World, asks: &[Ask]) ->
     let (m_target, m_threshold, m_player) =
         (of(&|m| m.target), of(&|m| m.threshold), of(&|m| m.player));
     let m_reactiontime = of(&|_| 0);
+    // No ask here ever targets the player, so the sector this hits never
+    // reads: any subsector at all does, over the level's own real sector
+    // table so the lookup stays in bounds.
+    let m_subsector = of(&|_| 0);
+    let sec_special = format!("(SELECT sec_special FROM {db}.native_state WHERE tic = 0)");
     let (prnd, weapon) = (world.prndindex.to_string(), world.readyweapon.to_string());
     let hurting = inter::Hurting {
         m_x: &m_x,
@@ -366,8 +374,12 @@ async fn ask_server(fixture: &Fixture, db: &str, world: &World, asks: &[Ask]) ->
         m_target: &m_target,
         m_threshold: &m_threshold,
         m_player: &m_player,
+        m_subsector: &m_subsector,
         prndindex: &prnd,
         readyweapon: &weapon,
+        p_cheats: "0",
+        p_powers: "[0, 0, 0, 0, 0, 0]",
+        sec_special: &sec_special,
     };
     let list = format!(
         "[{}]",
@@ -380,8 +392,14 @@ async fn ask_server(fixture: &Fixture, db: &str, world: &World, asks: &[Ask]) ->
     );
     let mut constants = sim::constants(db);
     constants.extend(inter::damage_constants(db));
+    // Only the fields up to `STUCK` are this test's own concern; the
+    // player fields past it never move, since no ask here targets one.
+    let trimmed = (1..=inter::hurt::STUCK)
+        .map(|field| format!("h.{field}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
-        "WITH\n{},\n    ({list}) AS dm_asks\nSELECT {} AS hurts",
+        "WITH\n{},\n    ({list}) AS dm_asks\nSELECT arrayMap(h -> ({trimmed}), {}) AS hurts",
         constants
             .into_iter()
             .map(|(name, expr)| format!("    ({expr}) AS {name}"))

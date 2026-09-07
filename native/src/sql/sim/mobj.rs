@@ -1,7 +1,9 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, attacks, enemy, inter, maputl, mask, missile, sight, specials, unresolved};
+use super::{
+    State, attacks, enemy, inter, maputl, mask, missile, player, sight, specials, unresolved,
+};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -550,8 +552,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_target: &s("m_target"),
         m_threshold: &s("m_threshold"),
         m_player: &s("m_player"),
+        m_subsector: &s("m_subsector"),
         prndindex: &s("prndindex"),
         readyweapon: &s("p_readyweapon"),
+        p_cheats: &s("p_cheats"),
+        p_powers: &s("p_powers"),
+        sec_special: &s("sec_special"),
     };
     bind(
         "mt_attacker_draws_asks",
@@ -916,18 +922,28 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_target: "mk_m_target",
         m_threshold: "mk_m_threshold",
         m_player: &s("m_player"),
+        m_subsector: "mk_m_subsector",
         prndindex: &s("prndindex"),
         readyweapon: &s("p_readyweapon"),
+        p_cheats: &s("p_cheats"),
+        p_powers: &s("p_powers"),
+        sec_special: &s("sec_special"),
     };
+    // The player's own health, armour, damagecount and attacker pick up
+    // from `mt_hurt`'s own final fields: a claw runs before this in
+    // `strikes`, the first of the tic's three damage folds.
     bind(
-        "mt_missile_thoughts",
+        "mt_missile_folded",
         missile::thinks_fold(
             "mt_missile_asks",
+            "mt_hurt",
             &struck_map,
             &struck_flying,
             &struck_hurting,
         ),
     );
+    bind("mt_missile_thoughts", "mt_missile_folded.1".to_owned());
+    bind("mt_missile_players", "mt_missile_folded.2".to_owned());
     bind(
         "mt_missile_hurt_targets",
         format!(
@@ -986,6 +1002,33 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                         &format!(
                             "arrayExists(t -> t.{} = 1, mt_missile_thoughts)",
                             missile::thought::STUCK
+                        ),
+                    ),
+                    (
+                        unresolved::PLAYER_DIES,
+                        &format!(
+                            "arrayExists(t -> t.{hurt}.{dies} = 1, mt_missile_thoughts) \
+                             OR mt_hurt.{dies} = 1",
+                            hurt = missile::thought::HURT,
+                            dies = inter::hurt::PL_DIES,
+                        ),
+                    ),
+                    (
+                        unresolved::SECTOR11_STUCK,
+                        &format!(
+                            "arrayExists(t -> t.{hurt}.{sec} = 1, mt_missile_thoughts) \
+                             OR mt_hurt.{sec} = 1",
+                            hurt = missile::thought::HURT,
+                            sec = inter::hurt::PL_SECTOR11,
+                        ),
+                    ),
+                    (
+                        unresolved::DM_SAME_TARGET,
+                        &format!(
+                            "arrayExists(t -> t.{hurt}.{same} = 1, mt_missile_thoughts) \
+                             OR mt_hurt.{same} = 1",
+                            hurt = missile::thought::HURT,
+                            same = inter::hurt::SAME_TARGET,
                         ),
                     ),
                 ],
@@ -1291,10 +1334,30 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         m_target: "mk_m_target",
         m_threshold: "mk_m_threshold",
         m_player: &s("m_player"),
+        m_subsector: "mk_m_subsector",
         prndindex: &s("prndindex"),
         readyweapon: &s("p_readyweapon"),
+        p_cheats: &s("p_cheats"),
+        p_powers: &s("p_powers"),
+        sec_special: &s("sec_special"),
     };
-    bind("mt_hurt", inter::damage_fold("mt_hurt_asks", &hurting));
+    // The player's own health, armour, damagecount and attacker start
+    // from the tic's own row: `strikes` runs before this stage's own
+    // missile impacts, the first of the tic's three damage folds.
+    bind(
+        "mt_hurt",
+        inter::damage_fold(
+            "mt_hurt_asks",
+            &inter::player_start(
+                &s("p_health"),
+                &s("p_armorpoints"),
+                &s("p_armortype"),
+                &s("p_damagecount"),
+                &s("p_attacker"),
+            ),
+            &hurting,
+        ),
+    );
 
     // `P_SpawnMissile` for an imp whose claw did not reach. The fireball
     // is the only missile a routine throws here, so its type is the one
@@ -1428,8 +1491,12 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         m_target: &s("m_target"),
         m_threshold: &s("m_threshold"),
         m_player: &s("m_player"),
+        m_subsector: &s("m_subsector"),
         prndindex: &s("prndindex"),
         readyweapon: &s("p_readyweapon"),
+        p_cheats: &s("p_cheats"),
+        p_powers: &s("p_powers"),
+        sec_special: &s("sec_special"),
     };
 
     // The compaction appends one slot per thing `mt_thrown` carries, in
@@ -1442,10 +1509,19 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
             draws = missile::thrown::DRAWS,
         ),
     );
+    // The player's own health, armour, damagecount and attacker pick up
+    // from `mt_missile_players`, the thinker stage's own final fields:
+    // this is the last of the tic's three damage folds, so its own final
+    // fields are what `player.rs`'s writeback reads.
     bind(
-        "tk_thoughts",
-        missile::thinks_fold("tk_asks", &map, &flying, &hurting),
+        "tk_folded",
+        missile::thinks_fold("tk_asks", "mt_missile_players", &map, &flying, &hurting),
     );
+    bind("tk_thoughts", "tk_folded.1".to_owned());
+    bind("tk_players", "tk_folded.2".to_owned());
+    for (name, expr) in player::hurt_writeback("tk_players") {
+        bind(&name, expr);
+    }
     bind("tk_slots", "arrayMap(a -> a.1, tk_asks)".to_owned());
     bind(
         "tk_at",
@@ -1575,13 +1651,39 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         "now_unresolved",
         mask(
             &s("unresolved"),
-            &[(
-                unresolved::TK_STUCK,
-                &format!(
-                    "arrayExists(t -> t.{} = 1, tk_thoughts)",
-                    missile::thought::STUCK
+            &[
+                (
+                    unresolved::TK_STUCK,
+                    &format!(
+                        "arrayExists(t -> t.{} = 1, tk_thoughts)",
+                        missile::thought::STUCK
+                    ),
                 ),
-            )],
+                (
+                    unresolved::PLAYER_DIES,
+                    &format!(
+                        "arrayExists(t -> t.{hurt}.{dies} = 1, tk_thoughts)",
+                        hurt = missile::thought::HURT,
+                        dies = inter::hurt::PL_DIES,
+                    ),
+                ),
+                (
+                    unresolved::SECTOR11_STUCK,
+                    &format!(
+                        "arrayExists(t -> t.{hurt}.{sec} = 1, tk_thoughts)",
+                        hurt = missile::thought::HURT,
+                        sec = inter::hurt::PL_SECTOR11,
+                    ),
+                ),
+                (
+                    unresolved::DM_SAME_TARGET,
+                    &format!(
+                        "arrayExists(t -> t.{hurt}.{same} = 1, tk_thoughts)",
+                        hurt = missile::thought::HURT,
+                        same = inter::hurt::SAME_TARGET,
+                    ),
+                ),
+            ],
         ),
     );
     bindings
@@ -3268,7 +3370,7 @@ mod tests {
     /// the damage tint and the weapon it drops are the player's own
     /// columns. The claw's own damage fold has to be read the same way.
     #[test]
-    fn a_claw_that_lands_on_the_player_is_unresolved() {
+    fn a_claw_s_own_stuck_call_leaves_the_thinker_stage_unresolved() {
         let bindings = thinkers(&State::default());
         let at_unrun = bindings
             .iter()
@@ -3278,6 +3380,30 @@ mod tests {
         assert!(
             at_unrun.contains(&format!("mt_hurt.{} = 1", inter::hurt::STUCK)),
             "{at_unrun}"
+        );
+    }
+
+    /// A hit that would kill the player, from a claw or a missile already
+    /// in flight, is its own bit rather than folded into `DM_STUCK`.
+    #[test]
+    fn a_hit_that_would_kill_the_player_is_its_own_bit() {
+        let bindings = thinkers(&State::default());
+        let now_unresolved = bindings
+            .iter()
+            .find(|(binding, _)| binding == "now_unresolved")
+            .map(|(_, expr)| expr.clone())
+            .unwrap_or_else(|| panic!("now_unresolved is bound"));
+        assert!(
+            now_unresolved.contains(&format!("mt_hurt.{} = 1", inter::hurt::PL_DIES)),
+            "{now_unresolved}"
+        );
+        assert!(
+            now_unresolved.contains(&format!(
+                "t.{}.{} = 1, mt_missile_thoughts",
+                missile::thought::HURT,
+                inter::hurt::PL_DIES,
+            )),
+            "{now_unresolved}"
         );
     }
 

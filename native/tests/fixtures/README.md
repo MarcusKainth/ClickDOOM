@@ -16,9 +16,14 @@ drawn from gametic 341, with blood splats near enough that a sprite column
 reads past the end of its own lump. Frame 1000 is drawn from gametic 963,
 with the shotgun raised and the player somewhere else on the map.
 
+Gametics 205 and 206 are the tic a thrown fireball reaches the player: the
+row at 205 is what it stood at the moment before, and 206 is what
+`P_DamageMobj`'s player branch left it at.
+
 | File | What it is |
 |---|---|
 | `demo3-states.tsv` | One row per gametic a frame is drawn from, in the shape `refemu/probe/README.md` describes: frame index, gametic, frame hash, then every field of `clickdoom_spec::native_state`. |
+| `demo3-player-damage.tsv` | The same shape, gametics 205 and 206 only. |
 | `demo3-frame0-*.bin`, `demo3-frame20-*.bin` | Two frames of the melt, which draws over a black screen rather than over the frame before it. |
 | `demo3-frame39-fb.bin`, `demo3-frame39-palette.bin` | The 64,000 bytes and 768-byte palette of frame 39, which frame 40 draws over. |
 | `demo3-frame40-fb.bin`, `demo3-frame40-palette.bin` | The same for frame 40, which the render test compares against. |

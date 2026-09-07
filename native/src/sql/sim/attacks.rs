@@ -1143,8 +1143,12 @@ mod tests {
             m_target: "m_target",
             m_threshold: "m_threshold",
             m_player: "m_player",
+            m_subsector: "m_subsector",
             prndindex: "prndindex",
             readyweapon: "readyweapon",
+            p_cheats: "p_cheats",
+            p_powers: "p_powers",
+            sec_special: "sec_special",
         }
     }
 

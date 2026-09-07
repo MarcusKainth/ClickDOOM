@@ -57,8 +57,8 @@ pub mod unresolved {
     /// `P_PlayerInSpecialSector`: the player stands in a sector that
     /// damages it.
     pub const PL_HURTS: u64 = 1 << 2;
-    /// `P_DamageMobj`: the hit lands on a player, or the frame it enters
-    /// carries an action other than none, `A_Pain` or `A_Scream`.
+    /// `P_DamageMobj`: the frame the hit enters carries an action other
+    /// than none, `A_Pain` or `A_Scream`.
     pub const DM_STUCK: u64 = 1 << 3;
     /// `P_GunShot`'s own fold: a shot's damage call hits a player or an
     /// unimplemented post-hit routine, or a shot crosses a special line
@@ -163,10 +163,19 @@ pub mod unresolved {
     /// The same, for a monster's own move. A monster's own crossing never
     /// reaches a door special, so only `PLAT_TRIGGER_SPECIALS` applies.
     pub const TX_MULTI_CROSSED: u64 = 1 << 33;
+    /// `P_DamageMobj`: a hit on the player leaves its health at 0 or below.
+    pub const PLAYER_DIES: u64 = 1 << 34;
+    /// `P_DamageMobj`: the target's sector special is 11, and the damage
+    /// reaches the clamp that keeps a hit there from killing outright.
+    pub const SECTOR11_STUCK: u64 = 1 << 35;
+    /// `P_DamageMobj`: a hit lands on a target this tic has already hit
+    /// once, whether in the same `damage_fold` call or an earlier one
+    /// chained into it.
+    pub const DM_SAME_TARGET: u64 = 1 << 36;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 34] = [
+const UNRESOLVED_BITS: [(u64, &str); 37] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -201,6 +210,9 @@ const UNRESOLVED_BITS: [(u64, &str); 34] = [
     (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
     (unresolved::PX_MULTI_CROSSED, "PX_MULTI_CROSSED"),
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
+    (unresolved::PLAYER_DIES, "PLAYER_DIES"),
+    (unresolved::SECTOR11_STUCK, "SECTOR11_STUCK"),
+    (unresolved::DM_SAME_TARGET, "DM_SAME_TARGET"),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

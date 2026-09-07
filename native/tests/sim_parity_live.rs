@@ -48,8 +48,10 @@ const OPEN: [&str; 0] = [];
 
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
 /// the way, the tics after it are the slide along that wall, and the door
-/// the press at 73 opens has reached the top and left the list by 120.
-const WALK_TICS: u32 = 205;
+/// the press at 73 opens has reached the top and left the list by 120. A
+/// second, normal door opens from a press this fixture does not otherwise
+/// name, waits at the top and closes on its own, off the list by 926.
+const WALK_TICS: u32 = 930;
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
@@ -66,6 +68,32 @@ const DOOR: [(u32, usize, i32, u32, i16); 6] = [
     (106, 17, 4456448, 17, 0),
     (107, 16, 4456448, 0, 0),
     (120, 16, 4456448, 0, 0),
+];
+
+/// `gametic, thinkers, sec_ceilingheight[115], sec_specialdata[115]` for a
+/// second door, read out of the reference emulator's trace. Unlike the
+/// one at gametic 73, its line's special is one of `vld_normal`'s (1, 26,
+/// 27 or 28), so it opens, waits at the top, and closes on its own rather
+/// than leaving the list once open.
+///
+/// `plane_ticks` only ever named a plat as something that acts on a tic
+/// the plane pass moves nothing for; a door's own count and direction,
+/// both computed every tic regardless, only ever reached `now_s_count`
+/// and `now_s_direction` while `plane_runs` held (`s_direction != 0`).
+/// Once this door reached the top and started waiting, both froze and it
+/// never closed. `WALK_TICS` did not reach this far until now, so this is
+/// a divergence the parity gate itself never caught, not one this fixes
+/// without a live check on the fix.
+const NORMAL_DOOR: [(u32, usize, i32, u32); 9] = [
+    (706, 17, 3670016, 0),
+    (707, 18, 3801088, 18),
+    (720, 18, 5505024, 18),
+    (740, 18, 8126464, 18),
+    (800, 18, 8126464, 17),
+    (891, 18, 8126464, 17),
+    (892, 18, 7995392, 17),
+    (925, 18, 3670016, 17),
+    (926, 17, 3670016, 0),
 ];
 
 /// A tic the use key goes down on and the press reaches nothing special.
@@ -338,6 +366,8 @@ struct Walked {
     ceiling: i32,
     specialdata: u32,
     special: i16,
+    ceiling114: i32,
+    specialdata114: u32,
     state25: i32,
     frame25: i32,
     state118: i32,
@@ -409,6 +439,7 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              unresolved, toUInt8(p_cmd_buttons) AS buttons, \
              toUInt64(length(s_kind)) AS thinkers, sec_ceilingheight[63] AS ceiling, \
              sec_specialdata[63] AS specialdata, line_special[951] AS special, \
+             sec_ceilingheight[115] AS ceiling114, sec_specialdata[115] AS specialdata114, \
              m_state[25] AS state25, m_frame[25] AS frame25, \
              m_state[118] AS state118, m_target[118] AS target118, \
              m_lastlook[34] AS lastlook34, \
@@ -535,6 +566,16 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             (row.thinkers, row.ceiling, row.specialdata, row.special),
             (thinkers as u64, ceiling, specialdata, special),
             "the door at gametic {tic}"
+        );
+    }
+    for (tic, thinkers, ceiling, specialdata) in
+        before_refusal(&NORMAL_DOOR, |e| e.0, first_refused, "NORMAL_DOOR")
+    {
+        let row = at(tic);
+        assert_eq!(
+            (row.thinkers, row.ceiling114, row.specialdata114),
+            (thinkers as u64, ceiling, specialdata),
+            "the second door at gametic {tic}"
         );
     }
 

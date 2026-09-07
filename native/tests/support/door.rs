@@ -65,9 +65,11 @@ impl Door {
     /// same tic this last runs.
     ///
     /// `T_MovePlane`'s own "one more step would pass the destination" test
-    /// is strict (`last + speed > dest`, not `>=`), so a distance the speed
-    /// divides evenly reaches the destination one tic before `PASTDEST`
-    /// registers: the tic that lands exactly on it still reports `OK`.
+    /// is strict (`p_floor.c:162`, `sector->ceilingheight + speed > dest`,
+    /// not `>=`; `p_floor.c:128` reads the same way for a plane going
+    /// down), so a distance the speed divides evenly reaches the
+    /// destination one tic before `PASTDEST` registers: the tic that lands
+    /// exactly on it still reports `OK`.
     pub fn tic(&mut self) -> Step {
         match self.direction {
             1 => {

@@ -68,11 +68,14 @@ and `m_linkseq`. **The parity query drops those five columns and compares by
 slot.**
 
 A slot is a thinker's one-based position in the thinker-list walk for that
-frame. Mobjs and sector thinkers are numbered separately, in list order. A
-pointer between thinkers is written as the pointed-to thinker's slot, and 0
-when it is null: `m_target`, `m_tracer`, `p_mo`, `p_attacker` and
-`sec_soundtarget` hold mobj slots, and `sec_specialdata` holds a sector-thinker
-slot.
+frame. Mobjs and sector thinkers are numbered separately, in list order.
+`setup_things` says where the walk splits the one list into the two: the
+sector thinkers run after that many mobj slots, since `P_SpawnSpecials` adds
+them after `P_LoadThings` and `P_AddThinker` appends. The probe reads it off
+the walk, so parity compares it rather than dropping it. A pointer between
+thinkers is written as the pointed-to thinker's slot, and 0 when it is null:
+`m_target`, `m_tracer`, `p_mo`, `p_attacker` and `sec_soundtarget` hold mobj
+slots, and `sec_specialdata` holds a sector-thinker slot.
 
 A pointer into one of the engine's static arrays becomes an index, and −1 when
 it is null: `m_state` and `psp_state` index `states`, `m_subsector` indexes

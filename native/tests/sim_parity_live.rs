@@ -50,8 +50,9 @@ const OPEN: [&str; 0] = [];
 /// the way, the tics after it are the slide along that wall, and the door
 /// the press at 73 opens has reached the top and left the list by 120. A
 /// second, normal door opens from a press this fixture does not otherwise
-/// name, waits at the top and closes on its own, off the list by 926.
-const WALK_TICS: u32 = 930;
+/// name, waits at the top and closes on its own, off the list by 926. A
+/// third door, the yellow one at gametic 1097, is off the list by 1316.
+const WALK_TICS: u32 = 1320;
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
@@ -94,6 +95,29 @@ const NORMAL_DOOR: [(u32, usize, i32, u32); 9] = [
     (892, 18, 7995392, 17),
     (925, 18, 3670016, 17),
     (926, 17, 3670016, 0),
+];
+
+/// `gametic, thinkers, sec_ceilingheight[42], sec_specialdata[42]` for the
+/// yellow door at gametic 1097, read out of the reference emulator's
+/// trace. The player already holds the yellow card by then, so the press
+/// opens it exactly as a normal door: up to the top, a wait, and down
+/// again on its own.
+///
+/// A thinker elsewhere in the level starts at 1185 and ends at 1287,
+/// unrelated to this door; its own removal shifts every thinker after it
+/// down one slot, which is why this door's own `specialdata` drops from
+/// 18 to 17 at 1287 while it is still only partway closed.
+const YELLOW_DOOR: [(u32, usize, i32, u32); 10] = [
+    (1096, 17, 0, 0),
+    (1097, 18, 131072, 18),
+    (1110, 18, 1835008, 18),
+    (1130, 18, 4456448, 18),
+    (1281, 19, 4456448, 18),
+    (1282, 19, 4325376, 18),
+    (1286, 19, 3801088, 18),
+    (1287, 18, 3670016, 17),
+    (1315, 18, 0, 17),
+    (1316, 17, 0, 0),
 ];
 
 /// A tic the use key goes down on and the press reaches nothing special.
@@ -341,7 +365,7 @@ const WALK: [(u32, i32, i32, i32, i32); 8] = [
     (205, 10419829, 14857119, -31105, 38150),
 ];
 
-#[derive(Row, Deserialize)]
+#[derive(Row, Deserialize, Clone)]
 struct Divergence {
     field: String,
     kind: String,
@@ -368,6 +392,9 @@ struct Walked {
     special: i16,
     ceiling114: i32,
     specialdata114: u32,
+    ceiling41: i32,
+    specialdata41: u32,
+    message: u64,
     state25: i32,
     frame25: i32,
     state118: i32,
@@ -411,7 +438,7 @@ struct Walked {
 /// which gametics `label` skips them for: a row at or past the first
 /// refused tic is whatever the statement could produce, not evidence the
 /// engine agrees or disagrees with it.
-fn before_refusal<T: Copy>(
+fn before_refusal<T: Clone>(
     entries: &[T],
     tic_of: impl Fn(&T) -> u32,
     first_refused: u32,
@@ -419,7 +446,7 @@ fn before_refusal<T: Copy>(
 ) -> Vec<T> {
     let (keep, skip): (Vec<T>, Vec<T>) = entries
         .iter()
-        .copied()
+        .cloned()
         .partition(|e| tic_of(e) < first_refused);
     if !skip.is_empty() {
         let tics: Vec<String> = skip.iter().map(|e| tic_of(e).to_string()).collect();
@@ -440,6 +467,8 @@ async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
              toUInt64(length(s_kind)) AS thinkers, sec_ceilingheight[63] AS ceiling, \
              sec_specialdata[63] AS specialdata, line_special[951] AS special, \
              sec_ceilingheight[115] AS ceiling114, sec_specialdata[115] AS specialdata114, \
+             sec_ceilingheight[42] AS ceiling41, sec_specialdata[42] AS specialdata41, \
+             p_message AS message, \
              m_state[25] AS state25, m_frame[25] AS frame25, \
              m_state[118] AS state118, m_target[118] AS target118, \
              m_lastlook[34] AS lastlook34, \
@@ -493,6 +522,21 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     let walk = walked(&fixture, &db).await;
     fixture.finish().await;
 
+    // A pin at or past the first tic the run itself refuses is not
+    // evidence either way: the row it reads is whatever the statement
+    // could produce, not what the engine did.
+    let first_refused = walk
+        .iter()
+        .find(|row| row.unresolved != 0)
+        .map(|row| row.tic)
+        .unwrap_or(u32::MAX);
+
+    // The committed fixture's own frame at or past the first refused tic
+    // is not evidence either way for the same reason a pinned array's own
+    // entry there is not: the field summary groups every differing tic
+    // under the field's first one, so filtering on `first_tic` alone never
+    // hides a divergence that started before the run gave up.
+    let summary = before_refusal(&summary, |d| d.first_tic, first_refused, "field_summary");
     let differ: Vec<&str> = summary.iter().map(|d| d.field.as_str()).collect();
     let unexpected: Vec<&Divergence> = summary
         .iter()
@@ -526,14 +570,6 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
-    // A pin at or past the first tic the run itself refuses is not
-    // evidence either way: the row it reads is whatever the statement
-    // could produce, not what the engine did.
-    let first_refused = walk
-        .iter()
-        .find(|row| row.unresolved != 0)
-        .map(|row| row.tic)
-        .unwrap_or(u32::MAX);
     assert_eq!(
         first_refused, FIRST_REFUSED,
         "the pinned first refused tic matches the run"
@@ -576,6 +612,21 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             (row.thinkers, row.ceiling114, row.specialdata114),
             (thinkers as u64, ceiling, specialdata),
             "the second door at gametic {tic}"
+        );
+    }
+    for (tic, thinkers, ceiling, specialdata) in
+        before_refusal(&YELLOW_DOOR, |e| e.0, first_refused, "YELLOW_DOOR")
+    {
+        let row = at(tic);
+        assert_eq!(
+            (row.thinkers, row.ceiling41, row.specialdata41),
+            (thinkers as u64, ceiling, specialdata),
+            "the yellow door at gametic {tic}"
+        );
+        assert_eq!(
+            row.message, 0,
+            "the yellow door opens on the card it holds, leaving no message, \
+             at gametic {tic}"
         );
     }
 

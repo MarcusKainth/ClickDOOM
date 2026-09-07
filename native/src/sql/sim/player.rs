@@ -821,7 +821,22 @@ fn writeback(state: &State) -> Vec<(String, String)> {
             "now_p_pendingweapon".to_owned(),
             "toInt32(pk.10)".to_owned(),
         ),
-        ("now_p_message".to_owned(), "toUInt64(pk.11)".to_owned()),
+        // `use_special_line`'s own `use_message` is a locked door's. A
+        // thing picked up the same tic still wins, the way
+        // `P_TouchSpecialThing` running after `P_PlayerThink`'s own use
+        // check would leave it; `pk.11` alone cannot tell that case from
+        // one where nothing was touched, since it then just carries
+        // whatever the fold started from, so this reads the touched list
+        // instead.
+        (
+            "now_p_message".to_owned(),
+            format!(
+                "toUInt64(multiIf(length(pk.{TAKEN}) > 0, pk.11, \
+                 use_message != 0, use_message, {held}))",
+                TAKEN = inter::TAKEN,
+                held = state.get("p_message"),
+            ),
+        ),
         ("now_p_itemcount".to_owned(), "toInt32(pk.12)".to_owned()),
         ("now_p_bonuscount".to_owned(), "toInt32(pk.13)".to_owned()),
         (

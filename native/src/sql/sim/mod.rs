@@ -427,6 +427,7 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
     constants.extend(attacks::constants(db));
     constants.extend(mobj::constants(db));
     constants.extend(missile::constants(db));
+    constants.extend(specials::constants(db));
     constants
 }
 

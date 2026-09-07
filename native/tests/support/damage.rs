@@ -188,7 +188,6 @@ impl World {
         if !lands {
             return hurt;
         }
-        hurt.stuck = it.player != -1;
         let flying = it.flags & MF_SKULLFLY != 0;
         if flying {
             hurt.momx = 0;
@@ -237,7 +236,10 @@ impl World {
             };
             hurt.state = state;
             hurt.tics = (state_tics[state as usize] - (second & 3)).max(1);
-            hurt.stuck |= self.routine_is_unwritten(it.state, state);
+            // `P_KillMobj`'s own player branch is a different thing this
+            // does not run, so a hit that kills a player leaves the call
+            // stuck, over and above whatever the corpse's own frame does.
+            hurt.stuck = it.player != -1 || self.routine_is_unwritten(it.state, state);
             hurt.drop = match it.kind {
                 k if k == thing_type("MT_POSSESSED") || k == thing_type("MT_WOLFSS") => {
                     thing_type("MT_CLIP")
@@ -255,7 +257,8 @@ impl World {
         }
         hurt.reactiontime = 0;
         let vile = thing_type("MT_VILE");
-        let chases = (it.threshold == 0 || it.kind == vile)
+        let chases = it.player == -1
+            && (it.threshold == 0 || it.kind == vile)
             && source != 0
             && source != target
             && credited.is_some_and(|from| from.kind != vile);

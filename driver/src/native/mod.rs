@@ -12,7 +12,11 @@
 //! the screen wipe's schedule, and [`schedule`] reads back which frames a
 //! run renders and what each one draws from. [`refusal`] reads back the
 //! tic a run stopped at, where `unresolved` or `unimplemented` said one
-//! could not be produced exactly.
+//! could not be produced exactly. [`schema`] stands between a database an
+//! older binary loaded and one this binary's own statements can read: a
+//! load without `--fresh` refuses a column that moved, and
+//! [`Session::open`] refuses a database whose schema hash is not this
+//! binary's own.
 //!
 //! A paced run adds [`pace`], the 35 Hz tic clock, and [`window`], which
 //! puts the frame SQL produced on the screen.
@@ -24,6 +28,7 @@ pub mod probe;
 pub mod refusal;
 pub mod rowbinary;
 pub mod schedule;
+pub mod schema;
 pub mod session;
 pub mod settings;
 pub mod stream;

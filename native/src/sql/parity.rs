@@ -191,7 +191,7 @@ fn compared() -> Vec<Field> {
             let declared = types
                 .iter()
                 .find(|(column, _)| column == name)
-                .map(|(_, kind)| *kind)
+                .map(|(_, kind)| kind.as_str())
                 .unwrap_or_else(|| panic!("native_state declares no column {name}"));
             fields.push(Field {
                 name,

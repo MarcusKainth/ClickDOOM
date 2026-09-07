@@ -17,7 +17,7 @@ use crate::native::pace::{Pace, TIC};
 use crate::native::schedule::MeltFrame;
 use crate::native::session::{FIRST_TIC_TIMEOUT, STATE_TABLE, SessionError, TIC_TIMEOUT};
 use crate::native::window::{Scale, Window};
-use crate::native::{Refusal, Session, plan, schedule};
+use crate::native::{Refusal, Session, plan, schedule, schema};
 use crate::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
 use crate::stats::{Clock, Monotonic, NativeCounters, NativeStatsLine};
 
@@ -125,6 +125,12 @@ pub(crate) async fn run(cmd: &DemoCmd) -> Result<Exit, Failure> {
 async fn run_probe(cmd: &DemoCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
+    if let Some(mismatch) = schema::check_hash(&db, database)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
+        return Err(failed(mismatch.to_string()));
+    }
     let plan = schedule::from_probe(&db, database, cmd.stop_at_frame)
         .await
         .map_err(|err| failed(err.to_string()))?;
@@ -160,6 +166,12 @@ async fn run_probe(cmd: &DemoCmd) -> Result<Exit, Failure> {
 async fn run_sim(cmd: &DemoCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
+    if let Some(mismatch) = schema::check_hash(&db, database)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
+        return Err(failed(mismatch.to_string()));
+    }
     // A demo run always plays from the level's own first state row, the
     // way `native diff` does, rather than resuming wherever a previous
     // sim run of this database left off.

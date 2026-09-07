@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_slot (slot UInt32, name String
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_colposts (slot UInt32, first UInt32, num UInt16)
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_post
 CREATE TABLE IF NOT EXISTS clickdoom_native.rt_ui_backing (id UInt8, data String)
+CREATE TABLE IF NOT EXISTS clickdoom_native.schema_hash (hash UInt64)
 INSERT INTO clickdoom_native.wad_lumps (id, name, map_marker, bytes) FORMAT RowBinary  [4194554 bytes]
 INSERT INTO clickdoom_native.states FORMAT TSVWithNames  [21857 bytes]
 INSERT INTO clickdoom_native.action_functions FORMAT TSVWithNames  [1089 bytes]

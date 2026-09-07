@@ -36,6 +36,17 @@ pub fn lowest_ceiling_surrounding(sector: &str, ceilingheight: &str) -> String {
     )
 }
 
+/// `P_FindLowestFloorSurrounding`: the sector's own floor, or a two sided
+/// neighbor's if one stands lower.
+pub fn lowest_floor_surrounding(sector: &str, floorheight: &str) -> String {
+    let other = format!("if(line_front[1 + l] = {sector}, line_back[1 + l], line_front[1 + l])");
+    format!(
+        "arrayMin(arrayPushBack(arrayMap(l -> toInt64({floorheight}[1 + {other}]), \
+         arrayFilter(l -> bitAnd(line_flags[1 + l], 4) != 0 AND ({other}) >= 0, \
+         sec_lines[1 + {sector}])), toInt64({floorheight}[1 + {sector}])))"
+    )
+}
+
 /// `p_spec.h`: what `T_MovePlane` answers.
 pub mod result {
     pub const OK: i64 = 0;

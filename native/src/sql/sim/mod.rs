@@ -153,10 +153,18 @@ pub mod unresolved {
     pub const MISSILE_DRAW_UNSURE: u64 = 1 << 30;
     /// A missile already in flight's own thinker hits an unwritten path.
     pub const MISSILE_STUCK: u64 = 1 << 31;
+    /// `P_TryMove`'s own spechit walk crosses more than one line
+    /// `PLAT_TRIGGER_SPECIALS` names in the same move. `cross_plats` only
+    /// carries the first such line a move crosses, so a second one a tic
+    /// would otherwise spawn is a tic this does not run rather than one
+    /// that silently drops it.
+    pub const PX_MULTI_CROSSED: u64 = 1 << 32;
+    /// The same, for a monster's own move.
+    pub const TX_MULTI_CROSSED: u64 = 1 << 33;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 32] = [
+const UNRESOLVED_BITS: [(u64, &str); 34] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -189,6 +197,8 @@ const UNRESOLVED_BITS: [(u64, &str); 32] = [
     (unresolved::AT_DRAW_UNSURE, "AT_DRAW_UNSURE"),
     (unresolved::MISSILE_DRAW_UNSURE, "MISSILE_DRAW_UNSURE"),
     (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
+    (unresolved::PX_MULTI_CROSSED, "PX_MULTI_CROSSED"),
+    (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

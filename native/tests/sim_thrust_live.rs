@@ -80,10 +80,14 @@ const OVER_MOMY: i64 = MAXMOVE + 100_000;
 /// clears the line instead of straddling it.
 const CROSSING: i64 = 8 * 65536 + 1;
 
-/// `p_spec.c`: what the seeded lines are given. A WR plat
-/// (down-wait-up-stay), one of the specials a monster's own crossing can
-/// reach `P_CrossSpecialLine`'s switch for.
-const MONSTER_PLAT: i64 = 88;
+/// `p_spec.c`: what the seeded lines are given. A WR teleport retrigger,
+/// one of the specials a monster's own crossing can reach
+/// `P_CrossSpecialLine`'s switch for and native does not dispatch. Every
+/// line in the level is given this special rather than only the one the
+/// crossing happens to cross, so a plat special would trip `EV_DoPlat`'s
+/// own tag-0 walk into every untagged sector at once; a special native
+/// runs sidesteps that rather than proving anything about it.
+const MONSTER_UNHANDLED: i64 = 97;
 
 /// One arm per seeded row: its name and where the copy of `BEFORE` lands.
 /// The tics are far apart so the arms cannot read each other's rows.
@@ -187,7 +191,7 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             // putting a special where the thrust happens to go.
             overrides.push((
                 "line_special",
-                format!("arrayMap(v -> toInt16({MONSTER_PLAT}), p.line_special)"),
+                format!("arrayMap(v -> toInt16({MONSTER_UNHANDLED}), p.line_special)"),
             ));
         }
         statements.extend(

@@ -92,7 +92,7 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -123,7 +123,7 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
     let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
         .map(|tic| Input::keys(tic, 0, (0, 0)))
         .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
+    statements.extend(sim::tick::run_statement(&db, &inputs));
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
         panic!("{error}");

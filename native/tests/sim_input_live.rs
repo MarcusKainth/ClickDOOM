@@ -63,7 +63,7 @@ async fn the_keys_build_the_command_the_engine_builds() {
         .enumerate()
         .map(|(at, (keys, dx, dy))| sim::tick::Input::keys(FIRST + at as u32, *keys, (*dx, *dy)))
         .collect();
-    plan.push(sim::tick::run_statement(&db, &run));
+    plan.extend(sim::tick::run_statement(&db, &run));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -135,7 +135,7 @@ async fn the_pause_key_stops_the_world(fixture: &Fixture) {
         .map(|(at, keys)| sim::tick::Input::keys(last + 1 + at as u32, keys, (0, 0)))
         .collect();
     fixture
-        .execute(&[sim::tick::run_statement(db, &presses)])
+        .execute(&sim::tick::run_statement(db, &presses))
         .await
         .unwrap();
     let paused: Vec<u8> = fixture

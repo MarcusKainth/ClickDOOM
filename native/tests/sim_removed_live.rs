@@ -68,7 +68,7 @@ async fn run() -> (Listed, Listed) {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, BEFORE));
+    plan.extend(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -110,7 +110,7 @@ async fn run() -> (Listed, Listed) {
         panic!("{error}");
     }
     let tic = sim::tick::demo_statement(&db, SEED_TIC + 1, SEED_TIC + 1);
-    if let Err(error) = fixture.execute(&[tic]).await {
+    if let Err(error) = fixture.execute(&tic).await {
         fixture.finish().await;
         panic!("{error}");
     }

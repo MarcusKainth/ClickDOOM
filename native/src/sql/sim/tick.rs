@@ -18,10 +18,31 @@ use crate::sql::Statement;
 
 use super::{Tic, game, hud, lights, mobj, player, spec, specials, state_columns};
 
-/// The columns the session streams, in wire order. `pad` carries the
-/// padding row the transport writes behind the statement text.
+/// The columns the first statement's session streams, in wire order. `pad`
+/// carries the padding row the transport writes behind the statement text.
 pub const INPUT_SCHEMA: &str =
     "tic UInt32, source UInt8, keys UInt32, mouse_dx Int16, mouse_dy Int16, pad String";
+
+/// The columns the second statement's session streams. It reads everything
+/// else back out of [`STAGE_TABLE`], the row the first statement just left
+/// there, so a tic number is all it needs.
+pub const STAGE2_INPUT_SCHEMA: &str = "tic UInt32, pad String";
+
+/// The table between the two statements: `native_state`'s own columns,
+/// keyed by `tic` the same way, plus [`STAGE_EXTRA_COLUMNS`], the scratch
+/// bindings a bare alias carries across the boundary rather than a
+/// `native_state` column read through `state`.
+pub const STAGE_TABLE: &str = "native_stage";
+
+/// `name, type` for each column past the contract that [`STAGE_TABLE`]
+/// carries. `cross_dispatch`'s own crossing inputs: the player's own
+/// crossed line and the moved things' own, neither a `native_state`
+/// column, both read back under these same bare names rather than through
+/// `state`.
+pub const STAGE_EXTRA_COLUMNS: [(&str, &str); 2] = [
+    ("px_crossed_line", "Int64"),
+    ("tx_crossed_line", "Array(Int64)"),
+];
 
 /// What a tic command comes from: the demo lump, or the keys and mouse
 /// deltas the session streamed.
@@ -51,12 +72,23 @@ pub mod source {
 const MELT_DRAWS: u32 = 320;
 const MELT_TIC: u32 = 2;
 
-/// The statement a session opens: one row in, one state row out.
+/// The first statement a session opens: one tic command in, one
+/// [`STAGE_TABLE`] row out, through the player and the thinkers.
 ///
 /// The padding row the transport writes ahead of the first real row
 /// carries tic 0, which the filter drops.
-pub fn resident_statement(db: &str) -> String {
-    transform(db, &format!("input('{INPUT_SCHEMA}')\nWHERE tic > 0"))
+pub fn resident_statement_stage1(db: &str) -> String {
+    transform_stage1(db, &format!("input('{INPUT_SCHEMA}')\nWHERE tic > 0"))
+}
+
+/// The second statement a session opens: one tic number in, the
+/// [`STAGE_TABLE`] row the first statement left read back, one
+/// `native_state` row out, through the specials and `G_Ticker`.
+pub fn resident_statement_stage2(db: &str) -> String {
+    transform_stage2(
+        db,
+        &format!("input('{STAGE2_INPUT_SCHEMA}')\nWHERE tic > 0"),
+    )
 }
 
 /// One row a session streams.
@@ -89,16 +121,22 @@ impl Input {
     }
 }
 
-/// The same transform over a run of input rows, as one statement a caller
-/// can issue on its own.
+const BATCH_SETTINGS: &str = "\nSETTINGS max_block_size = 1, max_insert_block_size = 1, \
+     min_insert_block_size_rows = 1, min_insert_block_size_bytes = 1, \
+     max_threads = 1, max_insert_threads = 1";
+
+/// The same two-statement transform over a run of input rows, as two
+/// statements a caller issues in order: every tic through [`STAGE_TABLE`],
+/// then every tic through `native_state`. Nothing opens the first alone,
+/// because the second's own row is not otherwise reachable.
 ///
 /// A row reads the tic before it through `joinGet`, which the `Join`
 /// engine makes visible inside the running statement once the rows arrive
 /// one block at a time. The settings that make that true are the ones a
 /// session sends as URL parameters, and here they travel with the
-/// statement. A run is one statement because the transform is analysed
-/// per statement and executed per row, exactly as a session's is.
-pub fn run_statement(db: &str, rows: &[Input]) -> Statement {
+/// statement. A run is two statements because the transform is analysed
+/// per statement and executed per row, exactly as a session's two are.
+pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
     // The rows come out of `numbers`, which honours the block size the
     // session runs under. A table of literal rows does not, and rows that
     // share a block all read the state from before it.
@@ -108,11 +146,9 @@ pub fn run_statement(db: &str, rows: &[Input]) -> Statement {
             rows.iter().map(of).collect::<Vec<_>>().join(", ")
         )
     };
-    Statement::sql(format!(
-        "{}\nSETTINGS max_block_size = 1, max_insert_block_size = 1, \
-         min_insert_block_size_rows = 1, min_insert_block_size_bytes = 1, \
-         max_threads = 1, max_insert_threads = 1",
-        transform(
+    let stage1 = Statement::sql(format!(
+        "{}{BATCH_SETTINGS}",
+        transform_stage1(
             db,
             &format!(
                 "(\n    SELECT\n        {} AS tic,\n        {} AS source,\n        \
@@ -127,28 +163,63 @@ pub fn run_statement(db: &str, rows: &[Input]) -> Statement {
             ),
         )
     ))
-    .with(&PARSE_SETTINGS)
+    .with(&PARSE_SETTINGS);
+    let stage2 = Statement::sql(format!(
+        "{}{BATCH_SETTINGS}",
+        transform_stage2(
+            db,
+            &format!(
+                "(\n    SELECT\n        {} AS tic\n    FROM numbers({})\n)\nWHERE tic > 0",
+                column("toUInt32", &|row: &Input| row.tic.to_string()),
+                rows.len()
+            ),
+        )
+    ))
+    .with(&PARSE_SETTINGS);
+    [stage1, stage2]
 }
 
 /// A run of tics the demo lump drives.
-pub fn demo_statement(db: &str, first: u32, last: u32) -> Statement {
+pub fn demo_statement(db: &str, first: u32, last: u32) -> [Statement; 2] {
     let rows: Vec<Input> = (first..=last).map(Input::demo).collect();
     run_statement(db, &rows)
 }
 
-fn transform(db: &str, from: &str) -> String {
-    let tic = bindings(db);
+fn transform_stage1(db: &str, from: &str) -> String {
+    let tic = bindings_stage1(db);
     let row = row(&tic.state);
-    super::insert(db, &tic.bindings, &row, from, INPUT_COLUMNS)
+    let extra: Vec<(&str, String)> = STAGE_EXTRA_COLUMNS
+        .iter()
+        .map(|(name, _)| {
+            let (_, expr) = tic
+                .bindings
+                .iter()
+                .find(|(bound, _)| bound == name)
+                .unwrap_or_else(|| panic!("no binding named {name} to stage across the boundary"));
+            (*name, expr.clone())
+        })
+        .collect();
+    super::insert(
+        db,
+        STAGE_TABLE,
+        &tic.bindings,
+        &row,
+        &extra,
+        from,
+        INPUT_COLUMNS,
+    )
 }
 
-/// Every binding the tic holds, in the order the engine computes them.
-///
-/// `P_Ticker` runs the players, the thinkers and the specials and then
-/// bumps `leveltime`; `G_Ticker` runs the status bar, the heads-up display
-/// and the menu after it. The melt comes last because it draws its numbers
-/// between the tic and the frame that follows it.
-fn bindings(db: &str) -> Tic {
+fn transform_stage2(db: &str, from: &str) -> String {
+    let tic = bindings_stage2(db);
+    let row = row(&tic.state);
+    super::insert(db, "native_state", &tic.bindings, &row, &[], from, &["tic"])
+}
+
+/// The first statement's own bindings: the player and the thinkers, which
+/// is `P_Ticker` up to the point `P_RunThinkers` has run every thinker the
+/// tic itself made room for.
+fn bindings_stage1(db: &str) -> Tic {
     let mut tic = Tic::new(previous(db));
     tic.stage(super::constants(db));
     let command = game::command(&tic.state, db);
@@ -166,6 +237,19 @@ fn bindings(db: &str) -> Tic {
     let thrown = mobj::thrown_thinks(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thrown);
+    tic
+}
+
+/// The second statement's own bindings: the specials, then `G_Ticker`'s
+/// status bar, heads-up display and menu, then the melt, which draws its
+/// numbers between the tic and the frame that follows it.
+///
+/// Seeded from [`STAGE_TABLE`] rather than `native_state`, so this reloads
+/// the map's own constants fresh the way the whole tic's own first stage
+/// already does, since those are not carried in either table.
+fn bindings_stage2(db: &str) -> Tic {
+    let mut tic = Tic::new(previous_stage2(db));
+    tic.stage(super::constants(db));
     let cross_dispatch = specials::cross_dispatch(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, cross_dispatch);
@@ -186,7 +270,8 @@ fn bindings(db: &str) -> Tic {
     tic
 }
 
-/// The state row the tic reads, one `joinGet` per column.
+/// The state row the first statement reads, one `joinGet` per column
+/// against `native_state`'s own previous tic.
 ///
 /// `native_state` is a `Join` table, so each of these is a hash probe
 /// against a table held in memory. The tic reads every column, because a
@@ -202,6 +287,30 @@ fn previous(db: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+/// The state row the second statement reads: [`STAGE_TABLE`]'s own row for
+/// this same tic, the first statement's, plus [`STAGE_EXTRA_COLUMNS`]
+/// under their own bare names rather than `prev_`, since `cross_dispatch`
+/// reads them that way, not through `state`.
+fn previous_stage2(db: &str) -> Vec<(String, String)> {
+    let mut bindings: Vec<(String, String)> = state_columns()
+        .into_iter()
+        .filter(|name| *name != "tic")
+        .map(|name| {
+            (
+                format!("prev_{name}"),
+                format!("joinGet('{db}.{STAGE_TABLE}', '{name}', toUInt32(tic))"),
+            )
+        })
+        .collect();
+    for (name, _) in STAGE_EXTRA_COLUMNS {
+        bindings.push((
+            name.to_owned(),
+            format!("joinGet('{db}.{STAGE_TABLE}', '{name}', toUInt32(tic))"),
+        ));
+    }
+    bindings
 }
 
 /// The last line of `P_Ticker`.
@@ -244,11 +353,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_resident_statement_reads_the_session_s_row() {
-        let sql = resident_statement("nat");
-        assert!(sql.contains(&format!("input('{INPUT_SCHEMA}')")));
-        assert!(sql.contains("WHERE tic > 0"));
-        assert!(sql.contains("joinGet('nat.native_state', 'leveltime', toUInt32(tic - 1))"));
+    fn the_resident_statements_read_the_session_s_rows() {
+        let stage1 = resident_statement_stage1("nat");
+        assert!(stage1.contains(&format!("input('{INPUT_SCHEMA}')")));
+        assert!(stage1.contains("WHERE tic > 0"));
+        assert!(stage1.contains("joinGet('nat.native_state', 'leveltime', toUInt32(tic - 1))"));
+        assert!(stage1.contains("INSERT INTO nat.native_stage"));
+
+        let stage2 = resident_statement_stage2("nat");
+        assert!(stage2.contains(&format!("input('{STAGE2_INPUT_SCHEMA}')")));
+        assert!(stage2.contains("WHERE tic > 0"));
+        assert!(stage2.contains("joinGet('nat.native_stage', 'leveltime', toUInt32(tic))"));
+        assert!(stage2.contains("INSERT INTO nat.native_state"));
     }
 
     /// One walk of the blockmap for the things and one for the lines is
@@ -273,7 +389,7 @@ mod tests {
     fn a_flying_skull_leaves_the_tic_unresolved() {
         /// `p_mobj.h`: `MF_SKULLFLY`.
         const REFUSED: i64 = 0x100_0000;
-        let sql = resident_statement("nat");
+        let sql = resident_statement_stage1("nat");
         assert!(
             sql.contains(&format!("m_flags[k], {REFUSED}) != 0")),
             "the move refuses the flag"
@@ -283,12 +399,13 @@ mod tests {
 
     #[test]
     fn each_caller_of_the_move_test_holds_one() {
-        let sql = resident_statement("nat");
+        let sql = resident_statement_stage1("nat") + &resident_statement_stage2("nat");
         // The player's own step, the general movers' two parts, the
         // chase, the spawn's own half step, the tic's own throw's move,
         // a missile already in flight's own worst-case draw count (read
         // once for the count and once for whether it is unsure), and its
-        // own thinker each hold one.
+        // own thinker each hold one. `arrayMap(clip ->` is a moving
+        // plane's own crush, in the second statement.
         assert_eq!(sql.matches("arrayMap(mv ->").count(), 9);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
@@ -297,16 +414,19 @@ mod tests {
 
     #[test]
     fn a_step_runs_the_same_transform_over_one_row() {
-        let step = run_statement("nat", &[Input::demo(7)]);
-        let resident = resident_statement("nat");
+        let [step1, step2] = run_statement("nat", &[Input::demo(7)]);
+        let resident1 = resident_statement_stage1("nat");
+        let resident2 = resident_statement_stage2("nat");
         let head = |sql: &str| sql.split("\nFROM\n").next().unwrap().to_owned();
-        assert_eq!(head(&step.sql), head(&resident));
-        assert!(step.sql.contains("toUInt32([7][1 + number]) AS tic"));
+        assert_eq!(head(&step1.sql), head(&resident1));
+        assert_eq!(head(&step2.sql), head(&resident2));
+        assert!(step1.sql.contains("toUInt32([7][1 + number]) AS tic"));
+        assert!(step2.sql.contains("toUInt32([7][1 + number]) AS tic"));
     }
 
     #[test]
     fn every_column_the_tic_does_not_compute_is_carried_forward() {
-        let row = row(&bindings("nat").state);
+        let row = row(&bindings_stage2("nat").state);
         assert_eq!(row.len(), state_columns().len());
         let named = |column: &str| {
             row.iter()
@@ -333,18 +453,22 @@ mod tests {
 
     #[test]
     fn a_binding_is_only_read_after_it_is_written() {
-        let with = bindings("nat").bindings;
-        let mut written: Vec<&str> = Vec::new();
-        for (name, expr) in &with {
-            for (earlier, _) in &with {
-                if earlier != name && mentions(expr, earlier) {
-                    assert!(
-                        written.contains(&earlier.as_str()),
-                        "{name} reads {earlier} before it is written"
-                    );
+        for with in [
+            bindings_stage1("nat").bindings,
+            bindings_stage2("nat").bindings,
+        ] {
+            let mut written: Vec<&str> = Vec::new();
+            for (name, expr) in &with {
+                for (earlier, _) in &with {
+                    if earlier != name && mentions(expr, earlier) {
+                        assert!(
+                            written.contains(&earlier.as_str()),
+                            "{name} reads {earlier} before it is written"
+                        );
+                    }
                 }
+                written.push(name);
             }
-            written.push(name);
         }
     }
 
@@ -387,22 +511,65 @@ mod tests {
     /// rather than the tic before it.
     #[test]
     fn a_subquery_names_nothing_bound_outside_it() {
-        let with = bindings("nat").bindings;
-        let names: Vec<&str> = with.iter().map(|(name, _)| name.as_str()).collect();
-        for (name, expr) in &with {
-            for query in subqueries(expr) {
-                // What the subquery binds for itself, which shadows any
-                // name outside it.
-                let own: Vec<&str> = query
-                    .match_indices(" AS ")
-                    .filter_map(|(at, _)| query[at + 4..].split([',', ' ', '\n']).next())
-                    .collect();
-                for other in &names {
-                    assert!(
-                        own.contains(other) || !reads(query, other),
-                        "the subquery in {name} reads {other} from outside itself"
-                    );
+        for with in [
+            bindings_stage1("nat").bindings,
+            bindings_stage2("nat").bindings,
+        ] {
+            let names: Vec<&str> = with.iter().map(|(name, _)| name.as_str()).collect();
+            for (name, expr) in &with {
+                for query in subqueries(expr) {
+                    // What the subquery binds for itself, which shadows any
+                    // name outside it.
+                    let own: Vec<&str> = query
+                        .match_indices(" AS ")
+                        .filter_map(|(at, _)| query[at + 4..].split([',', ' ', '\n']).next())
+                        .collect();
+                    for other in &names {
+                        assert!(
+                            own.contains(other) || !reads(query, other),
+                            "the subquery in {name} reads {other} from outside itself"
+                        );
+                    }
                 }
+            }
+        }
+    }
+
+    /// The scratch bindings a bare alias crosses the boundary with, and
+    /// nothing else.
+    ///
+    /// A tracked binding (one `now_<column>` names) is renamed to this
+    /// statement's own `s<n>_<column>`, a name the other statement's own
+    /// numbering never produces by coincidence, so only an untracked one
+    /// keeps the literal name a Rust source file could also spell in the
+    /// other statement's own generator. [`STAGE_EXTRA_COLUMNS`] are the
+    /// only untracked names allowed to.
+    #[test]
+    fn no_bare_alias_but_the_staged_ones_crosses_the_boundary() {
+        let stage1 = bindings_stage1("nat").bindings;
+        let stage2 = bindings_stage2("nat").bindings;
+        let stage2_names: Vec<&str> = stage2.iter().map(|(name, _)| name.as_str()).collect();
+        let scratch: Vec<&str> = stage1
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| super::super::column_of(&format!("now_{name}")).is_none())
+            .filter(|name| !name.starts_with("prev_"))
+            .filter(|name| {
+                !STAGE_EXTRA_COLUMNS
+                    .iter()
+                    .any(|(carried, _)| carried == name)
+            })
+            // A map constant both statements reload fresh under the same
+            // name is not read across the boundary; it is defined again.
+            .filter(|name| !stage2_names.contains(name))
+            .collect();
+        for (name, expr) in &stage2 {
+            for bare in &scratch {
+                assert!(
+                    !mentions(expr, bare),
+                    "{name} reads {bare} across the boundary, which \
+                     native_stage does not carry"
+                );
             }
         }
     }
@@ -422,7 +589,12 @@ mod expansion {
     /// of them starts being copied instead.
     #[test]
     fn no_large_binding_is_copied() {
-        let tic = bindings("lanew");
+        for tic in [bindings_stage1("lanew"), bindings_stage2("lanew")] {
+            check_no_large_binding_is_copied(&tic);
+        }
+    }
+
+    fn check_no_large_binding_is_copied(tic: &Tic) {
         let row = row(&tic.state);
         let stages = super::super::stages(&tic.bindings);
         for (at, stage) in stages.iter().enumerate() {

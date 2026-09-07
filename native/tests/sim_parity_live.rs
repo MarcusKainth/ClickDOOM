@@ -511,7 +511,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.push(probe::schema_statement(&db));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, WALK_TICS));
+    plan.extend(sim::tick::demo_statement(&db, 1, WALK_TICS));
     plan.push(probe::insert(&db, &fixture_tsv()).unwrap());
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;

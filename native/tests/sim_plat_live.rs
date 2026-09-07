@@ -67,7 +67,7 @@ async fn a_seeded_plat_runs_the_way_the_engine_runs_it() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -88,7 +88,7 @@ async fn a_seeded_plat_runs_the_way_the_engine_runs_it() {
         panic!("{error}");
     }
     let run = sim::tick::demo_statement(&db, SEED_TIC + 1, SEED_TIC + TICS);
-    if let Err(error) = fixture.execute(&[run]).await {
+    if let Err(error) = fixture.execute(&run).await {
         fixture.finish().await;
         panic!("{error}");
     }
@@ -175,7 +175,7 @@ async fn a_crossing_of_the_tagged_line_spawns_the_plat_ev_do_plat_spawns() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -206,7 +206,7 @@ async fn a_crossing_of_the_tagged_line_spawns_the_plat_ev_do_plat_spawns() {
     let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
         .map(|tic| Input::keys(tic, 0, (0, 0)))
         .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
+    statements.extend(sim::tick::run_statement(&db, &inputs));
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
         panic!("{error}");
@@ -297,7 +297,7 @@ async fn a_crossing_of_a_one_shot_line_spawns_the_plat_and_clears_the_line() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -334,7 +334,7 @@ async fn a_crossing_of_a_one_shot_line_spawns_the_plat_and_clears_the_line() {
     let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
         .map(|tic| Input::keys(tic, 0, (0, 0)))
         .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
+    statements.extend(sim::tick::run_statement(&db, &inputs));
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
         panic!("{error}");
@@ -452,7 +452,7 @@ async fn a_crossing_of_the_type_22_line_spawns_the_raise_to_nearest_and_change_p
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -483,7 +483,7 @@ async fn a_crossing_of_the_type_22_line_spawns_the_raise_to_nearest_and_change_p
     let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + RAISE_TICS)
         .map(|tic| Input::keys(tic, 0, (0, 0)))
         .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
+    statements.extend(sim::tick::run_statement(&db, &inputs));
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
         panic!("{error}");
@@ -609,7 +609,7 @@ async fn a_seeded_button_puts_its_picture_back_when_it_runs_out() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     fn put(column: &'static str, value: String) -> (&'static str, String) {
         (
             column,
@@ -630,7 +630,7 @@ async fn a_seeded_button_puts_its_picture_back_when_it_runs_out() {
         ],
     );
     plan.extend(seeded.into_iter().map(sql::Statement::sql));
-    plan.push(sim::tick::demo_statement(
+    plan.extend(sim::tick::demo_statement(
         &db,
         SEED_TIC + 1,
         SEED_TIC + BUTTONTIME as u32 + 2,

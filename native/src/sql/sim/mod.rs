@@ -481,8 +481,8 @@ fn insert_flat(db: &str, with: &[(String, String)], row: &[(&str, String)], from
     )
 }
 
-/// `INSERT INTO {db}.native_state (...) SELECT ... FROM ...`, with the
-/// bindings staged as nested subqueries.
+/// `INSERT INTO {db}.{table} (...) SELECT ... FROM ...`, with the bindings
+/// staged as nested subqueries.
 ///
 /// A binding named in another binding's text is expanded into it rather
 /// than shared, so a chain of aliases grows the query tree by the product
@@ -493,10 +493,14 @@ fn insert_flat(db: &str, with: &[(String, String)], row: &[(&str, String)], from
 /// `row` gives one expression per state column, in any order; the insert
 /// names its columns and emits them in the contract's order, so a column
 /// nobody wrote is a panic here rather than a wrong row in the table.
+/// `extra` names columns past the contract, in the order given, for a
+/// target table that carries more than `native_state` does.
 fn insert(
     db: &str,
+    table: &str,
     with: &[(String, String)],
     row: &[(&str, String)],
+    extra: &[(&str, String)],
     from: &str,
     carried: &[&str],
 ) -> String {
@@ -506,7 +510,9 @@ fn insert(
         columns.len(),
         "the row does not fill every column"
     );
-    let select: Vec<String> = columns
+    let mut names: Vec<String> = columns.iter().map(|name| format!("    {name}")).collect();
+    names.extend(extra.iter().map(|(name, _)| format!("    {name}")));
+    let mut select: Vec<String> = columns
         .iter()
         .map(|name| {
             let (_, expr) = row
@@ -516,13 +522,14 @@ fn insert(
             format!("    ({expr}) AS {name}")
         })
         .collect();
-    format!(
-        "INSERT INTO {db}.native_state\n(\n{}\n)\nSELECT\n{}\nFROM\n(\n{}\n)",
-        columns
+    select.extend(
+        extra
             .iter()
-            .map(|name| format!("    {name}"))
-            .collect::<Vec<_>>()
-            .join(",\n"),
+            .map(|(name, expr)| format!("    ({expr}) AS {name}")),
+    );
+    format!(
+        "INSERT INTO {db}.{table}\n(\n{}\n)\nSELECT\n{}\nFROM\n(\n{}\n)",
+        names.join(",\n"),
         select.join(",\n"),
         indent(&nest(&stages(with), from, &select.join(" "), carried)),
     )
@@ -695,7 +702,7 @@ mod tests {
     /// run stopped.
     #[test]
     fn every_unresolved_bit_is_set_somewhere_in_the_tic() {
-        let sql = tick::resident_statement("db");
+        let sql = tick::resident_statement_stage1("db") + &tick::resident_statement_stage2("db");
         for (bit, name) in UNRESOLVED_BITS {
             assert!(
                 sql.contains(&format!("toUInt64({bit}), toUInt64(0))")),
@@ -776,6 +783,6 @@ mod tests {
                 (name, "0".to_owned())
             })
             .collect();
-        insert("nat", &[], &row, "(SELECT 1)", &[]);
+        insert("nat", "native_state", &[], &row, &[], "(SELECT 1)", &[]);
     }
 }

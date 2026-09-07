@@ -53,7 +53,7 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, BEFORE));
+    plan.extend(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -98,7 +98,7 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
         panic!("{error}");
     }
     let run = sim::tick::demo_statement(&db, SEED_TIC + 1, LAST);
-    if let Err(error) = fixture.execute(&[run]).await {
+    if let Err(error) = fixture.execute(&run).await {
         fixture.finish().await;
         panic!("{error}");
     }

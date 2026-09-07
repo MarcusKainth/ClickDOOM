@@ -59,7 +59,7 @@ async fn the_player_walks_the_way_the_engine_walks() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, RUN_TICS));
+    plan.extend(sim::tick::demo_statement(&db, 1, RUN_TICS));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");

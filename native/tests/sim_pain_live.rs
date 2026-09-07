@@ -87,7 +87,7 @@ async fn a_pain_and_a_death_frame_run_through_a_tic() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, BEFORE));
+    plan.extend(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -104,7 +104,7 @@ async fn a_pain_and_a_death_frame_run_through_a_tic() {
                 .into_iter()
                 .map(sql::Statement::sql),
         );
-        statements.push(sim::tick::run_statement(
+        statements.extend(sim::tick::run_statement(
             &db,
             &[Input::keys(at + 1, 0, (0, 0))],
         ));

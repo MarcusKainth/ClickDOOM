@@ -15,11 +15,11 @@ use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement
 use bytes::Bytes;
 use clap::{Args, Subcommand};
 
+use clickdoom_native::resident::{CLOSE_TIMEOUT, Resident, resident_settings, rowbinary::Row};
+
 use super::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
-use crate::native::rowbinary::Row;
-use crate::native::settings::resident_settings;
-use crate::native::stream::{CLOSE_TIMEOUT, Resident};
+use crate::native::session::endpoint;
 
 /// `clickdoom native`.
 #[derive(Args)]
@@ -169,7 +169,7 @@ async fn stream_rows(cmd: &SessionCheckCmd, db: &Db, table: &str) -> Result<Meas
         "INSERT INTO {table} SELECT tic, tic * 2 FROM input('{CHECK_INPUT_SCHEMA}') WHERE tic > 0"
     );
     let resident = Resident::open(
-        &cmd.conn,
+        &endpoint(&cmd.conn),
         &statement,
         CHECK_INPUT_SCHEMA,
         &resident_settings(statement.len()),

@@ -94,7 +94,7 @@ async fn run_arms(fixture: &Fixture, db: &str, arms: &[Arm]) -> Vec<Ran> {
                 .map(sql::Statement::sql),
         );
         let keys = if arm.fires { key::FIRE } else { 0 };
-        statements.push(sim::tick::run_statement(
+        statements.extend(sim::tick::run_statement(
             db,
             &[Input::keys(arm.at + 1, keys, (0, 0))],
         ));
@@ -268,7 +268,7 @@ async fn a_held_pistols_second_shot_spreads() {
                 .into_iter()
                 .map(sql::Statement::sql),
         );
-        statements.push(sim::tick::run_statement(
+        statements.extend(sim::tick::run_statement(
             &db,
             &[Input::keys(at + 1, key::FIRE, (0, 0))],
         ));

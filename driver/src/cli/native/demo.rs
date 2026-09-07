@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration; // purity-ok: the frame budget and the timings the session measured, read from no clock here
 
 use clap::{Args, ValueEnum};
+use clickdoom_native::resident::{FIRST_TIC_TIMEOUT, TIC_TIMEOUT};
 use clickdoom_native::sql::sim::tick;
 use tokio::sync::mpsc;
 
@@ -15,7 +16,7 @@ use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::pace::{Pace, TIC};
 use crate::native::schedule::MeltFrame;
-use crate::native::session::{FIRST_TIC_TIMEOUT, STATE_TABLE, SessionError, TIC_TIMEOUT};
+use crate::native::session::{STAGE_TABLE, STATE_TABLE, SessionError};
 use crate::native::window::{Scale, Window};
 use crate::native::{Refusal, Session, plan, schedule, schema};
 use crate::render::{FB_HEIGHT, FB_WIDTH, ppm_sql_over};
@@ -192,10 +193,11 @@ async fn run_sim(cmd: &DemoCmd) -> Result<Exit, Failure> {
     schedule::clear_frames(&db, database)
         .await
         .map_err(|err| failed(format!("emptying the frames table: {err}")))?;
+    let (stage1, stage2) = tick::resident_statements(database);
     let session = Session::open(
         &cmd.conn,
         database,
-        Some(&tick::resident_statement(database)),
+        Some((&stage1, &stage2)),
         Some(&clickdoom_native::sql::render::frame_transform(database)),
     )
     .await
@@ -213,15 +215,24 @@ async fn run_sim(cmd: &DemoCmd) -> Result<Exit, Failure> {
     finish(out, played, closed)
 }
 
-/// Empties `native_state` and writes the level's first row again, the way
-/// `native diff`'s own restart does.
+/// Empties `native_state` and `native_stage` and writes the level's first
+/// row again, the way `native diff`'s own restart does.
+///
+/// `native_stage` holds a row a prior run staged for a tic this run has not
+/// reached yet, and the session's own presence check for that tic would
+/// find it before this run's own first statement has written it.
 async fn restart_sim(db: &Db, database: &str) -> Result<(), Failure> {
     let phases = [
         plan::Phase::new(
             "empty",
-            vec![clickdoom_native::sql::Statement::sql(format!(
-                "TRUNCATE TABLE IF EXISTS {database}.{STATE_TABLE}"
-            ))],
+            vec![
+                clickdoom_native::sql::Statement::sql(format!(
+                    "TRUNCATE TABLE IF EXISTS {database}.{STATE_TABLE}"
+                )),
+                clickdoom_native::sql::Statement::sql(format!(
+                    "TRUNCATE TABLE IF EXISTS {database}.{STAGE_TABLE}"
+                )),
+            ],
         ),
         plan::Phase::new("sim", clickdoom_native::sql::sim::load_statements(database)),
     ];

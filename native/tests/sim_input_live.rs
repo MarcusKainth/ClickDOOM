@@ -58,16 +58,16 @@ async fn the_keys_build_the_command_the_engine_builds() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
     let run: Vec<sim::tick::Input> = RUN
         .iter()
         .enumerate()
         .map(|(at, (keys, dx, dy))| sim::tick::Input::keys(FIRST + at as u32, *keys, (*dx, *dy)))
         .collect();
-    plan.push(sim::tick::run_statement(&db, &run));
-    if let Err(error) = fixture.execute(&plan).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    support::resident::run(&fixture, &run, false).await;
 
     let rows: Vec<Built> = fixture
         .rows(&format!(
@@ -134,10 +134,7 @@ async fn the_pause_key_stops_the_world(fixture: &Fixture) {
         .enumerate()
         .map(|(at, keys)| sim::tick::Input::keys(last + 1 + at as u32, keys, (0, 0)))
         .collect();
-    fixture
-        .execute(&[sim::tick::run_statement(db, &presses)])
-        .await
-        .unwrap();
+    support::resident::run(fixture, &presses, false).await;
     let paused: Vec<u8> = fixture
         .rows(&format!(
             "SELECT paused FROM {db}.native_state WHERE tic > {last} ORDER BY tic"

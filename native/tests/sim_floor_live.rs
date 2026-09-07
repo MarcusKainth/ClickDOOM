@@ -100,7 +100,7 @@ async fn a_crossing_of_the_turbo_lower_line_spawns_the_floor_ev_do_floor_spawns(
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -115,19 +115,19 @@ async fn a_crossing_of_the_turbo_lower_line_spawns_the_floor_ev_do_floor_spawns(
         put("m_floorz", format!("toInt32({NEIGHBOR_FLOOR})")),
         put("m_ceilingz", format!("toInt32({NEIGHBOR_CEILING})")),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
     const CROSS_TICS: u32 = 52;
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let rows = crossed_rows(&fixture, &db, FLOOR_TAG).await;
     fixture.finish().await;
@@ -192,7 +192,7 @@ async fn a_crossing_of_the_raise_floor_line_spawns_the_floor_ev_do_floor_spawns(
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -216,19 +216,19 @@ async fn a_crossing_of_the_raise_floor_line_spawns_the_floor_ev_do_floor_spawns(
             FLOOR_SECTOR + 1
         ),
     ));
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
     const CROSS_TICS: u32 = 196;
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    statements.push(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let rows = crossed_rows(&fixture, &db, FLOOR_TAG).await;
     fixture.finish().await;

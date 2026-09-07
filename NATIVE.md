@@ -66,12 +66,24 @@ engine: pixels the renderer does not draw keep their previous value.
 
 ## 6. Resident statements
 
-Each of the two components is one long-lived `INSERT INTO ... SELECT ... FROM
-input(...)` over a chunked HTTP body, analysed once per session. The statement
-text leads the body, terminated by a newline, because a URL parameter is
-limited to about 64 KB and these statements are larger; any `WITH` clause sits
-after `INSERT INTO ... ` and before `SELECT`. Settings travel as URL
-parameters: `max_insert_block_size = 1`, `min_insert_block_size_rows = 1`,
+The simulation opens as two residents chained through `native_stage`, and the
+renderer opens as a third. The first carries the player and the thinkers: it
+reads the state row for `tic - 1` and writes one row per tic into
+`native_stage`, keyed by `tic` the same way `native_state` is. The second
+carries the specials and `G_Ticker`: it reads that same tic's own row back out
+of `native_stage` and writes `native_state`. `native_stage` holds every column
+`native_state` holds, in the same order, plus `px_crossed_line` and
+`tx_crossed_line`, the two values the first resident computes that the second
+reads and that neither table's own contract otherwise carries. A `Join` engine
+table refuses `ALTER TABLE ... ADD COLUMN`, so the two column lists are
+declared separately in `schema.sql`, and a change to one is a change to both.
+
+Each resident is one long-lived `INSERT INTO ... SELECT ... FROM input(...)`
+over a chunked HTTP body, analysed once per session. The statement text leads
+the body, terminated by a newline, because a URL parameter is limited to about
+64 KB and these statements are larger; any `WITH` clause sits after `INSERT
+INTO ... ` and before `SELECT`. Settings travel as URL parameters:
+`max_insert_block_size = 1`, `min_insert_block_size_rows = 1`,
 `min_insert_block_size_bytes = 1`, `input_format_parallel_parsing = 0`,
 `max_block_size = 1`, `max_threads = 1`, `max_insert_threads = 1`,
 `async_insert = 0`, and `max_query_size` set to the statement's byte length
@@ -80,9 +92,19 @@ after the statement is padding, `tic = 0`, at least 128 bytes, and is filtered
 out. A statement error surfaces on the response only after the body closes,
 so the driver reads the response concurrently and treats an early response as
 failure. A statement that has already failed keeps accepting rows and commits
-none, so the driver detects death by rows that stop landing. The driver sends
-the row for tic t+1 only after the row for tic t is readable. A statement that
-ends is reopened, and the session resumes from the highest committed tic.
+none, so the driver detects death by rows that stop landing.
+
+The driver feeds the row for tic t to the first simulation resident, waits for
+`native_stage` to hold a row for t, feeds a row carrying `t` alone to the
+second, and waits for `native_state` to hold t before feeding t+1 to the
+first. All three residents open at once, so a session's first tic pays for the
+largest of their analyses rather than the sum. A resident that ends is
+reopened, and the session resumes both simulation statements from the same
+tic: a `native_stage` row a resumed run cannot show was ever read by the
+second statement is not one to trust. Restarting the simulation on a database
+it has already run against empties `native_stage` alongside `native_state`; a
+staged row left behind would let the driver's own presence check for that tic
+find it before the new run's own first statement has written it.
 
 Static data enters a statement as scalar constants evaluated once. A constant
 array is held as one value per element, and in a statement dozens of

@@ -110,7 +110,7 @@ async fn a_missile_that_hits_a_wall_reserves_its_own_explosion_draw() {
     );
 
     fixture
-        .execute(&[sim::tick::demo_statement(&db, GAMETIC_HIT, GAMETIC_HIT)])
+        .execute(&sim::tick::demo_statement(&db, GAMETIC_HIT, GAMETIC_HIT))
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     let after: Exploded = fixture

@@ -848,6 +848,205 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
 ENGINE = Join(ANY, LEFT, tic)
 SETTINGS join_any_take_last_row = 1;
 
+-- The simulation's own first statement writes here rather than to
+-- `native_state`, keyed by `tic` the same way: `native_state`'s own
+-- columns, plus the second statement's own scratch inputs that a bare
+-- alias carries across the thinker/specials boundary rather than a
+-- contract column read through `state`. The two column lists agree
+-- because a Join table refuses `ALTER TABLE ... ADD COLUMN`, so this
+-- one is not derived from the other; a schema change to one is a
+-- schema change to both.
+CREATE TABLE IF NOT EXISTS {{DB}}.native_stage
+(
+    tic            UInt32,
+
+    -- Game
+    leveltime      Int32,
+    prndindex      UInt8,
+    rndindex       UInt8,
+    next_seq       UInt32,
+    next_linkseq   UInt32,
+    paused         UInt8,
+    demo_end       UInt8,
+    totalkills     Int32,
+    totalitems     Int32,
+    totalsecret    Int32,
+
+    -- Mobjs
+    m_id           Array(UInt32),
+    m_x            Array(Int32),
+    m_y            Array(Int32),
+    m_z            Array(Int32),
+    m_angle        Array(UInt32),
+    m_sprite       Array(Int32),
+    m_frame        Array(Int32),
+    m_floorz       Array(Int32),
+    m_ceilingz     Array(Int32),
+    m_radius       Array(Int32),
+    m_height       Array(Int32),
+    m_momx         Array(Int32),
+    m_momy         Array(Int32),
+    m_momz         Array(Int32),
+    m_type         Array(Int32),
+    m_tics         Array(Int32),
+    m_state        Array(Int32),
+    m_flags        Array(Int32),
+    m_health       Array(Int32),
+    m_movedir      Array(Int32),
+    m_movecount    Array(Int32),
+    m_target       Array(UInt32),
+    m_reactiontime Array(Int32),
+    m_threshold    Array(Int32),
+    m_player       Array(Int8),
+    m_lastlook     Array(Int32),
+    m_sp_x         Array(Int16),
+    m_sp_y         Array(Int16),
+    m_sp_angle     Array(Int16),
+    m_sp_type      Array(Int16),
+    m_sp_options   Array(Int16),
+    m_tracer       Array(UInt32),
+    m_subsector    Array(Int32),
+    m_linkseq      Array(UInt32),
+
+    -- Sector thinkers
+    s_seq              Array(UInt32),
+    s_kind             Array(UInt8),
+    s_sector           Array(Int32),
+    s_type             Array(Int32),
+    s_direction        Array(Int32),
+    s_speed            Array(Int32),
+    s_dest             Array(Int32),
+    s_dest2            Array(Int32),
+    s_count            Array(Int32),
+    s_wait             Array(Int32),
+    s_status           Array(Int32),
+    s_oldstatus        Array(Int32),
+    s_crush            Array(UInt8),
+    s_tag              Array(Int32),
+    s_texture          Array(Int32),
+    s_newspecial       Array(Int32),
+    s_minlight         Array(Int32),
+    s_maxlight         Array(Int32),
+    s_mintime          Array(Int32),
+    s_maxtime          Array(Int32),
+    s_active           Array(UInt8),
+    s_activeplat_slot  Array(Int32),
+    s_activeceil_slot  Array(Int32),
+
+    -- Sectors, indexed by sector number
+    sec_floorheight    Array(Int32),
+    sec_ceilingheight  Array(Int32),
+    sec_floorpic       Array(Int16),
+    sec_lightlevel     Array(Int16),
+    sec_special        Array(Int16),
+    sec_specialdata    Array(UInt32),
+    sec_soundtarget    Array(UInt32),
+    sec_soundtraversed Array(Int32),
+
+    -- Lines and sides
+    line_special        Array(Int16),
+    side_toptexture     Array(Int16),
+    side_midtexture     Array(Int16),
+    side_bottomtexture  Array(Int16),
+    side_textureoffset  Array(Int32),
+
+    -- Switch buttons
+    btn_line     Array(Int32),
+    btn_where    Array(UInt8),
+    btn_texture  Array(Int32),
+    btn_timer    Array(Int32),
+
+    -- Animation, indexed by picture number
+    texturetranslation  Array(Int32),
+    flattranslation     Array(Int32),
+
+    -- Player one
+    p_mo               UInt32,
+    p_playerstate      UInt8,
+    p_cmd_forwardmove  Int8,
+    p_cmd_sidemove     Int8,
+    p_cmd_angleturn    Int16,
+    p_cmd_buttons      UInt8,
+    p_viewz            Int32,
+    p_viewheight       Int32,
+    p_deltaviewheight  Int32,
+    p_bob              Int32,
+    p_health           Int32,
+    p_armorpoints      Int32,
+    p_armortype        Int32,
+    p_powers           Array(Int32),
+    p_cards            Array(UInt8),
+    p_backpack         UInt8,
+    p_readyweapon      Int32,
+    p_pendingweapon    Int32,
+    p_weaponowned      Array(Int32),
+    p_ammo             Array(Int32),
+    p_maxammo          Array(Int32),
+    p_attackdown       UInt8,
+    p_usedown          UInt8,
+    p_cheats           Int32,
+    p_refire           Int32,
+    p_killcount        Int32,
+    p_itemcount        Int32,
+    p_secretcount      Int32,
+    p_message          UInt64,
+    p_damagecount      Int32,
+    p_bonuscount       Int32,
+    p_attacker         UInt32,
+    p_extralight       Int32,
+    p_fixedcolormap    Int32,
+
+    -- The two player sprites
+    psp_state  Array(Int32),
+    psp_tics   Array(Int32),
+    psp_sx     Array(Int32),
+    psp_sy     Array(Int32),
+
+    -- Status bar, heads-up display and menu
+    st_faceindex        Int32,
+    st_facecount        Int32,
+    st_priority         Int32,
+    st_lastattackdown   Int32,
+    st_oldweaponsowned  Array(Int32),
+    st_oldhealth        Int32,
+    st_randomnumber     Int32,
+    st_lastcalc         Int32,
+    st_calc_oldhealth   Int32,
+    st_palette          Int32,
+    st_clock            Int32,
+    hu_message_on       UInt8,
+    hu_message_counter  Int32,
+    hu_message          UInt64,
+    hu_nottobefuckedwith UInt8,
+    menu_skullanim      Int32,
+    menu_whichskull     Int32,
+
+    -- Interactive input carry
+    turnheld  Int32,
+
+    -- A tic the simulation could not produce in full. `unresolved` names
+    -- which paths this tic reached but could not run, one bit each;
+    -- `unimplemented` names which paths the level itself carries that
+    -- native mode does not model at all, also one bit each. Both are zero
+    -- on a tic that ran completely.
+    unresolved     UInt64,
+    unimplemented  UInt64,
+
+    -- What the tic drew from the random tables, in draw order: `dbg_ran`
+    -- the call sites, `dbg_prnd` the values. A divergence in the draw
+    -- sequence is what tells a wrong branch from a wrong arithmetic.
+    dbg_ran   Array(UInt32),
+    dbg_prnd  Array(UInt8),
+
+    -- Past the contract: `cross_dispatch`'s own crossing inputs,
+    -- neither a `native_state` column, read back under these same bare
+    -- names by the second statement rather than through `state`.
+    px_crossed_line  Int64,
+    tx_crossed_line  Array(Int64)
+)
+ENGINE = Join(ANY, LEFT, tic)
+SETTINGS join_any_take_last_row = 1;
+
 -- One row per frame. `fb` is the 64,000 bytes the renderer drew, `fb_bytes`
 -- the same as an array for a query that indexes it, `rgb32` the palette
 -- applied. `fb_hash` is `spec::fb_hash` over the framebuffer and palette.

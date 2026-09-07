@@ -174,11 +174,12 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
+    support::resident::run(&fixture, &walk, false).await;
 
     let put = |column: &'static str, value: String| {
         (
@@ -213,7 +214,7 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
                 .into_iter()
                 .map(sql::Statement::sql),
         );
-        statements.push(sim::tick::run_statement(
+        statements.extend(sim::tick::run_statement(
             &db,
             &[Input::keys(at + 1, 0, (0, 0))],
         ));
@@ -250,7 +251,7 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             .into_iter()
             .map(sql::Statement::sql),
     );
-    statements.push(sim::tick::run_statement(
+    statements.extend(sim::tick::run_statement(
         &db,
         &[Input::keys(CROWD_AT + 1, 0, (0, 0))],
     ));
@@ -373,9 +374,12 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     );
 
     // `P_CrossSpecialLine` is what a move that landed owes the special
-    // lines it crossed, and a thrust can push a monster over one. Nothing
-    // runs it here, so the tic says it could not be produced rather than
-    // dropping the crossing on the floor.
+    // lines it crossed, and a thrust can push a monster's own move across
+    // one. `MONSTER_UNHANDLED` is a special a monster's own crossing
+    // reaches the switch for and this engine does not dispatch, so the
+    // crossing leaves the tic unresolved rather than running or dropping
+    // it silently. Every line is given the special rather than depending
+    // on the map putting one where the thrust happens to go.
     //
     // The two arms are the test. They are the same thrust from the same
     // place and differ only in whether the lines carry a special, so a tic

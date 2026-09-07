@@ -188,7 +188,7 @@ async fn a_pistol_shot_that_kills_a_zombieman_counts_it_and_drops_a_clip() {
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
-    statements.push(sim::tick::run_statement(
+    statements.extend(sim::tick::run_statement(
         &db,
         &[Input::keys(at + 1, 0, (0, 0))],
     ));

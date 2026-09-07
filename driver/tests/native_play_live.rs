@@ -17,7 +17,7 @@
 
 use clickdoom_driver::client::Db;
 use clickdoom_driver::native::Session;
-use clickdoom_driver::native::session::FIRST_TIC_TIMEOUT;
+use clickdoom_native::resident::FIRST_TIC_TIMEOUT;
 use clickdoom_native::sql;
 use clickdoom_native::sql::sim::tick;
 use clickdoom_spec::native_state::key;
@@ -45,10 +45,11 @@ async fn command(db: &Db, database: &str, tic: u32) -> (i8, i16, u8, i32) {
 async fn a_key_the_driver_streams_reaches_the_tic_command() {
     let (database, admin) = loaded("keys").await;
     let conn = conn_args(&database);
+    let (stage1, stage2) = tick::resident_statements(&database);
     let session = Session::open(
         &conn,
         &database,
-        Some(&tick::resident_statement(&database)),
+        Some((&stage1, &stage2)),
         Some(&sql::render::frame_transform(&database)),
     )
     .await

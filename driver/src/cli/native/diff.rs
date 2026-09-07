@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration; // purity-ok: the tic budget and the timings the session measured, read from no clock here
 
 use clap::Args;
+use clickdoom_native::resident::{FIRST_TIC_TIMEOUT, TIC_TIMEOUT};
 use clickdoom_native::sql::sim::tick;
 use clickdoom_native::sql::{self, Statement, parity};
 use clickhouse::Row;
@@ -12,7 +13,7 @@ use serde::Deserialize;
 
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
-use crate::native::session::{FIRST_TIC_TIMEOUT, TIC_TIMEOUT};
+use crate::native::session::STAGE_TABLE;
 use crate::native::{Session, plan, probe, refusal, schema};
 use crate::stats::{Clock, Monotonic};
 
@@ -103,14 +104,10 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
         probe::STAGING_TABLE
     );
 
-    let session = Session::open(
-        &cmd.conn,
-        database,
-        Some(&tick::resident_statement(database)),
-        None,
-    )
-    .await
-    .map_err(|err| failed(format!("opening the simulation: {err}")))?;
+    let (stage1, stage2) = tick::resident_statements(database);
+    let session = Session::open(&cmd.conn, database, Some((&stage1, &stage2)), None)
+        .await
+        .map_err(|err| failed(format!("opening the simulation: {err}")))?;
     let ran = simulate(&session, cmd.tics).await;
     let closed = session.close().await;
     match (ran, closed) {
@@ -132,19 +129,27 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
     report(cmd, &db).await
 }
 
-/// Empties `native_state` and writes the level's first row again.
+/// Empties `native_state` and `native_stage` and writes the level's first
+/// row again.
 ///
 /// The comparison covers every tic both tables hold, so a run that left its
 /// own rows behind would have them compared by the next one. A diff run
 /// starts from the level as it stands at tic 0, whatever ran before it.
+/// `native_stage` empties the same way: left behind, it holds a row a prior
+/// run staged for a tic this run has not reached yet, and this run's own
+/// presence check for that tic would find it before this run's own first
+/// statement has written it.
 async fn restart(db: &Db, database: &str) -> Result<(), Failure> {
     let phases = [
         plan::Phase::new(
             "empty",
-            vec![Statement::sql(format!(
-                "TRUNCATE TABLE IF EXISTS {database}.{}",
-                probe::STATE_TABLE
-            ))],
+            vec![
+                Statement::sql(format!(
+                    "TRUNCATE TABLE IF EXISTS {database}.{}",
+                    probe::STATE_TABLE
+                )),
+                Statement::sql(format!("TRUNCATE TABLE IF EXISTS {database}.{STAGE_TABLE}")),
+            ],
         ),
         plan::Phase::new("sim", sql::sim::load_statements(database)),
     ];

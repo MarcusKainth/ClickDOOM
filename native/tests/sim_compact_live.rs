@@ -15,6 +15,7 @@
 #![cfg(feature = "clickhouse-tests")]
 
 use clickdoom_native::sql::sim;
+use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::{load, sql, wad::Wad};
 use clickhouse::Row;
 use serde::Deserialize;
@@ -53,11 +54,12 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.push(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
+    support::resident::run(&fixture, &walk, false).await;
 
     // Every thing points at itself and at the one after it, so whichever
     // thing the pickup takes, one pointer names it and the ones above it
@@ -97,11 +99,8 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let run = sim::tick::demo_statement(&db, SEED_TIC + 1, LAST);
-    if let Err(error) = fixture.execute(&[run]).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    let run: Vec<Input> = (SEED_TIC + 1..=LAST).map(Input::demo).collect();
+    support::resident::run(&fixture, &run, false).await;
 
     let rows: Vec<Compacted> = fixture
         .rows(&format!(

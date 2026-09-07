@@ -22,7 +22,7 @@ use std::time::Duration; // purity-ok: pacing and timeouts in the harness, never
 
 use clickdoom_driver::client::ConnArgs;
 use clickdoom_driver::native::session::{
-    Frame, RENDER_INPUT_SCHEMA, SIM_INPUT_SCHEMA, Session, SessionError,
+    Frame, RENDER_INPUT_SCHEMA, SIM_INPUT_SCHEMA, SIM_STAGE2_INPUT_SCHEMA, Session, SessionError,
 };
 use tokio::time::Instant; // purity-ok: measuring what the driver loop waits, never a value a statement reads
 
@@ -77,6 +77,16 @@ async fn setup(database: &str) -> ConnArgs {
         format!("DROP DATABASE IF EXISTS {database}"),
         format!("CREATE DATABASE {database}"),
         format!(
+            "CREATE TABLE {database}.native_stage \
+             (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
+              mouse_dx Int16, mouse_dy Int16, unresolved {}, unimplemented {}, \
+              demo_end {}) \
+             ENGINE = Join(ANY, LEFT, tic)",
+            state_type("unresolved"),
+            state_type("unimplemented"),
+            state_type("demo_end"),
+        ),
+        format!(
             "CREATE TABLE {database}.native_state \
              (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
               mouse_dx Int16, mouse_dy Int16, unresolved {}, unimplemented {}, \
@@ -109,11 +119,12 @@ async fn teardown(database: &str) {
         .unwrap_or_else(|e| panic!("dropping {database}: {e}"));
 }
 
-/// Accumulates the tic number into `leveltime`, so tic t holds
-/// `t * (t + 1) / 2` only if every tic before it landed, in order.
-fn sim_statement(database: &str) -> String {
+/// Accumulates the tic number into `native_stage`'s own `leveltime`, so
+/// tic t holds `t * (t + 1) / 2` there only if every tic before it landed,
+/// in order.
+fn sim_statement_stage1(database: &str) -> String {
     format!(
-        "INSERT INTO {database}.native_state \
+        "INSERT INTO {database}.native_stage \
          SELECT tic, \
                 tic + joinGet('{database}.native_state', 'leveltime', toUInt32(tic - 1)) \
                     AS leveltime, \
@@ -124,6 +135,25 @@ fn sim_statement(database: &str) -> String {
         state_type("unresolved"),
         state_type("unimplemented"),
         state_type("demo_end"),
+    )
+}
+
+/// Reads `native_stage`'s own row for the tic back and writes
+/// `native_state`, changing nothing.
+fn sim_statement_stage2(database: &str) -> String {
+    format!(
+        "INSERT INTO {database}.native_state \
+         SELECT tic, \
+                joinGet('{database}.native_stage', 'leveltime', toUInt32(tic)) AS leveltime, \
+                joinGet('{database}.native_stage', 'keys', toUInt32(tic)) AS keys, \
+                joinGet('{database}.native_stage', 'source', toUInt32(tic)) AS source, \
+                joinGet('{database}.native_stage', 'mouse_dx', toUInt32(tic)) AS mouse_dx, \
+                joinGet('{database}.native_stage', 'mouse_dy', toUInt32(tic)) AS mouse_dy, \
+                joinGet('{database}.native_stage', 'unresolved', toUInt32(tic)) AS unresolved, \
+                joinGet('{database}.native_stage', 'unimplemented', toUInt32(tic)) \
+                    AS unimplemented, \
+                joinGet('{database}.native_stage', 'demo_end', toUInt32(tic)) AS demo_end \
+         FROM input('{SIM_STAGE2_INPUT_SCHEMA}') WHERE tic > 0"
     )
 }
 
@@ -221,7 +251,10 @@ async fn a_session_runs_tics_and_their_frames_in_order() {
     let session = Session::open(
         &conn,
         &database,
-        Some(&sim_statement(&database)),
+        Some((
+            &sim_statement_stage1(&database),
+            &sim_statement_stage2(&database),
+        )),
         Some(&render_statement(&database)),
     )
     .await
@@ -309,7 +342,10 @@ async fn a_killed_statement_is_found_and_recovered() {
     let mut session = Session::open(
         &conn,
         &database,
-        Some(&sim_statement(&database)),
+        Some((
+            &sim_statement_stage1(&database),
+            &sim_statement_stage2(&database),
+        )),
         Some(&render_statement(&database)),
     )
     .await

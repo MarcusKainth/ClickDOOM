@@ -1015,6 +1015,48 @@ fn missile_shape(
         ),
     );
     value("mkd_hit", impact_fold("mkd_xy_touch_asks", flying));
+    // `P_CheckPosition`'s own geometry test, recomputed the same way
+    // `thought_of`'s own `mn_fits` is: a wall or a step too high blocks
+    // the move exactly as a thing does, and misses the target far more
+    // often than a hit lands.
+    value(
+        "mkd_fits",
+        format!(
+            "toUInt8(mkd_ran = 1 \
+             AND toInt64(mkd_xy_try.{ceil}) - toInt64(mkd_xy_try.{floor}) >= mkd_height \
+             AND toInt64(mkd_xy_try.{ceil}) - mkd_z0 >= mkd_height \
+             AND toInt64(mkd_xy_try.{floor}) - mkd_z0 <= {maxstep} \
+             AND (bitAnd(mkd_flags0, {dropoff}) != 0 \
+             OR toInt64(mkd_xy_try.{floor}) - toInt64(mkd_xy_try.{dropoffz}) <= {maxstep}))",
+            ceil = answer::CEILINGZ,
+            floor = answer::FLOORZ,
+            dropoffz = answer::DROPOFFZ,
+            dropoff = MF_DROPOFF,
+            maxstep = MAXSTEP,
+        ),
+    );
+    value(
+        "mkd_xy_blocked",
+        format!(
+            "toUInt8(mkd_ran = 1 AND (mkd_fits = 0 OR mkd_xy_try.{line} = 1 \
+             OR mkd_hit.{blocked} = 1))",
+            line = answer::LINE_BLOCKED,
+            blocked = struck::BLOCKED,
+        ),
+    );
+    // A wall or a special line blocks the walk before `PIT_CheckThing`
+    // ever runs, so the line the sky check reads is the move test's own
+    // rather than forced to none the way a thing's own block forces it.
+    value(
+        "mkd_ceilingline",
+        move_ceilingline(&format!("mkd_hit.{}", struck::BLOCKED), "mkd_xy_try"),
+    );
+    value(
+        "mkd_sky",
+        "toUInt8(mkd_ceilingline != -1 AND line_side1[1 + mkd_ceilingline] != -1 \
+         AND sec_ceilingpic[1 + line_back[1 + mkd_ceilingline]] = skyflatnum)"
+            .to_owned(),
+    );
     value(
         "mkd_worst",
         "toInt32(8 * mobj_damage[1 + mkd_type])".to_owned(),
@@ -1055,18 +1097,14 @@ fn missile_draws(
         format!("arraySum({})", inter::draws("mkd_hurt_asks", hurting)),
     ));
     // `P_ExplodeMissile` draws once for the tics its own death frame
-    // shortens by, wherever the walk set the missile off. This is exact
-    // rather than a worst case: `move_ceilingline` forces the ceiling
-    // line to none whenever a thing is what blocked the move, since
-    // `P_CheckPosition` reaches things before lines and stops at the
-    // first that answers no, so the sky hack - which reads that line -
-    // can never apply to a touch this walks. A missile a wall or a
-    // special line blocks instead is not a touch this reaches at all,
-    // and reserves nothing here either way.
+    // shortens by, wherever the walk set the missile off - a thing, a
+    // wall, or a special line - and the sky hack takes the draw back
+    // where the line it reads carries a sky flat. A thing's own block
+    // forces that line to none, so the hack can never reach a touch this
+    // walks; a wall or a line's own block is what it is for.
     let body = format!(
-        "toUInt32(mkd_hit.{draws} + mkd_hurt_draws + if(mkd_hit.{blocked} = 1, 1, 0))",
+        "toUInt32(mkd_hit.{draws} + mkd_hurt_draws + if(mkd_xy_blocked = 1 AND mkd_sky = 0, 1, 0))",
         draws = struck::DRAWS,
-        blocked = struck::BLOCKED,
     );
     (values, body)
 }
@@ -1786,27 +1824,50 @@ mod tests {
     }
 
     /// The count reserves the explosion's own draw wherever the walk sets
-    /// the missile off, not only where the touch it stopped on is one
-    /// this damages: `P_ExplodeMissile` draws whether or not
-    /// `PIT_CheckThing` found anything to hurt.
+    /// the missile off - a thing, a wall, or a special line - not only
+    /// where the touch it stopped on is one this damages: `P_ExplodeMissile`
+    /// draws whether or not `PIT_CheckThing` found anything to hurt, and a
+    /// wall stops a missile exactly as a thing does.
     #[test]
-    fn the_count_reserves_the_explosion_s_own_draw_where_a_touch_blocks() {
+    fn the_count_reserves_the_explosion_s_own_draw_wherever_the_walk_blocks() {
         let (_, body) = missile_draws(&map(), &flying(), &hurting());
         assert!(
-            body.contains(&format!(
-                "mkd_hurt_draws + if(mkd_hit.{} = 1, 1, 0)",
-                struck::BLOCKED
-            )),
+            body.contains("mkd_hurt_draws + if(mkd_xy_blocked = 1 AND mkd_sky = 0, 1, 0)"),
             "{body}"
         );
     }
 
+    /// `mkd_xy_blocked` folds in a thing's own block (`mkd_hit`), a wall or
+    /// a step the geometry test refuses (`mkd_fits = 0`), and a special
+    /// line (`answer::LINE_BLOCKED`) - the same three `thought_of`'s own
+    /// `mn_xy_blocked` reads, so the count and the real walk agree on what
+    /// counts as blocked.
+    #[test]
+    fn the_blocked_test_reads_a_thing_a_step_and_a_line() {
+        let (values, _) = missile_draws(&map(), &flying(), &hurting());
+        let blocked = values
+            .iter()
+            .find(|(name, _)| name == "mkd_xy_blocked")
+            .unwrap();
+        assert!(blocked.1.contains("mkd_fits = 0"), "{blocked:?}");
+        assert!(
+            blocked
+                .1
+                .contains(&format!("mkd_xy_try.{} = 1", answer::LINE_BLOCKED)),
+            "{blocked:?}"
+        );
+        assert!(
+            blocked
+                .1
+                .contains(&format!("mkd_hit.{} = 1", struck::BLOCKED)),
+            "{blocked:?}"
+        );
+    }
+
     /// `move_ceilingline` is what feeds the sky check its own line, and it
-    /// answers none whenever a thing blocked the move - so [`missile_draws`]
-    /// reserving the explosion's own draw there, unconditionally, is the
-    /// real count and not a worst case: the sky hack this reads can never
-    /// take a missile a touch stopped, only one a wall or a special line
-    /// did, which this does not reach at all.
+    /// answers none whenever a thing blocked the move - so a touch this
+    /// walks never reaches the sky hack, only a wall or a special line
+    /// does, which `mkd_sky` now reads for.
     #[test]
     fn a_touch_that_blocks_never_reaches_the_sky_hack() {
         assert_eq!(
@@ -1815,6 +1876,20 @@ mod tests {
                 "toInt32(if(mkd_hit.2 = 1, -1, mkd_xy_try.{}))",
                 answer::CEILINGLINE
             )
+        );
+    }
+
+    /// The sky check reads the same line, side and ceiling flat the real
+    /// explosion's own `ex_sky` does, over `mkd_ceilingline` rather than
+    /// `ex_line`.
+    #[test]
+    fn the_worst_case_s_own_sky_check_matches_the_real_one() {
+        let (values, _) = missile_draws(&map(), &flying(), &hurting());
+        let sky = values.iter().find(|(name, _)| name == "mkd_sky").unwrap();
+        assert!(
+            sky.1
+                .contains("sec_ceilingpic[1 + line_back[1 + mkd_ceilingline]] = skyflatnum"),
+            "{sky:?}"
         );
     }
 

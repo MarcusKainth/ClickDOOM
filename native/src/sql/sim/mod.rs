@@ -172,10 +172,14 @@ pub mod unresolved {
     /// once, whether in the same `damage_fold` call or an earlier one
     /// chained into it.
     pub const DM_SAME_TARGET: u64 = 1 << 36;
+    /// `P_FindNextHighestFloor`'s own 22 slot buffer: a raiseToNearestAndChange
+    /// plat whose sector has a 23rd qualifying neighbor would crash Vanilla,
+    /// so this leaves the tic unresolved instead.
+    pub const PLAT_NEXT_HIGHEST_OVERFLOW: u64 = 1 << 37;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 37] = [
+const UNRESOLVED_BITS: [(u64, &str); 38] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -213,6 +217,10 @@ const UNRESOLVED_BITS: [(u64, &str); 37] = [
     (unresolved::PLAYER_DIES, "PLAYER_DIES"),
     (unresolved::SECTOR11_STUCK, "SECTOR11_STUCK"),
     (unresolved::DM_SAME_TARGET, "DM_SAME_TARGET"),
+    (
+        unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
+        "PLAT_NEXT_HIGHEST_OVERFLOW",
+    ),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

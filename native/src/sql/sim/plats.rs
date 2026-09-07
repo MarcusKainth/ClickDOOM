@@ -111,3 +111,49 @@ pub fn plat_raise(plat: &Plat<'_>, moved: &str) -> String {
 fn result_of() -> usize {
     super::plane::moved::RESULT
 }
+
+/// Where each part of [`next_highest_floor`]'s fold answer sits.
+pub mod next_highest {
+    /// The running comparison floor: `currentheight`, until the buffer
+    /// quirk below raises it.
+    pub const HEIGHT: usize = 1;
+    /// How many neighbors have qualified so far.
+    pub const COUNT: usize = 2;
+    /// The least qualifying floor seen so far, or `i64::MAX` when none has.
+    pub const MIN: usize = 3;
+    /// 1 once a 23rd qualifying neighbor would have crashed Vanilla.
+    pub const OVERFLOW: usize = 4;
+}
+
+/// `P_FindNextHighestFloor` (`p_spec.c`): the least floor of a two sided
+/// neighbor strictly above `floorheight`, or `floorheight` itself when
+/// none qualifies.
+///
+/// Vanilla DOOM collects each qualifying neighbor into a 22 slot buffer
+/// and, on the 22nd, also overwrites its own running comparison floor with
+/// that neighbor's height (`p_spec.c`'s own comment calls this "emulation
+/// of memory (stack) overflow"); a 23rd qualifying neighbor overruns the
+/// buffer and crashes the original game with `I_Error`. This folds the
+/// sector's lines in the same order and carries the same running floor, so
+/// a 23rd is only counted past whatever the 22nd raised the floor to, the
+/// same as Vanilla's own comparison would see it. [`next_highest::OVERFLOW`]
+/// is 1 in exactly the case that crashes Vanilla, for a caller to leave the
+/// tic unresolved rather than pick a value the original game never reaches.
+pub fn next_highest_floor(sector: &str, floorheight: &str) -> String {
+    let other = format!("if(line_front[1 + l] = {sector}, line_back[1 + l], line_front[1 + l])");
+    let of = format!("toInt64({floorheight}[1 + ({other})])");
+    format!(
+        "arrayFold((acc, l) -> if(\
+         bitAnd(line_flags[1 + l], 4) = 0 OR ({other}) < 0 OR {of} <= acc.{HEIGHT}, acc, \
+         (if(acc.{COUNT} + 1 = 22, {of}, acc.{HEIGHT}), acc.{COUNT} + 1, \
+         if(acc.{COUNT} + 1 = 23, acc.{MIN}, least(acc.{MIN}, {of})), \
+         toUInt8(if(acc.{COUNT} + 1 = 23, 1, acc.{OVERFLOW})))), \
+         sec_lines[1 + {sector}], \
+         (toInt64({floorheight}[1 + {sector}]), toInt64(0), \
+         toInt64(9223372036854775807), toUInt8(0)))",
+        HEIGHT = next_highest::HEIGHT,
+        COUNT = next_highest::COUNT,
+        MIN = next_highest::MIN,
+        OVERFLOW = next_highest::OVERFLOW,
+    )
+}

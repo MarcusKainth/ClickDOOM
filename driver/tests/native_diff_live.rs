@@ -26,12 +26,12 @@ use support::{committed_fixture, conn_args, repo_root};
 /// gameplay tic, the one after it, and one from the middle of the demo.
 const FIRST_RECORDED_TIC: u32 = 2;
 
-/// The first tic DEMO3 on E1M7 leaves unresolved, read off a real run: a
-/// missile already in flight needs a move, and neither the general
-/// movers' own stage nor its Z-axis counterpart runs one for it. A fix
-/// that closes the gap behind it moves this later; update it in the same
-/// commit as that fix.
-const FIRST_REFUSED_TIC: u32 = 170;
+/// The first tic DEMO3 on E1M7 leaves unresolved, read off a real run: an
+/// imp's own chase frame carries `MF_JUSTATTACKED` from the fireball it
+/// threw seven tics earlier, and `A_Chase`'s own "do not attack twice in a
+/// row" branch is not one this runs. A fix that closes the gap behind it
+/// moves this later; update it in the same commit as that fix.
+const FIRST_REFUSED_TIC: u32 = 175;
 
 fn clickdoom(database: &str, args: &[&str]) -> (i32, String) {
     let conn = conn_args(database);

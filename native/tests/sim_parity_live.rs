@@ -79,10 +79,10 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic a missile already in flight needs a move: the imp's
-/// fireball, thrown the tic before, is still going and neither the
-/// general movers' own stage nor its Z-axis counterpart runs one for it.
-const FIRST_MISSILE_IN_FLIGHT: u32 = 170;
+/// The first tic a chaser's own move leaves the cycle stuck, read off a
+/// real run. The imp's fireball flies through the tics before it exact,
+/// including the ones its own move test used to leave unresolved.
+const FIRST_CHASE_STUCK: u32 = 175;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -474,7 +474,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     };
     // The run reaches past the door, and every tic up to the first shot
     // completes.
-    for row in walk.iter().filter(|row| row.tic < FIRST_MISSILE_IN_FLIGHT) {
+    for row in walk.iter().filter(|row| row.tic < FIRST_CHASE_STUCK) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
@@ -482,10 +482,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_MISSILE_IN_FLIGHT).unresolved,
-        sim::unresolved::TX_CROWDED | sim::unresolved::TX_UNRUN | sim::unresolved::TZ_UNRUN,
-        "a missile already in flight says the tic could not be produced, \
-         and stands close enough to another momentum mover to crowd it too"
+        at(FIRST_CHASE_STUCK).unresolved,
+        sim::unresolved::CHASE_STUCK,
+        "a chaser's own move says the tic could not be produced"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

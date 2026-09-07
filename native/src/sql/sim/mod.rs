@@ -148,10 +148,15 @@ pub mod unresolved {
     /// damage, and the height between them clears the fall check, so a
     /// real roll under the worst case might still draw the extra number.
     pub const AT_DRAW_UNSURE: u64 = 1 << 29;
+    /// A missile already in flight's own worst-case draw count could still
+    /// undercount, the same way a melee attack's can.
+    pub const MISSILE_DRAW_UNSURE: u64 = 1 << 30;
+    /// A missile already in flight's own thinker hits an unwritten path.
+    pub const MISSILE_STUCK: u64 = 1 << 31;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 30] = [
+const UNRESOLVED_BITS: [(u64, &str); 32] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -182,6 +187,8 @@ const UNRESOLVED_BITS: [(u64, &str); 30] = [
     (unresolved::DOOR_RUN_STUCK, "DOOR_RUN_STUCK"),
     (unresolved::PLANE_CRUSH, "PLANE_CRUSH"),
     (unresolved::AT_DRAW_UNSURE, "AT_DRAW_UNSURE"),
+    (unresolved::MISSILE_DRAW_UNSURE, "MISSILE_DRAW_UNSURE"),
+    (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

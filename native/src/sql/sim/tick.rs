@@ -259,20 +259,21 @@ mod tests {
     /// one entry or none, so a tic with nothing to chase does not run it,
     /// and both of the momentum's walks read a list that is empty on a tic
     /// where nothing carries any.
-    /// `P_XYMovement` returns before the friction for a missile and for a
-    /// skull in flight. A move the first cannot make ends it, and one the
-    /// second cannot make slams it back into its spawn frames, where
-    /// taking friction off either would be wrong. E1M7 holds no skull, so
-    /// nothing on the demo reaches this and the statement's own text is
-    /// what says the refusal is there.
+    /// `P_XYMovement` returns before the friction for a skull in flight: a
+    /// move it cannot make slams it back into its spawn frames, where
+    /// taking friction off it would be wrong. A missile already on the
+    /// list carries `missile::thinks_fold` for its own move instead, so
+    /// this no longer reaches it. E1M7 holds no skull, so nothing on the
+    /// demo reaches this and the statement's own text is what says the
+    /// refusal is there.
     #[test]
-    fn a_missile_or_a_flying_skull_leaves_the_tic_unresolved() {
-        /// `p_mobj.h`: `MF_MISSILE | MF_SKULLFLY`.
-        const REFUSED: i64 = 0x1_0000 | 0x100_0000;
+    fn a_flying_skull_leaves_the_tic_unresolved() {
+        /// `p_mobj.h`: `MF_SKULLFLY`.
+        const REFUSED: i64 = 0x100_0000;
         let sql = resident_statement("nat");
         assert!(
             sql.contains(&format!("m_flags[k], {REFUSED}) != 0")),
-            "the move refuses both flags together"
+            "the move refuses the flag"
         );
         assert!(sql.contains("tx_unrun = 1"), "and the refusal is read");
     }
@@ -281,9 +282,11 @@ mod tests {
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
         // The player's own step, the general movers' two parts, the
-        // chase, the spawn's own half step and the tic's own throw's move
-        // each hold one.
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 6);
+        // chase, the spawn's own half step, the tic's own throw's move,
+        // a missile already in flight's own worst-case draw count (read
+        // once for the count and once for whether it is unsure), and its
+        // own thinker each hold one.
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 9);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
         assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);

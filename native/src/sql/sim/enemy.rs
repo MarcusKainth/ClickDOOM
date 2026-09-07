@@ -206,6 +206,10 @@ mod shape {
     /// Whether the missile check answers yes without drawing, which is
     /// the target having just hit the thing.
     pub const MISSILEHIT: usize = 19;
+    /// Whether the thing carries `MF_JUSTATTACKED`, which skips the melee
+    /// and missile checks and runs `P_NewChaseDir` on its own, below
+    /// nightmare skill.
+    pub const JUSTATTACKED: usize = 20;
 }
 
 /// Where each field of one mover's answer sits.
@@ -297,10 +301,10 @@ mod ran {
 /// so the skill alone decides whether a thing waits its move count out.
 ///
 /// Everything this cannot answer for leaves the tic unresolved: a thing
-/// with no target or one that cannot be shot, a thing that just attacked,
-/// a melee attack, a missile check that needs a draw, a floating thing, a
-/// move that crosses a special line, and a mover whose own eight answers
-/// an earlier mover in the same fold actually moved into or out of.
+/// with no target or one that cannot be shot, a melee attack, a missile
+/// check that needs a draw, a floating thing, a move that crosses a
+/// special line, and a mover whose own eight answers an earlier mover in
+/// the same fold actually moved into or out of.
 pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
     let at = |array: &str, slot: &str| format!("{array}[{slot}]");
     let mut values: Vec<(String, String)> = Vec::new();
@@ -471,6 +475,10 @@ fn shape(state: &Chasing<'_>) -> String {
     value("cs_target", format!("toUInt32({target})"));
     value("cs_flags", format!("toInt64({})", at(state.m_flags)));
     value(
+        "cs_justattacked",
+        format!("toUInt8(bitAnd(cs_flags, {MF_JUSTATTACKED}) != 0)"),
+    );
+    value(
         "cs_reactiontime",
         format!(
             "toInt32(if({rt} != 0, {rt} - 1, {rt}))",
@@ -524,9 +532,16 @@ fn shape(state: &Chasing<'_>) -> String {
     );
     // `A_Chase`'s own `P_Move` runs only while the move count has not run
     // out, and `P_NewChaseDir` runs when it has or when that move fails.
+    // A thing carrying `MF_JUSTATTACKED` never reaches that move at all:
+    // it runs `P_NewChaseDir` on its own, below nightmare skill, and does
+    // nothing on it at or above.
     value(
         "cs_newchase",
-        format!("toUInt8(NOT (cs_count >= 0 AND {}))", walks("cs_movedir")),
+        format!(
+            "toUInt8(if(cs_justattacked = 1, skill < {SK_NIGHTMARE}, \
+             NOT (cs_count >= 0 AND {})))",
+            walks("cs_movedir")
+        ),
     );
     value(
         "cs_directtried",
@@ -556,7 +571,15 @@ fn shape(state: &Chasing<'_>) -> String {
         ),
     );
     value("cs_turnaround", format!("toUInt8({})", walks("cs_turn")));
-    value("cs_sound", format!("toUInt8({} != 0)", kind("activesound")));
+    // The branch a thing carrying `MF_JUSTATTACKED` takes returns before
+    // `A_Chase` reaches its own active sound check.
+    value(
+        "cs_sound",
+        format!(
+            "toUInt8(cs_justattacked = 0 AND {} != 0)",
+            kind("activesound")
+        ),
+    );
     value("cs_sight", format!("toUInt8({})", at(state.sees_target)));
     value(
         "cs_distance",
@@ -571,7 +594,8 @@ fn shape(state: &Chasing<'_>) -> String {
     value(
         "cs_melee",
         format!(
-            "toUInt8({} != 0 AND cs_distance < {} + toInt64({}[cs_target]) AND cs_sight = 1)",
+            "toUInt8(cs_justattacked = 0 AND {} != 0 AND cs_distance < {} + \
+             toInt64({}[cs_target]) AND cs_sight = 1)",
             kind("meleestate"),
             MELEERANGE - (20 << 16),
             state.m_radius,
@@ -583,7 +607,8 @@ fn shape(state: &Chasing<'_>) -> String {
     value(
         "cs_missile_asked",
         format!(
-            "toUInt8(cs_melee = 0 AND {} != 0 AND NOT (skill < {SK_NIGHTMARE} AND {} != 0))",
+            "toUInt8(cs_justattacked = 0 AND cs_melee = 0 AND {} != 0 AND \
+             NOT (skill < {SK_NIGHTMARE} AND {} != 0))",
             kind("missilestate"),
             at(state.m_movecount)
         ),
@@ -648,7 +673,6 @@ fn shape(state: &Chasing<'_>) -> String {
             "toUInt8({} != 1 \
              OR cs_target = 0 \
              OR bitAnd(toInt64({}[cs_target]), {MF_SHOOTABLE}) = 0 \
-             OR bitAnd(cs_flags, {MF_JUSTATTACKED}) != 0 \
              OR bitAnd(cs_flags, {MF_FLOAT}) != 0 \
              OR bitAnd(toInt64({}[cs_target]), {MF_SHADOW}) != 0 \
              OR cs_melee = 1)",
@@ -680,6 +704,7 @@ fn shape(state: &Chasing<'_>) -> String {
         "toUInt8(cs_missile_draw)".to_owned(),
         "toInt64(cs_missile_dist)".to_owned(),
         "toUInt8(cs_missile_hit)".to_owned(),
+        "toUInt8(cs_justattacked)".to_owned(),
     ];
     bind::chain_in("cs", &values, &format!("({})", members.join(", ")))
 }
@@ -789,9 +814,11 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_moved",
         format!(
-            "toUInt8(cc_attacked = 0 AND multiIf({} = 0, 1, {} = 1, 1, cc_won != 0))",
-            sh(shape::NEWCHASE),
-            sh(shape::DIRECT)
+            "toUInt8(cc_attacked = 0 AND multiIf({just} = 1 AND {new} = 0, 0, \
+             {new} = 0, 1, {} = 1, 1, cc_won != 0))",
+            sh(shape::DIRECT),
+            just = sh(shape::JUSTATTACKED),
+            new = sh(shape::NEWCHASE),
         ),
     );
     value(
@@ -800,13 +827,17 @@ fn chased(state: &Chasing<'_>) -> String {
     );
     // The directions the engine reached, which is the move count's own
     // move, the direct route, and the search up to the one that worked.
+    // A thing carrying `MF_JUSTATTACKED` never reaches `A_Chase`'s own
+    // continuing move at all, so its move count never says a direction
+    // was tried.
     value(
         "cc_tried",
         format!(
-            "arrayConcat(if({count} >= 0, [{dir}], CAST([], 'Array(Int64)')), \
+            "arrayConcat(if({just} = 0 AND {count} >= 0, [{dir}], CAST([], 'Array(Int64)')), \
              if({newchase} = 0, CAST([], 'Array(Int64)'), \
              arrayConcat(if({tried} = 1, [{diag}], CAST([], 'Array(Int64)')), \
              arraySlice(cc_order, 1, if(cc_won > 0, cc_won, toInt64(length(cc_order)))))))",
+            just = sh(shape::JUSTATTACKED),
             count = sh(shape::COUNT),
             dir = sh(shape::MOVEDIR),
             newchase = sh(shape::NEWCHASE),
@@ -839,13 +870,18 @@ fn chased(state: &Chasing<'_>) -> String {
             sh(shape::MOVEDIR)
         ),
     );
+    // The move count only carries the fold's own decrement where the
+    // continuing move actually ran it, which a thing carrying
+    // `MF_JUSTATTACKED` never reaches.
     value(
         "cc_movecount",
         format!(
-            "toInt64(multiIf(cc_attacked = 1, {}, {} = 0, {count}, \
-             cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
-            at(state.m_movecount),
-            sh(shape::NEWCHASE),
+            "toInt64(multiIf(cc_attacked = 1, {held}, \
+             {just} = 1 AND cc_moved = 0, {held}, \
+             {new} = 0, {count}, cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
+            held = at(state.m_movecount),
+            just = sh(shape::JUSTATTACKED),
+            new = sh(shape::NEWCHASE),
             count = sh(shape::COUNT),
         ),
     );
@@ -973,15 +1009,19 @@ fn chased(state: &Chasing<'_>) -> String {
             "toInt32(if(cc_attacked = 1, mobj_missilestate[1 + {}], -1))",
             at(state.m_type)
         ),
-        // `P_CheckMissileRange` clears the mark on the branch that answers
-        // yes without drawing, and `A_FaceTarget` takes the thing off
-        // ambush as it turns.
+        // A thing carrying `MF_JUSTATTACKED` clears it before anything
+        // else this branch does. `P_CheckMissileRange` sets the mark back
+        // on the branch that answers yes without drawing, and
+        // `A_FaceTarget` takes the thing off ambush as it turns.
         format!(
-            "toInt32(if(cc_attacked = 1, bitOr(bitAnd(toInt64({flags}), \
-             if(sh.{} = 1, {}, {})), {MF_JUSTATTACKED}), toInt64({flags})))",
+            "toInt32(if({just} = 1, bitAnd(toInt64({flags}), {not_just}), \
+             if(cc_attacked = 1, bitOr(bitAnd(toInt64({flags}), \
+             if(sh.{} = 1, {}, {})), {MF_JUSTATTACKED}), toInt64({flags}))))",
             shape::MISSILEHIT,
             !(MF_AMBUSH | MF_JUSTHIT),
             !MF_AMBUSH,
+            just = sh(shape::JUSTATTACKED),
+            not_just = !MF_JUSTATTACKED,
             flags = at(state.m_flags),
         ),
     ];

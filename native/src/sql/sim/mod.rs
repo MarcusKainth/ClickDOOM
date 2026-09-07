@@ -7,6 +7,7 @@
 pub mod attacks;
 pub mod doors;
 pub mod enemy;
+pub mod floor;
 pub mod game;
 pub mod hud;
 pub mod inter;

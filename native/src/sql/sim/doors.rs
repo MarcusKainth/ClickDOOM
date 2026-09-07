@@ -138,6 +138,7 @@ pub struct Opening<'a> {
     pub line_back: &'a str,
     pub sec_specialdata: &'a str,
     pub sec_ceilingheight: &'a str,
+    pub cards: &'a str,
 }
 
 /// Where each part of the answer sits.
@@ -153,17 +154,66 @@ pub mod opened {
     /// The thinker the press turned around instead of making a new one.
     pub const REOPENS: usize = 7;
     pub const UNRESOLVED: usize = 8;
+    /// The message a missing key leaves, hashed, or 0.
+    pub const MESSAGE: usize = 9;
+}
+
+/// `doomdef.h`'s `card_t`, one-based for `p_cards`.
+pub mod card {
+    pub const BLUE: i64 = 1;
+    pub const YELLOW: i64 = 2;
+    pub const RED: i64 = 3;
+    pub const BLUE_SKULL: i64 = 4;
+    pub const YELLOW_SKULL: i64 = 5;
+    pub const RED_SKULL: i64 = 6;
 }
 
 /// The manual door specials, in the order `EV_VerticalDoor` reads them.
-///
-/// The locked ones need a key the press does not carry here, so a press
-/// that reaches one leaves the tic unresolved.
 pub fn locked(special: &str) -> String {
     format!("{special} IN (26, 27, 28, 32, 33, 34)")
 }
 
+/// `EV_VerticalDoor`'s own key check: true when `special` is one of the
+/// locked cases and `cards` carries neither the card nor the skull key it
+/// needs. 26 and 32 are the blue lock, 27 and 34 the yellow, 28 and 33 the
+/// red; the pairing is `p_doors.c`'s own, not a pattern in the numbers.
+fn missing_key(special: &str, cards: &str) -> String {
+    format!(
+        "toUInt8(multiIf(\
+         {special} IN (26, 32), {cards}[{BLUE}] = 0 AND {cards}[{BLUE_SKULL}] = 0, \
+         {special} IN (27, 34), {cards}[{YELLOW}] = 0 AND {cards}[{YELLOW_SKULL}] = 0, \
+         {special} IN (28, 33), {cards}[{RED}] = 0 AND {cards}[{RED_SKULL}] = 0, \
+         0))",
+        BLUE = card::BLUE,
+        BLUE_SKULL = card::BLUE_SKULL,
+        YELLOW = card::YELLOW,
+        YELLOW_SKULL = card::YELLOW_SKULL,
+        RED = card::RED,
+        RED_SKULL = card::RED_SKULL,
+    )
+}
+
+/// The message `EV_VerticalDoor` leaves for whichever lock `special` names,
+/// hashed the way `inter::message` hashes one, or 0 for a special that
+/// names no lock.
+fn missing_key_message(special: &str) -> String {
+    format!(
+        "multiIf(\
+         {special} IN (26, 32), {blue}, \
+         {special} IN (27, 34), {yellow}, \
+         {special} IN (28, 33), {red}, \
+         toUInt64(0))",
+        blue = super::inter::message("You need a blue key to open this door"),
+        yellow = super::inter::message("You need a yellow key to open this door"),
+        red = super::inter::message("You need a red key to open this door"),
+    )
+}
+
 /// What the press does, given the sector behind the line.
+///
+/// A locked special without its key changes nothing but the message:
+/// `EV_VerticalDoor`'s own check runs before it even reads the sector, so
+/// it stops the same way whether or not a door is already there.
 pub fn opening(door: &Opening<'_>, lowest_ceiling: &str) -> String {
     let special = format!("toInt64({}[1 + {}])", door.line_special, door.line);
     let sector = format!("toInt32({}[1 + {}])", door.line_back, door.line);
@@ -171,6 +221,7 @@ pub fn opening(door: &Opening<'_>, lowest_ceiling: &str) -> String {
     // A door already on the sector is turned around rather than remade,
     // but only for the specials the engine lists.
     let reuse = format!("{held} != 0 AND {special} IN (1, 26, 27, 28, 117)");
+    let missing = missing_key(&special, door.cards);
     let kind = format!(
         "toInt64(multiIf({special} IN (1, 26, 27, 28), {NORMAL}, \
          {special} IN (31, 32, 33, 34), {OPEN}, \
@@ -187,15 +238,19 @@ pub fn opening(door: &Opening<'_>, lowest_ceiling: &str) -> String {
     );
     format!(
         "multiIf(\
-         {} OR {sector} < 0, \
+         {sector} < 0, \
          (toInt32(-1), toInt64(0), toInt64(0), toInt64(0), toInt64(0), toUInt8(0), \
-         toInt64(0), toUInt8(1)), \
+         toInt64(0), toUInt8(1), toUInt64(0)), \
+         {locked} AND {missing} = 1, \
+         (toInt32(-1), toInt64(0), toInt64(0), toInt64(0), toInt64(0), toUInt8(0), \
+         toInt64(0), toUInt8(0), {message}), \
          {reuse}, (toInt32(-1), toInt64(0), toInt64(0), toInt64(0), toInt64(0), toUInt8(0), \
-         {held}, toUInt8(0)), \
+         {held}, toUInt8(0), toUInt64(0)), \
          ({sector}, {kind}, toInt64(1), {speed}, \
          toInt64({lowest_ceiling}) - {}, \
-         toUInt8({special} IN (31, 32, 33, 34, 118)), toInt64(0), toUInt8(0)))",
-        locked(&special),
+         toUInt8({special} IN (31, 32, 33, 34, 118)), toInt64(0), toUInt8(0), toUInt64(0)))",
         4 * FRACUNIT,
+        locked = locked(&special),
+        message = missing_key_message(&special),
     )
 }

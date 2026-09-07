@@ -63,7 +63,7 @@ pub fn update_specials(state: &super::State, db: &str) -> Vec<(String, String)> 
 
 /// `p_spec.h`: where on the side a switch's picture sits, in the order
 /// `bwhere_e` declares them.
-mod where_ {
+pub mod where_ {
     pub const TOP: i64 = 0;
     pub const MIDDLE: i64 = 1;
     pub const BOTTOM: i64 = 2;

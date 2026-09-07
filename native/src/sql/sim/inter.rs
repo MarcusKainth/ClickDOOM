@@ -720,7 +720,7 @@ fn next_weapon(ammo: &str) -> String {
 }
 
 /// A message, hashed the way both writers hash one.
-fn message(text: &str) -> String {
+pub fn message(text: &str) -> String {
     format!("xxHash64('{}')", text.replace('\'', "''"))
 }
 

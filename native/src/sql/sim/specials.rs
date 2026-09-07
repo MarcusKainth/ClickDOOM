@@ -12,8 +12,31 @@ use super::floor;
 use super::map::World;
 use super::plane::{self, Plane, Things};
 use super::plats::{self, Plat};
+use super::spec::where_;
 use super::{mask, unresolved};
 use crate::sql::bind;
+
+/// The tables `use_special_line`'s own switch reads: the two pictures each
+/// switch texture alternates between.
+pub fn constants(db: &str) -> Vec<(String, String)> {
+    // `P_InitSwitchList` only keeps a pair whose own episode is at most
+    // the game's; this ROM is the shareware IWAD, which runs as episode 1.
+    // The name is resolved to a texture id through a join rather than a
+    // correlated subquery, which this ClickHouse version refuses to plan
+    // once it sits inside another subquery.
+    let resolve = |column: &str| {
+        format!(
+            "(SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArray((sw.id, tex.id))))\n     \
+             FROM {db}.switchlist AS sw\n     \
+             JOIN {db}.tex_textures AS tex ON upper(tex.name) = upper(sw.{column})\n     \
+             WHERE sw.episode = 1)"
+        )
+    };
+    vec![
+        ("switch_off".to_owned(), resolve("name1")),
+        ("switch_on".to_owned(), resolve("name2")),
+    ]
+}
 
 /// `p_floor.c`: the `floor_e` values whose arrival changes the sector's
 /// floor picture and its special, which this does not write.
@@ -228,53 +251,79 @@ fn spawn_planes(rows: &str, held: impl Fn(&str) -> String) -> Vec<(String, Strin
         .collect()
 }
 
-/// `P_UseSpecialLine` for the manual door specials, and the thinker it
-/// appends.
+/// `p_spec.h`: how long a switch stays pressed before its picture goes
+/// back.
+const BUTTONTIME: i64 = 35;
+
+/// `P_UseSpecialLine` for the manual door specials and the switch specials
+/// that spawn a plat, and the thinker either one appends.
 ///
-/// Only the doors are here. A press that reaches any other special leaves
-/// the tic unresolved, which is what `mv_useline` already does. `also` is
-/// the caller's own `unresolved` mask so far, which this is the last stage
-/// of `P_PlayerThink` to be able to add to.
+/// A press that reaches any other special leaves the tic unresolved,
+/// which is what `mv_useline` already does. `also` is the caller's own
+/// `unresolved` mask so far, which this is the last stage of
+/// `P_PlayerThink` to be able to add to.
 pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let line = "mv_useline";
+    let special = format!("toInt64({}[1 + {line}])", s("line_special"));
     let opening = Opening {
         line,
         line_special: &s("line_special"),
         line_back: "line_back",
         sec_specialdata: &s("sec_specialdata"),
         sec_ceilingheight: &s("sec_ceilingheight"),
+        cards: &s("p_cards"),
     };
     let sector = format!("toInt32(line_back[1 + {line}])");
     let lowest = plane::lowest_ceiling_surrounding(&sector, &s("sec_ceilingheight"));
     let mut bindings = vec![
+        ("use_special".to_owned(), special),
         (
-            "use_handles".to_owned(),
+            "use_handles_door".to_owned(),
             format!(
-                "toUInt8({line} >= 0 AND toInt64({}[1 + {line}]) \
-                 IN (1, 26, 27, 28, 31, 32, 33, 34, 117, 118))",
-                s("line_special")
+                "toUInt8({line} >= 0 AND use_special IN (1, 26, 27, 28, 31, 32, 33, 34, 117, 118))"
             ),
         ),
         (
             "use_opened".to_owned(),
             format!(
-                "if(use_handles = 1, {}, {})",
+                "if(use_handles_door = 1, {}, {})",
                 doors::opening(&opening, &lowest),
                 empty_opening(),
             ),
         ),
         (
-            "use_makes".to_owned(),
+            "use_door_makes".to_owned(),
             format!("toUInt8(use_opened.{} >= 0)", doors::opened::SECTOR),
         ),
         (
             "use_reopens".to_owned(),
             format!("toInt64(use_opened.{})", doors::opened::REOPENS),
         ),
+        (
+            "use_handles_plat".to_owned(),
+            format!("toUInt8({line} >= 0 AND use_special = 62)"),
+        ),
+        (
+            "use_plat_sectors".to_owned(),
+            format!(
+                "if(use_handles_plat = 1, arrayFilter(sec -> {specialdata}[sec] = 0, {tag_sectors}), \
+                 CAST([], 'Array(UInt64)'))",
+                specialdata = s("sec_specialdata"),
+                tag_sectors = sectors_by_tag(&format!("toInt64(line_tag[1 + {line}])")),
+            ),
+        ),
+        (
+            "use_plat_makes".to_owned(),
+            "toUInt8(length(use_plat_sectors) > 0)".to_owned(),
+        ),
+        (
+            "use_door_count".to_owned(),
+            "toUInt32(if(use_door_makes = 1, 1, 0))".to_owned(),
+        ),
     ];
-    // The new thinker's fields, in the order `THINKER_COLUMNS` names them.
-    let fields = [
+    // The door's own fields, in the order `THINKER_COLUMNS` names them.
+    let door_fields = [
         format!("toUInt32({})", s("next_seq")),
         format!("toUInt8({})", kind::DOOR),
         format!("toInt32(use_opened.{})", doors::opened::SECTOR),
@@ -299,11 +348,48 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
         "toInt32(0)".to_owned(),
         "toInt32(0)".to_owned(),
     ];
-    let rows = format!(
-        "if(use_makes = 1, [{}], {})",
-        new_plane(&fields),
+    let door_rows = format!(
+        "if(use_door_makes = 1, [{}], {})",
+        new_plane(&door_fields),
         no_planes()
     );
+    // `EV_DoPlat`'s downWaitUpStay (case 62): the same fields
+    // `cross_dispatch`'s own crossing dispatch gives it.
+    let plat_floor = format!("toInt64({}[sec])", s("sec_floorheight"));
+    let plat_low = plane::lowest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
+    let plat_fields = [
+        format!("toUInt32({} + use_door_count + i - 1)", s("next_seq")),
+        format!("toUInt8({})", kind::PLAT),
+        "toInt32(sec - 1)".to_owned(),
+        format!("toInt32({})", plats::kind::DOWN_WAIT_UP_STAY),
+        "toInt32(0)".to_owned(),
+        format!("toInt32({})", plats::PLATSPEED * 4),
+        format!("toInt32(least({plat_low}, {plat_floor}))"),
+        format!("toInt32({plat_floor})"),
+        "toInt32(0)".to_owned(),
+        format!("toInt32({})", plats::TICRATE * plats::PLATWAIT),
+        format!("toInt32({})", plats::status::DOWN),
+        "toInt32(0)".to_owned(),
+        "toUInt8(0)".to_owned(),
+        "toInt32(sec_tag[sec])".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(1)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+    ];
+    let plat_rows = format!(
+        "arrayMap((sec, i) -> {}, use_plat_sectors, arrayEnumerate(use_plat_sectors))",
+        new_plane(&plat_fields)
+    );
+    bindings.push((
+        "use_rows".to_owned(),
+        format!("arrayConcat({door_rows}, {plat_rows})"),
+    ));
     // A press that turns an existing door around writes its direction
     // rather than appending to it.
     let held_direction = format!(
@@ -313,46 +399,160 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
         s("s_direction"),
         s("s_direction"),
     );
-    bindings.extend(spawn_planes(&rows, |column| {
+    bindings.extend(spawn_planes("use_rows", |column| {
         if column == "s_direction" {
             held_direction.clone()
         } else {
             s(column)
         }
     }));
+
+    // `P_ChangeSwitchTexture` (case 62 only, `useAgain = 1`): the first of
+    // the front side's own top, middle and bottom pictures that names a
+    // switch, checked in that order, and the picture the other half of
+    // its pair carries.
+    let use_side0 = "toInt32(line_side0[1 + mv_useline])".to_owned();
+    let flip = |tex: &str| {
+        format!(
+            "multiIf(\
+             has(switch_off, {tex}), switch_on[indexOf(switch_off, {tex})], \
+             has(switch_on, {tex}), switch_off[indexOf(switch_on, {tex})], \
+             {tex})"
+        )
+    };
+    let top = format!("toInt64({}[1 + use_side0])", s("side_toptexture"));
+    let mid = format!("toInt64({}[1 + use_side0])", s("side_midtexture"));
+    let bot = format!("toInt64({}[1 + use_side0])", s("side_bottomtexture"));
+    let switched = format!(
+        "multiIf(\
+         has(switch_off, {top}) OR has(switch_on, {top}), \
+         (toInt64({TOP}), {}, {top}), \
+         has(switch_off, {mid}) OR has(switch_on, {mid}), \
+         (toInt64({MIDDLE}), {}, {mid}), \
+         has(switch_off, {bot}) OR has(switch_on, {bot}), \
+         (toInt64({BOTTOM}), {}, {bot}), \
+         (toInt64(-1), toInt64(0), toInt64(0)))",
+        flip(&top),
+        flip(&mid),
+        flip(&bot),
+        TOP = where_::TOP,
+        MIDDLE = where_::MIDDLE,
+        BOTTOM = where_::BOTTOM,
+    );
+    bindings.extend([
+        ("use_side0".to_owned(), use_side0),
+        (
+            "use_switch_active".to_owned(),
+            "toUInt8(use_handles_plat = 1 AND use_plat_makes = 1)".to_owned(),
+        ),
+        (
+            "use_switched".to_owned(),
+            format!("if(use_switch_active = 1, {switched}, (toInt64(-1), toInt64(0), toInt64(0)))"),
+        ),
+    ]);
+    for (column, at) in [
+        ("side_toptexture", where_::TOP),
+        ("side_midtexture", where_::MIDDLE),
+        ("side_bottomtexture", where_::BOTTOM),
+    ] {
+        bindings.push((
+            format!("now_{column}"),
+            format!(
+                "arrayMap((v, i) -> toInt16(if(use_switched.1 = {at} AND i = 1 + use_side0, \
+                 use_switched.2, v)), {held}, arrayEnumerate({held}))",
+                held = s(column),
+            ),
+        ));
+    }
+    // `P_StartButton`: reused for a line already pending, a fresh slot
+    // otherwise, or the first one an earlier button's own expiry freed.
+    let already_pressed = format!(
+        "arrayExists((t, l) -> t != 0 AND l = {line} + 1, {}, {})",
+        s("btn_timer"),
+        s("btn_line"),
+    );
+    bindings.push((
+        "use_button_starts".to_owned(),
+        format!("toUInt8(use_switched.1 != -1 AND NOT ({already_pressed}))"),
+    ));
+    let empty_slot = format!("toUInt32(indexOf({}, 0))", s("btn_timer"));
+    bindings.push(("use_button_slot".to_owned(), empty_slot));
+    let write = |held: &str, new_value: &str| {
+        format!(
+            "if(use_button_starts = 0, {held}, \
+             if(use_button_slot != 0, \
+             arrayMap((v, i) -> toInt32(if(i = use_button_slot, {new_value}, v)), \
+             {held}, arrayEnumerate({held})), \
+             arrayPushBack({held}, toInt32({new_value}))))"
+        )
+    };
+    bindings.extend([
+        (
+            "now_btn_line".to_owned(),
+            write(&s("btn_line"), &format!("{line} + 1")),
+        ),
+        (
+            "now_btn_where".to_owned(),
+            write(&s("btn_where"), "use_switched.1"),
+        ),
+        (
+            "now_btn_texture".to_owned(),
+            write(&s("btn_texture"), "use_switched.3"),
+        ),
+        (
+            "now_btn_timer".to_owned(),
+            write(&s("btn_timer"), &BUTTONTIME.to_string()),
+        ),
+    ]);
+
     bindings.extend([
         // `specialdata` names the thinker by its place on the list, which
-        // is the slot the append just took.
+        // is the slot the append just took: the door's own row first, if
+        // it made one, then the plat's.
         (
             "now_sec_specialdata".to_owned(),
             format!(
-                "arrayMap((v, i) -> toUInt32(if(use_makes = 1 AND i = 1 + use_opened.{}, {}, v)), \
-                 {held}, arrayEnumerate({held}))",
-                doors::opened::SECTOR,
-                format_args!("length({}) + 1", s("s_kind")),
+                "arrayMap((v, i) -> toUInt32(multiIf(\
+                 use_door_makes = 1 AND i = 1 + use_opened.{SECTOR}, {base} + 1, \
+                 indexOf(use_plat_sectors, i) != 0, \
+                 {base} + use_door_count + indexOf(use_plat_sectors, i), \
+                 v)), {held}, arrayEnumerate({held}))",
+                SECTOR = doors::opened::SECTOR,
+                base = format_args!("length({})", s("s_kind")),
                 held = s("sec_specialdata"),
             ),
         ),
         (
             "now_line_special".to_owned(),
             format!(
-                "arrayMap((v, i) -> toInt16(if(use_makes = 1 AND use_opened.{} = 1 \
+                "arrayMap((v, i) -> toInt16(if(use_door_makes = 1 AND use_opened.{} = 1 \
                  AND i = 1 + {line}, 0, v)), {held}, arrayEnumerate({held}))",
                 doors::opened::CLEARS,
                 held = s("line_special"),
             ),
         ),
-        // A door the press made took an identity. The writeback adds what
-        // the tic spawned on top and names the column, because two stages
-        // of one tic cannot both write it.
+        // The pickup fold inside `mv` writes `now_p_message` once for the
+        // whole of `P_PlayerThink`, so a locked door's own message rides
+        // in as its own binding for that write to fold in.
+        (
+            "use_message".to_owned(),
+            format!("toUInt64(use_opened.{})", doors::opened::MESSAGE),
+        ),
+        // A door or a plat the press made took an identity. The writeback
+        // adds what the tic spawned on top and names the column, because
+        // two stages of one tic cannot both write it.
         (
             "use_next_seq".to_owned(),
-            format!("toUInt32({} + if(use_makes = 1, 1, 0))", s("next_seq")),
+            format!(
+                "toUInt32({} + use_door_count + length(use_plat_sectors))",
+                s("next_seq")
+            ),
         ),
-        // A press that reaches a door is a tic this finishes. One that
-        // reaches any other special, or a locked door, is not.
-        // The writeback names the column, because the shots have their own
-        // reason to leave the tic unresolved and one stage writes it once.
+        // A press that reaches a door or a plat is a tic this finishes.
+        // One that reaches any other special, or a locked door without
+        // its key, is not. The writeback names the column, because the
+        // shots have their own reason to leave the tic unresolved and one
+        // stage writes it once.
         (
             "use_unresolved".to_owned(),
             mask(
@@ -362,7 +562,7 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
                     (unresolved::PL_ACTION_NEEDED, "pl_action_needed = 1"),
                     (
                         unresolved::USE_UNHANDLED_SPECIAL,
-                        &format!("({line} >= 0 AND use_handles = 0)"),
+                        &format!("({line} >= 0 AND use_handles_door = 0 AND use_handles_plat = 0)"),
                     ),
                     (
                         unresolved::DOOR_OPEN_STUCK,
@@ -740,7 +940,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
 /// A press that starts nothing.
 fn empty_opening() -> String {
     "(toInt32(-1), toInt64(0), toInt64(0), toInt64(0), toInt64(0), toUInt8(0), \
-     toInt64(0), toUInt8(0))"
+     toInt64(0), toUInt8(0), toUInt64(0))"
         .to_owned()
 }
 

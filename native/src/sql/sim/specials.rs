@@ -61,8 +61,9 @@ const THINKER_TYPES: [&str; 23] = [
 /// `P_CrossSpecialLine`'s own switch (`p_spec.c`), every special it names,
 /// TRIGGERS and RETRIGGERS together. A crossed line whose special is not
 /// here does nothing, exactly as the switch falls through with no case
-/// for it. [`PLAT_TRIGGER_SPECIALS`] run; a crossing that reaches any
-/// other one still leaves the tic unresolved rather than being guessed.
+/// for it. [`PLAT_TRIGGER_SPECIALS`] and [`DOOR_TRIGGER_SPECIALS`] run; a
+/// crossing that reaches any other one still leaves the tic unresolved
+/// rather than being guessed.
 pub const CROSSABLE_SPECIALS: [i64; 72] = [
     2, 3, 4, 5, 6, 8, 10, 12, 13, 16, 17, 19, 22, 25, 30, 35, 36, 37, 38, 39, 40, 44, 52, 53, 54,
     56, 57, 58, 59, 72, 73, 74, 75, 76, 77, 79, 80, 81, 82, 83, 84, 86, 87, 88, 89, 90, 91, 92, 93,
@@ -73,20 +74,29 @@ pub const CROSSABLE_SPECIALS: [i64; 72] = [
 /// `P_CrossSpecialLine`'s non-player allow-list (`p_spec.c`): the only
 /// specials a monster's crossing ever reaches the switch for at all.
 /// Every other special returns before the switch runs, whether or not the
-/// switch itself would have a case for it.
+/// switch itself would have a case for it. Neither of
+/// [`DOOR_TRIGGER_SPECIALS`] is here, so a monster's own crossing never
+/// reaches a door.
 pub const MONSTER_CROSSABLE_SPECIALS: [i64; 7] = [4, 10, 39, 88, 97, 125, 126];
 
 /// `EV_DoPlat`'s downWaitUpStay: both `P_CrossSpecialLine` cases that spawn
 /// it, one W1 (10, one-shot) and one WR (88, a retrigger).
 pub const PLAT_TRIGGER_SPECIALS: [i64; 2] = [10, 88];
 
-/// `specials` minus [`PLAT_TRIGGER_SPECIALS`]: what still leaves a
-/// crossing unresolved once `cross_plats` runs the rest of them.
+/// `EV_DoDoor`'s open and normal: `P_CrossSpecialLine` cases 2 (`vld_open`,
+/// W1, one-shot) and 90 (`vld_normal`, WR, a retrigger).
+pub const DOOR_TRIGGER_SPECIALS: [i64; 2] = [2, 90];
+
+/// `specials` minus [`PLAT_TRIGGER_SPECIALS`] and [`DOOR_TRIGGER_SPECIALS`]:
+/// what still leaves a crossing unresolved once `cross_dispatch` runs the
+/// rest of them.
 pub fn unhandled_crossable(specials: &[i64]) -> Vec<i64> {
     specials
         .iter()
         .copied()
-        .filter(|special| !PLAT_TRIGGER_SPECIALS.contains(special))
+        .filter(|special| {
+            !PLAT_TRIGGER_SPECIALS.contains(special) && !DOOR_TRIGGER_SPECIALS.contains(special)
+        })
         .collect()
 }
 
@@ -356,26 +366,29 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
     bindings
 }
 
-/// `EV_DoPlat`'s downWaitUpStay, over every mover that crossed a special 10
-/// or 88 line this tic.
+/// `EV_DoPlat`'s downWaitUpStay and `EV_DoDoor`'s open and normal, over
+/// every mover that crossed a handled special this tic.
 ///
 /// `P_FindSectorFromLineTag`'s walk runs once per tag a crossing named,
-/// skipping a sector `EV_DoPlat` finds already busy. Case 10 (W1) clears
-/// the line's special once its plat is spawned; case 88 (WR) leaves it, so
-/// a later crossing can retrigger it once the sector frees up.
+/// skipping a sector the matching `EV_*` finds already busy. Case 10 (W1)
+/// and case 2 (W1) clear their line's special once their thinker spawns;
+/// case 88 and case 90 (both WR) leave it, so a later crossing can
+/// retrigger them once the sector frees up.
 ///
 /// `px_crossed_line` and `tx_crossed_line` each name at most one line, the
 /// first `P_TryMove`'s own spechit walk finds; a move whose spechit holds
 /// two lines this dispatch would otherwise run leaves the tic unresolved
 /// (`PX_MULTI_CROSSED`, `TX_MULTI_CROSSED`) rather than running the first
-/// and dropping the second.
+/// and dropping the second. `MONSTER_CROSSABLE_SPECIALS` names neither of
+/// `DOOR_TRIGGER_SPECIALS`, so `tx_crossed_line` never carries a door and
+/// `cx_door_lines` below is a single line or none.
 ///
 /// The busy check reads `sec_specialdata` as `use_special_line` already
 /// left it, since that stage runs first: a sector a press claims this tic
 /// is never spawned into twice. A sector a press and a crossing both name
 /// the same tic always resolves to the press, not to whichever order real
 /// DOOM's own interleaving of the two would reach first.
-pub fn cross_plats(state: &State) -> Vec<(String, String)> {
+pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
@@ -386,32 +399,55 @@ pub fn cross_plats(state: &State) -> Vec<(String, String)> {
     );
     // `line_tag` is loaded fresh from `lv_lines` every tic rather than
     // carried in `native_state`, so it is read by its own name rather than
-    // through `state`.
-    bind(
-        "cx_tags",
-        "arrayDistinct(arrayMap(l -> toInt64(line_tag[1 + l]), cx_lines))".to_owned(),
-    );
-    bind(
-        "cx_sectors",
+    // through `state`. `sectors_for` runs `P_FindSectorFromLineTag` once
+    // per tag `lines` names, skipping a sector already busy.
+    let sectors_for = |lines: &str| {
         format!(
-            "arrayFilter(sec -> {}[sec] = 0, \
-             arrayDistinct(arrayFlatten(arrayMap(tag -> {}, cx_tags))))",
+            "arrayFilter(sec -> {}[sec] = 0, arrayDistinct(arrayFlatten(arrayMap(\
+             tag -> {}, arrayDistinct(arrayMap(l -> toInt64(line_tag[1 + l]), {lines}))))))",
             s("sec_specialdata"),
             sectors_by_tag("tag"),
+        )
+    };
+
+    bind(
+        "cx_plat_lines",
+        format!(
+            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            special_list(&PLAT_TRIGGER_SPECIALS)
         ),
     );
-    let floor = format!("toInt64({}[sec])", s("sec_floorheight"));
-    let low = plane::lowest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
+    bind("cx_plat_sectors", sectors_for("cx_plat_lines"));
+    bind(
+        "cx_door_lines",
+        format!(
+            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            special_list(&DOOR_TRIGGER_SPECIALS)
+        ),
+    );
+    // A sector `cx_plat_sectors` already claimed this tic is not claimed
+    // again, in the unlikely case a door tag and a plat tag name the same
+    // sector.
+    bind(
+        "cx_door_sectors",
+        format!(
+            "arrayFilter(sec -> indexOf(cx_plat_sectors, sec) = 0, {})",
+            sectors_for("cx_door_lines")
+        ),
+    );
+
+    let plat_floor = format!("toInt64({}[sec])", s("sec_floorheight"));
+    let plat_low = plane::lowest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
     // The new plat's fields, in the order `THINKER_COLUMNS` names them.
-    let fields = [
+    let plat_fields = [
         format!("toUInt32({} + i - 1)", s("next_seq")),
         format!("toUInt8({})", kind::PLAT),
         "toInt32(sec - 1)".to_owned(),
         format!("toInt32({})", plats::kind::DOWN_WAIT_UP_STAY),
         "toInt32(0)".to_owned(),
         format!("toInt32({})", plats::PLATSPEED * 4),
-        format!("toInt32(least({low}, {floor}))"),
-        format!("toInt32({floor})"),
+        format!("toInt32(least({plat_low}, {plat_floor}))"),
+        format!("toInt32({plat_floor})"),
         "toInt32(0)".to_owned(),
         format!("toInt32({})", plats::TICRATE * plats::PLATWAIT),
         format!("toInt32({})", plats::status::DOWN),
@@ -432,28 +468,84 @@ pub fn cross_plats(state: &State) -> Vec<(String, String)> {
         "toInt32(0)".to_owned(),
     ];
     bind(
-        "cx_rows",
+        "cx_plat_rows",
         format!(
-            "arrayMap((sec, i) -> {}, cx_sectors, arrayEnumerate(cx_sectors))",
-            new_plane(&fields)
+            "arrayMap((sec, i) -> {}, cx_plat_sectors, arrayEnumerate(cx_plat_sectors))",
+            new_plane(&plat_fields)
         ),
+    );
+
+    bind(
+        "cx_door_type",
+        format!(
+            "toInt64(if(empty(cx_door_lines), 0, \
+             if(line_special[1 + cx_door_lines[1]] = 2, {}, {})))",
+            doors::kind::OPEN,
+            doors::kind::NORMAL,
+        ),
+    );
+    let door_top = doors::topheight("(sec - 1)", &s("sec_ceilingheight"));
+    // The new door's fields, in the order `THINKER_COLUMNS` names them.
+    let door_fields = [
+        format!(
+            "toUInt32({} + length(cx_plat_sectors) + i - 1)",
+            s("next_seq")
+        ),
+        format!("toUInt8({})", kind::DOOR),
+        "toInt32(sec - 1)".to_owned(),
+        "toInt32(cx_door_type)".to_owned(),
+        "toInt32(1)".to_owned(),
+        format!("toInt32({})", doors::VDOORSPEED),
+        format!("toInt32({door_top})"),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        format!("toInt32({})", doors::VDOORWAIT),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(0)".to_owned(),
+        "toInt32(sec_tag[sec])".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toUInt8(1)".to_owned(),
+        "toInt32(0)".to_owned(),
+        "toInt32(0)".to_owned(),
+    ];
+    bind(
+        "cx_door_rows",
+        format!(
+            "arrayMap((sec, i) -> {}, cx_door_sectors, arrayEnumerate(cx_door_sectors))",
+            new_plane(&door_fields)
+        ),
+    );
+
+    bind(
+        "cx_rows",
+        "arrayConcat(cx_plat_rows, cx_door_rows)".to_owned(),
     );
     bindings.extend(spawn_planes("cx_rows", |column| s(column)));
     // `specialdata` names the thinker by its place on the list, which is
-    // the slot the append just took.
+    // the slot the append just took: the plat rows first, then the door
+    // rows, in the order `cx_rows` concatenates them.
     let base = format!("length({})", s("s_kind"));
     bindings.push((
         "now_sec_specialdata".to_owned(),
         format!(
-            "arrayMap((v, i) -> toUInt32(if(indexOf(cx_sectors, i) != 0, \
-             toUInt32({base} + indexOf(cx_sectors, i)), v)), {held}, arrayEnumerate({held}))",
+            "arrayMap((v, i) -> toUInt32(multiIf(\
+             indexOf(cx_plat_sectors, i) != 0, {base} + indexOf(cx_plat_sectors, i), \
+             indexOf(cx_door_sectors, i) != 0, \
+             {base} + length(cx_plat_sectors) + indexOf(cx_door_sectors, i), \
+             v)), {held}, arrayEnumerate({held}))",
             held = s("sec_specialdata"),
         ),
     ));
     bindings.push((
         "now_line_special".to_owned(),
         format!(
-            "arrayMap((v, i) -> toInt16(if(v = 10 AND has(cx_lines, i - 1), 0, v)), \
+            "arrayMap((v, i) -> toInt16(if(v IN (10, 2) AND has(cx_lines, i - 1), 0, v)), \
              {held}, arrayEnumerate({held}))",
             held = s("line_special"),
         ),
@@ -1039,17 +1131,23 @@ mod tests {
         assert!(sql.contains("arrayEnumerate(sec_tag)"), "{sql}");
     }
 
-    /// `cross_plats` runs both of `PLAT_TRIGGER_SPECIALS`, so a crossing
-    /// unresolved bit built from `unhandled_crossable` no longer names
-    /// either, and names nothing else it did not already.
+    /// `cross_dispatch` runs every special `PLAT_TRIGGER_SPECIALS` and
+    /// `DOOR_TRIGGER_SPECIALS` name, so a crossing unresolved bit built
+    /// from `unhandled_crossable` no longer names any of them, and names
+    /// nothing else it did not already.
     #[test]
-    fn unhandled_crossable_takes_out_exactly_the_plat_triggers() {
+    fn unhandled_crossable_takes_out_exactly_the_dispatched_triggers() {
         let unhandled = unhandled_crossable(&CROSSABLE_SPECIALS);
-        for special in PLAT_TRIGGER_SPECIALS {
+        for special in PLAT_TRIGGER_SPECIALS
+            .into_iter()
+            .chain(DOOR_TRIGGER_SPECIALS)
+        {
             assert!(!unhandled.contains(&special), "{special}");
         }
         for special in CROSSABLE_SPECIALS {
-            if !PLAT_TRIGGER_SPECIALS.contains(&special) {
+            if !PLAT_TRIGGER_SPECIALS.contains(&special)
+                && !DOOR_TRIGGER_SPECIALS.contains(&special)
+            {
                 assert!(unhandled.contains(&special), "{special}");
             }
         }

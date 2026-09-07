@@ -166,9 +166,9 @@ fn bindings(db: &str) -> Tic {
     let thrown = mobj::thrown_thinks(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thrown);
-    let cross_plats = specials::cross_plats(&tic.state);
+    let cross_dispatch = specials::cross_dispatch(&tic.state);
     let running = game::running(&tic.state);
-    tic.stage_when(&running, cross_plats);
+    tic.stage_when(&running, cross_dispatch);
     let thinkers = lights::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thinkers);

@@ -161,10 +161,18 @@ pub mod unresolved {
     pub const PX_MULTI_CROSSED: u64 = 1 << 32;
     /// The same, for a monster's own move.
     pub const TX_MULTI_CROSSED: u64 = 1 << 33;
+    /// A gun attacker's own shot crosses a special line, or kills what a
+    /// later shot of the same call would have reached.
+    pub const GN_STUCK: u64 = 1 << 34;
+    /// A melee attacker throws a fireball in the same tic a gun attacker
+    /// fires. `mt_thrown`'s and `mt_debris`'s own things always append in
+    /// that order, and this tic is the one where their true order, by
+    /// slot, could differ from it.
+    pub const AT_THROW_GUNS: u64 = 1 << 35;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 34] = [
+const UNRESOLVED_BITS: [(u64, &str); 36] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -199,6 +207,8 @@ const UNRESOLVED_BITS: [(u64, &str); 34] = [
     (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
     (unresolved::PX_MULTI_CROSSED, "PX_MULTI_CROSSED"),
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
+    (unresolved::GN_STUCK, "GN_STUCK"),
+    (unresolved::AT_THROW_GUNS, "AT_THROW_GUNS"),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

@@ -673,6 +673,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_state
     rndindex       UInt8,
     next_seq       UInt32,
     next_linkseq   UInt32,
+    setup_things   UInt32,
     paused         UInt8,
     demo_end       UInt8,
     totalkills     Int32,

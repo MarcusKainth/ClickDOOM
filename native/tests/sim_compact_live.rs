@@ -40,6 +40,7 @@ struct Compacted {
     tracer: Vec<u32>,
     soundtarget: Vec<u32>,
     attacker: u32,
+    setup_things: u32,
     unresolved: u64,
 }
 
@@ -106,7 +107,8 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
     let rows: Vec<Compacted> = fixture
         .rows(&format!(
             "SELECT tic, m_sprite AS sprite, m_target AS target, m_tracer AS tracer, \
-             sec_soundtarget AS soundtarget, p_attacker AS attacker, unresolved \
+             sec_soundtarget AS soundtarget, p_attacker AS attacker, setup_things, \
+             unresolved \
              FROM {db}.native_state WHERE tic >= {SEED_TIC} ORDER BY tic"
         ))
         .await;
@@ -143,6 +145,19 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
         }
     };
     let surviving = || (1..=slots).filter(|slot| *slot != taken);
+
+    // The pickup is one of the map's own things, so it stands ahead of
+    // the sector thinkers and taking it moves the boundary down one.
+    assert!(
+        taken as u32 <= before.setup_things,
+        "slot {taken} of {slots} is above the boundary at {}",
+        before.setup_things
+    );
+    assert_eq!(
+        after.setup_things,
+        before.setup_things - 1,
+        "the boundary follows the thing that went"
+    );
 
     // A pointer at a thing that survives names the slot it moved to, and
     // one at the thing that was taken is none.

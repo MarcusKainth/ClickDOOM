@@ -15,15 +15,21 @@
 pub const TICRATE: u32 = 35;
 
 /// Bumped whenever a field list below changes shape. Both writers stamp it.
-pub const STATE_SCHEMA_VERSION: u32 = 1;
+pub const STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Scalars that describe the world as a whole.
+///
+/// `setup_things` is how many of the mobjs the level setup spawned are still
+/// on the thinker list. `P_SpawnSpecials` adds the sector thinkers after
+/// `P_LoadThings`, and a thing spawned during play goes on the end of the
+/// list, so the sector thinkers run after that many mobj slots.
 pub const GAME_FIELDS: &[&str] = &[
     "leveltime",
     "prndindex",
     "rndindex",
     "next_seq",
     "next_linkseq",
+    "setup_things",
     "paused",
     "demo_end",
     "totalkills",

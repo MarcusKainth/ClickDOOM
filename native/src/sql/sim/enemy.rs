@@ -253,6 +253,11 @@ pub struct Chasing<'a> {
     /// not known ahead of the trace that reads them, so the fold below
     /// carries them itself instead.
     pub shouts: &'a str,
+    /// How many numbers the sector thinkers draw this tic.
+    pub light_draws: &'a str,
+    /// How many slots the list holds ahead of the sector thinkers. A
+    /// mover above that many counts their draws in its own base.
+    pub setup_things: &'a str,
     /// The slots whose state cycle entered `A_PosAttack` or
     /// `A_SPosAttack`, in list order.
     pub gun_attackers: &'a str,
@@ -404,12 +409,21 @@ pub fn chase(
         ),
     );
     // A draw the tic has already made stands ahead of this thing's own:
-    // every shout and every melee attack up to and including this slot.
-    // A gun attacker's own draws and a chase's own are not in this array;
-    // the fold below carries both forward itself, because how many
-    // numbers either one draws is not known until its own first draw is
-    // read.
-    value("cf_shouts", format!("arrayCumSum({})", state.shouts));
+    // every shout and every melee attack up to and including this slot,
+    // and the sector thinkers' own for a slot they run before. A gun
+    // attacker's own draws and a chase's own are not in this array; the
+    // fold below carries both forward itself, because how many numbers
+    // either one draws is not known until its own first draw is read.
+    value(
+        "cf_shouts",
+        format!(
+            "arrayMap((c, k) -> c + if(k > {boundary}, {lights}, 0), \
+             arrayCumSum({shouts}), arrayEnumerate({shouts}))",
+            boundary = state.setup_things,
+            lights = state.light_draws,
+            shouts = state.shouts,
+        ),
+    );
     // The tic's own movers and gun attackers, tagged and merged back into
     // one list in slot order: 1 for a mover, 2 for a gun attacker. A
     // slot's state cycle enters at most one of the two, so the tag is
@@ -1153,6 +1167,8 @@ mod tests {
             movers: "mt_movers",
             entries: "mt_entries",
             shouts: "mt_shouts",
+            light_draws: "lt_draws",
+            setup_things: "prev_setup_things",
             gun_attackers: "at_gun",
             m_x: "w_x",
             m_y: "w_y",

@@ -721,6 +721,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         movers: "mt_movers",
         entries: "mt_entries",
         shouts: "mt_pure_draws",
+        light_draws: "lt_draws",
+        setup_things: &s("setup_things"),
         gun_attackers: "at_gun",
         m_x: "tx_m_x",
         m_y: "tx_m_y",
@@ -946,9 +948,11 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "mt_missile_asks",
         format!(
             "arrayMap(k -> (toUInt32(k), toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
-             + arraySum(arrayMap(c -> toUInt32(c.{draws}), arraySlice(cw_slot, 1, k))))), \
+             + arraySum(arrayMap(c -> toUInt32(c.{draws}), arraySlice(cw_slot, 1, k))) \
+             + if(k > {boundary}, lt_draws, 0))), \
              mt_missiles)",
             draws = enemy::chased::DRAWS,
+            boundary = s("setup_things"),
         ),
     );
     let struck_map = World {
@@ -1012,6 +1016,22 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!(
             "arrayMap(t -> t.{}, mt_missile_thoughts)",
             missile::thought::HURT_TARGET
+        ),
+    );
+    // The random index the sector thinkers start from. They sit between
+    // the things the level setup spawned and everything spawned during
+    // play, so every draw the slots at or below the boundary made stands
+    // ahead of them and nothing above it does.
+    bind(
+        "mt_light_index",
+        format!(
+            "toUInt8(bitAnd(toUInt32({index}) \
+             + arraySum(arraySlice(mt_pure_draws, 1, {boundary})) \
+             + arraySum(arrayMap(c -> toUInt32(c.{draws}), arraySlice(cw_slot, 1, {boundary}))), \
+             255))",
+            index = s("prndindex"),
+            boundary = s("setup_things"),
+            draws = enemy::chased::DRAWS,
         ),
     );
     bind(
@@ -1105,6 +1125,15 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     bind(
         "mt_slot",
         "arrayMap((a, c) -> toUInt32(if(a = 1, c, 0)), mt_kept, arrayCumSum(mt_kept))".to_owned(),
+    );
+    // The boundary the sector thinkers sit at, which only ever moves down:
+    // a thing the tic threw goes on the end of the list, behind them.
+    bind(
+        "now_setup_things",
+        format!(
+            "toUInt32(arraySum(arraySlice(mt_kept, 1, {})))",
+            s("setup_things")
+        ),
     );
 
     let moved_slot = |slot: &str| format!("toUInt32(if({slot} = 0, 0, mt_slot[{slot}]))");
@@ -1329,9 +1358,11 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
             "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
              toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), \
              toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
-             + arraySum(arrayMap(c -> toUInt32(c.{}), arraySlice(cw_slot, 1, k))))), \
+             + arraySum(arrayMap(c -> toUInt32(c.{draws}), arraySlice(cw_slot, 1, k))) \
+             + if(k > {boundary}, lt_draws, 0))), \
              at_melee)",
-            enemy::chased::DRAWS
+            draws = enemy::chased::DRAWS,
+            boundary = s("setup_things"),
         ),
     );
     let world = attacks::Attacking {
@@ -1611,11 +1642,13 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
     };
 
     // The compaction appends one slot per thing `mt_thrown` carries, in
-    // order, right after what it kept.
+    // order, right after what it kept. That is behind the sector
+    // thinkers on the list, so their draws stand ahead of its own.
     bind(
         "tk_asks",
         format!(
-            "arrayMap((t, i) -> (toUInt32(length(mt_kept) + i), toUInt32(t.{draws})), \
+            "arrayMap((t, i) -> (toUInt32(length(mt_kept) + i), \
+             toUInt32(t.{draws}) + lt_draws), \
              mt_thrown, arrayEnumerate(mt_thrown))",
             draws = missile::thrown::DRAWS,
         ),
@@ -3366,6 +3399,66 @@ mod tests {
             named("cw").contains("mt_pure_draws"),
             "the chase fold's own base reads it too: {}",
             named("cw")
+        );
+    }
+
+    /// The sector thinkers run after the things the level setup spawned,
+    /// so a slot above that boundary counts their draws in its own base
+    /// and a slot at or below it does not. The light stage in turn starts
+    /// from what the slots at or below the boundary drew.
+    #[test]
+    fn a_slot_above_the_boundary_counts_the_sector_thinkers_own_draws() {
+        let bindings = thinkers(&State::default());
+        let named = |name: &str| {
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("{name} is bound"))
+        };
+        for base in ["mt_missile_asks", "at_asks"] {
+            assert!(
+                named(base).contains("if(k > prev_setup_things, lt_draws, 0)"),
+                "{base}: {}",
+                named(base)
+            );
+        }
+        assert!(
+            named("cw").contains("if(k > prev_setup_things, lt_draws, 0)"),
+            "the chase fold's own base: {}",
+            named("cw")
+        );
+        // A thing the tic threw goes on the end of the list, so it is
+        // always above the boundary and counts them unconditionally.
+        assert!(
+            thrown_thinks(&State::default())
+                .iter()
+                .any(|(name, expr)| name == "tk_asks" && expr.contains("+ lt_draws")),
+            "the throw's own thinker counts them too"
+        );
+        let base = named("mt_light_index");
+        assert!(
+            base.contains("arraySlice(mt_pure_draws, 1, prev_setup_things)"),
+            "{base}"
+        );
+        assert!(
+            base.contains("arraySlice(cw_slot, 1, prev_setup_things)"),
+            "{base}"
+        );
+    }
+
+    /// The boundary follows the compaction: a slot at or below it that
+    /// goes takes it down one, and a slot above it leaves it alone.
+    #[test]
+    fn the_boundary_counts_what_the_compaction_kept_below_it() {
+        let bindings = removed(&State::default(), "1");
+        let (_, expr) = bindings
+            .iter()
+            .find(|(name, _)| name == "now_setup_things")
+            .expect("the boundary is bound");
+        assert_eq!(
+            expr,
+            "toUInt32(arraySum(arraySlice(mt_kept, 1, prev_setup_things)))"
         );
     }
 

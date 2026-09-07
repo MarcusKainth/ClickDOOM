@@ -88,8 +88,8 @@ pub mod unresolved {
     /// more states than its own budget allows.
     pub const CYCLE_STUCK: u64 = 1 << 11;
     /// `A_Chase`: entered twice in one tic, no target, an unshootable or
-    /// fuzzy target, a target it just attacked or one that floats, in
-    /// melee range of its target, or a move that reaches a special line.
+    /// fuzzy target, one that floats, in melee range of its target, or a
+    /// move that reaches a special line.
     pub const CHASE_STUCK: u64 = 1 << 12;
     /// Two movers this tic stand close enough that running one after the
     /// other would not read the world the other one left, where at least

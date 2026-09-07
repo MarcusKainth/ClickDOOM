@@ -137,10 +137,15 @@ jobs:
     # Throwaway databases only; never `clickdoom`. `make test` runs the same
     # suites in one pass locally.
     needs: [build-tests, build-rom, build-refemu]
-    runs-on: ubuntu-latest
+    # The repository variables CLICKDOOM_TEST_RUNNER (a runs-on label) and
+    # CLICKDOOM_TEST_THREADS (tests per simulation group at once) pick the
+    # machine the groups run on; unset, a standard runner at four.
+    runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 90
+    env:
+      TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:
       fail-fast: false
       matrix:

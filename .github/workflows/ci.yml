@@ -140,11 +140,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f, native-rest, driver-native]
+        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f, native-sim-g, native-rest, driver-native]
     name: test (${{ matrix.group }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -15,6 +15,7 @@
 #   native-sim-d   the fall suite
 #   native-sim-e   the thrust suite
 #   native-sim-f   the shot suite
+#   native-sim-g   the attack, damage, pain, door, floor and removal suites
 #   native-rest    the native crate's loader, renderer and table suites
 #   driver-native  the driver's native_* suites: load, render, demo, play,
 #                  diff, session and stream; the connection suite runs in
@@ -79,7 +80,7 @@ case "$group" in
     native-sim-b)
         # shellcheck disable=SC2086
         run $live --test-threads 4 \
-            -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live) | binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live) | binary(sim_shot_live) | binary(sim_fall_live) | binary(sim_thrust_live))'
+            -E 'package(clickdoom-native) and binary(/^sim_/) and not (binary(sim_tic_live) | binary(sim_plat_live) | binary(sim_compact_live) | binary(sim_hearing_live) | binary(sim_missile_live) | binary(sim_parity_live) | binary(sim_move_live) | binary(sim_shot_live) | binary(sim_fall_live) | binary(sim_thrust_live) | binary(sim_damage_live) | binary(sim_refire_live) | binary(sim_removed_live) | binary(sim_troop_live) | binary(sim_pain_live) | binary(sim_justattacked_live) | binary(sim_claw_live) | binary(sim_gunshot_live) | binary(sim_blast_live) | binary(sim_impact_live) | binary(sim_door_live) | binary(sim_floor_live))'
         ;;
     native-sim-c)
         # shellcheck disable=SC2086
@@ -101,6 +102,11 @@ case "$group" in
         run $live --test-threads 4 \
             -E 'package(clickdoom-native) and binary(sim_shot_live)'
         ;;
+    native-sim-g)
+        # shellcheck disable=SC2086
+        run $live --test-threads 4 \
+            -E 'package(clickdoom-native) and (binary(sim_damage_live) | binary(sim_refire_live) | binary(sim_removed_live) | binary(sim_troop_live) | binary(sim_pain_live) | binary(sim_justattacked_live) | binary(sim_claw_live) | binary(sim_gunshot_live) | binary(sim_blast_live) | binary(sim_impact_live) | binary(sim_door_live) | binary(sim_floor_live))'
+        ;;
     native-rest)
         # shellcheck disable=SC2086
         run $live --test-threads 2 \
@@ -112,7 +118,7 @@ case "$group" in
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)
-        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-sim-f|native-rest|driver-native" >&2
+        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-sim-f|native-sim-g|native-rest|driver-native" >&2
         exit 2
         ;;
 esac

@@ -752,16 +752,27 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
             s("s_kind")
         ),
     );
-    // A plat that is only waiting still runs its count down, so it acts on
-    // tics the plane pass does not move anything for it.
+    value(
+        "plane_is_door",
+        format!(
+            "arrayMap(j -> toUInt8({} = {}), arrayEnumerate({}))",
+            at("s_kind"),
+            kind::DOOR,
+            s("s_kind")
+        ),
+    );
+    // A plat that is only waiting still runs its count down, and a door
+    // that is only waiting at the top still runs its own down too, so
+    // either acts on tics the plane pass does not move anything for it.
     value(
         "plane_ticks",
         format!(
-            "arrayMap(j -> toUInt8({} = 1 AND ({} = {} OR plane_runs[j] = 1)), \
+            "arrayMap(j -> toUInt8({} = 1 AND ({} IN ({}, {}) OR plane_runs[j] = 1)), \
              arrayEnumerate({k}))",
             at("s_active"),
             at("s_kind"),
             kind::PLAT,
+            kind::DOOR,
             k = s("s_kind"),
         ),
     );
@@ -796,7 +807,7 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     };
     let ran = |member: usize, column: &str| {
         each(format!(
-            "toInt32(if(plane_runs[j] = 1, plane_door[j].{member}, {}))",
+            "toInt32(if(plane_is_door[j] = 1 AND plane_ticks[j] = 1, plane_door[j].{member}, {}))",
             at(column)
         ))
     };
@@ -805,12 +816,12 @@ pub fn planes(state: &State) -> Vec<(String, String)> {
     let floor = scatter(plane::FLOOR, &s("sec_floorheight"));
     let direction = ran(doors::ran::DIRECTION, "s_direction");
     let kind_now = ran(doors::ran::KIND, "s_type");
-    // The count belongs to whichever thinker ran, and the status is the
-    // plat's alone.
+    // The count belongs to whichever thinker ran or ticked, and the
+    // status is the plat's alone.
     let count = each(format!(
         "toInt32(multiIf(plane_is_plat[j] = 1 AND plane_ticks[j] = 1, plane_plat[j].{}, \
          plane_is_plat[j] = 1, {c}, \
-         plane_runs[j] = 1, plane_door[j].{}, {c}))",
+         plane_is_door[j] = 1 AND plane_ticks[j] = 1, plane_door[j].{}, {c}))",
         plats::ran::COUNT,
         doors::ran::COUNT,
         c = at("s_count"),

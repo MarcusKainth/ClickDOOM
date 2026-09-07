@@ -12,8 +12,9 @@
 #   native-sim-a   the tic, plat and compaction suites
 #   native-sim-b   every simulation suite the other groups do not name
 #   native-sim-c   the hearing, missile, parity and move suites
-#   native-sim-d   the shot and fall suites
+#   native-sim-d   the fall suite
 #   native-sim-e   the thrust suite
+#   native-sim-f   the shot suite
 #   native-rest    the native crate's loader, renderer and table suites
 #   driver-native  the driver's native_* suites: load, render, demo, play,
 #                  diff, session and stream; the connection suite runs in
@@ -88,12 +89,17 @@ case "$group" in
     native-sim-d)
         # shellcheck disable=SC2086
         run $live --test-threads 4 \
-            -E 'package(clickdoom-native) and (binary(sim_shot_live) | binary(sim_fall_live))'
+            -E 'package(clickdoom-native) and binary(sim_fall_live)'
         ;;
     native-sim-e)
         # shellcheck disable=SC2086
         run $live --test-threads 4 \
             -E 'package(clickdoom-native) and binary(sim_thrust_live)'
+        ;;
+    native-sim-f)
+        # shellcheck disable=SC2086
+        run $live --test-threads 4 \
+            -E 'package(clickdoom-native) and binary(sim_shot_live)'
         ;;
     native-rest)
         # shellcheck disable=SC2086
@@ -106,7 +112,7 @@ case "$group" in
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)
-        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-rest|driver-native" >&2
+        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-sim-f|native-rest|driver-native" >&2
         exit 2
         ;;
 esac

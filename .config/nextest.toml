@@ -4,6 +4,7 @@
 # at once share nothing but the server.
 [profile.default]
 fail-fast = false
-# A live suite's first session analyses a statement that takes about a
-# minute on a CI runner, so a test is slow only past this.
-slow-timeout = { period = "300s", terminate-after = 4 }
+# A live suite's first session analyses a statement that takes several
+# minutes on a CI runner, so a test is slow only past this, and one that
+# opens more than one session runs well past it before it is cut off.
+slow-timeout = { period = "300s", terminate-after = 8 }

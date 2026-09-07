@@ -150,6 +150,28 @@ pub fn crossed_line(
     )
 }
 
+/// How many `spechit` lines whose special is one of `specials` have a side
+/// flip between where the move started and where it lands. [`crossed_line`]
+/// only ever carries the first of these, so a caller reads this to tell a
+/// move that crosses one from a move that crosses more than one.
+#[allow(clippy::too_many_arguments)]
+pub fn crossed_count(
+    old_x: &str,
+    old_y: &str,
+    new_x: &str,
+    new_y: &str,
+    spechit: &str,
+    line_special: &str,
+    specials: &[i64],
+) -> String {
+    format!(
+        "toInt64(arrayCount(l -> {line_special}[1 + l] IN ({}) AND {} != {}, {spechit}))",
+        special_list(specials),
+        super::map::point_on_line_side(new_x, new_y, "l"),
+        super::map::point_on_line_side(old_x, old_y, "l"),
+    )
+}
+
 /// One new thinker's fields, in `THINKER_COLUMNS`' order, as one tuple
 /// [`spawn_planes`] appends.
 pub fn new_plane(fields: &[String]) -> String {
@@ -341,6 +363,18 @@ pub fn use_special_line(state: &State, also: &str) -> Vec<(String, String)> {
 /// skipping a sector `EV_DoPlat` finds already busy. Case 10 (W1) clears
 /// the line's special once its plat is spawned; case 88 (WR) leaves it, so
 /// a later crossing can retrigger it once the sector frees up.
+///
+/// `px_crossed_line` and `tx_crossed_line` each name at most one line, the
+/// first `P_TryMove`'s own spechit walk finds; a move whose spechit holds
+/// two lines this dispatch would otherwise run leaves the tic unresolved
+/// (`PX_MULTI_CROSSED`, `TX_MULTI_CROSSED`) rather than running the first
+/// and dropping the second.
+///
+/// The busy check reads `sec_specialdata` as `use_special_line` already
+/// left it, since that stage runs first: a sector a press claims this tic
+/// is never spawned into twice. A sector a press and a crossing both name
+/// the same tic always resolves to the press, not to whichever order real
+/// DOOM's own interleaving of the two would reach first.
 pub fn cross_plats(state: &State) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
@@ -1008,6 +1042,16 @@ mod tests {
                 assert!(unhandled.contains(&special), "{special}");
             }
         }
+    }
+
+    /// `crossed_count` answers how many lines match, not whether one does,
+    /// which is what tells a move that crosses two plat triggers from one
+    /// that crosses one: `crossed_line` alone cannot.
+    #[test]
+    fn crossed_count_counts_rather_than_asks_whether_any_match() {
+        let sql = crossed_count("ox", "oy", "nx", "ny", "hits", "line_special", &[10, 88]);
+        assert!(sql.contains("arrayCount("), "{sql}");
+        assert!(sql.contains("IN (10, 88)"), "{sql}");
     }
 
     /// `CROSSABLE_SPECIALS` names no special twice; `p_spec.c`'s own

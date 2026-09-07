@@ -170,6 +170,7 @@ type BornRow = (
     i32,
     i32,
     u32,
+    u8,
 );
 
 #[derive(Row, Deserialize)]
@@ -195,6 +196,7 @@ fn read(spawned: Spawned) -> Vec<Born> {
             reactiontime: i64::from(b.10),
             momz: i64::from(b.11),
             draws: i64::from(b.12),
+            dropped: b.13 != 0,
         })
         .collect()
 }
@@ -278,7 +280,8 @@ async fn ask_spawn(
         "[{}]",
         asks.iter()
             .map(|(kind, x, y, z, base)| format!(
-                "(toInt32({kind}), toInt32({x}), toInt32({y}), toInt32({z}), toUInt32({base}))"
+                "(toInt32({kind}), toInt32({x}), toInt32({y}), toInt32({z}), \
+                 toUInt32({base}), toUInt8(0))"
             ))
             .collect::<Vec<_>>()
             .join(", ")

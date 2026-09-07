@@ -248,6 +248,11 @@ impl World {
                 k if k == thing_type("MT_CHAINGUY") => thing_type("MT_CHAINGUN"),
                 _ => -1,
             };
+            // `P_SpawnMobj` draws once for `lastlook` on every call it
+            // makes, the drop's own spawn included.
+            if hurt.drop != -1 {
+                hurt.draws += 1;
+            }
             return hurt;
         }
         if second < info("painchance") && !flying {

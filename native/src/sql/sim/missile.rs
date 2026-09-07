@@ -224,7 +224,8 @@ fn thrown(
             "{}[1]",
             mobj::spawn_mobj(
                 &format!(
-                    "[(ms_type, {}, {}, toInt32(toInt64({}) + {MISSILE_HEIGHT}), toUInt32({}))]",
+                    "[(ms_type, {}, {}, toInt32(toInt64({}) + {MISSILE_HEIGHT}), toUInt32({}), \
+                     toUInt8(0))]",
                     from(world.m_x),
                     from(world.m_y),
                     from(world.m_z),
@@ -879,12 +880,14 @@ pub fn thinks_fold(
     let folded = bind::chain_in(
         "tkb",
         &[("tk_result".to_owned(), step)],
-        "(arrayPushBack(tk_held.1, tk_result.1), tk_result.2)",
+        "(arrayPushBack(tk_held.1, tk_result.1), tk_result.2, \
+         arrayConcat(tk_held.3, tk_result.3))",
     );
     format!(
         "arrayFold((tk_held, tk_ask) -> {folded}, {asks}, \
-         (CAST([] AS Array({})), {start}))",
-        thought_type()
+         (CAST([] AS Array({})), {start}, CAST([] AS Array({}))))",
+        thought_type(),
+        mobj::SPAWN_ASK_TYPE,
     )
 }
 
@@ -1235,6 +1238,27 @@ fn thought_of(
             hit = struck::HIT,
         ),
     );
+    // `P_KillMobj`'s own drop, for a target this missile's own impact
+    // killed. The damage call's own base sits behind the impact's own
+    // draws, and `mn_hurt`'s own count already reserves its last draw for
+    // the drop, so the spawn's own base is one short of what the call as a
+    // whole drew.
+    value(
+        "mn_drop_asks",
+        format!(
+            "if(mn_hurt_target != 0 AND mn_hurt.{drop} != -1, \
+             [(mn_hurt.{drop}, toInt32({mx}[greatest(mn_hurt_target, 1)]), \
+             toInt32({my}[greatest(mn_hurt_target, 1)]), toInt32({onfloorz}), \
+             toUInt32(mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws} - 1), \
+             toUInt8(1))], [])",
+            drop = inter::hurt::DROP,
+            mx = map.m_x,
+            my = map.m_y,
+            onfloorz = mobj::ONFLOORZ,
+            hit_draws = struck::DRAWS,
+            hurt_draws = inter::hurt::DRAWS,
+        ),
+    );
     value(
         "mn_xy_blocked",
         format!(
@@ -1573,7 +1597,10 @@ fn thought_of(
         "mn_draws".to_owned(),
         "mn_stuck".to_owned(),
     ];
-    (values, format!("(({}), mn_hurt)", members.join(", ")))
+    (
+        values,
+        format!("(({}), mn_hurt, mn_drop_asks)", members.join(", ")),
+    )
 }
 
 #[cfg(test)]

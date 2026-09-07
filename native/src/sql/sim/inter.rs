@@ -1065,7 +1065,7 @@ pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
 /// any of them is worked out. Nothing a call draws changes how many draws
 /// it makes, so the count is this much of the routine and no more.
 pub fn draws(asks: &str, world: &Hurting<'_>) -> String {
-    let body = "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))";
+    let body = "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0) + toUInt32(dm_drop_kill))";
     format!(
         "arrayMap(dm_ask -> {}, {asks})",
         bind::chain_in("dmd", &reach(world), body)
@@ -1165,6 +1165,21 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
                 from(world.m_z),
             ),
         ),
+        (
+            "dm_type".to_owned(),
+            format!("toInt32({})", at(world.m_type)),
+        ),
+        // `P_KillMobj`'s own drop, worked out here rather than only where
+        // the fold actually runs: a call this reaches, no player's own
+        // armour or baby-skill halving can move the damage a monster
+        // takes, so the kill this decides agrees with `damaged`'s own.
+        (
+            "dm_drop_kill".to_owned(),
+            "toUInt8(dm_reaches = 1 AND dm_health - dm_damage_now <= 0 \
+             AND (dm_type = mt_possessed OR dm_type = mt_wolfss \
+             OR dm_type = mt_shotguy OR dm_type = mt_chainguy))"
+                .to_owned(),
+        ),
     ]
 }
 
@@ -1203,7 +1218,6 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
     let mut values: Vec<(String, String)> = reach(world);
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
-    value("dm_type", format!("toInt32({})", at(world.m_type)));
     // A lost soul charging stops dead where it is hit, and the push below
     // then reads the momentum it stopped at.
     value(
@@ -1496,7 +1510,9 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         "toUInt8(dm_killed)".to_owned(),
         format!("toUInt8(dm_killed = 1 AND bitAnd(dm_flags, {MF_COUNTKILL}) != 0)"),
         "toInt32(if(dm_killed = 1, dm_drop, -1))".to_owned(),
-        "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))".to_owned(),
+        "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0) \
+         + if(dm_killed = 1 AND dm_drop != -1, 1, 0))"
+            .to_owned(),
         "toUInt8(dm_stuck)".to_owned(),
         format!(
             "toInt32(if(dm_player_hit = 1, greatest(toInt32({player}.{}) - dm_damage_final, 0), \
@@ -1567,16 +1583,20 @@ mod damage_tests {
         }
     }
 
-    /// A call draws once where it lands and once more where the hit may
-    /// knock its target over. A god mode or invulnerable player's own
-    /// return still may fell, since the push runs ahead of it, but never
-    /// lands, so it draws for the fall alone. A call that neither reaches
-    /// nor may fell draws nothing.
+    /// A call draws once where it lands, once more where the hit may knock
+    /// its target over, and once more where it kills a monster whose type
+    /// drops something. A god mode or invulnerable player's own return
+    /// still may fell, since the push runs ahead of it, but never lands or
+    /// drops, so it draws for the fall alone. A call that reaches none of
+    /// these draws nothing.
     #[test]
-    fn a_call_draws_by_where_it_lands_and_whether_it_may_fell() {
+    fn a_call_draws_by_where_it_lands_whether_it_may_fell_and_whether_it_drops() {
         let (_, body) = damaged(&world(), "dm_held");
         assert!(
-            body.contains("toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))"),
+            body.contains(
+                "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0) \
+                 + if(dm_killed = 1 AND dm_drop != -1, 1, 0))"
+            ),
             "{body}"
         );
     }

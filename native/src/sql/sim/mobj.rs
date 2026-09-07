@@ -37,6 +37,7 @@ const MF_AMBUSH: i64 = 32;
 const MF_NOGRAVITY: i64 = 512;
 const MF_FLOAT: i64 = 0x4000;
 const MF_MISSILE: i64 = 0x1_0000;
+const MF_DROPPED: i64 = 0x2_0000;
 const MF_CORPSE: i64 = 0x10_0000;
 const MF_SKULLFLY: i64 = 0x100_0000;
 
@@ -159,7 +160,30 @@ pub fn guards(db: &str) -> Vec<Statement> {
         })
         .collect();
     guards.push(Statement::sql(no_zero_tics_chain(db)));
+    guards.push(Statement::sql(drop_state_is_static(db)));
     guards
+}
+
+/// `P_KillMobj`'s own drop spawns at a state this never runs a thinker
+/// for: no action, and a tic count that never counts down. Every drop
+/// type carries both today; a table change that does not throws here
+/// instead of a dropped item silently missing its own state cycle.
+fn drop_state_is_static(db: &str) -> String {
+    let kind = |name: &str| format!("(SELECT id FROM {db}.mobjtype WHERE name = '{name}')");
+    let bad = |name: &str| {
+        format!(
+            "(SELECT action != 0 OR tics != -1 FROM {db}.states \
+             WHERE id = (SELECT spawnstate FROM {db}.mobjinfo WHERE id = {}))",
+            kind(name)
+        )
+    };
+    format!(
+        "SELECT throwIf({} OR {} OR {}, \n\
+         'a drop''s own spawn state carries an action or ticks down')",
+        bad("MT_CLIP"),
+        bad("MT_SHOTGUN"),
+        bad("MT_CHAINGUN"),
+    )
 }
 
 /// How far a chain of `nextstate` links is walked looking for a state
@@ -3885,7 +3909,15 @@ pub fn born_column(column: &str, spawn: &str) -> Option<String> {
         "m_frame" => state("state_frame"),
         "m_radius" => info("mobj_radius"),
         "m_height" => info("mobj_height"),
-        "m_flags" => info("mobj_flags"),
+        // `P_KillMobj`'s own drop ORs `MF_DROPPED` onto whatever
+        // `P_SpawnMobj` gave it. Nothing else spawns a clip, a shotgun or
+        // a chaingun at run time, so the type alone tells a drop apart.
+        "m_flags" => format!(
+            "toInt32(if({} IN (mt_clip, mt_shotgun, mt_chaingun), bitOr({flags}, {MF_DROPPED}), \
+             {flags}))",
+            at(born::TYPE),
+            flags = info("mobj_flags"),
+        ),
         "m_health" => info("mobj_spawnhealth"),
         // `P_SpawnMobj` clears the structure, and the contract writes a
         // null player pointer as -1 rather than as 0.

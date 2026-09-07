@@ -401,6 +401,11 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+    // `line_special` is a genuine `native_state` column, so it is read
+    // through `state` rather than by its own bare name: a bare reference
+    // resolves to whatever this tic's own clearing below leaves it at,
+    // not the value the crossing started the tic with.
+    let ls = s("line_special");
 
     bind(
         "cx_lines",
@@ -422,7 +427,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     bind(
         "cx_plat_lines",
         format!(
-            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            "arrayFilter(l -> {ls}[1 + l] IN ({}), cx_lines)",
             special_list(&PLAT_TRIGGER_SPECIALS)
         ),
     );
@@ -430,7 +435,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     bind(
         "cx_door_lines",
         format!(
-            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            "arrayFilter(l -> {ls}[1 + l] IN ({}), cx_lines)",
             special_list(&DOOR_TRIGGER_SPECIALS)
         ),
     );
@@ -488,7 +493,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
         "cx_door_type",
         format!(
             "toInt64(if(empty(cx_door_lines), 0, \
-             if(line_special[1 + cx_door_lines[1]] = 2, {}, {})))",
+             if({ls}[1 + cx_door_lines[1]] = 2, {}, {})))",
             doors::kind::OPEN,
             doors::kind::NORMAL,
         ),
@@ -534,7 +539,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     bind(
         "cx_floor_lines",
         format!(
-            "arrayFilter(l -> line_special[1 + l] IN ({}), cx_lines)",
+            "arrayFilter(l -> {ls}[1 + l] IN ({}), cx_lines)",
             special_list(&FLOOR_TRIGGER_SPECIALS)
         ),
     );
@@ -555,7 +560,7 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
     // same as `cx_door_lines`.
     bind(
         "cx_floor_special",
-        "toInt64(if(empty(cx_floor_lines), 0, line_special[1 + cx_floor_lines[1]]))".to_owned(),
+        format!("toInt64(if(empty(cx_floor_lines), 0, {ls}[1 + cx_floor_lines[1]]))"),
     );
     let raise_ceiling = plane::lowest_ceiling_surrounding("(sec - 1)", &s("sec_ceilingheight"));
     let turbo_floor = floor::highest_floor_surrounding("(sec - 1)", &s("sec_floorheight"));
@@ -1217,6 +1222,38 @@ mod tests {
             .find(|(name, _)| name == "planes")
             .map(|(_, expr)| expr)
             .expect("the pass is one binding")
+    }
+
+    /// `line_special` is a `native_state` column, not a fresh-per-tic
+    /// constant, so a dispatch filter has to read it through `state`
+    /// rather than by its own bare name. A bare reference in one of these
+    /// bindings would resolve to whatever `now_line_special`'s own
+    /// clearing below leaves the line at, which is invisible for a
+    /// retriggerable special but drops a one-shot special dispatched and
+    /// cleared in the same tic.
+    #[test]
+    fn every_dispatch_filter_reads_line_special_through_state() {
+        let bindings = cross_dispatch(&State::default());
+        for name in [
+            "cx_plat_lines",
+            "cx_door_lines",
+            "cx_floor_lines",
+            "cx_door_type",
+            "cx_floor_special",
+        ] {
+            let (_, expr) = bindings
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is one of cross_dispatch's own bindings"));
+            let bare = expr.match_indices("line_special").any(|(at, _)| {
+                !expr[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+            assert!(!bare, "{name}: {expr}");
+            assert!(expr.contains("prev_line_special"), "{name}: {expr}");
+        }
     }
 
     #[test]

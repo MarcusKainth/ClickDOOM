@@ -285,11 +285,12 @@ mod tests {
     fn each_caller_of_the_move_test_holds_one() {
         let sql = resident_statement("nat");
         // The player's own step, the general movers' two parts, the
-        // chase, the spawn's own half step, the tic's own throw's move,
-        // a missile already in flight's own worst-case draw count (read
-        // once for the count and once for whether it is unsure), and its
-        // own thinker each hold one.
-        assert_eq!(sql.matches("arrayMap(mv ->").count(), 9);
+        // chase, a disturbed chase step's own recompute, the spawn's own
+        // half step, the tic's own throw's move, a missile already in
+        // flight's own worst-case draw count (read once for the count and
+        // once for whether it is unsure), and its own thinker each hold
+        // one.
+        assert_eq!(sql.matches("arrayMap(mv ->").count(), 10);
         assert_eq!(sql.matches("arrayMap(clip ->").count(), 1);
         assert_eq!(sql.matches("arrayFold((move_at, move_step)").count(), 1);
         assert_eq!(sql.matches("arrayFold((cw_at, cw_step)").count(), 1);

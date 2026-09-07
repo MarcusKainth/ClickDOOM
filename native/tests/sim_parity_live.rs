@@ -49,7 +49,8 @@ const OPEN: [&str; 0] = [];
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
 /// the way, the tics after it are the slide along that wall, and the door
 /// the press at 73 opens has reached the top and left the list by 120.
-const WALK_TICS: u32 = 205;
+/// `FIRST_REFUSED` sits at the far end of it.
+const WALK_TICS: u32 = 206;
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
@@ -77,10 +78,11 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic DEMO3 leaves unresolved, read off a real run: `A_Chase`
-/// reaches a path this does not run. `driver/tests/native_diff_live.rs`'s
-/// own `FIRST_REFUSED_TIC` is the same fact, read the same way.
-const FIRST_REFUSED: u32 = 181;
+/// The first tic DEMO3 leaves unresolved, read off a real run: a missile
+/// already in flight's own thinker reaches a path this does not run.
+/// `driver/tests/native_diff_live.rs`'s own `FIRST_REFUSED_TIC` is the
+/// same fact, read the same way.
+const FIRST_REFUSED: u32 = 206;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -518,8 +520,8 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     }
     assert_eq!(
         at(FIRST_REFUSED).unresolved,
-        sim::unresolved::CHASE_STUCK,
-        "A_Chase reaches a path this does not run"
+        sim::unresolved::MISSILE_STUCK,
+        "a missile already in flight's own thinker reaches a path this does not run"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

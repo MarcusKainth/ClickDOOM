@@ -834,7 +834,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "tx_m_subsector".to_owned(),
         ),
     ];
-    let mut standing: Vec<String> = vec![String::new(); enemy::chased::FLAGS];
+    let mut standing: Vec<String> = vec![String::new(); enemy::chased::DISTURBED];
     for (_, member, cast, array) in &held {
         standing[member - 1] = format!("{cast}({array}[k])");
     }
@@ -848,6 +848,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // A thing no chase reaches attacks nothing and keeps its flags.
     standing[enemy::chased::STATE - 1] = "toInt32(-1)".to_owned();
     standing[enemy::chased::FLAGS - 1] = format!("toInt32({}[k])", s("m_flags"));
+    // A thing no chase reaches was never a candidate to disturb.
+    standing[enemy::chased::DISTURBED - 1] = "toUInt8(0)".to_owned();
     // What the chase left, put back where the mover stands, as one value
     // per slot. A slot no mover holds keeps what the cycle left it.
     bind(

@@ -12,6 +12,16 @@ use clickdoom_native::sql::sim;
 /// each named column replaced by its expression. An expression may name
 /// the source row's columns through the `p` alias.
 pub fn row(db: &str, tic: u32, from: u32, overrides: &[(&str, String)]) -> Vec<String> {
+    let mut named: Vec<&str> = Vec::new();
+    for (column, _) in overrides {
+        assert!(
+            !named.contains(column),
+            "{column} is overridden twice; a column two slots both touch \
+             needs one combined expression, not two separate ones, since \
+             only the first would ever apply"
+        );
+        named.push(column);
+    }
     let columns: Vec<String> = sim::state_columns()
         .into_iter()
         .map(|column| {
@@ -35,4 +45,23 @@ pub fn row(db: &str, tic: u32, from: u32, overrides: &[(&str, String)]) -> Vec<S
             columns.join(",\n")
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::row;
+
+    /// Two separate overrides of the same column used to mean the second
+    /// silently lost to `find`'s own first match, seeding the wrong row
+    /// rather than failing the test that read it.
+    #[test]
+    #[should_panic(expected = "m_x is overridden twice")]
+    fn a_column_overridden_twice_panics() {
+        row(
+            "db",
+            1,
+            0,
+            &[("m_x", "1".to_owned()), ("m_x", "2".to_owned())],
+        );
+    }
 }

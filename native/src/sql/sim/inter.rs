@@ -920,40 +920,45 @@ pub mod hurt {
     /// 1 where the target's sector special is 11 and the damage reaches
     /// the clamp that keeps a hit there from killing outright.
     pub const PL_SECTOR11: usize = 23;
-    /// 1 where this call's own target is already in
-    /// [`hurt::HIT_TARGETS`]: the mobj fields a call answers with
-    /// (`HEALTH`, `FLAGS` and the rest) read the tic-start arrays
-    /// directly rather than an accumulator, so a second hit on a target
-    /// this tic has already hit once, in the same `damage_fold` list or a
-    /// later one chained after it, would overwrite the first's own
-    /// answer rather than build on it.
-    pub const SAME_TARGET: usize = 24;
     /// Every target a hit has landed on this tic, threaded the same way
     /// the player's own fields are.
-    pub const HIT_TARGETS: usize = 25;
+    pub const HIT_TARGETS: usize = 24;
+    /// Each entry of [`HIT_TARGETS`]'s own latest answer, in the same
+    /// order: the mobj fields (`HEALTH` through `THRESHOLD`) a hit on
+    /// that target left, for a later hit on the same target to carry on
+    /// from rather than overwrite with the tic-start arrays.
+    pub const HIT_RESULTS: usize = 25;
 }
+
+/// The ClickHouse type of one [`hurt::HIT_RESULTS`] entry: [`hurt::HEALTH`]
+/// through [`hurt::THRESHOLD`], in that order.
+const HIT_RESULT_TYPE: &str =
+    "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, UInt32, Int32)";
 
 /// The ClickHouse type of a [`hurt`] tuple, for a caller that carries one
 /// through a fold or a wider tuple of its own.
 pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
                              Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8, Int32, \
-                             Int32, Int32, Int32, UInt32, UInt8, UInt8, UInt8, Array(UInt32))";
+                             Int32, Int32, Int32, UInt32, UInt8, UInt8, Array(UInt32), \
+                             Array(Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
+                             Int32, UInt32, Int32)))";
 
 /// A call nobody made, for a caller that reads the first answer of a list
 /// that may be empty.
 pub fn no_hurt() -> String {
-    "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
-     toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
-     toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
-     toUInt8(0), toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'))"
-        .to_owned()
+    format!(
+        "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+         toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
+         toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
+         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'))"
+    )
 }
 
 /// The tic's own player fields, wrapped as a [`hurt`] tuple for the first
 /// [`damage_fold`] of the tic to start from: every other field the same as
 /// [`no_hurt`], since nothing but [`hurt::PL_HEALTH`] through
 /// [`hurt::PL_ATTACKER`] is ever read off a fold's own seed, and
-/// [`hurt::HIT_TARGETS`] starts the tic empty.
+/// [`hurt::HIT_TARGETS`]/[`hurt::HIT_RESULTS`] start the tic empty.
 pub fn player_start(
     p_health: &str,
     p_armorpoints: &str,
@@ -966,7 +971,7 @@ pub fn player_start(
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32({p_health}), toInt32({p_armorpoints}), \
          toInt32({p_armortype}), toInt32({p_damagecount}), toUInt32({p_attacker}), toUInt8(0), \
-         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'))"
+         toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'))"
     )
 }
 
@@ -1068,17 +1073,32 @@ pub fn draws(asks: &str, world: &Hurting<'_>) -> String {
     let body = "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0) + toUInt32(dm_drop_kill))";
     format!(
         "arrayMap(dm_ask -> {}, {asks})",
-        bind::chain_in("dmd", &reach(world), body)
+        bind::chain_in("dmd", &reach(world, &no_hurt()), body)
     )
 }
 
 /// What a call works out before it reads a number: whether the damage
 /// lands, whether it pushes, and whether it may knock the target over.
-fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
+///
+/// `player` is where a target this tic has already hit stands, the same
+/// accumulator [`damaged`] threads; [`draws`] passes [`no_hurt`], reading
+/// the tic-start arrays for every ask the way it always has, since a
+/// worst-case draw count does not need the real one.
+fn reach(world: &Hurting<'_>, player: &str) -> Vec<(String, String)> {
     let a = |field: usize| format!("dm_ask.{field}");
     let at = |array: &str| format!("{array}[dm_target]");
     let from = |array: &str| format!("{array}[dm_inflictor]");
     let credited = |array: &str| format!("{array}[dm_source]");
+    // The mobj fields (`HEALTH` through `THRESHOLD`) a hit on this target
+    // left, where one landed on it earlier in the same tic, in place of
+    // the tic-start arrays.
+    let carried = |field: usize, array: &str| {
+        format!(
+            "if(dm_prior_pos != 0, {player}.{}[dm_prior_pos].{field}, {})",
+            hurt::HIT_RESULTS,
+            at(array),
+        )
+    };
     vec![
         (
             "dm_target".to_owned(),
@@ -1096,13 +1116,30 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
             "dm_damage".to_owned(),
             format!("toInt32({})", a(hurting::DAMAGE)),
         ),
+        // Where this target sits in `player`'s own `HIT_TARGETS`, the
+        // last position where it appears more than once, 0 where nothing
+        // has hit it yet this tic.
+        (
+            "dm_reverse_pos".to_owned(),
+            format!(
+                "toUInt32(indexOf(arrayReverse({player}.{}), dm_target))",
+                hurt::HIT_TARGETS
+            ),
+        ),
+        (
+            "dm_prior_pos".to_owned(),
+            format!(
+                "toUInt32(if(dm_reverse_pos = 0, 0, length({player}.{}) - dm_reverse_pos + 1))",
+                hurt::HIT_TARGETS
+            ),
+        ),
         (
             "dm_flags".to_owned(),
-            format!("toInt32({})", at(world.m_flags)),
+            format!("toInt32({})", carried(hurt::FLAGS, world.m_flags)),
         ),
         (
             "dm_health".to_owned(),
-            format!("toInt32({})", at(world.m_health)),
+            format!("toInt32({})", carried(hurt::HEALTH, world.m_health)),
         ),
         (
             "dm_is_player".to_owned(),
@@ -1215,7 +1252,14 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
     let from = |array: &str| format!("{array}[dm_inflictor]");
     let credited = |array: &str| format!("{array}[dm_source]");
     let info = |table: &str| format!("{table}[1 + dm_type]");
-    let mut values: Vec<(String, String)> = reach(world);
+    let carried = |field: usize, array: &str| {
+        format!(
+            "if(dm_prior_pos != 0, {player}.{}[dm_prior_pos].{field}, {})",
+            hurt::HIT_RESULTS,
+            at(array),
+        )
+    };
+    let mut values: Vec<(String, String)> = reach(world, player);
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
 
     // A lost soul charging stops dead where it is hit, and the push below
@@ -1226,11 +1270,17 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
     );
     value(
         "dm_momx_held",
-        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momx)),
+        format!(
+            "toInt32(if(dm_flying = 1, 0, {}))",
+            carried(hurt::MOMX, world.m_momx)
+        ),
     );
     value(
         "dm_momy_held",
-        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momy)),
+        format!(
+            "toInt32(if(dm_flying = 1, 0, {}))",
+            carried(hurt::MOMY, world.m_momy)
+        ),
     );
     value(
         "dm_thrust",
@@ -1404,7 +1454,7 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
             "toUInt8(dm_lands = 1 AND dm_killed = 0 AND dm_is_player = 0 \
              AND ({} = 0 OR dm_type = mt_vile) \
              AND dm_source != 0 AND dm_source != dm_target AND {} != mt_vile)",
-            at(world.m_threshold),
+            carried(hurt::THRESHOLD, world.m_threshold),
             credited(world.m_type),
         ),
     );
@@ -1416,7 +1466,7 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         format!(
             "toInt32(if(dm_pained = 1, {}, {}))",
             info("mobj_painstate"),
-            at(world.m_state),
+            carried(hurt::STATE, world.m_state),
         ),
     );
     value(
@@ -1436,7 +1486,7 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
              dm_wakes = 1, {}, dm_pained = 1, {}, {held}))",
             info("mobj_seestate"),
             info("mobj_painstate"),
-            held = at(world.m_state),
+            held = carried(hurt::STATE, world.m_state),
         ),
     );
     // A frame the routine enters brings its own wait, whether or not it is
@@ -1451,7 +1501,7 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
             "toInt32(multiIf(dm_moves = 0, {held}, \
              dm_killed = 1, greatest(state_tics[1 + dm_death_state] - bitAnd({second}, 3), 1), \
              state_tics[1 + dm_state]))",
-            held = at(world.m_tics),
+            held = carried(hurt::TICS, world.m_tics),
         ),
     );
     // `P_SetMobjState` runs the routine the frame it enters carries.
@@ -1464,49 +1514,70 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         "dm_routine",
         "toInt32(if(dm_moves = 1, state_action[1 + dm_state], 0))".to_owned(),
     );
-    // A target this tic has already hit once, in this call's own list or
-    // an earlier one chained into it: the mobj fields below read the
-    // tic-start arrays rather than an accumulator, so a second hit here
-    // would overwrite the first's own answer rather than build on it.
-    value(
-        "dm_same_target",
-        format!("toUInt8(has({player}.{}, dm_target))", hurt::HIT_TARGETS),
-    );
     value(
         "dm_stuck",
         "toUInt8(dm_lands = 1 AND (dm_player_dies = 1 OR dm_sector11 = 1 \
-         OR dm_same_target = 1 \
          OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))"
             .to_owned(),
     );
-    let members = [
+    value(
+        "dm_out_health",
         "toInt32(if(dm_lands = 1, dm_left, dm_health))".to_owned(),
+    );
+    value(
+        "dm_out_flags",
         format!(
             "toInt32(multiIf(dm_killed = 1, dm_corpse_flags, \
              dm_pained = 1, bitOr(dm_flags, {MF_JUSTHIT}), dm_flags))"
         ),
+    );
+    value(
+        "dm_out_momz",
+        format!(
+            "toInt32(if(dm_flying = 1, 0, {}))",
+            carried(hurt::MOMZ, world.m_momz)
+        ),
+    );
+    value(
+        "dm_out_height",
+        format!(
+            "toInt32(if(dm_killed = 1, bitShiftRight({held}, 2), {held}))",
+            held = carried(hurt::HEIGHT, world.m_height),
+        ),
+    );
+    value(
+        "dm_out_reactiontime",
+        format!(
+            "toInt32(if(dm_lands = 1 AND dm_killed = 0, 0, {}))",
+            carried(hurt::REACTIONTIME, world.m_reactiontime)
+        ),
+    );
+    value(
+        "dm_out_target",
+        format!(
+            "toUInt32(if(dm_chases = 1, dm_source, {}))",
+            carried(hurt::TARGET, world.m_target)
+        ),
+    );
+    value(
+        "dm_out_threshold",
+        format!(
+            "toInt32(if(dm_chases = 1, {BASETHRESHOLD}, {}))",
+            carried(hurt::THRESHOLD, world.m_threshold)
+        ),
+    );
+    let members = [
+        "dm_out_health".to_owned(),
+        "dm_out_flags".to_owned(),
         "toInt32(dm_state)".to_owned(),
         "toInt32(dm_tics)".to_owned(),
         "toInt32(dm_momx)".to_owned(),
         "toInt32(dm_momy)".to_owned(),
-        format!("toInt32(if(dm_flying = 1, 0, {}))", at(world.m_momz)),
-        format!(
-            "toInt32(if(dm_killed = 1, bitShiftRight({}, 2), {held}))",
-            at(world.m_height),
-            held = at(world.m_height),
-        ),
-        format!(
-            "toInt32(if(dm_lands = 1 AND dm_killed = 0, 0, {}))",
-            at(world.m_reactiontime)
-        ),
-        format!(
-            "toUInt32(if(dm_chases = 1, dm_source, {}))",
-            at(world.m_target)
-        ),
-        format!(
-            "toInt32(if(dm_chases = 1, {BASETHRESHOLD}, {}))",
-            at(world.m_threshold)
-        ),
+        "dm_out_momz".to_owned(),
+        "dm_out_height".to_owned(),
+        "dm_out_reactiontime".to_owned(),
+        "dm_out_target".to_owned(),
+        "dm_out_threshold".to_owned(),
         "toUInt8(dm_killed)".to_owned(),
         format!("toUInt8(dm_killed = 1 AND bitAnd(dm_flags, {MF_COUNTKILL}) != 0)"),
         "toInt32(if(dm_killed = 1, dm_drop, -1))".to_owned(),
@@ -1542,11 +1613,17 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         ),
         "toUInt8(dm_player_dies)".to_owned(),
         "toUInt8(dm_sector11)".to_owned(),
-        "toUInt8(dm_same_target)".to_owned(),
         format!(
             "if(dm_lands = 1, arrayPushBack({player}.{}, dm_target), {player}.{})",
             hurt::HIT_TARGETS,
             hurt::HIT_TARGETS,
+        ),
+        format!(
+            "if(dm_lands = 1, arrayPushBack({player}.{}, \
+             (dm_out_health, dm_out_flags, dm_state, dm_tics, dm_momx, dm_momy, dm_out_momz, \
+             dm_out_height, dm_out_reactiontime, dm_out_target, dm_out_threshold)), {player}.{})",
+            hurt::HIT_RESULTS,
+            hurt::HIT_RESULTS,
         ),
     ];
     (values, format!("({})", members.join(", ")))
@@ -1667,28 +1744,47 @@ mod damage_tests {
     /// list or an earlier one chained into it through `player`: both read
     /// the same `hurt::HIT_TARGETS` off `player`.
     #[test]
-    fn a_target_this_tic_has_already_hit_leaves_a_later_hit_stuck() {
+    fn a_target_this_tic_has_already_hit_carries_its_own_result_rather_than_sticking() {
         let (values, body) = damaged(&world(), "dm_held");
-        let same_target = values
+        let prior = values
             .iter()
-            .find(|(name, _)| name == "dm_same_target")
-            .expect("the call names what a repeat target is");
+            .find(|(name, _)| name == "dm_prior_pos")
+            .expect("the call names where a repeat target's own result sits");
         assert!(
-            same_target
-                .1
-                .contains(&format!("has(dm_held.{}, dm_target)", hurt::HIT_TARGETS)),
-            "{same_target:?}"
+            values.iter().any(|(name, expr)| name == "dm_reverse_pos"
+                && expr.contains(&format!(
+                    "indexOf(arrayReverse(dm_held.{}), dm_target)",
+                    hurt::HIT_TARGETS
+                ))),
+            "{prior:?}"
+        );
+        let health = values
+            .iter()
+            .find(|(name, _)| name == "dm_health")
+            .expect("the call names the target's own health");
+        assert!(
+            health.1.contains(&format!(
+                "dm_held.{}[dm_prior_pos].{}",
+                hurt::HIT_RESULTS,
+                hurt::HEALTH
+            )),
+            "{health:?}"
         );
         let stuck = values
             .iter()
             .find(|(name, _)| name == "dm_stuck")
             .expect("the call names what leaves it stuck");
-        assert!(stuck.1.contains("dm_same_target = 1"), "{stuck:?}");
+        assert!(!stuck.1.contains("dm_prior_pos"), "{stuck:?}");
+        assert!(!stuck.1.contains("same_target"), "{stuck:?}");
         assert!(
             body.contains(&format!(
                 "arrayPushBack(dm_held.{}, dm_target)",
                 hurt::HIT_TARGETS
             )),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("arrayPushBack(dm_held.{}", hurt::HIT_RESULTS)),
             "{body}"
         );
     }
@@ -1769,5 +1865,14 @@ mod damage_tests {
             _ => d,
         });
         assert_eq!(depth, 0, "{sql}");
+    }
+
+    /// [`HURT_TYPE`]'s own last field is [`HIT_RESULT_TYPE`] spelled a
+    /// second time, since a `const` cannot format one into the other.
+    /// This fails if the two are ever edited apart.
+    #[test]
+    fn hurt_type_s_own_last_field_is_hit_result_type() {
+        let wrapped = format!("Array({HIT_RESULT_TYPE}))");
+        assert!(HURT_TYPE.ends_with(&wrapped), "{HURT_TYPE}\n{wrapped}");
     }
 }

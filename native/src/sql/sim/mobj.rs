@@ -1057,15 +1057,6 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                             sec = inter::hurt::PL_SECTOR11,
                         ),
                     ),
-                    (
-                        unresolved::DM_SAME_TARGET,
-                        &format!(
-                            "arrayExists(t -> t.{hurt}.{same} = 1, mt_missile_thoughts) \
-                             OR mt_hurt.{same} = 1",
-                            hurt = missile::thought::HURT,
-                            same = inter::hurt::SAME_TARGET,
-                        ),
-                    ),
                 ],
             )
         ),
@@ -1149,10 +1140,15 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             ),
             _ => held,
         };
+        // `indexOf` answers the first missile whose own impact reached a
+        // slot; two in the same list landing on it means the last carries
+        // the other's own already-threaded answer, so the scatter reads
+        // the list in reverse to find that one instead.
         let held = match clawed(column) {
             Some(member) => format!(
-                "arrayMap((k, v) -> toInt32(if(indexOf(mt_missile_hurt_targets, k) != 0, \
-                 mt_missile_thoughts[indexOf(mt_missile_hurt_targets, k)].{hurt}.{member}, v)), \
+                "arrayMap((k, v) -> toInt32(if(indexOf(arrayReverse(mt_missile_hurt_targets), \
+                 k) != 0, mt_missile_thoughts[length(mt_missile_hurt_targets) - \
+                 indexOf(arrayReverse(mt_missile_hurt_targets), k) + 1].{hurt}.{member}, v)), \
                  mt_slots, {held})",
                 hurt = missile::thought::HURT,
             ),
@@ -1624,10 +1620,16 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
             missile::thought::HURT_TARGET
         ),
     );
+    // `indexOf` answers the first thrown thing whose own first-tic impact
+    // reached a slot; two in the same list landing on it means the last
+    // carries the other's own already-threaded answer, so this reads the
+    // list in reverse to find that one instead.
     bind(
         "tk_hurt_at",
         format!(
-            "arrayMap(k -> indexOf(tk_hurt_targets, k), arrayEnumerate({}))",
+            "arrayMap(k -> if(indexOf(arrayReverse(tk_hurt_targets), k) = 0, 0, \
+             length(tk_hurt_targets) - indexOf(arrayReverse(tk_hurt_targets), k) + 1), \
+             arrayEnumerate({}))",
             s("m_x")
         ),
     );
@@ -1792,14 +1794,6 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
                         "arrayExists(t -> t.{hurt}.{sec} = 1, tk_thoughts)",
                         hurt = missile::thought::HURT,
                         sec = inter::hurt::PL_SECTOR11,
-                    ),
-                ),
-                (
-                    unresolved::DM_SAME_TARGET,
-                    &format!(
-                        "arrayExists(t -> t.{hurt}.{same} = 1, tk_thoughts)",
-                        hurt = missile::thought::HURT,
-                        same = inter::hurt::SAME_TARGET,
                     ),
                 ),
             ],

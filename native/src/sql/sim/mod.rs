@@ -164,10 +164,6 @@ pub mod unresolved {
     /// `P_DamageMobj`: the target's sector special is 11, and the damage
     /// reaches the clamp that keeps a hit there from killing outright.
     pub const SECTOR11_STUCK: u64 = 1 << 35;
-    /// `P_DamageMobj`: a hit lands on a target this tic has already hit
-    /// once, whether in the same `damage_fold` call or an earlier one
-    /// chained into it.
-    pub const DM_SAME_TARGET: u64 = 1 << 36;
     /// `P_FindNextHighestFloor`'s own 22 slot buffer: a raiseToNearestAndChange
     /// plat whose sector has a 23rd qualifying neighbor would crash Vanilla,
     /// so this leaves the tic unresolved instead.
@@ -175,7 +171,7 @@ pub mod unresolved {
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 36] = [
+const UNRESOLVED_BITS: [(u64, &str); 35] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -210,7 +206,6 @@ const UNRESOLVED_BITS: [(u64, &str); 36] = [
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
     (unresolved::PLAYER_DIES, "PLAYER_DIES"),
     (unresolved::SECTOR11_STUCK, "SECTOR11_STUCK"),
-    (unresolved::DM_SAME_TARGET, "DM_SAME_TARGET"),
     (
         unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
         "PLAT_NEXT_HIGHEST_OVERFLOW",

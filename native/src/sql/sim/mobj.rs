@@ -322,10 +322,21 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!(
             "arrayFilter((k, c, n, t) -> c = 1 AND n != 0 AND t != 0 \
              AND (state_action[1 + n] = a_troopattack \
-             OR state_action[1 + n] = a_sargattack), \
+             OR state_action[1 + n] = a_sargattack \
+             OR state_action[1 + n] = a_posattack \
+             OR state_action[1 + n] = a_sposattack), \
              mt_slots, mt_cycles, mt_next, {})",
             s("m_target")
         ),
+    );
+    // The melee routines among `mt_attackers`, which `attack_fold`'s claw
+    // math and its draw count both read: `A_PosAttack` and `A_SPosAttack`
+    // carry their own primitive and their own draw count instead.
+    bind(
+        "at_melee",
+        "arrayFilter(k -> state_action[1 + mt_next[k]] = a_troopattack \
+         OR state_action[1 + mt_next[k]] = a_sargattack, mt_attackers)"
+            .to_owned(),
     );
     let pairs = |slot: &str, other: &dyn Fn(&str) -> String| {
         sight::asking(
@@ -556,7 +567,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_attacker_draws_asks",
         "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
-         toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), toUInt32(0)), mt_attackers)"
+         toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), toUInt32(0)), at_melee)"
             .to_owned(),
     );
     bind(
@@ -569,8 +580,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     bind(
         "mt_attack_draws",
-        "arrayMap(k -> toUInt32(if(indexOf(mt_attackers, k) = 0, 0, \
-         mt_attacker_draws[indexOf(mt_attackers, k)])), mt_slots)"
+        "arrayMap(k -> toUInt32(if(indexOf(at_melee, k) = 0, 0, \
+         mt_attacker_draws[indexOf(at_melee, k)])), mt_slots)"
             .to_owned(),
     );
     // `A_Scream` draws for the sound a thing makes as it dies, the same
@@ -843,21 +854,30 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     for (name, expr) in strikes(state, &world) {
         bind(&name, expr);
     }
+    // Each attacker's own angle and flags, by its position in
+    // `mt_attackers`: the melee fold's one answer at the melee attacker's
+    // own slot, and the chase's own answer, unchanged, everywhere else.
     bind(
-        "mk_m_angle",
+        "at_answers",
         format!(
-            "arrayMap((k, v) -> toUInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
-             mt_slots, cq_m_angle)",
-            attacks::attacked::ANGLE
+            "arrayMap(k -> if(k = at_one AND at_one != 0, \
+             (toUInt32(at_struck.{ang}), toInt32(at_struck.{fl})), \
+             (cq_m_angle[k], cq_m_flags[k])), mt_attackers)",
+            ang = attacks::attacked::ANGLE,
+            fl = attacks::attacked::FLAGS,
         ),
     );
     bind(
+        "mk_m_angle",
+        "arrayMap((k, v) -> toUInt32(if(indexOf(mt_attackers, k) != 0, \
+         at_answers[indexOf(mt_attackers, k)].1, v)), mt_slots, cq_m_angle)"
+            .to_owned(),
+    );
+    bind(
         "mk_m_flags",
-        format!(
-            "arrayMap((k, v) -> toInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
-             mt_slots, cq_m_flags)",
-            attacks::attacked::FLAGS
-        ),
+        "arrayMap((k, v) -> toInt32(if(indexOf(mt_attackers, k) != 0, \
+         at_answers[indexOf(mt_attackers, k)].2, v)), mt_slots, cq_m_flags)"
+            .to_owned(),
     );
     // A missile already on the list runs its own thinker in full, in
     // slot order with the other movers, over what the chase and the
@@ -1208,17 +1228,17 @@ const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 /// rather than mapped, so a tic that reaches neither runs neither body.
 ///
 /// Three cases say the tic could not be produced: more than one thing
-/// reaching a routine, because the second would draw from an index the
-/// first moves; the fireball, which wants a missile spawned; and a claw
+/// reaching a melee routine, because the second would draw from an index
+/// the first moves; the fireball, which wants a missile spawned; and a claw
 /// that kills, which owes the kill count and whatever the corpse drops.
 fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
 
-    // One ask per attacker: the slot, the routine its frame carries, the
-    // sight `P_CheckMeleeRange` needs, and how many numbers the tic drew
-    // before it.
+    // One ask per melee attacker: the slot, the routine its frame carries,
+    // the sight `P_CheckMeleeRange` needs, and how many numbers the tic
+    // drew before it.
     bind(
         "at_asks",
         format!(
@@ -1226,7 +1246,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
              toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), \
              toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
              + arraySum(arrayMap(c -> toUInt32(c.{}), arraySlice(cw_slot, 1, k))))), \
-             mt_attackers)",
+             at_melee)",
             enemy::chased::DRAWS
         ),
     );
@@ -1243,11 +1263,12 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         prndindex: &s("prndindex"),
     };
     bind("at_struck", attacks::attack_fold("at_asks", &world));
-    // The one attacker a tic carries and what it drew before its own call.
-    // A tic reaching more than one is refused below and reads neither.
+    // The one melee attacker a tic carries and what it drew before its own
+    // call. A tic reaching more than one is refused below and reads
+    // neither.
     bind(
         "at_one",
-        "toUInt32(if(length(mt_attackers) = 1, mt_attackers[1], 0))".to_owned(),
+        "toUInt32(if(length(at_melee) = 1, at_melee[1], 0))".to_owned(),
     );
     bind(
         "at_base",
@@ -1263,14 +1284,21 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     // up a call of its own, because the routine is among the largest
     // things the statement carries and every copy costs a tic that hurts
     // nothing.
+    //
+    // One ask list per attacker in `mt_attackers`, flattened: the melee
+    // attacker's own claw where it lands, and an empty list everywhere
+    // else.
     bind(
-        "mt_hurt_asks",
+        "at_hurt_asks",
         format!(
-            "arraySlice([{}], 1, at_struck.{})",
-            attacks::claw_ask("at_struck", "greatest(at_one, 1)", "mk_m_target", "at_base"),
-            attacks::attacked::CLAWED,
+            "arrayMap(k -> if(k = at_one AND at_one != 0 AND at_struck.{clawed} = 1, \
+             [{claw}], CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32)))), \
+             mt_attackers)",
+            clawed = attacks::attacked::CLAWED,
+            claw = attacks::claw_ask("at_struck", "greatest(at_one, 1)", "mk_m_target", "at_base"),
         ),
     );
+    bind("mt_hurt_asks", "arrayFlatten(at_hurt_asks)".to_owned());
     // The target as the stage has left it so far. `m_health` and
     // `m_height` have no writer ahead of this one, so they stand as the
     // tic started.
@@ -1341,7 +1369,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         mask(
             "toUInt64(0)",
             &[
-                (unresolved::AT_ATTACKERS, "length(mt_attackers) > 1"),
+                (unresolved::AT_ATTACKERS, "length(at_melee) > 1"),
                 (
                     unresolved::AT_ROUTINE_STUCK,
                     &format!("at_struck.{} = 1", attacks::attacked::STUCK),

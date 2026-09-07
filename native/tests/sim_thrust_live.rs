@@ -37,6 +37,20 @@ const BEFORE: u32 = 40;
 /// demo's player later shoots, and at gametic 40 it stands still.
 const SLOT: usize = 118;
 
+/// A second slot the crowd arm seeds beside [`SLOT`], also alive and
+/// standing still at gametic 40.
+const SLOT2: usize = 258;
+
+/// How far apart the crowd arm's two things stand: comfortably more than
+/// twice [`NARROW`], so their own boxes never come close to touching, and
+/// comfortably less than the general movers' own gate once it pads either
+/// thing's radius with its speed and its momentum.
+const CROWD_APART: i64 = 5 * 65_536;
+
+/// The momentum the crowd arm gives both things, along the axis neither
+/// stands apart on, so the gap between them never changes.
+const CROWD_MOMY: i64 = 2 * 65_536;
+
 /// Where an arm that needs room puts the thing before it moves, and how
 /// wide it is made there.
 ///
@@ -204,6 +218,43 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             &[Input::keys(at + 1, 0, (0, 0))],
         ));
     }
+
+    // Two things standing close enough to fail the general movers' own
+    // reach test, thrust the same way along the axis neither stands apart
+    // on, so their real destinations never come closer than they started.
+    const CROWD_AT: u32 = 700;
+    // `seed::row` takes the first override it finds for a column, so both
+    // slots' own values for one column have to sit in the one expression.
+    let put_both = |column: &'static str, one: String, two: String| {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {one}, if(k = {SLOT2}, {two}, v))), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    };
+    let crowd_overrides = [
+        put_both(
+            "m_x",
+            OPEN.0.to_string(),
+            (OPEN.0 + CROWD_APART).to_string(),
+        ),
+        put_both("m_y", OPEN.1.to_string(), OPEN.1.to_string()),
+        put_both("m_radius", NARROW.to_string(), NARROW.to_string()),
+        put_both("m_momx", "0".to_owned(), "0".to_owned()),
+        put_both("m_momy", CROWD_MOMY.to_string(), CROWD_MOMY.to_string()),
+    ];
+    statements.extend(
+        seed::row(&db, CROWD_AT, BEFORE, &crowd_overrides)
+            .into_iter()
+            .map(sql::Statement::sql),
+    );
+    statements.push(sim::tick::run_statement(
+        &db,
+        &[Input::keys(CROWD_AT + 1, 0, (0, 0))],
+    ));
+
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
         panic!("{error}");
@@ -221,6 +272,31 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             wanted.join(", ")
         ))
         .await;
+    #[derive(Row, Deserialize)]
+    struct Crowd {
+        unresolved: u64,
+        x: i32,
+        y: i32,
+        momx: i32,
+        momy: i32,
+        x2: i32,
+        y2: i32,
+        momx2: i32,
+        momy2: i32,
+    }
+    let crowd: Crowd = fixture
+        .rows(&format!(
+            "SELECT unresolved, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
+             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, \
+             m_x[{SLOT2}] AS x2, m_y[{SLOT2}] AS y2, \
+             m_momx[{SLOT2}] AS momx2, m_momy[{SLOT2}] AS momy2 \
+             FROM {db}.native_state WHERE tic = {}",
+            CROWD_AT + 1
+        ))
+        .await
+        .into_iter()
+        .next()
+        .expect("the crowd arm's own tic ran");
     fixture.finish().await;
     assert_eq!(
         rows.len(),
@@ -319,4 +395,30 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
         sim::unresolved::TX_CROSSED,
         "the special line the move crossed is not run, so the tic says so"
     );
+
+    // Two things thrust the same way, close enough that the general
+    // movers' own reach test alone would call them crowded, resolve: the
+    // consulted set the fold builds sees neither destination came closer
+    // to the other than it started.
+    assert_eq!(
+        crowd.unresolved, 0,
+        "two things thrust apart resolve, not just crowded"
+    );
+    assert_eq!(
+        (crowd.y as i64, crowd.momy as i64),
+        (OPEN.1 + spent(CROWD_MOMY), left(0, CROWD_MOMY).1 as i64),
+        "the first thing's own move lands"
+    );
+    assert_eq!(
+        (crowd.y2 as i64, crowd.momy2 as i64),
+        (OPEN.1 + spent(CROWD_MOMY), left(0, CROWD_MOMY).1 as i64),
+        "and so does the second thing's own move, the same way"
+    );
+    assert_eq!(
+        crowd.x2 - crowd.x,
+        CROWD_APART as i32,
+        "moving the same way leaves the gap between them exactly as it was"
+    );
+    assert_eq!(crowd.momx, 0, "no momentum on the axis they stand apart on");
+    assert_eq!(crowd.momx2, 0, "for the second thing either");
 }

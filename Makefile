@@ -71,7 +71,7 @@ reference_trace = refemu/reference_traces/demo-boot-to-first-frame.$$(cut -c1-12
         preflight-milestone run-milestone \
         build-refemu build-clickdoom build-riscv-tests-fixtures gen-reference-trace gen-demo3-trace \
         gen-layout gen-probe-trace gen-probe-fixture \
-        native-smoke native-load native-demo native-play native-parity require-probe-trace \
+        native-smoke native-load native-demo native-demo-sim native-play native-parity require-probe-trace \
         fuzz \
         lint check-purity shellcheck format clippy typos actionlint zizmor \
         adr-new check-adr require-rom \
@@ -163,6 +163,9 @@ native-load: up build-clickdoom ## Decode the WAD into the native database, and 
 native-demo: up build-clickdoom require-probe-trace ## Play demo3 at 35 Hz in a window from the probed states
 	$(CLICKDOOM) native load --probe $(probe_trace) $(native_conn) $(no_stdin)
 	$(CLICKDOOM) native demo demo3 $(native_conn) $(no_stdin)
+
+native-demo-sim: up build-clickdoom ## Play demo3 at 35 Hz in a window, from the simulation's own commands
+	$(CLICKDOOM) native demo demo3 --from sim $(native_conn) $(no_stdin)
 
 native-play: up build-clickdoom ## Play the loaded level from the keyboard and mouse
 	$(CLICKDOOM) native play $(native_conn) $(no_stdin)

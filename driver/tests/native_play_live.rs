@@ -15,10 +15,9 @@
 
 #![cfg(feature = "clickhouse-tests")]
 
-use std::time::Duration; // purity-ok: a timeout in the harness, never a value a statement reads
-
 use clickdoom_driver::client::Db;
 use clickdoom_driver::native::Session;
+use clickdoom_driver::native::session::FIRST_TIC_TIMEOUT;
 use clickdoom_native::sql;
 use clickdoom_native::sql::sim::tick;
 use clickdoom_spec::native_state::key;
@@ -30,10 +29,6 @@ use support::{conn_args, drop_database, loaded};
 /// `G_BuildTiccmd`'s `forwardmove`, walking and running.
 const WALK: i8 = 0x19;
 const RUN: i8 = 0x32;
-
-/// The first tic of a session pays for the statement's analysis, which is
-/// seconds. `TIC_TIMEOUT` is the budget for the tics after it.
-const FIRST_ROW_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The tic command the simulation built for `tic`, and where the player
 /// stands after it.
@@ -75,7 +70,7 @@ async fn a_key_the_driver_streams_reaches_the_tic_command() {
             .feed_sim(tic, tick::source::KEYS, keys, 0, 0)
             .unwrap_or_else(|e| panic!("feeding tic {tic}: {e}"));
         session
-            .wait_sim(tic, FIRST_ROW_TIMEOUT)
+            .wait_sim(tic, FIRST_TIC_TIMEOUT)
             .await
             .unwrap_or_else(|e| panic!("tic {tic}: {e}"));
     }

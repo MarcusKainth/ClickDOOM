@@ -61,7 +61,8 @@ async fn setup(database: &str) -> ConnArgs {
         format!(
             "CREATE TABLE {database}.native_state \
              (tic UInt32, leveltime UInt32, keys UInt32, source UInt8, \
-              mouse_dx Int16, mouse_dy Int16, unresolved UInt64, unimplemented UInt64) \
+              mouse_dx Int16, mouse_dy Int16, unresolved UInt64, unimplemented UInt64, \
+              demo_end UInt8) \
              ENGINE = Join(ANY, LEFT, tic)"
         ),
         format!(
@@ -83,7 +84,8 @@ fn sim_statement(database: &str) -> String {
     format!(
         "INSERT INTO {database}.native_state \
          SELECT tic, tic * 2 AS leveltime, keys, source, mouse_dx, mouse_dy, \
-                toUInt64(0) AS unresolved, toUInt64(0) AS unimplemented \
+                toUInt64(0) AS unresolved, toUInt64(0) AS unimplemented, \
+                toUInt8(0) AS demo_end \
          FROM input('{SIM_INPUT_SCHEMA}') WHERE tic > 0"
     )
 }

@@ -50,9 +50,14 @@ pub const FRAMES_TABLE: &str = "native_frames";
 /// How long a paced run waits for one tic of a warm statement before it
 /// calls the statement dead. A tic's budget is 28.6 ms, so this is a wide
 /// margin over the slowest tic and not a target. The first tic of a session
-/// is not one of these: it pays for the statement's analysis, and a caller
-/// passes its own budget for that.
+/// is not one of these: it pays for the statement's analysis, and
+/// [`FIRST_TIC_TIMEOUT`] is the budget for that.
 pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the first tic a session runs may take, which is the simulation
+/// statement being analysed. Sized for a CI runner, about four times
+/// slower than a development machine.
+pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long a wait pauses between polls. The poll is a query round trip,
 /// which paces the loop on its own; this keeps a slow tic from turning into
@@ -133,13 +138,14 @@ pub struct Waited {
     pub read: Duration,
 }
 
-/// One tic run, with how long it took and whether `native_state` left it
-/// unresolved or unimplemented, read in the same poll that found it
-/// committed.
+/// One tic run, with how long it took, whether `native_state` left it
+/// unresolved or unimplemented, and whether it ran past the demo lump's
+/// recorded commands, all read in the same poll that found it committed.
 #[derive(Debug)]
 pub struct Ran {
     pub elapsed: Duration,
     pub refusal: Option<super::Refusal>,
+    pub demo_end: bool,
 }
 
 /// What one call to [`Session::recover`] found.
@@ -176,6 +182,7 @@ struct CommittedRow {
     tic: u32,
     unresolved: u64,
     unimplemented: u64,
+    demo_end: u8,
 }
 
 /// Both statements of one session, plus the connection that reads their
@@ -312,6 +319,7 @@ impl Session {
                         committed.unresolved,
                         committed.unimplemented,
                     ),
+                    demo_end: committed.demo_end != 0,
                 });
             }
             let waited = started.elapsed();
@@ -459,8 +467,8 @@ impl Session {
     }
 
     /// The highest tic `native_state` holds, 0 when it holds none, with
-    /// what that row left in `unresolved` and `unimplemented`, in the one
-    /// query.
+    /// what that row left in `unresolved`, `unimplemented` and `demo_end`,
+    /// in the one query.
     ///
     /// Retried the same way [`Session::poll_frame`] is.
     async fn committed(&self) -> Result<CommittedRow, SessionError> {
@@ -468,7 +476,8 @@ impl Session {
         let sql = format!(
             "SELECT tic, \
                     joinGet('{table}', 'unresolved', tic) AS unresolved, \
-                    joinGet('{table}', 'unimplemented', tic) AS unimplemented \
+                    joinGet('{table}', 'unimplemented', tic) AS unimplemented, \
+                    joinGet('{table}', 'demo_end', tic) AS demo_end \
              FROM (SELECT max(tic) AS tic FROM {table})"
         );
         self.db

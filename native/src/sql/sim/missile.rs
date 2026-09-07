@@ -224,7 +224,8 @@ fn thrown(
             "{}[1]",
             mobj::spawn_mobj(
                 &format!(
-                    "[(ms_type, {}, {}, toInt32(toInt64({}) + {MISSILE_HEIGHT}), toUInt32({}))]",
+                    "[(ms_type, {}, {}, toInt32(toInt64({}) + {MISSILE_HEIGHT}), toUInt32({}), \
+                     toUInt8(0))]",
                     from(world.m_x),
                     from(world.m_y),
                     from(world.m_z),
@@ -1248,7 +1249,8 @@ fn thought_of(
             "if(mn_hurt_target != 0 AND mn_hurt.{drop} != -1, \
              [(mn_hurt.{drop}, toInt32({mx}[greatest(mn_hurt_target, 1)]), \
              toInt32({my}[greatest(mn_hurt_target, 1)]), toInt32({onfloorz}), \
-             toUInt32(mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws} - 1))], [])",
+             toUInt32(mn_base + mn_hit.{hit_draws} + mn_hurt.{hurt_draws} - 1), \
+             toUInt8(1))], [])",
             drop = inter::hurt::DROP,
             mx = map.m_x,
             my = map.m_y,

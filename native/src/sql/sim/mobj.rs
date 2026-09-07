@@ -1465,7 +1465,8 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
             "if(mt_hurt.{drop} != -1, [(mt_hurt.{drop}, \
              toInt32(mk_m_x[greatest(at_target, 1)]), \
              toInt32(mk_m_y[greatest(at_target, 1)]), toInt32({ONFLOORZ}), \
-             toUInt32(at_base + at_struck.{routine_draws} + mt_hurt.{draws} - 1))], [])",
+             toUInt32(at_base + at_struck.{routine_draws} + mt_hurt.{draws} - 1), \
+             toUInt8(1))], [])",
             drop = inter::hurt::DROP,
             routine_draws = attacks::attacked::DRAWS,
             draws = inter::hurt::DRAWS,
@@ -3747,11 +3748,14 @@ pub mod spawning {
     pub const Z: usize = 4;
     /// How many numbers the tic drew before this spawn's own.
     pub const BASE: usize = 5;
+    /// 1 for `P_KillMobj`'s own drop, 0 for anything else `P_SpawnMobj`
+    /// spawns.
+    pub const DROPPED: usize = 6;
 }
 
 /// The ClickHouse type of a [`spawning`] ask, for a caller that carries a
 /// list of them through a fold.
-pub const SPAWN_ASK_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, UInt32)";
+pub const SPAWN_ASK_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, UInt32, UInt8)";
 
 /// Where each field of a debris ask sits in its tuple.
 ///
@@ -3776,7 +3780,7 @@ pub mod bleeding {
 /// The ClickHouse type of a [`born`] tuple, for a caller that carries a
 /// list of them through a fold.
 pub const BORN_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
-                             Int32, Int32, Int32, Int32, UInt32)";
+                             Int32, Int32, Int32, Int32, UInt32, UInt8)";
 
 /// Where each field of a spawned thing sits in its tuple.
 ///
@@ -3797,6 +3801,9 @@ pub mod born {
     pub const MOMZ: usize = 12;
     /// How many numbers the spawn drew.
     pub const DRAWS: usize = 13;
+    /// 1 for `P_KillMobj`'s own drop, straight from the ask's own
+    /// [`spawning::DROPPED`].
+    pub const DROPPED: usize = 14;
 }
 
 /// What a spawn reads: how high each sector stands at this point in the
@@ -3825,7 +3832,13 @@ pub fn spawn_mobj(asks: &str, world: &Spawning<'_>) -> String {
         &a(spawning::BASE),
         world,
     );
-    let body = born_tuple("sp_state", "sp_tics", "toInt32(0)", "toUInt32(1)");
+    let body = born_tuple(
+        "sp_state",
+        "sp_tics",
+        "toInt32(0)",
+        "toUInt32(1)",
+        &format!("toUInt8({})", a(spawning::DROPPED)),
+    );
     format!(
         "arrayMap(sp_ask -> {}, {asks})",
         bind::chain_in("spa", &values, &body)
@@ -3910,6 +3923,7 @@ fn debris_values(world: &Spawning<'_>) -> (Vec<(String, String)>, String) {
             1 << 16
         ),
         "toUInt32(4)",
+        "toUInt8(0)",
     );
     (values, body)
 }
@@ -3977,11 +3991,11 @@ fn spawned(
 }
 
 /// A [`born`] tuple, from the values [`spawned`] bound.
-fn born_tuple(state: &str, tics: &str, momz: &str, draws: &str) -> String {
+fn born_tuple(state: &str, tics: &str, momz: &str, draws: &str, dropped: &str) -> String {
     format!(
         "(sp_x, sp_y, sp_z_now, sp_type, toInt32({state}), toInt32({tics}), \
          sp_floorz, sp_ceilingz, sp_subsector, sp_lastlook, sp_reactiontime, \
-         toInt32({momz}), toUInt32({draws}))"
+         toInt32({momz}), toUInt32({draws}), {dropped})"
     )
 }
 
@@ -4025,12 +4039,11 @@ pub fn born_column(column: &str, spawn: &str) -> Option<String> {
         "m_radius" => info("mobj_radius"),
         "m_height" => info("mobj_height"),
         // `P_KillMobj`'s own drop ORs `MF_DROPPED` onto whatever
-        // `P_SpawnMobj` gave it. Nothing else spawns a clip, a shotgun or
-        // a chaingun at run time, so the type alone tells a drop apart.
+        // `P_SpawnMobj` gave it. The ask carries whether this spawn is a
+        // drop; nothing about the type says so on its own.
         "m_flags" => format!(
-            "toInt32(if({} IN (mt_clip, mt_shotgun, mt_chaingun), bitOr({flags}, {MF_DROPPED}), \
-             {flags}))",
-            at(born::TYPE),
+            "toInt32(if({} = 1, bitOr({flags}, {MF_DROPPED}), {flags}))",
+            at(born::DROPPED),
             flags = info("mobj_flags"),
         ),
         "m_health" => info("mobj_spawnhealth"),
@@ -4143,6 +4156,34 @@ mod spawn_tests {
         assert_eq!(born_column("m_player", "b").as_deref(), Some("toInt8(-1)"));
         assert_eq!(born_column("m_sp_x", "b").as_deref(), Some("toInt16(0)"));
         assert_eq!(born_column("m_x", "b").as_deref(), Some("b.1"));
+    }
+
+    /// `MF_DROPPED` reads the ask's own field, not the type: a future
+    /// caller placing a clip or a shotgun that is not a drop must not pick
+    /// the flag up.
+    #[test]
+    fn the_dropped_flag_reads_the_ask_not_the_type() {
+        let sql = born_column("m_flags", "b").unwrap();
+        assert!(sql.contains(&format!("b.{} = 1", born::DROPPED)), "{sql}");
+        assert!(!sql.contains("mt_clip"), "{sql}");
+    }
+
+    /// A spawn carries its own ask's dropped field into the [`born`] tuple
+    /// untouched; a debris spawn, which has no such field to read, is
+    /// never a drop.
+    #[test]
+    fn a_spawn_carries_its_own_dropped_field_and_debris_never_drops() {
+        assert!(
+            spawn_mobj("asks", &world())
+                .contains(&format!("toUInt8(sp_ask.{})", spawning::DROPPED)),
+            "{}",
+            spawn_mobj("asks", &world())
+        );
+        assert!(
+            spawn_debris("asks", &world()).contains("toUInt32(4)), toUInt8(0))"),
+            "{}",
+            spawn_debris("asks", &world())
+        );
     }
 
     /// The identity a thinker takes and the order its sector lists it in

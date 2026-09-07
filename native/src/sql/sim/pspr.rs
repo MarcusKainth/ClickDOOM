@@ -1011,7 +1011,8 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
             &format!(
                 "if(gs_hit.{drop} != -1, [(gs_hit.{drop}, toInt32(gs_m_x[greatest(gs_id, 1)]), \
                  toInt32(gs_m_y[greatest(gs_id, 1)]), toInt32({onfloorz}), \
-                 toUInt32({} + gs_shot_draws + gs_spawn_draws + gs_hit.{draws} - 1))], [])",
+                 toUInt32({} + gs_shot_draws + gs_spawn_draws + gs_hit.{draws} - 1), \
+                 toUInt8(1))], [])",
                 at(firing::DRAWS),
                 drop = inter::hurt::DROP,
                 draws = inter::hurt::DRAWS,

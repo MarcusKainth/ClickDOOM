@@ -77,9 +77,10 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic the weapon sprite's own cycle enters `A_ReFire`, which
-/// this does not run, read off a real run.
-const FIRST_REFIRE: u32 = 177;
+/// The first tic DEMO3 leaves unresolved, read off a real run: `A_Chase`
+/// reaches a path this does not run. `driver/tests/native_diff_live.rs`'s
+/// own `FIRST_REFUSED_TIC` is the same fact, read the same way.
+const FIRST_REFUSED: u32 = 181;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -503,7 +504,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         .map(|row| row.tic)
         .unwrap_or(u32::MAX);
     assert_eq!(
-        first_refused, FIRST_REFIRE,
+        first_refused, FIRST_REFUSED,
         "the pinned first refused tic matches the run"
     );
     // The run reaches past the door, and every tic up to the first shot
@@ -516,9 +517,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_REFIRE).unresolved,
-        sim::unresolved::PSP_STUCK,
-        "the weapon sprite's own cycle enters a routine this does not run"
+        at(FIRST_REFUSED).unresolved,
+        sim::unresolved::CHASE_STUCK,
+        "A_Chase reaches a path this does not run"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

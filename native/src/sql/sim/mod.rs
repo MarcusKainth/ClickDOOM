@@ -164,14 +164,23 @@ pub mod unresolved {
     /// `P_DamageMobj`: the target's sector special is 11, and the damage
     /// reaches the clamp that keeps a hit there from killing outright.
     pub const SECTOR11_STUCK: u64 = 1 << 35;
+    /// A gun attacker's own shot crosses a special line, or kills what a
+    /// later shot of the same call would have reached.
+    pub const GN_STUCK: u64 = 1 << 36;
     /// `P_FindNextHighestFloor`'s own 22 slot buffer: a raiseToNearestAndChange
     /// plat whose sector has a 23rd qualifying neighbor would crash Vanilla,
     /// so this leaves the tic unresolved instead.
     pub const PLAT_NEXT_HIGHEST_OVERFLOW: u64 = 1 << 37;
+    /// A gun attacker fires in the same tic the attack stage spawns
+    /// something else: a fireball a melee attacker threw, or the drop a
+    /// kill left. `mt_thrown`, `mt_drops` and `mt_debris` always append
+    /// in that order, and this tic is the one where their true order, by
+    /// slot, could differ from it.
+    pub const AT_SPAWN_GUNS: u64 = 1 << 38;
 }
 
 /// Every bit `unresolved` names, in ascending order.
-const UNRESOLVED_BITS: [(u64, &str); 35] = [
+const UNRESOLVED_BITS: [(u64, &str); 37] = [
     (unresolved::PK_STUCK, "PK_STUCK"),
     (unresolved::PX_CROSSED, "PX_CROSSED"),
     (unresolved::PL_HURTS, "PL_HURTS"),
@@ -206,10 +215,12 @@ const UNRESOLVED_BITS: [(u64, &str); 35] = [
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
     (unresolved::PLAYER_DIES, "PLAYER_DIES"),
     (unresolved::SECTOR11_STUCK, "SECTOR11_STUCK"),
+    (unresolved::GN_STUCK, "GN_STUCK"),
     (
         unresolved::PLAT_NEXT_HIGHEST_OVERFLOW,
         "PLAT_NEXT_HIGHEST_OVERFLOW",
     ),
+    (unresolved::AT_SPAWN_GUNS, "AT_SPAWN_GUNS"),
 ];
 
 /// The names of the bits `bits` sets, most significant last, for a message

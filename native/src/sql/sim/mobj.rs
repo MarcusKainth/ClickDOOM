@@ -968,6 +968,10 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                     (unresolved::TX_CROWDED, "tx_crowded = 1"),
                     (unresolved::TX_UNRUN, "tx_unrun = 1"),
                     (unresolved::TX_CROSSED, "tx_crossed = 1"),
+                    (
+                        unresolved::TX_MULTI_CROSSED,
+                        "arrayExists(c -> c > 1, tx_crossed_count)",
+                    ),
                     (unresolved::TZ_UNRUN, "tz_unrun = 1"),
                     (
                         unresolved::AT_DRAW_UNSURE,
@@ -1696,6 +1700,9 @@ pub mod moving {
     pub const CROSSED: usize = 17;
     /// The first special line a step's landed move crossed, or -1.
     pub const CROSSED_LINE: usize = 18;
+    /// How many of the specials `CROSSED_LINE` names a step's landed move
+    /// crossed in total.
+    pub const CROSSED_COUNT: usize = 19;
 }
 
 /// The thing whose momentum is being spent, as expressions.
@@ -2112,6 +2119,40 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
         by_place(
             "toInt64(multiIf(tx_ok_one[i] = 1 AND tx_cross_one[i] != -1, tx_cross_one[i], \
              tx_ok_two[i] = 1 AND tx_cross_two[i] != -1, tx_cross_two[i], toInt64(-1)))",
+        ),
+    );
+    // How many special-10-or-88 lines the move crosses, so a move that
+    // crosses more than one is named rather than having `tx_crossed_line`
+    // silently carry only the first.
+    bind(
+        "tx_count_one",
+        by_place(&specials::crossed_count(
+            "tx_hold_x[i]",
+            "tx_hold_y[i]",
+            "tx_x_one[i]",
+            "tx_y_one[i]",
+            &format!("tx_one[i].{}", answer::SPECHIT),
+            world.line_special,
+            &specials::PLAT_TRIGGER_SPECIALS,
+        )),
+    );
+    bind(
+        "tx_count_two",
+        by_place(&specials::crossed_count(
+            "tx_x_one[i]",
+            "tx_y_one[i]",
+            "tx_x[i]",
+            "tx_y[i]",
+            &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
+            world.line_special,
+            &specials::PLAT_TRIGGER_SPECIALS,
+        )),
+    );
+    bind(
+        "tx_crossed_count",
+        by_place(
+            "toInt64(if(tx_ok_one[i] = 1, tx_count_one[i], 0) + \
+             if(tx_ok_two[i] = 1, tx_count_two[i], 0))",
         ),
     );
 
@@ -2680,6 +2721,19 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
                 &specials::PLAT_TRIGGER_SPECIALS,
             ),
         ),
+        format!(
+            "toInt64({held} + if(st_ok = 1, {count}, toInt64(0)))",
+            held = held(moving::CROSSED_COUNT),
+            count = specials::crossed_count(
+                &held(moving::X),
+                &held(moving::Y),
+                "st_tryx",
+                "st_tryy",
+                &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
+                world.line_special,
+                &specials::PLAT_TRIGGER_SPECIALS,
+            ),
+        ),
     ];
     let body = format!("({})", members.join(", "));
     let start = format!(
@@ -2687,7 +2741,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
          toInt64(multiIf({uses} = 1, {USE}, {momx} != 0 OR {momy} != 0, {STEP}, {DONE})), \
          toInt32({floorz}), toInt32({ceilingz}), toInt32({subsector}), toInt64(0), {pk}, {alive}, \
          toInt64({xmove}), toInt64({ymove}), toInt64(0), toInt64(0), toInt64(-1), toUInt8(0), \
-         toInt64(-1))",
+         toInt64(-1), toInt64(0))",
         USE = phase::USE,
         STEP = phase::STEP,
         DONE = phase::DONE,
@@ -2725,6 +2779,11 @@ pub fn unfinished(loop_state: &str) -> String {
 /// The special line the move crossed, or -1.
 pub fn crossed_line(loop_state: &str) -> String {
     format!("toInt64({loop_state}.{})", moving::CROSSED_LINE)
+}
+
+/// How many of the specials `crossed_line` names the move crossed.
+pub fn crossed_count(loop_state: &str) -> String {
+    format!("toInt64({loop_state}.{})", moving::CROSSED_COUNT)
 }
 
 /// `PTR_SlideTraverse`: the first line of each trace that stops the thing,

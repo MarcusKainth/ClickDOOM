@@ -582,6 +582,10 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
             "px_crossed_line".to_owned(),
             held(mobj::moving::CROSSED_LINE),
         ),
+        (
+            "px_crossed_count".to_owned(),
+            held(mobj::moving::CROSSED_COUNT),
+        ),
     ];
     bindings.extend(mobj::friction(
         "mv_leftx",
@@ -763,6 +767,7 @@ fn writeback(state: &State) -> Vec<(String, String)> {
                 &[
                     (unresolved::PK_STUCK, &format!("pk.{} = 1", inter::STUCK)),
                     (unresolved::PX_CROSSED, "px_crossed = 1"),
+                    (unresolved::PX_MULTI_CROSSED, "px_crossed_count > 1"),
                     (unresolved::PL_HURTS, "pl_hurts = 1"),
                 ],
             ),

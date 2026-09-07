@@ -20,7 +20,7 @@ const VIEWHEIGHT: i64 = 41 << 16;
 
 /// `p_mobj.h`: the z a spawn asks for when it wants the floor or the
 /// ceiling it lands in.
-const ONFLOORZ: i64 = i32::MIN as i64;
+pub(super) const ONFLOORZ: i64 = i32::MIN as i64;
 const ONCEILINGZ: i64 = i32::MAX as i64;
 /// `d_player.h`
 const MAXPLAYERS: i64 = 4;
@@ -968,6 +968,17 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     bind("mt_missile_thoughts", "mt_missile_folded.1".to_owned());
     bind("mt_missile_players", "mt_missile_folded.2".to_owned());
+    bind("mt_missile_drop_asks", "mt_missile_folded.3".to_owned());
+    let missile_spawning = Spawning {
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        prndindex: &s("prndindex"),
+        skill: "skill",
+    };
+    bind(
+        "mt_missile_drops",
+        spawn_mobj("mt_missile_drop_asks", &missile_spawning),
+    );
     bind(
         "mt_missile_hurt_targets",
         format!(
@@ -1153,38 +1164,38 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             held
         };
         // `P_AddThinker` puts a new thing on the end of the list, so a
-        // fireball the tic threw and whatever a kill this tic dropped go
-        // behind what survived the compaction, the fireball first.
-        let thrown_born = match missile::born_column(column, "t") {
-            Some(value) => {
-                let value = if POINTERS.contains(&column) {
-                    moved_slot(&value)
-                } else {
-                    value
-                };
-                format!("arrayMap(t -> {value}, mt_thrown)")
-            }
-            None => format!(
-                "arrayMap((t, i) -> toUInt32({} + i - 1), mt_thrown, arrayEnumerate(mt_thrown))",
-                s("next_linkseq")
+        // fireball the tic threw and whatever a kill this tic dropped -
+        // the claw's own, then an in-flight missile's - go behind what
+        // survived the compaction, in that order.
+        let segment =
+            |born: fn(&str, &str) -> Option<String>, list: &str, letter: &str, before: &str| {
+                match born(column, letter) {
+                    Some(value) => {
+                        let value = if POINTERS.contains(&column) {
+                            moved_slot(&value)
+                        } else {
+                            value
+                        };
+                        format!("arrayMap({letter} -> {value}, {list})")
+                    }
+                    None => format!(
+                        "arrayMap(({letter}, i) -> toUInt32({} + {before} + i - 1), \
+                     {list}, arrayEnumerate({list}))",
+                        s("next_linkseq")
+                    ),
+                }
+            };
+        let born = format!(
+            "arrayConcat(arrayConcat({}, {}), {})",
+            segment(missile::born_column, "mt_thrown", "t", "0"),
+            segment(born_column, "mt_drops", "d", "length(mt_thrown)"),
+            segment(
+                born_column,
+                "mt_missile_drops",
+                "d",
+                "length(mt_thrown) + length(mt_drops)"
             ),
-        };
-        let dropped_born = match born_column(column, "d") {
-            Some(value) => {
-                let value = if POINTERS.contains(&column) {
-                    moved_slot(&value)
-                } else {
-                    value
-                };
-                format!("arrayMap(d -> {value}, mt_drops)")
-            }
-            None => format!(
-                "arrayMap((d, i) -> toUInt32({} + length(mt_thrown) + i - 1), \
-                 mt_drops, arrayEnumerate(mt_drops))",
-                s("next_linkseq")
-            ),
-        };
-        let born = format!("arrayConcat({thrown_born}, {dropped_born})");
+        );
         bind(
             &format!("now_{column}"),
             format!("arrayConcat(arrayFilter((v, a) -> a = 1, {held}, mt_kept), {born})"),
@@ -1209,7 +1220,7 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
         bind(
             &format!("now_{column}"),
             format!(
-                "toUInt32({} + length(mt_thrown) + length(mt_drops))",
+                "toUInt32({} + length(mt_thrown) + length(mt_drops) + length(mt_missile_drops))",
                 s(column)
             ),
         );
@@ -1443,17 +1454,20 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         "at_target",
         "toUInt32(if(at_clawed = 1, mk_m_target[greatest(at_one, 1)], 0))".to_owned(),
     );
-    // `P_KillMobj`'s own drop, for the claw's own target. `draws` already
-    // reserves this call's own last draw for it, so the spawn's own base
-    // is one short of what the call as a whole drew.
+    // `P_KillMobj`'s own drop, for the claw's own target. `mt_hurt_asks`'s
+    // own base sits behind the routine's own draws (the face turn, for a
+    // fuzzy target), and `draws` already reserves the call's own last draw
+    // for the drop, so the spawn's own base is one short of what the call
+    // as a whole drew.
     bind(
         "mt_drop_asks",
         format!(
             "if(mt_hurt.{drop} != -1, [(mt_hurt.{drop}, \
              toInt32(mk_m_x[greatest(at_target, 1)]), \
              toInt32(mk_m_y[greatest(at_target, 1)]), toInt32({ONFLOORZ}), \
-             toUInt32(at_base + mt_hurt.{draws} - 1))], [])",
+             toUInt32(at_base + at_struck.{routine_draws} + mt_hurt.{draws} - 1))], [])",
             drop = inter::hurt::DROP,
+            routine_draws = attacks::attacked::DRAWS,
             draws = inter::hurt::DRAWS,
         ),
     );
@@ -1570,9 +1584,30 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
     );
     bind("tk_thoughts", "tk_folded.1".to_owned());
     bind("tk_players", "tk_folded.2".to_owned());
+    bind("tk_drop_asks", "tk_folded.3".to_owned());
+    let tk_spawning = Spawning {
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        prndindex: &s("prndindex"),
+        skill: "skill",
+    };
+    bind("tk_drops", spawn_mobj("tk_drop_asks", &tk_spawning));
     for (name, expr) in player::hurt_writeback("tk_players") {
         bind(&name, expr);
     }
+    // A drop from the thrown missile's own first-tic impact goes behind
+    // every slot this stage already holds, the same append `removed`
+    // gives a fireball or a claw's own drop.
+    let append_drops = |column: &str, value: &str| -> String {
+        match born_column(column, "d") {
+            Some(v) => format!("arrayConcat({value}, arrayMap(d -> {v}, tk_drops))"),
+            None => format!(
+                "arrayConcat({value}, arrayMap((d, i) -> toUInt32({} + i - 1), \
+                 tk_drops, arrayEnumerate(tk_drops)))",
+                s("next_linkseq")
+            ),
+        }
+    };
     bind("tk_slots", "arrayMap(a -> a.1, tk_asks)".to_owned());
     bind(
         "tk_at",
@@ -1611,13 +1646,11 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         ("m_momz", missile::thought::MOMZ),
     ] {
         let held = s(column);
-        bind(
-            &format!("now_{column}"),
-            format!(
-                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tk_thoughts[i].{member})), \
-                 arrayEnumerate({held}), tk_at)"
-            ),
+        let moved = format!(
+            "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], tk_thoughts[i].{member})), \
+             arrayEnumerate({held}), tk_at)"
         );
+        bind(&format!("now_{column}"), append_drops(column, &moved));
     }
     for (column, cast, hurt_member) in [
         ("m_health", "toInt32", inter::hurt::HEALTH),
@@ -1626,67 +1659,101 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         ("m_threshold", "toInt32", inter::hurt::THRESHOLD),
     ] {
         let held = s(column);
-        bind(
-            &format!("now_{column}"),
-            format!(
-                "arrayMap((k, h) -> {cast}(if(h = 0, {held}[k], \
-                 tk_thoughts[h].{hurt}.{hurt_member})), arrayEnumerate({held}), tk_hurt_at)",
-                hurt = missile::thought::HURT,
-            ),
+        let moved = format!(
+            "arrayMap((k, h) -> {cast}(if(h = 0, {held}[k], \
+             tk_thoughts[h].{hurt}.{hurt_member})), arrayEnumerate({held}), tk_hurt_at)",
+            hurt = missile::thought::HURT,
         );
+        bind(&format!("now_{column}"), append_drops(column, &moved));
     }
     // `m_flags`, `m_state` and `m_tics` a hit reaches take the hurt
     // answer's own; the thrower's own slot takes its thinker's, and
     // nothing else moves.
-    bind(
-        "now_m_tics",
-        format!(
-            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{tics}, \
-             h != 0, tk_thoughts[h].{hurt}.{hurt_tics}, {held}[k])), \
-             arrayEnumerate({held}), tk_at, tk_hurt_at)",
-            held = s("m_tics"),
-            tics = missile::thought::TICS,
-            hurt = missile::thought::HURT,
-            hurt_tics = inter::hurt::TICS,
-        ),
+    let moved = format!(
+        "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{tics}, \
+         h != 0, tk_thoughts[h].{hurt}.{hurt_tics}, {held}[k])), \
+         arrayEnumerate({held}), tk_at, tk_hurt_at)",
+        held = s("m_tics"),
+        tics = missile::thought::TICS,
+        hurt = missile::thought::HURT,
+        hurt_tics = inter::hurt::TICS,
     );
-    bind(
-        "now_m_flags",
-        format!(
-            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{flags}, \
-             h != 0, tk_thoughts[h].{hurt}.{hurt_flags}, {held}[k])), \
-             arrayEnumerate({held}), tk_at, tk_hurt_at)",
-            held = s("m_flags"),
-            flags = missile::thought::FLAGS,
-            hurt = missile::thought::HURT,
-            hurt_flags = inter::hurt::FLAGS,
-        ),
+    bind("now_m_tics", append_drops("m_tics", &moved));
+    let moved = format!(
+        "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{flags}, \
+         h != 0, tk_thoughts[h].{hurt}.{hurt_flags}, {held}[k])), \
+         arrayEnumerate({held}), tk_at, tk_hurt_at)",
+        held = s("m_flags"),
+        flags = missile::thought::FLAGS,
+        hurt = missile::thought::HURT,
+        hurt_flags = inter::hurt::FLAGS,
     );
-    bind(
-        "now_m_state",
-        format!(
-            "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{state}, \
-             h != 0, tk_thoughts[h].{hurt}.{hurt_state}, {held}[k])), \
-             arrayEnumerate({held}), tk_at, tk_hurt_at)",
-            held = s("m_state"),
-            state = missile::thought::STATE,
-            hurt = missile::thought::HURT,
-            hurt_state = inter::hurt::STATE,
-        ),
+    bind("now_m_flags", append_drops("m_flags", &moved));
+    let moved = format!(
+        "arrayMap((k, i, h) -> toInt32(multiIf(i != 0, tk_thoughts[i].{state}, \
+         h != 0, tk_thoughts[h].{hurt}.{hurt_state}, {held}[k])), \
+         arrayEnumerate({held}), tk_at, tk_hurt_at)",
+        held = s("m_state"),
+        state = missile::thought::STATE,
+        hurt = missile::thought::HURT,
+        hurt_state = inter::hurt::STATE,
     );
+    bind("now_m_state", append_drops("m_state", &moved));
     // The state cycle moves the picture; a hit reaches no sprite or frame
-    // of its own, matching the claw's damage fold.
+    // of its own, matching the claw's damage fold. A drop's own sprite and
+    // frame come from its own spawn state, through `append_drops`.
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         let held = s(column);
-        bind(
-            &format!("now_{column}"),
-            format!(
-                "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {table}[1 + now_m_state[k]])), \
-                 arrayEnumerate({held}), tk_at)"
-            ),
+        let moved = format!(
+            "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {table}[1 + now_m_state[k]])), \
+             arrayEnumerate({held}), tk_at)"
         );
+        bind(&format!("now_{column}"), append_drops(column, &moved));
     }
 
+    // Every mobj column this stage does not otherwise move still grows by
+    // whatever `tk_drops` carries, the same way `removed` appends a
+    // fireball or a claw's own drop.
+    const HANDLED: [&str; 18] = [
+        "m_x",
+        "m_y",
+        "m_z",
+        "m_floorz",
+        "m_ceilingz",
+        "m_subsector",
+        "m_momx",
+        "m_momy",
+        "m_momz",
+        "m_health",
+        "m_reactiontime",
+        "m_target",
+        "m_threshold",
+        "m_tics",
+        "m_flags",
+        "m_state",
+        "m_sprite",
+        "m_frame",
+    ];
+    for column in super::state_columns() {
+        if !column.starts_with("m_") || column == "m_id" || HANDLED.contains(&column) {
+            continue;
+        }
+        let held = s(column);
+        bind(&format!("now_{column}"), append_drops(column, &held));
+    }
+    bind(
+        "now_m_id",
+        "arrayMap(n -> toUInt32(n), arrayEnumerate(now_m_x))".to_owned(),
+    );
+    for column in ["next_seq", "next_linkseq"] {
+        bind(
+            &format!("now_{column}"),
+            format!("toUInt32({} + length(tk_drops))", s(column)),
+        );
+    }
+    // `t.{draws}` already carries a drop's own lastlook draw, the same way
+    // a claw's own reserved total does, so nothing further is added here
+    // for `tk_drops`.
     bind(
         "now_prndindex",
         format!(
@@ -3681,6 +3748,10 @@ pub mod spawning {
     /// How many numbers the tic drew before this spawn's own.
     pub const BASE: usize = 5;
 }
+
+/// The ClickHouse type of a [`spawning`] ask, for a caller that carries a
+/// list of them through a fold.
+pub const SPAWN_ASK_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, UInt32)";
 
 /// Where each field of a debris ask sits in its tuple.
 ///

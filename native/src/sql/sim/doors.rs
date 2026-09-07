@@ -27,6 +27,16 @@ const TICRATE: i64 = 35;
 /// `m_fixed.h`
 const FRACUNIT: i64 = 1 << 16;
 
+/// The height a door opens to: the lowest of the sector's own two-sided
+/// neighbors' ceilings, four map units short of it.
+pub fn topheight(sector: &str, ceilingheight: &str) -> String {
+    format!(
+        "toInt64({}) - {}",
+        plane::lowest_ceiling_surrounding(sector, ceilingheight),
+        4 * FRACUNIT
+    )
+}
+
 /// Where each part of a door's tic sits in the answer.
 pub mod ran {
     /// The direction the door is left going.

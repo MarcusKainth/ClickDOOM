@@ -2684,6 +2684,12 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
     let clipped = |kept: usize, when: &str, from: usize| {
         format!("toInt64(if({when}, {}, {}))", held(from), held(kept))
     };
+    // Only the player's own crossing ever reaches a door special, so this
+    // move's own dispatch list is wider than a monster's.
+    let dispatch_specials: Vec<i64> = specials::PLAT_TRIGGER_SPECIALS
+        .into_iter()
+        .chain(specials::DOOR_TRIGGER_SPECIALS)
+        .collect();
     let members = [
         keep(moving::X, "st_tryx".to_owned()),
         keep(moving::Y, "st_tryy".to_owned()),
@@ -2733,7 +2739,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
         // line whose side flips between the step's start point and the
         // point it lands at; a line the move's box only brushed keeps its
         // side. `P_CrossSpecialLine`'s own switch decides what runs;
-        // `cross_plats` already runs the specials `unhandled_crossable`
+        // `cross_dispatch` already runs the specials `unhandled_crossable`
         // takes out, so a step that crosses one of those does not mark
         // this. A step that crosses any other one it names keeps the mark
         // rather than losing it to the step after it. A line the switch
@@ -2762,7 +2768,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
                 "st_tryy",
                 &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
                 world.line_special,
-                &specials::PLAT_TRIGGER_SPECIALS,
+                &dispatch_specials,
             ),
         ),
         format!(
@@ -2775,7 +2781,7 @@ pub fn xy_movement(mover: &Mover<'_>, world: &World<'_>, pickups: &Pickups<'_>) 
                 "st_tryy",
                 &format!("arrayFirst(a -> 1, st_answers).{}", answer::SPECHIT),
                 world.line_special,
-                &specials::PLAT_TRIGGER_SPECIALS,
+                &dispatch_specials,
             ),
         ),
     ];
@@ -3393,14 +3399,12 @@ mod tests {
         );
         assert!(sql.contains(&old_side), "{sql}");
         assert!(sql.contains(&format!(").{}))))", answer::SPECHIT)), "{sql}");
-        // Only a line `P_CrossSpecialLine`'s own switch names can mark the
-        // move crossed; the reach test runs on top of that, not instead
-        // of it.
+        // Only a line `P_CrossSpecialLine`'s own switch names, and
+        // `cross_dispatch` does not already run, can mark the move
+        // crossed; the reach test runs on top of that, not instead of it.
+        let unhandled = specials::unhandled_crossable(&specials::CROSSABLE_SPECIALS);
         assert!(
-            sql.contains(&format!(
-                "w_special[1 + l] IN ({}",
-                specials::CROSSABLE_SPECIALS[0]
-            )),
+            sql.contains(&format!("w_special[1 + l] IN ({}", unhandled[0])),
             "{sql}"
         );
     }

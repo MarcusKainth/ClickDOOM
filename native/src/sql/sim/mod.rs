@@ -154,12 +154,13 @@ pub mod unresolved {
     /// A missile already in flight's own thinker hits an unwritten path.
     pub const MISSILE_STUCK: u64 = 1 << 31;
     /// `P_TryMove`'s own spechit walk crosses more than one line
-    /// `PLAT_TRIGGER_SPECIALS` names in the same move. `cross_plats` only
-    /// carries the first such line a move crosses, so a second one a tic
-    /// would otherwise spawn is a tic this does not run rather than one
-    /// that silently drops it.
+    /// `PLAT_TRIGGER_SPECIALS` or `DOOR_TRIGGER_SPECIALS` names in the same
+    /// move. `cross_dispatch` only carries the first such line a move
+    /// crosses, so a second one a tic would otherwise spawn is a tic this
+    /// does not run rather than one that silently drops it.
     pub const PX_MULTI_CROSSED: u64 = 1 << 32;
-    /// The same, for a monster's own move.
+    /// The same, for a monster's own move. A monster's own crossing never
+    /// reaches a door special, so only `PLAT_TRIGGER_SPECIALS` applies.
     pub const TX_MULTI_CROSSED: u64 = 1 << 33;
 }
 

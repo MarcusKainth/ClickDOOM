@@ -23,6 +23,7 @@ pub mod patch;
 
 pub mod attacks;
 pub mod damage;
+pub mod door;
 pub mod lights;
 pub mod missile;
 pub mod mobj;

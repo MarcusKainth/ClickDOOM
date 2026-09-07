@@ -14,6 +14,7 @@
 #![cfg(feature = "clickhouse-tests")]
 
 use clickdoom_native::sql::sim;
+use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::{load, sql, wad::Wad};
 use clickhouse::Row;
 use serde::Deserialize;
@@ -68,11 +69,12 @@ async fn run() -> (Listed, Listed) {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
+    support::resident::run(&fixture, &walk, false).await;
 
     let put = |column: &'static str, at: usize, value: String| {
         (

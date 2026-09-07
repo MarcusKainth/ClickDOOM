@@ -32,6 +32,8 @@ pub mod noise;
 pub mod plat;
 #[cfg(feature = "clickhouse-tests")]
 pub mod probe;
+#[cfg(feature = "clickhouse-tests")]
+pub mod resident;
 pub mod seed;
 pub mod shoot;
 pub mod sight;

@@ -48,6 +48,20 @@ pub fn client(database: &str) -> Client {
         .with_database(database)
 }
 
+/// The same server, as the endpoint a resident statement opens against.
+pub fn endpoint(database: &str) -> clickdoom_native::resident::Endpoint {
+    clickdoom_native::resident::Endpoint {
+        host: env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "localhost".to_owned()),
+        port: env::var("CLICKHOUSE_HTTP_PORT")
+            .ok()
+            .and_then(|port| port.parse().ok())
+            .unwrap_or(8123),
+        user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_owned()),
+        database: database.to_owned(),
+        password: env::var("CLICKHOUSE_PASSWORD").ok(),
+    }
+}
+
 /// A private database, dropped when the test ends.
 pub struct Fixture {
     pub database: String,

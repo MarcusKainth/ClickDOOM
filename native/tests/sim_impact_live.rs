@@ -16,6 +16,7 @@
 //! server visibly excludes them.
 #![cfg(feature = "clickhouse-tests")]
 
+use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::sql::sim::{self, map, missile};
 use clickdoom_native::{load, sql, tables, wad::Wad};
 use clickhouse::Row;
@@ -520,11 +521,12 @@ async fn a_missile_that_went_off_runs_out_its_death_frames() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, BEFORE));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
+    support::resident::run(&fixture, &walk, false).await;
 
     // The chain `P_ExplodeMissile` leaves the thing at the top of, and how
     // long it takes to run out.
@@ -574,11 +576,8 @@ async fn a_missile_that_went_off_runs_out_its_death_frames() {
         panic!("{error}");
     }
     let last = SEED_TIC + 1 + waits as u32;
-    let run = sim::tick::demo_statement(&db, SEED_TIC + 1, last);
-    if let Err(error) = fixture.execute(&run).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    let run: Vec<Input> = (SEED_TIC + 1..=last).map(Input::demo).collect();
+    support::resident::run(&fixture, &run, false).await;
 
     // The seeded thing is followed by its type, not by the slot it stands
     // in: a removal anywhere below it moves it down, and `m_id` holds the

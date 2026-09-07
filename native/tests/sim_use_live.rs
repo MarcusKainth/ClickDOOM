@@ -133,18 +133,18 @@ async fn a_press_of_a_switch_line_spawns_the_plat_and_flips_the_picture() {
             ),
         ),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + SWITCH_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    statements.extend(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + SWITCH_TICS)
+        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let side0: i32 = fixture
         .scalar(&format!(
@@ -281,18 +281,18 @@ async fn a_press_of_a_locked_door_without_its_key_only_leaves_the_message() {
         put("m_floorz", format!("toInt32({LOCKED_FLOORZ})")),
         put("m_ceilingz", format!("toInt32({LOCKED_CEILINGZ})")),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    statements.extend(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
+        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let expect: u64 = fixture
         .scalar("SELECT xxHash64('You need a yellow key to open this door')")
@@ -378,18 +378,18 @@ async fn a_press_of_a_locked_door_with_its_key_opens_it() {
             ),
         ),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    statements.extend(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
+        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let rows: Vec<Opened> = fixture
         .rows(&format!(

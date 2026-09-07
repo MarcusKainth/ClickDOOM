@@ -116,18 +116,18 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
         put("m_floorz", format!("toInt32({CROSS_FLOORZ})")),
         put("m_ceilingz", format!("toInt32({CROSS_CEILINGZ})")),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
         .into_iter()
         .map(sql::Statement::sql)
         .collect();
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    statements.extend(sim::tick::run_statement(&db, &inputs));
-    if let Err(error) = fixture.execute(&statements).await {
+    if let Err(error) = fixture.execute(&seeded).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
 
     let rows: Vec<Crossed> = fixture
         .rows(&format!(

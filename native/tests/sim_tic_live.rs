@@ -11,6 +11,7 @@
 #![cfg(feature = "clickhouse-tests")]
 
 use clickdoom_native::sql::sim;
+use clickdoom_native::sql::sim::tick::Input;
 use clickdoom_native::{load, sql, tables, wad::Wad};
 use clickhouse::Row;
 use serde::Deserialize;
@@ -47,11 +48,12 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, TICS));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
+    let walk: Vec<Input> = (1..=TICS).map(Input::demo).collect();
+    support::resident::run(&fixture, &walk, false).await;
 
     let rows: Vec<Tic> = fixture
         .rows(&format!(
@@ -121,10 +123,8 @@ async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
     assert_eq!(taken.p_message, 0, "the player's hand is emptied");
 
     // The counter runs down, and the widget goes off when it hits zero.
-    fixture
-        .execute(&sim::tick::demo_statement(db, 102, 101 + MSGTIMEOUT as u32))
-        .await
-        .unwrap();
+    let run: Vec<Input> = (102..=101 + MSGTIMEOUT as u32).map(Input::demo).collect();
+    support::resident::run(fixture, &run, false).await;
     let running = read(102).await;
     assert_eq!(running.hu_message_counter, MSGTIMEOUT - 1);
     assert_eq!(running.hu_message_on, 1);

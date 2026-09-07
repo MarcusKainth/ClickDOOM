@@ -264,6 +264,132 @@ async fn a_crossing_of_the_tagged_line_spawns_the_plat_ev_do_plat_spawns() {
     assert!(want.reached_bottom, "the run reaches the bottom");
 }
 
+#[derive(Row, Deserialize)]
+struct CrossedOneShot {
+    tic: u32,
+    slot: u32,
+    floor: i32,
+    status: i32,
+    count: i32,
+    special: i16,
+    unresolved: u64,
+}
+
+/// The same crossing of line 396 as the WR test above, with the line's own
+/// special set to 10 (`downWaitUpStay`, W1) rather than the map's own 88.
+/// `EV_DoPlat` spawns the same plat either way; what only a W1 line does is
+/// clear its own special once it spawns one, and a dispatch filter reading
+/// `line_special` by its own bare name resolves to whatever that same
+/// clearing already left the line at, so the crossing that clears its own
+/// trigger never finds itself in the list dispatched from.
+#[tokio::test]
+async fn a_crossing_of_a_one_shot_line_spawns_the_plat_and_clears_the_line() {
+    let bytes = support::doom1();
+    let wad = Wad::parse(&bytes).unwrap();
+    let fixture = Fixture::create("sim_plat_oneshot").await;
+    let db = fixture.database.clone();
+
+    let mut plan = load::plan(&db, &wad);
+    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
+    plan.extend(sim::load_statements(&db));
+    plan.push(sim::tick::demo_statement(&db, 1, 1));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    fn put(column: &'static str, value: String) -> (&'static str, String) {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> if(k = p.p_mo, {value}, v), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    }
+    let overrides = [
+        put("m_x", format!("toInt32({CROSS_OLD_X})")),
+        put("m_y", format!("toInt32({CROSS_OLD_Y})")),
+        put("m_momx", format!("toInt32({CROSS_MOMX})")),
+        put("m_momy", format!("toInt32({CROSS_MOMY})")),
+        put("m_z", format!("toInt32({CROSS_FLOORZ})")),
+        put("m_floorz", format!("toInt32({CROSS_FLOORZ})")),
+        put("m_ceilingz", format!("toInt32({CROSS_CEILINGZ})")),
+        (
+            "line_special",
+            "arrayMap((v, i) -> toInt16(if(i = 397, 10, v)), \
+             p.line_special, arrayEnumerate(p.line_special))"
+                .to_owned(),
+        ),
+    ];
+    let mut statements: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+        .into_iter()
+        .map(sql::Statement::sql)
+        .collect();
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    statements.push(sim::tick::run_statement(&db, &inputs));
+    if let Err(error) = fixture.execute(&statements).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    let rows: Vec<CrossedOneShot> = fixture
+        .rows(&format!(
+            "SELECT tic, \
+             arrayFirstIndex((k, t) -> k = {PLAT} AND t = 1, s_kind, s_tag) AS slot, \
+             sec_floorheight[{sector}] AS floor, \
+             if(slot = 0, -1, s_status[slot]) AS status, \
+             if(slot = 0, -1, s_count[slot]) AS count, \
+             line_special[397] AS special, \
+             unresolved \
+             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
+            PLAT = sector_thinker_kind::PLAT,
+            sector = CROSSED_SECTOR + 1,
+        ))
+        .await;
+    fixture.finish().await;
+
+    assert_eq!(rows.len(), CROSS_TICS as usize, "every tic ran");
+    let crossed_bits = sim::unresolved::PX_CROSSED | sim::unresolved::TX_CROSSED;
+    for row in &rows {
+        assert_eq!(
+            row.unresolved & crossed_bits,
+            0,
+            "tic {} left a crossing unresolved",
+            row.tic
+        );
+    }
+    let spawned = rows
+        .iter()
+        .find(|row| row.slot != 0)
+        .unwrap_or_else(|| panic!("no tic after the crossing spawns the plat"));
+    assert_eq!(
+        spawned.special, 0,
+        "the spawn tic clears the line's own one-shot special"
+    );
+
+    let mut want = plat::Plat::down_wait_up_stay(CROSSED_HIGH, CROSSED_LOW);
+    let first = want.tic();
+    assert_eq!(
+        (spawned.floor, spawned.status, spawned.count),
+        (first.floorheight, first.status, first.count),
+        "the spawn tic's own first move"
+    );
+    for row in rows.iter().filter(|row| row.tic > spawned.tic) {
+        let step = want.tic();
+        assert_eq!(
+            (row.floor, row.status, row.count),
+            (step.floorheight, step.status, step.count),
+            "tic {}",
+            row.tic
+        );
+        assert_eq!(row.special, 0, "tic {}: the line stays cleared", row.tic);
+    }
+    assert!(want.reached_bottom, "the run reaches the bottom");
+}
+
 /// `p_spec.h`: how long a switch stays pressed.
 const BUTTONTIME: i32 = 35;
 

@@ -741,12 +741,23 @@ pub fn hitscan(
     )
 }
 
-/// The ClickHouse type of a [`gunned`] tuple, which the fold's empty list
+/// The ClickHouse type of a [`gunned`] tuple, which an empty list of them
 /// has to carry.
-fn gunned_type() -> String {
+pub(crate) fn gunned_type() -> String {
     format!(
         "Tuple(UInt32, Int32, Int32, Array({}), Array(Int32), Array(UInt32), Array(UInt32), \
          UInt32, UInt8)",
+        shoot::REACHED_TYPE,
+    )
+}
+
+/// A [`gunned`] tuple for a slot that never fired: no turn, no shot, no
+/// draw.
+pub(crate) fn no_gunshot() -> String {
+    format!(
+        "(toUInt32(0), toInt32(0), toInt32(0), CAST([], 'Array({})'), \
+         CAST([], 'Array(Int32)'), CAST([], 'Array(UInt32)'), CAST([], 'Array(UInt32)'), \
+         toUInt32(0), toUInt8(0))",
         shoot::REACHED_TYPE,
     )
 }

@@ -1,7 +1,9 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
-use super::{State, attacks, enemy, inter, maputl, mask, missile, sight, specials, unresolved};
+use super::{
+    State, attacks, enemy, inter, maputl, mask, missile, shoot, sight, specials, unresolved,
+};
 use crate::sql::Statement;
 use crate::sql::bind;
 use crate::sql::fixed;
@@ -28,10 +30,14 @@ const SK_NIGHTMARE: i64 = 4;
 /// `p_local.h`: how far a punch reaches, which is the range a puff sparks
 /// on the wall at.
 const MELEERANGE: i64 = 64 << 16;
+/// `p_local.h`: how far a gunshot reaches, which is any range a puff's own
+/// spawn asks for other than a punch's.
+const MISSILERANGE: i64 = 32 * 64 * (1 << 16);
 
 /// `p_mobj.h`
 const MF_SHOOTABLE: i64 = 4;
 const MF_AMBUSH: i64 = 32;
+const MF_NOBLOOD: i64 = 0x8_0000;
 const MF_NOGRAVITY: i64 = 512;
 const MF_FLOAT: i64 = 0x4000;
 const MF_MISSILE: i64 = 0x1_0000;
@@ -322,10 +328,30 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         format!(
             "arrayFilter((k, c, n, t) -> c = 1 AND n != 0 AND t != 0 \
              AND (state_action[1 + n] = a_troopattack \
-             OR state_action[1 + n] = a_sargattack), \
+             OR state_action[1 + n] = a_sargattack \
+             OR state_action[1 + n] = a_posattack \
+             OR state_action[1 + n] = a_sposattack), \
              mt_slots, mt_cycles, mt_next, {})",
             s("m_target")
         ),
+    );
+    // The melee routines among `mt_attackers`, which `attack_fold`'s claw
+    // math and its draw count both read: `A_PosAttack` and `A_SPosAttack`
+    // carry their own primitive and their own draw count instead.
+    bind(
+        "at_melee",
+        "arrayFilter(k -> state_action[1 + mt_next[k]] = a_troopattack \
+         OR state_action[1 + mt_next[k]] = a_sargattack, mt_attackers)"
+            .to_owned(),
+    );
+    // The gun routines among `mt_attackers`. A shot's own draws depend on
+    // what it reaches, so `enemy::chase`'s own fold runs them, not a pure
+    // count here.
+    bind(
+        "at_gun",
+        "arrayFilter(k -> state_action[1 + mt_next[k]] = a_posattack \
+         OR state_action[1 + mt_next[k]] = a_sposattack, mt_attackers)"
+            .to_owned(),
     );
     let pairs = |slot: &str, other: &dyn Fn(&str) -> String| {
         sight::asking(
@@ -556,7 +582,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     bind(
         "mt_attacker_draws_asks",
         "arrayMap(k -> (toUInt32(k), toInt32(state_action[1 + mt_next[k]]), \
-         toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), toUInt32(0)), mt_attackers)"
+         toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), toUInt32(0)), at_melee)"
             .to_owned(),
     );
     bind(
@@ -569,8 +595,8 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     );
     bind(
         "mt_attack_draws",
-        "arrayMap(k -> toUInt32(if(indexOf(mt_attackers, k) = 0, 0, \
-         mt_attacker_draws[indexOf(mt_attackers, k)])), mt_slots)"
+        "arrayMap(k -> toUInt32(if(indexOf(at_melee, k) = 0, 0, \
+         mt_attacker_draws[indexOf(at_melee, k)])), mt_slots)"
             .to_owned(),
     );
     // `A_Scream` draws for the sound a thing makes as it dies, the same
@@ -695,6 +721,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         movers: "mt_movers",
         entries: "mt_entries",
         shouts: "mt_pure_draws",
+        gun_attackers: "at_gun",
         m_x: "tx_m_x",
         m_y: "tx_m_y",
         m_z: "tz_m_z",
@@ -715,7 +742,38 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         sees_target: "mt_sees_target",
         prndindex: &s("prndindex"),
     };
-    for (name, expr) in enemy::chase(&chasing, &world) {
+    // A gun attacker's own facing and flags read the same values a melee
+    // attacker's do (`strikes`'s own `world`): nothing before this stage
+    // moves it, so the tic-start columns stand.
+    let gun_world = attacks::Attacking {
+        m_x: &s("m_x"),
+        m_y: &s("m_y"),
+        m_z: "tz_m_z",
+        m_angle: &s("m_angle"),
+        m_height: &s("m_height"),
+        m_flags: &s("m_flags"),
+        m_type: &s("m_type"),
+        m_health: &s("m_health"),
+        m_target: "mk_m_target",
+        prndindex: &s("prndindex"),
+    };
+    // The rest of the world, for the trace a shot walks: the same
+    // reading `map::World` above takes at this same stage, widened with
+    // the height and the sector columns the walk also needs.
+    let gun_targets = shoot::Targets {
+        m_x: "tx_m_x",
+        m_y: "tx_m_y",
+        m_z: "tz_m_z",
+        m_radius: &s("m_radius"),
+        m_height: &s("m_height"),
+        m_flags: &s("m_flags"),
+        m_linkseq: &s("m_linkseq"),
+        alive: "mt_alive",
+        floorheight: &s("sec_floorheight"),
+        ceilingheight: &s("sec_ceilingheight"),
+        line_special: &s("line_special"),
+    };
+    for (name, expr) in enemy::chase(&chasing, &world, &gun_world, &gun_targets, &draws_hurting) {
         bind(&name, expr);
     }
     // What the chase left, put back where the mover stands, as one value
@@ -780,7 +838,12 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     for (_, member, cast, array) in &held {
         standing[member - 1] = format!("{cast}({array}[k])");
     }
-    standing[enemy::chased::DRAWS - 1] = "toUInt32(0)".to_owned();
+    // A gun attacker draws for what its own shots reach; nothing else
+    // that reaches no chase draws anything here.
+    standing[enemy::chased::DRAWS - 1] = format!(
+        "toUInt32(if(indexOf(at_gun, k) = 0, 0, cw_gunned[indexOf(at_gun, k)].{}))",
+        attacks::gunned::DRAWS
+    );
     standing[enemy::chased::STUCK - 1] = "toUInt8(0)".to_owned();
     // A thing no chase reaches attacks nothing and keeps its flags.
     standing[enemy::chased::STATE - 1] = "toInt32(-1)".to_owned();
@@ -843,21 +906,37 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     for (name, expr) in strikes(state, &world) {
         bind(&name, expr);
     }
+    // Each attacker's own angle and flags, by its position in
+    // `mt_attackers`: the melee fold's one answer at the melee attacker's
+    // own slot, the chase fold's own gun answer at a gun attacker's, and
+    // the chase's own answer, unchanged, everywhere else (there is
+    // nowhere else, since `mt_attackers` is exactly the union of the two).
     bind(
-        "mk_m_angle",
+        "at_answers",
         format!(
-            "arrayMap((k, v) -> toUInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
-             mt_slots, cq_m_angle)",
-            attacks::attacked::ANGLE
+            "arrayMap(k -> multiIf(k = at_one AND at_one != 0, \
+             (toUInt32(at_struck.{ang}), toInt32(at_struck.{fl})), \
+             indexOf(at_gun, k) != 0, \
+             (toUInt32(cw_gunned[indexOf(at_gun, k)].{gang}), \
+             toInt32(cw_gunned[indexOf(at_gun, k)].{gfl})), \
+             (cq_m_angle[k], cq_m_flags[k])), mt_attackers)",
+            ang = attacks::attacked::ANGLE,
+            fl = attacks::attacked::FLAGS,
+            gang = attacks::gunned::ANGLE,
+            gfl = attacks::gunned::FLAGS,
         ),
     );
     bind(
+        "mk_m_angle",
+        "arrayMap((k, v) -> toUInt32(if(indexOf(mt_attackers, k) != 0, \
+         at_answers[indexOf(mt_attackers, k)].1, v)), mt_slots, cq_m_angle)"
+            .to_owned(),
+    );
+    bind(
         "mk_m_flags",
-        format!(
-            "arrayMap((k, v) -> toInt32(if(k = at_one AND at_one != 0, at_struck.{}, v)), \
-             mt_slots, cq_m_flags)",
-            attacks::attacked::FLAGS
-        ),
+        "arrayMap((k, v) -> toInt32(if(indexOf(mt_attackers, k) != 0, \
+         at_answers[indexOf(mt_attackers, k)].2, v)), mt_slots, cq_m_flags)"
+            .to_owned(),
     );
     // A missile already on the list runs its own thinker in full, in
     // slot order with the other movers, over what the chase and the
@@ -1086,8 +1165,12 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             held
         };
         // `P_AddThinker` puts a new thing on the end of the list, so a
-        // fireball the tic threw goes behind what survived the compaction.
-        let born = match missile::born_column(column, "t") {
+        // fireball the tic threw and the puffs and the blood its own
+        // shots left go behind what survived the compaction, thrown
+        // things first. `AT_THROW_GUNS` refuses the one tic this stage
+        // could throw a fireball and fire a gun in, so their relative
+        // order between the two never has to be decided.
+        let thrown = match missile::born_column(column, "t") {
             Some(value) => {
                 let value = if POINTERS.contains(&column) {
                     moved_slot(&value)
@@ -1101,9 +1184,26 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
                 s("next_linkseq")
             ),
         };
+        let debris = match born_column(column, "t") {
+            Some(value) => {
+                let value = if POINTERS.contains(&column) {
+                    moved_slot(&value)
+                } else {
+                    value
+                };
+                format!("arrayMap(t -> {value}, mt_debris)")
+            }
+            None => format!(
+                "arrayMap((t, i) -> toUInt32({} + length(mt_thrown) + i - 1), \
+                 mt_debris, arrayEnumerate(mt_debris))",
+                s("next_linkseq")
+            ),
+        };
         bind(
             &format!("now_{column}"),
-            format!("arrayConcat(arrayFilter((v, a) -> a = 1, {held}, mt_kept), {born})"),
+            format!(
+                "arrayConcat(arrayFilter((v, a) -> a = 1, {held}, mt_kept), {thrown}, {debris})"
+            ),
         );
     }
     bind(
@@ -1120,11 +1220,15 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
     );
     bind("now_p_attacker", moved_slot(&s("p_attacker")));
     bind("now_p_mo", format!("toUInt32(mt_slot[{player}])"));
-    // Every thing the tic threw took one of each counter.
+    // Every thing the tic threw or spawned as debris took one of each
+    // counter.
     for column in ["next_seq", "next_linkseq"] {
         bind(
             &format!("now_{column}"),
-            format!("toUInt32({} + length(mt_thrown))", s(column)),
+            format!(
+                "toUInt32({} + length(mt_thrown) + length(mt_debris))",
+                s(column)
+            ),
         );
     }
     bindings
@@ -1208,17 +1312,17 @@ const POINTERS: [&str; 2] = ["m_target", "m_tracer"];
 /// rather than mapped, so a tic that reaches neither runs neither body.
 ///
 /// Three cases say the tic could not be produced: more than one thing
-/// reaching a routine, because the second would draw from an index the
-/// first moves; the fireball, which wants a missile spawned; and a claw
+/// reaching a melee routine, because the second would draw from an index
+/// the first moves; the fireball, which wants a missile spawned; and a claw
 /// that kills, which owes the kill count and whatever the corpse drops.
 fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let mut bindings: Vec<(String, String)> = Vec::new();
     let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
 
-    // One ask per attacker: the slot, the routine its frame carries, the
-    // sight `P_CheckMeleeRange` needs, and how many numbers the tic drew
-    // before it.
+    // One ask per melee attacker: the slot, the routine its frame carries,
+    // the sight `P_CheckMeleeRange` needs, and how many numbers the tic
+    // drew before it.
     bind(
         "at_asks",
         format!(
@@ -1226,7 +1330,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
              toUInt8(mt_attack_seen[indexOf(mt_attackers, k)]), \
              toUInt32(arraySum(arraySlice(mt_pure_draws, 1, k - 1)) \
              + arraySum(arrayMap(c -> toUInt32(c.{}), arraySlice(cw_slot, 1, k))))), \
-             mt_attackers)",
+             at_melee)",
             enemy::chased::DRAWS
         ),
     );
@@ -1243,11 +1347,12 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         prndindex: &s("prndindex"),
     };
     bind("at_struck", attacks::attack_fold("at_asks", &world));
-    // The one attacker a tic carries and what it drew before its own call.
-    // A tic reaching more than one is refused below and reads neither.
+    // The one melee attacker a tic carries and what it drew before its own
+    // call. A tic reaching more than one is refused below and reads
+    // neither.
     bind(
         "at_one",
-        "toUInt32(if(length(mt_attackers) = 1, mt_attackers[1], 0))".to_owned(),
+        "toUInt32(if(length(at_melee) = 1, at_melee[1], 0))".to_owned(),
     );
     bind(
         "at_base",
@@ -1263,13 +1368,41 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
     // up a call of its own, because the routine is among the largest
     // things the statement carries and every copy costs a tic that hurts
     // nothing.
+    //
+    // One ask list per attacker in `mt_attackers`, flattened: the melee
+    // attacker's own claw where it lands, a gun attacker's own shot per
+    // shot that reached a thing, and an empty list for whichever of the
+    // two an attacker is not.
+    bind(
+        "at_hurt_asks",
+        format!(
+            "arrayMap(k -> if(k = at_one AND at_one != 0 AND at_struck.{clawed} = 1, \
+             [{claw}], CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32)))), \
+             mt_attackers)",
+            clawed = attacks::attacked::CLAWED,
+            claw = attacks::claw_ask("at_struck", "greatest(at_one, 1)", "mk_m_target", "at_base"),
+        ),
+    );
+    bind(
+        "at_gun_hurt_asks",
+        format!(
+            "arrayMap(k -> if(indexOf(at_gun, k) = 0, \
+             CAST([] AS Array(Tuple(UInt32, UInt32, UInt32, Int32, UInt32))), \
+             arrayMap(z -> (toUInt32(z.1.{gid}), toUInt32(k), toUInt32(k), z.2, z.3), \
+             arrayFilter(z -> toUInt8(z.1.{gkind}) = 2, arrayZip( \
+             cw_gunned[indexOf(at_gun, k)].{shots}, cw_gunned[indexOf(at_gun, k)].{damage}, \
+             cw_gunned[indexOf(at_gun, k)].{hurt_base})))), mt_attackers)",
+            gid = shoot::reached::ID,
+            gkind = shoot::reached::KIND,
+            shots = attacks::gunned::SHOTS,
+            damage = attacks::gunned::DAMAGE,
+            hurt_base = attacks::gunned::HURT_BASE,
+        ),
+    );
     bind(
         "mt_hurt_asks",
-        format!(
-            "arraySlice([{}], 1, at_struck.{})",
-            attacks::claw_ask("at_struck", "greatest(at_one, 1)", "mk_m_target", "at_base"),
-            attacks::attacked::CLAWED,
-        ),
+        "arrayFlatten(arrayMap((m, g) -> arrayConcat(m, g), at_hurt_asks, at_gun_hurt_asks))"
+            .to_owned(),
     );
     // The target as the stage has left it so far. `m_health` and
     // `m_height` have no writer ahead of this one, so they stand as the
@@ -1328,6 +1461,37 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         missile::spawn_fold("mt_throw_asks", &throwing, &spawning, map),
     );
 
+    // `P_SpawnPuff` and `P_SpawnBlood` for a gun attacker's own shots, one
+    // ask per shot that reached a wall or a thing, in attacker-then-shot
+    // order. `spawn_debris`'s own `born` tuples join `mt_thrown`'s at the
+    // end of the mobj list, behind it: this stage never runs both a
+    // fireball throw and a gun attacker in the same tic (`AT_THROW_GUNS`
+    // below), so their relative order there never has to be decided.
+    bind(
+        "at_gun_debris_asks",
+        format!(
+            "arrayFlatten(arrayMap(k -> if(indexOf(at_gun, k) = 0, \
+             CAST([] AS Array(Tuple(UInt8, Int32, Int32, Int32, Int32, Int32, UInt32))), \
+             arrayMap(z -> (toUInt8(toUInt8(z.1.{gkind}) = 2 \
+             AND bitAnd({flags}[toInt32(z.1.{gid})], {MF_NOBLOOD}) = 0), \
+             toInt32(z.1.{gx}), toInt32(z.1.{gy}), toInt32(z.1.{gz}), z.2, \
+             toInt32({MISSILERANGE}), toUInt32(z.3)), \
+             arrayFilter(z -> toUInt8(z.1.{gkind}) != 0, arrayZip( \
+             cw_gunned[indexOf(at_gun, k)].{shots}, cw_gunned[indexOf(at_gun, k)].{damage}, \
+             cw_gunned[indexOf(at_gun, k)].{spawn_base})))), mt_attackers))",
+            gkind = shoot::reached::KIND,
+            gid = shoot::reached::ID,
+            gx = shoot::reached::X,
+            gy = shoot::reached::Y,
+            gz = shoot::reached::Z,
+            flags = s("m_flags"),
+            shots = attacks::gunned::SHOTS,
+            damage = attacks::gunned::DAMAGE,
+            spawn_base = attacks::gunned::SPAWN_BASE,
+        ),
+    );
+    bind("mt_debris", spawn_debris("at_gun_debris_asks", &spawning));
+
     bind(
         "at_clawed",
         format!("toUInt8(at_struck.{})", attacks::attacked::CLAWED),
@@ -1341,7 +1505,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
         mask(
             "toUInt64(0)",
             &[
-                (unresolved::AT_ATTACKERS, "length(mt_attackers) > 1"),
+                (unresolved::AT_ATTACKERS, "length(at_melee) > 1"),
                 (
                     unresolved::AT_ROUTINE_STUCK,
                     &format!("at_struck.{} = 1", attacks::attacked::STUCK),
@@ -1363,6 +1527,20 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
                     &format!(
                         "arrayExists(t -> t.{} = 1, mt_thrown)",
                         missile::thrown::STUCK
+                    ),
+                ),
+                (
+                    unresolved::GN_STUCK,
+                    &format!(
+                        "arrayExists(g -> g.{} = 1, cw_gunned)",
+                        attacks::gunned::STUCK
+                    ),
+                ),
+                (
+                    unresolved::AT_THROW_GUNS,
+                    &format!(
+                        "at_struck.{} = 1 AND length(at_gun) > 0",
+                        attacks::attacked::THROWS
                     ),
                 ),
             ],
@@ -1615,6 +1793,8 @@ fn entry_one(slot: &str, state: &State) -> String {
              AND state_action[1 + n] != a_facetarget \
              AND state_action[1 + n] != a_troopattack \
              AND state_action[1 + n] != a_sargattack \
+             AND state_action[1 + n] != a_posattack \
+             AND state_action[1 + n] != a_sposattack \
              AND state_action[1 + n] != a_pain \
              AND state_action[1 + n] != a_xscream \
              AND state_action[1 + n] != a_scream \

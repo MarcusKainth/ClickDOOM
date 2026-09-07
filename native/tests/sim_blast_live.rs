@@ -309,10 +309,11 @@ struct Arrays {
     m_threshold: String,
     m_player: String,
     zero: String,
+    sec_special: String,
 }
 
 impl Arrays {
-    fn of(mobjs: &[Mobj], standing: &[Standing], subsector: &[i64]) -> Arrays {
+    fn of(mobjs: &[Mobj], standing: &[Standing], subsector: &[i64], db: &str) -> Arrays {
         let of =
             |get: &dyn Fn(usize) -> i64| literal(&(0..mobjs.len()).map(get).collect::<Vec<_>>());
         Arrays {
@@ -333,6 +334,10 @@ impl Arrays {
             m_threshold: of(&|at| mobjs[at].threshold),
             m_player: of(&|at| mobjs[at].player),
             zero: of(&|_| 0),
+            // No ask here ever targets the player, so the sector this
+            // hits never reads: the level's own real sector table keeps
+            // the lookup in bounds regardless.
+            sec_special: format!("(SELECT sec_special FROM {db}.native_state WHERE tic = 0)"),
         }
     }
 
@@ -369,8 +374,12 @@ impl Arrays {
             m_target: &self.m_target,
             m_threshold: &self.m_threshold,
             m_player: &self.m_player,
+            m_subsector: &self.m_subsector,
             prndindex,
             readyweapon: "0",
+            p_cheats: "0",
+            p_powers: "[0, 0, 0, 0, 0, 0]",
+            sec_special: &self.sec_special,
         }
     }
 }
@@ -440,7 +449,7 @@ async fn ask_server(
     prnd: i64,
     base: i64,
 ) -> (Vec<Bomb>, i64) {
-    let arrays = Arrays::of(mobjs, standing, subsector);
+    let arrays = Arrays::of(mobjs, standing, subsector, db);
     let prndindex = prnd.to_string();
     let hurting = arrays.hurting(&prndindex);
     let source = mobjs[spot - 1].target;

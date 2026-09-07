@@ -557,8 +557,12 @@ impl Arrays {
             m_target: &self.m_target,
             m_threshold: &self.m_threshold,
             m_player: &self.m_player,
+            m_subsector: &self.zero,
             prndindex,
             readyweapon: "0",
+            p_cheats: "0",
+            p_powers: "[0, 0, 0, 0, 0, 0]",
+            sec_special: "[0]",
         }
     }
 }

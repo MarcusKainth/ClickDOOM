@@ -842,28 +842,49 @@ fn clamp(mom: &str) -> String {
 }
 
 /// The ClickHouse type of a [`thought`] tuple, for a caller that carries a
-/// list of them through a fold.
-pub const THOUGHT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
-                                Int32, Int32, Int32, Int32, UInt32, Tuple(Int32, Int32, Int32, \
-                                Int32, Int32, Int32, Int32, Int32, Int32, UInt32, Int32, UInt8, \
-                                UInt8, Int32, UInt32, UInt8), UInt32, UInt8)";
+/// list of them through a fold. Its own [`thought::HURT`] member is
+/// [`inter::HURT_TYPE`], named once rather than spelled twice so the two
+/// cannot drift apart.
+pub fn thought_type() -> String {
+    format!(
+        "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
+         Int32, UInt32, {}, UInt32, UInt8)",
+        inter::HURT_TYPE
+    )
+}
 
 /// The mobj arrays a missile already on the list reads for its own move,
 /// its own fall and its own state cycle, plus what a thing it damages
 /// reads. `slot` names which mobj in these `flying` and `hurting` reads
 /// the missile itself, over the same arrays a caller driving anything
 /// else's move already holds.
+///
+/// The player's own health, armour, damagecount and attacker thread
+/// through every missile the list carries, in order: each one's own
+/// `P_DamageMobj` reads what the missile before it left, the way
+/// [`inter::damage_fold`] threads them for a caller with only one ask.
+/// `start` is the tic's own player fields for the first list this runs
+/// over, or the previous list's own final fields for one chained after
+/// it; the fold's own final tuple carries them on for a caller to chain
+/// further still.
 pub fn thinks_fold(
     asks: &str,
+    start: &str,
     map: &World<'_>,
     flying: &Flying<'_>,
     hurting: &inter::Hurting<'_>,
 ) -> String {
     let (values, body) = thought_of(map, flying, hurting);
+    let step = bind::chain_in("tka", &values, &body);
+    let folded = bind::chain_in(
+        "tkb",
+        &[("tk_result".to_owned(), step)],
+        "(arrayPushBack(tk_held.1, tk_result.1), tk_result.2)",
+    );
     format!(
-        "arrayFold((tk_held, tk_ask) -> arrayPushBack(tk_held, {}), {asks}, \
-         CAST([] AS Array({THOUGHT_TYPE})))",
-        bind::chain_in("tka", &values, &body)
+        "arrayFold((tk_held, tk_ask) -> {folded}, {asks}, \
+         (CAST([] AS Array({})), {start}))",
+        thought_type()
     )
 }
 
@@ -1199,7 +1220,13 @@ fn thought_of(
             damage = struck::DAMAGE,
         ),
     );
-    value("mn_hurt", inter::damage_fold("mn_damage_asks", hurting));
+    // `tk_held.2` is what the missile before this one in the same list
+    // left the player's own fields at, or the tic's own row where this is
+    // the first.
+    value(
+        "mn_hurt",
+        inter::damage_fold("mn_damage_asks", "tk_held.2", hurting),
+    );
     value(
         "mn_hurt_target",
         format!(
@@ -1546,7 +1573,7 @@ fn thought_of(
         "mn_draws".to_owned(),
         "mn_stuck".to_owned(),
     ];
-    (values, format!("({})", members.join(", ")))
+    (values, format!("(({}), mn_hurt)", members.join(", ")))
 }
 
 #[cfg(test)]
@@ -1828,13 +1855,17 @@ mod tests {
             m_target: "m_target",
             m_threshold: "m_threshold",
             m_player: "m_player",
+            m_subsector: "m_subsector",
             prndindex: "prndindex",
             readyweapon: "readyweapon",
+            p_cheats: "p_cheats",
+            p_powers: "p_powers",
+            sec_special: "sec_special",
         }
     }
 
     fn thinks_sql() -> String {
-        thinks_fold("asks", &map(), &flying(), &hurting())
+        thinks_fold("asks", &inter::no_hurt(), &map(), &flying(), &hurting())
     }
 
     #[test]

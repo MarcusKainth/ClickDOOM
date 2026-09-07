@@ -965,8 +965,12 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
                 m_target: member(firing::TARGET),
                 m_threshold: member(firing::THRESHOLD),
                 m_player: "gs_m_player",
+                m_subsector: &s("m_subsector"),
                 prndindex: &prnd,
                 readyweapon: "now_p_readyweapon",
+                p_cheats: &s("p_cheats"),
+                p_powers: &s("p_powers"),
+                sec_special: &s("sec_special"),
             },
         ),
     );

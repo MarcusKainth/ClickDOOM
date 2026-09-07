@@ -857,6 +857,16 @@ const ANGLETOFINESHIFT: u32 = 19;
 /// to be knocked over, and the most damage that can do it.
 const FALL_HEIGHT: i64 = 64 * FRACUNIT;
 const FALL_DAMAGE: i64 = 40;
+/// `d_player.h`
+const CF_GODMODE: i64 = 2;
+/// `d_englsh.h`'s `skill_t`: `sk_baby`, one below the default `sk_medium`
+/// the demo header carries for `DEMO3`.
+const SK_BABY: i64 = 0;
+/// `p_inter.c`: below this, god mode and invulnerability stop the hit
+/// outright rather than reduce it.
+const GODMODE_DAMAGE_LIMIT: i64 = 1000;
+/// `p_inter.c`: a damage tint clamps at this many tics.
+const DAMAGECOUNT_LIMIT: i64 = 100;
 
 /// Where each field of a damage ask sits in its tuple.
 pub mod hurting {
@@ -897,20 +907,55 @@ pub mod hurt {
     pub const DRAWS: usize = 15;
     /// 1 where the call reached a path this does not write.
     pub const STUCK: usize = 16;
+    /// The player's own health where the target is the player, carried
+    /// through unchanged otherwise.
+    pub const PL_HEALTH: usize = 17;
+    pub const PL_ARMORPOINTS: usize = 18;
+    pub const PL_ARMORTYPE: usize = 19;
+    pub const PL_DAMAGECOUNT: usize = 20;
+    /// 0 for none, the same as [`hurting::SOURCE`].
+    pub const PL_ATTACKER: usize = 21;
+    /// 1 where the hit leaves the player's own health at 0 or below.
+    pub const PL_DIES: usize = 22;
+    /// 1 where the target's sector special is 11 and the damage reaches
+    /// the clamp that keeps a hit there from killing outright.
+    pub const PL_SECTOR11: usize = 23;
 }
 
 /// The ClickHouse type of a [`hurt`] tuple, for a caller that carries one
 /// through a fold or a wider tuple of its own.
 pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
-                             Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8)";
+                             Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8, Int32, \
+                             Int32, Int32, Int32, UInt32, UInt8, UInt8)";
 
 /// A call nobody made, for a caller that reads the first answer of a list
 /// that may be empty.
 pub fn no_hurt() -> String {
     "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
      toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
-     toUInt32(0), toUInt8(0))"
+     toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
+     toUInt8(0), toUInt8(0))"
         .to_owned()
+}
+
+/// The tic's own player fields, wrapped as a [`hurt`] tuple for the first
+/// [`damage_fold`] of the tic to start from: every other field the same as
+/// [`no_hurt`], since nothing but [`hurt::PL_HEALTH`] through
+/// [`hurt::PL_ATTACKER`] is ever read off a fold's own seed.
+pub fn player_start(
+    p_health: &str,
+    p_armorpoints: &str,
+    p_armortype: &str,
+    p_damagecount: &str,
+    p_attacker: &str,
+) -> String {
+    format!(
+        "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+         toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
+         toUInt32(0), toUInt8(0), toInt32({p_health}), toInt32({p_armorpoints}), \
+         toInt32({p_armortype}), toInt32({p_damagecount}), toUInt32({p_attacker}), toUInt8(0), \
+         toUInt8(0))"
+    )
 }
 
 /// The arrays a damage call reads.
@@ -931,10 +976,19 @@ pub struct Hurting<'a> {
     pub m_target: &'a str,
     pub m_threshold: &'a str,
     pub m_player: &'a str,
+    /// The sector each mobj's own subsector belongs to, for the sector 11
+    /// hack a hit into it reaches.
+    pub m_subsector: &'a str,
     pub prndindex: &'a str,
     /// The weapon in the player's hands, which is what decides whether a
     /// hit pushes its target.
     pub readyweapon: &'a str,
+    /// `player->cheats`, for `CF_GODMODE`.
+    pub p_cheats: &'a str,
+    /// `player->powers`, one-based, for `pw_invulnerability`.
+    pub p_powers: &'a str,
+    /// Each sector's own special, for the sector 11 hack.
+    pub sec_special: &'a str,
 }
 
 /// The engine tables a damage call reads that no other stage does.
@@ -980,10 +1034,12 @@ pub fn damage_constants(db: &str) -> Vec<(String, String)> {
 /// may knock it over. Both are decided before either number is read, so a
 /// caller making several calls knows the offset each one's draws sit at.
 ///
-/// A player target leaves the call stuck rather than guessed: the armour,
-/// the damage tint and the weapon it drops are the player's own columns.
+/// A player's own health, armour, damage tint and attacker do not thread
+/// here the way [`damage_fold`]'s own accumulator threads them: nothing
+/// this runs for asks the player itself, so [`no_hurt`] stands in for the
+/// player fields a body reads and never answers with.
 pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
-    let (values, body) = damaged(world);
+    let (values, body) = damaged(world, &no_hurt());
     format!(
         "arrayMap(dm_ask -> {}, {asks})",
         bind::chain_in("dma", &values, &body)
@@ -1035,11 +1091,39 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
             "dm_health".to_owned(),
             format!("toInt32({})", at(world.m_health)),
         ),
+        (
+            "dm_is_player".to_owned(),
+            format!("toUInt8({} != -1)", at(world.m_player)),
+        ),
+        // `damage >>= 1` on the baby skill, for a player target only, ahead
+        // of the thrust and everything after it, which all read the same
+        // local the engine does.
+        (
+            "dm_damage_now".to_owned(),
+            format!(
+                "toInt32(if(dm_is_player = 1 AND skill = {SK_BABY}, intDiv(dm_damage, 2), \
+                 dm_damage))"
+            ),
+        ),
+        // God mode and invulnerability return before anything else runs,
+        // under a damage this large.
+        (
+            "dm_immune".to_owned(),
+            format!(
+                "toUInt8(dm_is_player = 1 AND dm_damage_now < {GODMODE_DAMAGE_LIMIT} \
+                 AND (bitAnd({}, {CF_GODMODE}) != 0 OR {}[{PW_INVULNERABILITY}] != 0))",
+                world.p_cheats, world.p_powers,
+            ),
+        ),
         // The two early returns: a thing that cannot be shot, and one
-        // already dead, take nothing and draw nothing.
+        // already dead, take nothing and draw nothing. A player's own god
+        // mode or invulnerability is the same kind of return.
         (
             "dm_lands".to_owned(),
-            format!("toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0)"),
+            format!(
+                "toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0 \
+                 AND dm_immune = 0)"
+            ),
         ),
         // The push. A call with no inflictor pushes nothing, and a
         // chainsaw in the source's hands holds its target in reach.
@@ -1057,7 +1141,8 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
         (
             "dm_may_fall".to_owned(),
             format!(
-                "toUInt8(dm_pushes = 1 AND dm_damage < {FALL_DAMAGE} AND dm_damage > dm_health \
+                "toUInt8(dm_pushes = 1 AND dm_damage_now < {FALL_DAMAGE} \
+                 AND dm_damage_now > dm_health \
                  AND toInt64({}) - toInt64({}) > {FALL_HEIGHT})",
                 at(world.m_z),
                 from(world.m_z),
@@ -1072,20 +1157,27 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
 /// A map runs every function in its body once even on an empty list, and
 /// this body is the whole routine. A fold runs its body only where the
 /// list has an element, so a caller with nothing to hurt pays for the fold
-/// and nothing under it. The answer is the last ask in the list, and
-/// [`no_hurt`] is what an empty one gives.
-pub fn damage_fold(asks: &str, world: &Hurting<'_>) -> String {
-    let (values, body) = damaged(world);
+/// and nothing under it. The answer is the last ask in the list.
+///
+/// `start` is what an empty list answers with, and what the one ask an
+/// asks list carries reads its own player fields from: the engine applies
+/// several hits to the player in the order their own thinkers run, each
+/// reading what the one before it left, so a caller chaining several
+/// `damage_fold` calls in one tic passes the previous call's own answer
+/// rather than [`no_hurt`].
+pub fn damage_fold(asks: &str, start: &str, world: &Hurting<'_>) -> String {
+    let (values, body) = damaged(world, "dm_held");
     format!(
-        "arrayFold((dm_held, dm_ask) -> {}, {asks}, {})",
+        "arrayFold((dm_held, dm_ask) -> {}, {asks}, {start})",
         bind::chain_in("dma", &values, &body),
-        no_hurt(),
     )
 }
 
 /// What one call works out, as the values a body reads and the [`hurt`]
-/// tuple it answers with.
-fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
+/// tuple it answers with. `player` is where the ask's own player fields
+/// stand before this call, `dm_held` under [`damage_fold`]'s own fold and
+/// [`no_hurt`] where nothing threads them.
+fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String) {
     let a = |field: usize| format!("dm_ask.{field}");
     let at = |array: &str| format!("{array}[dm_target]");
     let from = |array: &str| format!("{array}[dm_inflictor]");
@@ -1112,7 +1204,7 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
     value(
         "dm_thrust",
         format!(
-            "toInt32(intDiv(dm_damage * {} * 100, {}))",
+            "toInt32(intDiv(dm_damage_now * {} * 100, {}))",
             FRACUNIT >> 3,
             info("mobj_mass")
         ),
@@ -1170,11 +1262,66 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
         "dm_momy",
         along(super::maputl::finesine("dm_fine"), "dm_momy_held"),
     );
-    // The damage, and the death it may cause.
-    value("dm_left", "toInt32(dm_health - dm_damage)".to_owned());
+    // `target->subsector->sector->special == 11`'s own clamp keeps a hit
+    // there from killing outright. This does not compute it: the tic
+    // leaves stuck below instead, where the damage reaches it.
+    value(
+        "dm_sector",
+        format!(
+            "toUInt32(1 + ssec_sector[1 + toUInt32({})])",
+            at(world.m_subsector)
+        ),
+    );
+    value(
+        "dm_sector11",
+        format!(
+            "toUInt8(dm_is_player = 1 AND {}[dm_sector] = 11 AND dm_damage_now >= dm_health)",
+            world.sec_special
+        ),
+    );
+    // The armour, ahead of the health both it and the mobj's own share:
+    // `player->armortype == 1` saves a third, `2` saves a half, and armour
+    // that cannot cover the save is spent and taken off.
+    value(
+        "dm_armortype_in",
+        format!("toInt32({player}.{})", hurt::PL_ARMORTYPE),
+    );
+    value(
+        "dm_armorpoints_in",
+        format!("toInt32({player}.{})", hurt::PL_ARMORPOINTS),
+    );
+    value(
+        "dm_saved",
+        "toInt32(if(dm_is_player = 1 AND dm_armortype_in != 0, \
+         intDiv(dm_damage_now, if(dm_armortype_in = 1, 3, 2)), 0))"
+            .to_owned(),
+    );
+    value(
+        "dm_saved_clamped",
+        "toInt32(least(dm_saved, dm_armorpoints_in))".to_owned(),
+    );
+    // The damage, and the death it may cause. A player target's own
+    // health and the mobj's own share the same armour-reduced number, the
+    // way `target->health -= damage` reads the local the player block
+    // above it already changed.
+    value(
+        "dm_damage_final",
+        "toInt32(if(dm_is_player = 1, dm_damage_now - dm_saved_clamped, dm_damage_now))".to_owned(),
+    );
+    value("dm_left", "toInt32(dm_health - dm_damage_final)".to_owned());
     value(
         "dm_killed",
         "toUInt8(dm_lands = 1 AND dm_left <= 0)".to_owned(),
+    );
+    value(
+        "dm_player_dies",
+        "toUInt8(dm_is_player = 1 AND dm_killed = 1)".to_owned(),
+    );
+    // A living player actually takes this hit: not immune, not a miss,
+    // and not the death this leaves stuck instead of guessing at.
+    value(
+        "dm_player_hit",
+        "toUInt8(dm_lands = 1 AND dm_is_player = 1 AND dm_player_dies = 0)".to_owned(),
     );
     // The second draw sits behind the fall's, where one was made.
     let second = format!(
@@ -1223,7 +1370,7 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
     value(
         "dm_chases",
         format!(
-            "toUInt8(dm_lands = 1 AND dm_killed = 0 \
+            "toUInt8(dm_lands = 1 AND dm_killed = 0 AND dm_is_player = 0 \
              AND ({} = 0 OR dm_type = mt_vile) \
              AND dm_source != 0 AND dm_source != dm_target AND {} != mt_vile)",
             at(world.m_threshold),
@@ -1276,23 +1423,21 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
             held = at(world.m_tics),
         ),
     );
-    // A player target leaves the call stuck: the armour it wears, the tint
-    // it takes and the weapon it drops are the player's own columns.
     // `P_SetMobjState` runs the routine the frame it enters carries.
     // `A_Pain` and `A_Scream` only make a noise; any other leaves the call
     // stuck rather than guessed, which is what an `A_Chase` on a see frame
-    // and an `A_Explode` on a barrel's death frame do.
+    // and an `A_Explode` on a barrel's death frame do. The player's own
+    // death is the same kind of stuck: `P_KillMobj`'s player branch is not
+    // written here.
     value(
         "dm_routine",
         "toInt32(if(dm_moves = 1, state_action[1 + dm_state], 0))".to_owned(),
     );
     value(
         "dm_stuck",
-        format!(
-            "toUInt8(dm_lands = 1 AND ({} != -1 \
-             OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))",
-            at(world.m_player)
-        ),
+        "toUInt8(dm_lands = 1 AND (dm_player_dies = 1 OR dm_sector11 = 1 \
+         OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))"
+            .to_owned(),
     );
     let members = [
         "toInt32(if(dm_lands = 1, dm_left, dm_health))".to_owned(),
@@ -1327,6 +1472,34 @@ fn damaged(world: &Hurting<'_>) -> (Vec<(String, String)>, String) {
         "toInt32(if(dm_killed = 1, dm_drop, -1))".to_owned(),
         "toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))".to_owned(),
         "toUInt8(dm_stuck)".to_owned(),
+        format!(
+            "toInt32(if(dm_player_hit = 1, greatest(toInt32({player}.{}) - dm_damage_final, 0), \
+             {player}.{}))",
+            hurt::PL_HEALTH,
+            hurt::PL_HEALTH,
+        ),
+        format!(
+            "toInt32(if(dm_player_hit = 1, dm_armorpoints_in - dm_saved_clamped, {player}.{}))",
+            hurt::PL_ARMORPOINTS,
+        ),
+        format!(
+            "toInt32(if(dm_player_hit = 1, \
+             if(dm_armortype_in != 0 AND dm_armorpoints_in <= dm_saved, 0, dm_armortype_in), \
+             {player}.{}))",
+            hurt::PL_ARMORTYPE,
+        ),
+        format!(
+            "toInt32(if(dm_player_hit = 1, \
+             least(toInt32({player}.{}) + dm_damage_final, {DAMAGECOUNT_LIMIT}), {player}.{}))",
+            hurt::PL_DAMAGECOUNT,
+            hurt::PL_DAMAGECOUNT,
+        ),
+        format!(
+            "toUInt32(if(dm_player_hit = 1, dm_source, {player}.{}))",
+            hurt::PL_ATTACKER,
+        ),
+        "toUInt8(dm_player_dies)".to_owned(),
+        "toUInt8(dm_sector11)".to_owned(),
     ];
     (values, format!("({})", members.join(", ")))
 }
@@ -1353,8 +1526,12 @@ mod damage_tests {
             m_target: "m_target",
             m_threshold: "m_threshold",
             m_player: "m_player",
+            m_subsector: "m_subsector",
             prndindex: "prndindex",
             readyweapon: "readyweapon",
+            p_cheats: "p_cheats",
+            p_powers: "p_powers",
+            sec_special: "sec_special",
         }
     }
 
@@ -1363,7 +1540,7 @@ mod damage_tests {
     /// draw after it in the tic sits behind that count.
     #[test]
     fn a_call_draws_by_where_it_lands_and_whether_it_may_fell() {
-        let (_, body) = damaged(&world());
+        let (_, body) = damaged(&world(), "dm_held");
         assert!(
             body.contains("toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))"),
             "{body}"
@@ -1374,7 +1551,7 @@ mod damage_tests {
     /// the chainsaw test and the chase read the source.
     #[test]
     fn the_push_reads_the_inflictor_and_the_credit_reads_the_source() {
-        let (values, _) = damaged(&world());
+        let (values, _) = damaged(&world(), "dm_held");
         let named = |name: &str| {
             values
                 .iter()
@@ -1395,17 +1572,19 @@ mod damage_tests {
         assert!(!chases.contains("dm_inflictor"), "{chases}");
     }
 
-    /// A player target leaves the call stuck rather than guessed, because
-    /// the armour, the tint and the dropped weapon are the player's own
-    /// columns.
+    /// A hit that would kill the player leaves the call stuck rather than
+    /// guessed, because `P_KillMobj`'s player branch is not written here.
+    /// A living player's own hit is not: its armour, health, attacker and
+    /// damage tint are the fields threaded through `player`.
     #[test]
-    fn a_player_target_leaves_the_call_stuck() {
-        let (values, _) = damaged(&world());
+    fn a_hit_that_would_kill_the_player_leaves_the_call_stuck() {
+        let (values, _) = damaged(&world(), "dm_held");
         let stuck = values
             .iter()
             .find(|(name, _)| name == "dm_stuck")
             .expect("the call names what leaves it stuck");
-        assert!(stuck.1.contains("m_player[dm_target] != -1"), "{stuck:?}");
+        assert!(stuck.1.contains("dm_player_dies = 1"), "{stuck:?}");
+        assert!(stuck.1.contains("dm_sector11 = 1"), "{stuck:?}");
     }
 
     /// The routine reads no thing type it names by hand out of the

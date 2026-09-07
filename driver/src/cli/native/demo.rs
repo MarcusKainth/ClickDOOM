@@ -166,7 +166,10 @@ async fn run_probe(cmd: &DemoCmd) -> Result<Exit, Failure> {
 async fn run_sim(cmd: &DemoCmd) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
     let db = cmd.conn.connect();
-    if let Some(mismatch) = schema::check_hash(&db, database).await {
+    if let Some(mismatch) = schema::check_hash(&db, database)
+        .await
+        .map_err(|err| failed(err.to_string()))?
+    {
         return Err(failed(mismatch.to_string()));
     }
     // A demo run always plays from the level's own first state row, the

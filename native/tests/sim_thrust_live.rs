@@ -281,7 +281,7 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
             .into_iter()
             .map(sql::Statement::sql),
     );
-    statements.push(sim::tick::run_statement(
+    statements.extend(sim::tick::run_statement(
         &db,
         &[Input::keys(CROWD_AT + 1, 0, (0, 0))],
     ));

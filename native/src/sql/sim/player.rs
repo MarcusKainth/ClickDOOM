@@ -578,6 +578,10 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
         ("mv_lefty".to_owned(), held(mobj::moving::MOMY)),
         ("pk_alive".to_owned(), held(mobj::moving::ALIVE)),
         ("px_crossed".to_owned(), held(mobj::moving::CROSSED)),
+        (
+            "px_crossed_line".to_owned(),
+            held(mobj::moving::CROSSED_LINE),
+        ),
     ];
     bindings.extend(mobj::friction(
         "mv_leftx",

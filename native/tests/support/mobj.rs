@@ -34,6 +34,7 @@ pub struct Born {
     pub reactiontime: i64,
     pub momz: i64,
     pub draws: i64,
+    pub dropped: bool,
 }
 
 /// One `P_SpawnPuff` or `P_SpawnBlood` call.
@@ -117,6 +118,7 @@ impl World {
             },
             momz: 0,
             draws: 1,
+            dropped: false,
         }
     }
 

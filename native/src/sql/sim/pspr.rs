@@ -80,6 +80,15 @@ mod held {
     /// What the light routines have left, which the status bar and the
     /// renderer read as the flash's brightness.
     pub const EXTRALIGHT: usize = 15;
+    /// `player->refire`: how many tics running `A_ReFire` has fired again
+    /// on, read by `A_FirePistol` and `A_FireCGun` for their own accuracy.
+    /// Held here rather than read straight from the state row because a
+    /// tic that redirects from `A_ReFire` into one of them reads the
+    /// count `A_ReFire`'s own entry just left, not the tic's starting one.
+    pub const REFIRE: usize = 16;
+    /// Whether an entry ran `A_Punch`, which [`punch`] reads outside this
+    /// fold to know whether to run at all.
+    pub const PUNCHED: usize = 17;
 }
 
 /// The constants the sprites read: the weapon table and the action
@@ -101,6 +110,9 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         ("a_raise".to_owned(), action("A_Raise")),
         ("a_firepistol".to_owned(), action("A_FirePistol")),
         ("a_fireshotgun".to_owned(), action("A_FireShotgun")),
+        ("a_firecgun".to_owned(), action("A_FireCGun")),
+        ("a_refire".to_owned(), action("A_ReFire")),
+        ("a_punch".to_owned(), action("A_Punch")),
         ("a_light0".to_owned(), action("A_Light0")),
         ("a_light1".to_owned(), action("A_Light1")),
         ("a_light2".to_owned(), action("A_Light2")),
@@ -253,34 +265,71 @@ pub fn move_psprites(
             ammo = s("p_ammo")
         ),
     );
+    // `A_ReFire` fires again on its own, without `A_WeaponReady`'s change
+    // and missile/BFG checks: held trigger, no weapon change pending, and
+    // alive.
+    value(
+        "psp_refire_fires",
+        format!(
+            "toUInt8(psp_action = a_refire AND psp_attack_held = 1 \
+             AND {p} = {WP_NOCHANGE} AND {h} != 0)",
+            p = w(held::PENDINGWEAPON),
+            h = s("p_health")
+        ),
+    );
     value(
         "psp_fires",
-        "toUInt8(psp_ready_fires = 1 AND psp_has_ammo = 1)".to_owned(),
+        "toUInt8((psp_ready_fires = 1 OR psp_refire_fires = 1) AND psp_has_ammo = 1)".to_owned(),
     );
-    // `A_FireShotgun` sends seven shots down the barrel and `A_FirePistol`
-    // one, which goes where the weapon points unless the trigger was held.
-    // Both spend a round and put the flash sprite in the weapon's own
-    // flash frame.
+    // `A_FireShotgun` sends seven shots down the barrel, `A_FirePistol`
+    // one and `A_FireCGun` one, which go where the weapon points unless
+    // the trigger was held. Each spends a round and puts the flash sprite
+    // in the weapon's own flash frame, but the chaingun's own two firing
+    // frames share one action and only the first is behind `P_CheckAmmo`,
+    // so its second shot returns without any of that where the clip ran
+    // out in between.
+    value(
+        "psp_cgun_has_ammo",
+        format!(
+            "toUInt8({ammo}[1 + weapon_ammo[1 + {r}]] != 0)",
+            r = w(held::READYWEAPON),
+            ammo = s("p_ammo")
+        ),
+    );
     value(
         "psp_fires_shots",
-        "toUInt8(psp_action = a_fireshotgun OR psp_action = a_firepistol)".to_owned(),
+        "toUInt8(psp_action = a_fireshotgun OR psp_action = a_firepistol \
+         OR (psp_action = a_firecgun AND psp_cgun_has_ammo = 1))"
+            .to_owned(),
     );
     value(
         "psp_shot_count",
-        "toUInt32(multiIf(psp_action = a_fireshotgun, 7, psp_action = a_firepistol, 1, 0))"
+        "toUInt32(multiIf(psp_action = a_fireshotgun, 7, \
+         psp_action = a_firepistol OR psp_action = a_firecgun, 1, 0))"
             .to_owned(),
     );
     value(
         "psp_shot_accurate",
         format!(
-            "toUInt8(psp_action = a_firepistol AND {} = 0)",
-            s("p_refire")
+            "toUInt8((psp_action = a_firepistol OR psp_action = a_firecgun) AND {} = 0)",
+            w(held::REFIRE)
         ),
     );
+    // The pistol and the shotgun each fire from one state, one past their
+    // own `weapon_atkstate`, which carries no action of its own, so the
+    // flash they enter is `weapon_flashstate` outright. The chaingun's own
+    // atkstate carries `A_FireCGun` itself, and its second firing frame
+    // runs the same routine again, so the offset between whichever this
+    // entered and `weapon_atkstate` carries over to the flash frame the
+    // same way.
     value(
         "psp_flash_entered",
         format!(
-            "toInt32(if(psp_fires_shots = 1, weapon_flashstate[1 + {r}], {NO_STATE}))",
+            "toInt32(multiIf(\
+             psp_action = a_firecgun AND psp_cgun_has_ammo = 1, \
+             weapon_flashstate[1 + {r}] + (psp_entering - weapon_atkstate[1 + {r}]), \
+             psp_fires_shots = 1, weapon_flashstate[1 + {r}], \
+             {NO_STATE}))",
             r = w(held::READYWEAPON)
         ),
     );
@@ -338,8 +387,11 @@ pub fn move_psprites(
              (psp_action != 0 AND psp_action != a_weaponready \
              AND psp_action != a_lower AND psp_action != a_raise \
              AND psp_action != a_light0 AND psp_action != a_light1 \
-             AND psp_action != a_light2 AND psp_fires_shots = 0) \
-             OR (psp_ready_fires = 1 AND psp_has_ammo = 0) \
+             AND psp_action != a_light2 AND psp_action != a_refire \
+             AND psp_action != a_punch AND psp_action != a_firecgun \
+             AND psp_fires_shots = 0) \
+             OR ((psp_ready_fires = 1 OR psp_refire_fires = 1) AND psp_has_ammo = 0) \
+             OR (psp_action = a_refire AND psp_refire_fires = 0 AND psp_has_ammo = 0) \
              OR (psp_fires_shots = 1 AND (psp_flash_entered = 0 \
              OR (state_action[1 + psp_flash_entered] != a_light0 \
              AND state_action[1 + psp_flash_entered] != a_light1 \
@@ -424,6 +476,14 @@ pub fn move_psprites(
         light("psp_flash_entered", &w(held::EXTRALIGHT)),
         light("greatest(psp_entering, 0)", &w(held::EXTRALIGHT)),
     );
+    // `A_ReFire` counts up while it keeps firing and drops back to 0 the
+    // tic it does not, whether that is because the trigger let go or
+    // because it ran `P_CheckAmmo` instead.
+    let refire_now = format!(
+        "toInt32(if(psp_action = a_refire, if(psp_refire_fires = 1, {held} + 1, 0), {held}))",
+        held = w(held::REFIRE)
+    );
+    let punched_now = format!("toUInt8(if(psp_action = a_punch, 1, {}))", w(held::PUNCHED));
     let members = [
         put(w(held::STATE), &state_now),
         put(w(held::TICS), &tics_now),
@@ -440,6 +500,8 @@ pub fn move_psprites(
         accurate_now,
         flash_now,
         extralight_now,
+        refire_now,
+        punched_now,
     ];
     let body = format!("if(psp_runs = 0, psp_at, ({}))", members.join(", "));
 
@@ -454,13 +516,14 @@ pub fn move_psprites(
     let start = format!(
         "({}, {dropped}, {}, {}, toInt32({}), toInt32({pendingweapon}), toUInt8({}), \
          CAST([{NO_STATE}, {NO_STATE}], 'Array(Int32)'), toUInt8(0), toUInt8(0), toUInt8(0), \
-         toUInt32(0), toUInt8(0), toInt32({NO_STATE}), toInt32({}))",
+         toUInt32(0), toUInt8(0), toInt32({NO_STATE}), toInt32({}), toInt32({}), toUInt8(0))",
         s("psp_state"),
         s("psp_sx"),
         s("psp_sy"),
         s("p_readyweapon"),
         s("p_attackdown"),
         s("p_extralight"),
+        s("p_refire"),
     );
     // One step per entry each cycling sprite is given, in sprite order.
     // A sprite whose count did not run out contributes none, so a tic that
@@ -540,6 +603,14 @@ pub fn move_psprites(
         (
             "now_p_attackdown".to_owned(),
             format!("toUInt8({})", held(held::ATTACKDOWN)),
+        ),
+        (
+            "now_p_refire".to_owned(),
+            format!("toInt32({})", held(held::REFIRE)),
+        ),
+        (
+            "psp_punched".to_owned(),
+            format!("toUInt8({})", held(held::PUNCHED)),
         ),
         (
             "psp_unresolved".to_owned(),
@@ -1004,8 +1075,11 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         );
     }
     bind("gs_spawned", ran(firing::SPAWNED));
+    // Not `now_prndindex`: `punch` may run instead of a shot, in the same
+    // tic and the same stage, and it is the one that has the final say on
+    // where the tic's own draws left `prndindex`.
     bind(
-        "now_prndindex",
+        "gs_prndindex_next",
         format!(
             "toUInt8(bitAnd(toUInt32({}) + {}, 255))",
             s("prndindex"),
@@ -1021,8 +1095,9 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
             a = s("p_ammo")
         ),
     );
+    // Not `now_p_killcount`, for the same reason as `gs_prndindex_next`.
     bind(
-        "now_p_killcount",
+        "gs_p_killcount_next",
         format!("toInt32({} + {})", s("p_killcount"), ran(firing::KILLS)),
     );
     bind(
@@ -1032,6 +1107,333 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
             &[(unresolved::GS_STUCK, &format!("{} = 1", ran(firing::STUCK)))],
         ),
     );
+    bindings
+}
+
+// ---------------------------------------------------------------------------
+// The punch
+// ---------------------------------------------------------------------------
+
+/// `p_local.h`: how far a punch reaches.
+const MELEERANGE: i64 = 64 * FRACUNIT;
+/// `d_player.h`: `pw_strength`, one-based for `p_powers`.
+const PW_STRENGTH: usize = 2;
+
+/// Where each field of the punch fold's accumulator sits. The first eleven
+/// match [`firing`]'s own damage-moved columns; the rest are what only a
+/// punch leaves.
+mod punching {
+    pub const HEALTH: usize = 1;
+    pub const FLAGS: usize = 2;
+    pub const STATE: usize = 3;
+    pub const TICS: usize = 4;
+    pub const MOMX: usize = 5;
+    pub const MOMY: usize = 6;
+    pub const MOMZ: usize = 7;
+    pub const HEIGHT: usize = 8;
+    pub const TARGET: usize = 9;
+    pub const THRESHOLD: usize = 10;
+    pub const REACTIONTIME: usize = 11;
+    pub const SPAWNED: usize = 12;
+    pub const UNRESOLVED: usize = 13;
+    pub const PRNDINDEX: usize = 14;
+    pub const KILLCOUNT: usize = 15;
+    /// The player's own facing, turned to the punch's target where it
+    /// found one.
+    pub const ANGLE: usize = 16;
+    /// 1 where the punch reached a thing, which is what turns the angle.
+    pub const HIT: usize = 17;
+}
+
+/// `A_Punch`, over one entry when `move_psprites` says a step ran it and
+/// none when it did not, so a tic that does not punch pays for the list
+/// and not the swing.
+///
+/// One aim at `MELEERANGE`, then one attack at the slope it found:
+/// `P_AimLineAttack` answers a slope of its own even where it reaches
+/// nothing, so a punch has no fallback swing to retry the way a gun's
+/// three aiming tries cover for each other. A hit turns the player to
+/// face what it hit; a miss leaves the angle exactly where it stood.
+///
+/// `fire_shots` and this never run in the same tic, but the columns
+/// either can move are the same ones, so this reads what `fire_shots`
+/// left as its own starting point and is the one with the final say:
+/// `now_prndindex` and `now_p_killcount` are bound here rather than
+/// there, and [`super::player::writeback`] reads this fold's arrays
+/// rather than `fire_shots`'s.
+pub fn punch(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |name: &str, expr: String| bindings.push((name.to_owned(), expr));
+
+    let at = |field: usize| format!("pn_at.{field}");
+
+    let mut values: Vec<(String, String)> = Vec::new();
+    let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
+
+    let draw =
+        |nth: &str| format!("toInt64(rnd[1 + bitAnd(toUInt32(gs_prndindex_next) + {nth}, 255)])");
+    value("pn_damage_half", format!("toInt64({} % 10 + 1)", draw("1")));
+    value(
+        "pn_berserk",
+        format!("toUInt8({}[{PW_STRENGTH}] != 0)", s("p_powers")),
+    );
+    value(
+        "pn_damage",
+        "toInt32(if(pn_berserk = 1, (pn_damage_half * 2) * 10, pn_damage_half * 2))".to_owned(),
+    );
+    // `(P_Random()-P_Random())<<18`: the earlier draw is the left operand,
+    // confirmed from the ELF.
+    value(
+        "pn_angle",
+        format!(
+            "toUInt32(bitAnd(toUInt64(pl_new_angle) + \
+             toUInt64(bitAnd(bitShiftLeft({} - {}, {SPREADSHIFT}), {})), {}))",
+            draw("2"),
+            draw("3"),
+            ANGLE_WRAP - 1,
+            ANGLE_WRAP - 1,
+        ),
+    );
+    // One aim, unlike `P_BulletSlope`'s three tries: `P_AimLineAttack`
+    // leaves a slope of its own to fall back on, so there is nothing here
+    // for a second try to cover.
+    value(
+        "pn_aim",
+        format!(
+            "({})[1]",
+            shoot::traverse(
+                &format!(
+                    "[{}]",
+                    shoot::asking(
+                        "pl_slot",
+                        "pl_x",
+                        "pl_y",
+                        "pl_z",
+                        "pl_height",
+                        "pn_angle",
+                        &MELEERANGE.to_string()
+                    )
+                ),
+                &targets("gs_m_flags", "gs_m_height"),
+            )
+        ),
+    );
+    value(
+        "pn_slope",
+        format!("toInt32(pn_aim.{})", shoot::reached::SLOPE),
+    );
+    value(
+        "pn_attack",
+        format!(
+            "({})[1]",
+            shoot::traverse(
+                &format!(
+                    "[{}]",
+                    shoot::shooting(
+                        "pl_slot",
+                        "pl_x",
+                        "pl_y",
+                        "pl_z",
+                        "pl_height",
+                        "pn_angle",
+                        &MELEERANGE.to_string(),
+                        "pn_slope"
+                    )
+                ),
+                &targets("gs_m_flags", "gs_m_height"),
+            )
+        ),
+    );
+    value(
+        "pn_kind",
+        format!("toUInt8(pn_attack.{})", shoot::reached::KIND),
+    );
+    value(
+        "pn_id",
+        format!("toInt32(pn_attack.{})", shoot::reached::ID),
+    );
+    // `P_SpawnPuff` for a wall and for a thing that cannot bleed,
+    // `P_SpawnBlood` for one that can.
+    value(
+        "pn_blood",
+        format!("toUInt8(pn_kind = 2 AND bitAnd(gs_m_flags[pn_id], {MF_NOBLOOD}) = 0)"),
+    );
+    value(
+        "pn_born",
+        mobj::spawn_debris(
+            &format!(
+                "arraySlice([(pn_blood, toInt32(pn_attack.{}), toInt32(pn_attack.{}), \
+                 toInt32(pn_attack.{}), pn_damage, toInt32({MELEERANGE}), toUInt32(3))], \
+                 1, toUInt8(pn_kind != 0))",
+                shoot::reached::X,
+                shoot::reached::Y,
+                shoot::reached::Z,
+            ),
+            &mobj::Spawning {
+                floorheight: "gs_sec_floorheight",
+                ceilingheight: "gs_sec_ceilingheight",
+                prndindex: "gs_prndindex_next",
+                skill: "skill",
+            },
+        ),
+    );
+    value(
+        "pn_spawn_draws",
+        "toUInt32(if(pn_kind = 0, 0, 4))".to_owned(),
+    );
+    value(
+        "pn_hurt",
+        inter::damage_mobj(
+            "arraySlice([(toUInt32(pn_id), toUInt32(pl_slot), toUInt32(pl_slot), pn_damage, \
+             toUInt32(3 + pn_spawn_draws))], 1, toUInt8(pn_kind = 2))",
+            &inter::Hurting {
+                m_x: "gs_m_x",
+                m_y: "gs_m_y",
+                m_z: "gs_m_z",
+                m_momx: &at(punching::MOMX),
+                m_momy: &at(punching::MOMY),
+                m_momz: &at(punching::MOMZ),
+                m_reactiontime: &at(punching::REACTIONTIME),
+                m_type: "gs_m_type",
+                m_state: &at(punching::STATE),
+                m_tics: &at(punching::TICS),
+                m_flags: &at(punching::FLAGS),
+                m_health: &at(punching::HEALTH),
+                m_height: &at(punching::HEIGHT),
+                m_target: &at(punching::TARGET),
+                m_threshold: &at(punching::THRESHOLD),
+                m_player: "gs_m_player",
+                prndindex: "gs_prndindex_next",
+                readyweapon: "now_p_readyweapon",
+            },
+        ),
+    );
+    value(
+        "pn_hit",
+        format!(
+            "arrayFirst(v -> 1, arrayPushBack(pn_hurt, {}))",
+            inter::no_hurt()
+        ),
+    );
+    value(
+        "pn_draws_now",
+        format!(
+            "toUInt32(3 + pn_spawn_draws + toUInt32(pn_hit.{}))",
+            inter::hurt::DRAWS
+        ),
+    );
+    value(
+        "pn_stuck_now",
+        mask(
+            &at(punching::UNRESOLVED),
+            &[
+                (
+                    unresolved::DM_STUCK,
+                    &format!("pn_hit.{} = 1", inter::hurt::STUCK),
+                ),
+                (
+                    unresolved::GS_STUCK,
+                    &format!("notEmpty(pn_attack.{})", shoot::reached::SPECHIT),
+                ),
+            ],
+        ),
+    );
+    // `R_PointToAngle2` from the player to what the punch hit, only where
+    // it hit one.
+    value(
+        "pn_angle_now",
+        format!(
+            "toUInt32(if(pn_kind = 2, {}, {}))",
+            fixed::point_to_angle(
+                "toInt64(gs_m_x[pn_id]) - toInt64(pl_x)",
+                "toInt64(gs_m_y[pn_id]) - toInt64(pl_y)",
+                "tantoangle"
+            ),
+            at(punching::ANGLE)
+        ),
+    );
+
+    let hurt_into = |field: usize, member: usize, cast: &str| {
+        format!(
+            "arrayMap((v, k) -> {cast}(if(pn_kind = 2 AND k = pn_id, pn_hit.{member}, v)), \
+             {a}, arrayEnumerate({a}))",
+            a = at(field)
+        )
+    };
+    let members = [
+        hurt_into(punching::HEALTH, inter::hurt::HEALTH, "toInt32"),
+        hurt_into(punching::FLAGS, inter::hurt::FLAGS, "toInt32"),
+        hurt_into(punching::STATE, inter::hurt::STATE, "toInt32"),
+        hurt_into(punching::TICS, inter::hurt::TICS, "toInt32"),
+        hurt_into(punching::MOMX, inter::hurt::MOMX, "toInt32"),
+        hurt_into(punching::MOMY, inter::hurt::MOMY, "toInt32"),
+        hurt_into(punching::MOMZ, inter::hurt::MOMZ, "toInt32"),
+        hurt_into(punching::HEIGHT, inter::hurt::HEIGHT, "toInt32"),
+        hurt_into(punching::TARGET, inter::hurt::TARGET, "toUInt32"),
+        hurt_into(punching::THRESHOLD, inter::hurt::THRESHOLD, "toInt32"),
+        hurt_into(punching::REACTIONTIME, inter::hurt::REACTIONTIME, "toInt32"),
+        format!("arrayConcat({}, pn_born)", at(punching::SPAWNED)),
+        "pn_stuck_now".to_owned(),
+        format!(
+            "toUInt8(bitAnd(toUInt32({}) + pn_draws_now, 255))",
+            at(punching::PRNDINDEX)
+        ),
+        format!(
+            "toInt32({} + toInt32(pn_hit.{}))",
+            at(punching::KILLCOUNT),
+            inter::hurt::COUNTED
+        ),
+        "pn_angle_now".to_owned(),
+        "toUInt8(pn_kind = 2)".to_owned(),
+    ];
+    let start = "(gs_m_health, gs_m_flags, gs_m_state, gs_m_tics, gs_m_momx, gs_m_momy, \
+         gs_m_momz, gs_m_height, gs_m_target, gs_m_threshold, gs_m_reactiontime, gs_spawned, \
+         gs_unresolved, gs_prndindex_next, gs_p_killcount_next, toUInt32(pl_new_angle), \
+         toUInt8(0))"
+        .to_owned();
+    bind(
+        "pn_ran",
+        format!(
+            "arrayFold((pn_at, pn_x) -> {}, arraySlice([0], 1, toUInt8(psp_punched = 1)), {start})",
+            bind::chain_in("pna", &values, &format!("({})", members.join(", ")))
+        ),
+    );
+
+    let ran = |field: usize| format!("pn_ran.{field}");
+    for (column, field, cast) in [
+        ("m_health", punching::HEALTH, "toInt32"),
+        ("m_flags", punching::FLAGS, "toInt32"),
+        ("m_state", punching::STATE, "toInt32"),
+        ("m_tics", punching::TICS, "toInt32"),
+        ("m_momx", punching::MOMX, "toInt32"),
+        ("m_momy", punching::MOMY, "toInt32"),
+        ("m_momz", punching::MOMZ, "toInt32"),
+        ("m_height", punching::HEIGHT, "toInt32"),
+        ("m_target", punching::TARGET, "toUInt32"),
+        ("m_threshold", punching::THRESHOLD, "toInt32"),
+        ("m_reactiontime", punching::REACTIONTIME, "toInt32"),
+    ] {
+        bind(
+            &format!("pn_{column}"),
+            format!("arrayMap(v -> {cast}(v), {})", ran(field)),
+        );
+    }
+    bind("pn_spawned", ran(punching::SPAWNED));
+    bind("pn_unresolved", ran(punching::UNRESOLVED));
+    bind(
+        "now_prndindex",
+        format!("toUInt8({})", ran(punching::PRNDINDEX)),
+    );
+    bind(
+        "now_p_killcount",
+        format!("toInt32({})", ran(punching::KILLCOUNT)),
+    );
+    bind(
+        "psp_punch_angle",
+        format!("toUInt32({})", ran(punching::ANGLE)),
+    );
+    bind("psp_punch_hit", format!("toUInt8({})", ran(punching::HIT)));
     bindings
 }
 

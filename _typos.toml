@@ -22,6 +22,7 @@ VERTEXES = "VERTEXES"             # the WAD lump name, spelled that way in the f
 alph = "alph"                     # alphSwitchList, a DOOM engine table
 aprox = "aprox"                   # P_AproxDistance, a DOOM engine function
 PLAS = "PLAS"                     # SPR_PLAS, the plasma gun's sprite
+pn = "pn"                         # pspr.rs: A_Punch's own binding prefix
 
 [default]
 extend-ignore-re = [

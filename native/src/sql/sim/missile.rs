@@ -1054,9 +1054,15 @@ fn missile_draws(
         "mkd_hurt_draws".to_owned(),
         format!("arraySum({})", inter::draws("mkd_hurt_asks", hurting)),
     ));
+    // `P_ExplodeMissile` draws once for the tics its own death frame
+    // shortens by, wherever the walk set the missile off - the worst
+    // case reserves it whenever that is true, whether or not the touch
+    // it stopped on was one this damages, since the sky hack this does
+    // not model only ever draws less.
     let body = format!(
-        "toUInt32(mkd_hit.{draws} + mkd_hurt_draws)",
+        "toUInt32(mkd_hit.{draws} + mkd_hurt_draws + if(mkd_hit.{blocked} = 1, 1, 0))",
         draws = struck::DRAWS,
+        blocked = struck::BLOCKED,
     );
     (values, body)
 }
@@ -1773,6 +1779,22 @@ mod tests {
             "{sky:?}"
         );
         assert!(body.contains("toUInt32(if(ex_sky = 1, 0, 1))"), "{body}");
+    }
+
+    /// The worst case reserves the explosion's own draw wherever the walk
+    /// sets the missile off, not only where the touch it stopped on is
+    /// one this damages: `P_ExplodeMissile` draws whether or not
+    /// `PIT_CheckThing` found anything to hurt.
+    #[test]
+    fn the_worst_case_reserves_the_explosion_s_own_draw() {
+        let (_, body) = missile_draws(&map(), &flying(), &hurting());
+        assert!(
+            body.contains(&format!(
+                "mkd_hurt_draws + if(mkd_hit.{} = 1, 1, 0)",
+                struck::BLOCKED
+            )),
+            "{body}"
+        );
     }
 
     /// The explosion takes `MF_MISSILE` off, and leaves the flags alone

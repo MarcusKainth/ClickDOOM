@@ -77,6 +77,7 @@ struct Hit {
     unresolved: u64,
     missile_a_state: i32,
     missile_b_state: i32,
+    prndindex: u8,
 }
 
 #[tokio::test]
@@ -256,7 +257,7 @@ async fn two_fireballs_in_one_list_thread_a_zombieman_through_both() {
         .rows(&format!(
             "SELECT tic, m_health[{TARGET}] AS target_health, unresolved, \
              m_state[{MISSILE_A}] AS missile_a_state, \
-             m_state[{MISSILE_B}] AS missile_b_state \
+             m_state[{MISSILE_B}] AS missile_b_state, prndindex \
              FROM {db}.native_state WHERE tic IN ({at}, {}) ORDER BY tic",
             at + 1
         ))
@@ -286,5 +287,16 @@ async fn two_fireballs_in_one_list_thread_a_zombieman_through_both() {
     assert!(
         (6..=48).contains(&taken),
         "two hits, each three to twenty-four: {taken}"
+    );
+    // Neither of the target's own draws or the two hits' own pain rolls
+    // falls (its own z sits level with both missiles, well under
+    // `FALL_HEIGHT`), so each missile draws exactly three: its own
+    // damage roll, the pain roll, and `P_ExplodeMissile`'s own. Nothing
+    // else on the level's own list wakes at gametic 40, so the tic's own
+    // total is the two missiles' own six and nothing more.
+    assert_eq!(
+        after.prndindex,
+        before.prndindex.wrapping_add(6),
+        "each missile draws three: its own damage roll, the pain roll, and the explosion's"
     );
 }

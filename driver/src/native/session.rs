@@ -68,18 +68,6 @@ pub const STATE_TABLE: &str = "native_state";
 /// The table the renderer writes, keyed by frame.
 pub const FRAMES_TABLE: &str = "native_frames";
 
-/// How long a paced run waits for one tic of a warm statement before it
-/// calls the statement dead. A tic's budget is 28.6 ms, so this is a wide
-/// margin over the slowest tic and not a target. The first tic of a session
-/// is not one of these: it pays for the statement's analysis, and
-/// [`FIRST_TIC_TIMEOUT`] is the budget for that.
-pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How long the first tic a session runs may take, which is the simulation
-/// statement being analysed. Sized for a CI runner, about four times
-/// slower than a development machine.
-pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(600);
-
 /// How long a wait pauses between polls. The poll is a query round trip,
 /// which paces the loop on its own; this keeps a slow tic from turning into
 /// a tight query loop.
@@ -436,8 +424,9 @@ impl Session {
     /// [`wait_frame`](Session::wait_frame) and for the same reason: the
     /// first tic of a session pays for the statements' own analysis, the
     /// larger of the two since both are sent at once, which is seconds,
-    /// and every tic after it is milliseconds. [`TIC_TIMEOUT`] is the one a
-    /// paced run uses once the statements are warm, and covers both hops.
+    /// and every tic after it is milliseconds.
+    /// [`TIC_TIMEOUT`](clickdoom_native::resident::TIC_TIMEOUT) is the one
+    /// a paced run uses once the statements are warm, and covers both hops.
     pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Ran, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
         let mut fed_second = false;

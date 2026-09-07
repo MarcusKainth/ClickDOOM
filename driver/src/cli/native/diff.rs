@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration; // purity-ok: the tic budget and the timings the session measured, read from no clock here
 
 use clap::Args;
+use clickdoom_native::resident::{FIRST_TIC_TIMEOUT, TIC_TIMEOUT};
 use clickdoom_native::sql::sim::tick;
 use clickdoom_native::sql::{self, Statement, parity};
 use clickhouse::Row;
@@ -12,7 +13,7 @@ use serde::Deserialize;
 
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
-use crate::native::session::{FIRST_TIC_TIMEOUT, STAGE_TABLE, TIC_TIMEOUT};
+use crate::native::session::STAGE_TABLE;
 use crate::native::{Session, plan, probe, refusal, schema};
 use crate::stats::{Clock, Monotonic};
 
@@ -103,17 +104,10 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
         probe::STAGING_TABLE
     );
 
-    let session = Session::open(
-        &cmd.conn,
-        database,
-        Some((
-            &tick::resident_statement_stage1(database),
-            &tick::resident_statement_stage2(database),
-        )),
-        None,
-    )
-    .await
-    .map_err(|err| failed(format!("opening the simulation: {err}")))?;
+    let (stage1, stage2) = tick::resident_statements(database);
+    let session = Session::open(&cmd.conn, database, Some((&stage1, &stage2)), None)
+        .await
+        .map_err(|err| failed(format!("opening the simulation: {err}")))?;
     let ran = simulate(&session, cmd.tics).await;
     let closed = session.close().await;
     match (ran, closed) {

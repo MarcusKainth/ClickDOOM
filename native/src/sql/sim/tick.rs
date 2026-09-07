@@ -72,19 +72,26 @@ pub mod source {
 const MELT_DRAWS: u32 = 320;
 const MELT_TIC: u32 = 2;
 
+/// The tic's own two resident statements, paired: the second's own input
+/// depends on rows only the first writes, so nothing outside this crate
+/// opens one without the other.
+pub fn resident_statements(db: &str) -> (String, String) {
+    (resident_statement_stage1(db), resident_statement_stage2(db))
+}
+
 /// The first statement a session opens: one tic command in, one
 /// [`STAGE_TABLE`] row out, through the player and the thinkers.
 ///
 /// The padding row the transport writes ahead of the first real row
 /// carries tic 0, which the filter drops.
-pub fn resident_statement_stage1(db: &str) -> String {
+pub(crate) fn resident_statement_stage1(db: &str) -> String {
     transform_stage1(db, &format!("input('{INPUT_SCHEMA}')\nWHERE tic > 0"))
 }
 
 /// The second statement a session opens: one tic number in, the
 /// [`STAGE_TABLE`] row the first statement left read back, one
 /// `native_state` row out, through the specials and `G_Ticker`.
-pub fn resident_statement_stage2(db: &str) -> String {
+pub(crate) fn resident_statement_stage2(db: &str) -> String {
     transform_stage2(
         db,
         &format!("input('{STAGE2_INPUT_SCHEMA}')\nWHERE tic > 0"),

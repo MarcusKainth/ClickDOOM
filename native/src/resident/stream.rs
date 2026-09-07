@@ -79,6 +79,18 @@ const MESSAGE_CHARS: usize = 1000;
 /// long to detect costs nothing a caller would notice.
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long a caller waits for one tic of a warm resident statement before
+/// calling it dead. A tic's own budget is 28.6 ms at 35 Hz, so this is a
+/// wide margin over the slowest tic and not a target. The first tic after
+/// a statement opens is not one of these: it pays for the statement's own
+/// analysis, and [`FIRST_TIC_TIMEOUT`] is the budget for that.
+pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the first tic after a resident statement opens may take, which
+/// is the statement being analysed. Sized for a CI runner under load,
+/// several times slower than a quiet development machine.
+pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Anything that stops a resident statement from opening or from taking
 /// another row.
 #[derive(Debug, thiserror::Error)]

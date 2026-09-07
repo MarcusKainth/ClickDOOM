@@ -18,19 +18,18 @@ use bytes::Bytes;
 use clickhouse::Row;
 use serde::Deserialize;
 
-use clickdoom_native::resident::{CLOSE_TIMEOUT, Endpoint, Resident, resident_settings, rowbinary};
+use clickdoom_native::resident::{
+    CLOSE_TIMEOUT, Endpoint, FIRST_TIC_TIMEOUT, Resident, resident_settings, rowbinary,
+};
 use clickdoom_native::sql::render;
 use clickdoom_native::sql::sim::tick::{self, Input};
 
 use super::db::Fixture;
 
-/// How long the first tic may take, which pays for every statement's own
-/// analysis. Sized the way the driver's own `FIRST_TIC_TIMEOUT` is, for a
-/// slow, shared machine rather than a target.
-const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// How long every tic after the first may take. A test has no 35 Hz budget
-/// to keep, so this is wide rather than paced.
+/// How long every tic after the first may take. Wider than
+/// [`clickdoom_native::resident::TIC_TIMEOUT`]'s own 5 s: a test has no
+/// 35 Hz budget to keep, so this is sized for a shared, loaded machine
+/// rather than a paced run's own margin.
 const TIC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often a wait polls.
@@ -64,8 +63,7 @@ struct Present {
 /// and writes its tables but never closes it.
 pub async fn run(fixture: &Fixture, rows: &[Input], render: bool) -> Ran {
     let endpoint = super::db::endpoint(&fixture.database);
-    let stage1_sql = tick::resident_statement_stage1(&fixture.database);
-    let stage2_sql = tick::resident_statement_stage2(&fixture.database);
+    let (stage1_sql, stage2_sql) = tick::resident_statements(&fixture.database);
     let render_sql = render::frame_transform(&fixture.database);
 
     let (stage1, stage2, renderer) = tokio::join!(

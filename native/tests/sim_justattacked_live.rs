@@ -68,6 +68,26 @@ fn put(column: &'static str, slot: usize, value: String, cast: &str) -> (&'stati
     )
 }
 
+/// Two slots overridden in the same column. `seed::row` keeps only the
+/// first override it finds for a column name, so a column both slots
+/// touch needs one combined entry rather than two separate [`put`] calls.
+fn put2(
+    column: &'static str,
+    slot_a: usize,
+    value_a: String,
+    slot_b: usize,
+    value_b: String,
+    cast: &str,
+) -> (&'static str, String) {
+    (
+        column,
+        format!(
+            "arrayMap((v, k) -> {cast}(multiIf(k = {slot_a}, {value_a}, \
+             k = {slot_b}, {value_b}, v)), p.{column}, arrayEnumerate(p.{column}))"
+        ),
+    )
+}
+
 #[derive(Row, Deserialize)]
 struct Chased {
     #[allow(dead_code)]
@@ -110,10 +130,22 @@ async fn a_thing_that_just_attacked_does_not_attack_again() {
         put("m_tics", SUBJECT, "1".to_owned(), "toInt32"),
         put("m_target", SUBJECT, "1".to_owned(), "toInt32"),
         put("m_movedir", SUBJECT, MOVEDIR.to_string(), "toInt32"),
-        put("m_x", SUBJECT, IMP_X.to_string(), "toInt32"),
-        put("m_y", SUBJECT, IMP_Y.to_string(), "toInt32"),
-        put("m_x", 1, TARGET_X.to_string(), "toInt32"),
-        put("m_y", 1, TARGET_Y.to_string(), "toInt32"),
+        put2(
+            "m_x",
+            SUBJECT,
+            IMP_X.to_string(),
+            1,
+            TARGET_X.to_string(),
+            "toInt32",
+        ),
+        put2(
+            "m_y",
+            SUBJECT,
+            IMP_Y.to_string(),
+            1,
+            TARGET_Y.to_string(),
+            "toInt32",
+        ),
     ];
     let mut statements: Vec<sql::Statement> = seed::row(&db, at, BEFORE, &overrides)
         .into_iter()

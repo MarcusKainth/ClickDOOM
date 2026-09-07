@@ -8,15 +8,20 @@ license = "GPL-3.0-or-later"
 repository.workspace = true
 
 [dependencies]
+bytes.workspace = true
 clickdoom-spec.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-bytes.workspace = true
 clickhouse.workspace = true
 serde.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 [features]
 # The tests that execute generated SQL against a real ClickHouse server.

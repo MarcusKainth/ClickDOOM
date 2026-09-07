@@ -23,9 +23,9 @@ use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement
 
 use bytes::Bytes;
 use clickdoom_driver::client::{ConnArgs, Db};
-use clickdoom_driver::native::rowbinary::Row;
-use clickdoom_driver::native::settings::resident_settings;
-use clickdoom_driver::native::{Resident, ResidentError};
+use clickdoom_native::resident::{
+    Endpoint, Resident, ResidentError, resident_settings, rowbinary::Row,
+};
 
 /// The schema every statement here reads. `pad` exists for the padding row
 /// the transport writes behind the statement.
@@ -57,6 +57,17 @@ fn conn_args(database: &str) -> ConnArgs {
         user: "default".to_owned(),
         database: database.to_owned(),
         password: None,
+    }
+}
+
+/// `conn` as the endpoint [`Resident::open`] takes.
+fn endpoint(conn: &ConnArgs) -> Endpoint {
+    Endpoint {
+        host: conn.host.clone(),
+        port: conn.port,
+        user: conn.user.clone(),
+        database: conn.database.clone(),
+        password: conn.password.clone(),
     }
 }
 
@@ -147,7 +158,7 @@ async fn one_statement_takes_a_hundred_tics_and_chains_them() {
          FROM input('{INPUT_SCHEMA}') WHERE tic > 0"
     );
     let resident = Resident::open(
-        &conn,
+        &endpoint(&conn),
         &statement,
         INPUT_SCHEMA,
         &resident_settings(statement.len()),
@@ -215,7 +226,7 @@ async fn a_statement_the_server_cannot_parse_reports_its_message_on_close() {
         "INSERT INTO {database}.pairs SELECT tic, tic * 2 FROM input('{INPUT_SCHEMA}') WHERE tic >"
     );
     let resident = Resident::open(
-        &conn,
+        &endpoint(&conn),
         &statement,
         INPUT_SCHEMA,
         &resident_settings(statement.len()),
@@ -266,7 +277,7 @@ async fn a_statement_that_fails_on_a_row_stops_writing_and_says_why() {
          FROM input('{INPUT_SCHEMA}') WHERE tic > 0"
     );
     let resident = Resident::open(
-        &conn,
+        &endpoint(&conn),
         &statement,
         INPUT_SCHEMA,
         &resident_settings(statement.len()),
@@ -349,7 +360,7 @@ async fn a_statement_too_large_for_a_url_parameter_opens() {
     );
 
     let resident = Resident::open(
-        &conn,
+        &endpoint(&conn),
         &statement,
         INPUT_SCHEMA,
         &resident_settings(statement.len()),

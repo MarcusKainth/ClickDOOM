@@ -1,11 +1,10 @@
-//! The transport native mode runs on.
+//! Driving native mode's own resident statements.
 //!
-//! `NATIVE.md` states the contract: each component of native mode is one
-//! `INSERT ... SELECT ... FROM input(...)` kept open for a whole session,
-//! with one row streamed into it per tic. [`stream`] holds that statement
-//! open, [`rowbinary`] encodes the rows it takes, [`settings`] names the
-//! settings it runs under and [`url`] builds the request target.
-//! [`session`] drives the two statements of one session together.
+//! `NATIVE.md` states the contract, and `clickdoom_native::resident` carries
+//! the one implementation of the wire protocol it describes: opening a
+//! statement, streaming one row per tic, reading the `Join` table it
+//! writes back. [`session`] drives the three of one session together: the
+//! simulation's own two, chained through `native_stage`, and the renderer.
 //!
 //! The one-off side is beside it: [`plan`] issues the statements that load a
 //! database, [`probe`] loads the reference emulator's state rows, [`melt`]
@@ -26,15 +25,11 @@ pub mod pace;
 pub mod plan;
 pub mod probe;
 pub mod refusal;
-pub mod rowbinary;
 pub mod schedule;
 pub mod schema;
 pub mod session;
-pub mod settings;
-pub mod stream;
-pub mod url;
 pub mod window;
 
+pub use clickdoom_native::resident::{Resident, ResidentError};
 pub use refusal::Refusal;
 pub use session::{Frame, Recovery, Session, SessionError, Waited};
-pub use stream::{Resident, ResidentError};

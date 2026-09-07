@@ -23,7 +23,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
-use std::time::Duration; // purity-ok: a bound on a wait in the driver loop, never a value a statement reads
+use std::time::Duration; // purity-ok: a bound on a wait in a resident session, never a value a statement reads
 
 use bytes::{BufMut, Bytes, BytesMut};
 use http::{Request, Response, StatusCode};
@@ -36,12 +36,35 @@ use tokio::task::JoinHandle;
 
 use super::rowbinary::{self, SchemaError};
 use super::url;
-use crate::client::ConnArgs;
 
 /// The format clause [`Resident::open`] appends to the statement. The rows
 /// this module encodes are RowBinary, so the statement says so rather than
 /// the caller.
 pub const FORMAT_CLAUSE: &str = " FORMAT RowBinary";
+
+/// Where the server is, and how [`Resident::open`] authenticates to it.
+///
+/// A caller's own connection type (a CLI's parsed arguments, a test's
+/// fixture) builds one of these rather than this module reading a wider
+/// type it does not need the rest of.
+pub struct Endpoint {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+    /// The password to authenticate with, resolved: the caller's own
+    /// choice, else `$CLICKHOUSE_PASSWORD`, else empty.
+    pub password: Option<String>,
+}
+
+impl Endpoint {
+    fn resolved_password(&self) -> String {
+        self.password
+            .clone()
+            .or_else(|| std::env::var("CLICKHOUSE_PASSWORD").ok())
+            .unwrap_or_default()
+    }
+}
 
 /// The header ClickHouse puts an exception code in.
 const EXCEPTION_CODE: &str = "x-clickhouse-exception-code";
@@ -49,10 +72,12 @@ const EXCEPTION_CODE: &str = "x-clickhouse-exception-code";
 /// How much of a server message an error carries.
 const MESSAGE_CHARS: usize = 1000;
 
-/// The bound the driver gives [`Resident::close`]. The server answers
-/// within a round trip of the last byte of the body, so anything past this
-/// is a server that has stopped answering.
-pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The bound a caller gives [`Resident::close`]: not the time a live
+/// statement takes to answer once its body ends, which is a round trip,
+/// but the time to be sure a statement that has stopped answering really
+/// has. A close happens once per run, so a dead statement costing this
+/// long to detect costs nothing a caller would notice.
+pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Anything that stops a resident statement from opening or from taking
 /// another row.
@@ -163,7 +188,7 @@ impl Resident {
     /// server accepted the statement. A rejected statement surfaces
     /// through [`send`](Resident::send) or [`close`](Resident::close).
     pub async fn open(
-        conn: &ConnArgs,
+        endpoint: &Endpoint,
         statement: &str,
         input_schema: &str,
         settings: &[(&str, String)],
@@ -172,7 +197,7 @@ impl Resident {
             return Err(ResidentError::OwnFormat);
         }
         let padding = rowbinary::padding_row(input_schema)?;
-        let addr = format!("{}:{}", conn.host, conn.port);
+        let addr = format!("{}:{}", endpoint.host, endpoint.port);
 
         let socket = TcpStream::connect(&addr)
             .await
@@ -215,10 +240,10 @@ impl Resident {
 
         let request = Request::builder()
             .method("POST")
-            .uri(url::request_target(&conn.database, settings))
+            .uri(url::request_target(&endpoint.database, settings))
             .header(http::header::HOST, &addr)
-            .header("X-ClickHouse-User", &conn.user)
-            .header("X-ClickHouse-Key", conn.resolved_password())
+            .header("X-ClickHouse-User", &endpoint.user)
+            .header("X-ClickHouse-Key", endpoint.resolved_password())
             .body(RowBody { rows: receiver })
             .map_err(|source| ResidentError::Request {
                 addr: addr.clone(),
@@ -429,7 +454,7 @@ mod tests {
             request.len()
         });
 
-        let conn = ConnArgs {
+        let endpoint = Endpoint {
             host: "127.0.0.1".to_owned(),
             port,
             user: "default".to_owned(),
@@ -437,7 +462,7 @@ mod tests {
             password: Some(String::new()),
         };
         let resident = Resident::open(
-            &conn,
+            &endpoint,
             "INSERT INTO t SELECT tic",
             "tic UInt32, pad String",
             &[],

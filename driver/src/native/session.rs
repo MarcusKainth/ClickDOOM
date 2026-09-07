@@ -27,9 +27,10 @@ use clickhouse::Row;
 use serde::Deserialize;
 use tokio::time::Instant; // purity-ok: pacing and timeouts in the driver loop, never a value a statement reads
 
-use super::rowbinary;
-use super::settings::resident_settings;
-use super::stream::{CLOSE_TIMEOUT, Resident, ResidentError};
+use clickdoom_native::resident::{
+    CLOSE_TIMEOUT, Endpoint, Resident, ResidentError, resident_settings, rowbinary,
+};
+
 use crate::checkpoint::hex64;
 use crate::client::{self, ConnArgs, Db};
 
@@ -515,6 +516,19 @@ enum Role {
     Render,
 }
 
+/// `conn` as the endpoint [`Resident::open`] takes: this module's own
+/// connection arguments carry more than a resident statement needs to
+/// know about.
+pub(crate) fn endpoint(conn: &ConnArgs) -> Endpoint {
+    Endpoint {
+        host: conn.host.clone(),
+        port: conn.port,
+        user: conn.user.clone(),
+        database: conn.database.clone(),
+        password: conn.password.clone(),
+    }
+}
+
 /// Opens one statement under `id`, with the settings a resident statement
 /// needs.
 async fn open_one(
@@ -525,7 +539,7 @@ async fn open_one(
 ) -> Result<Resident, ResidentError> {
     let mut settings = resident_settings(statement.len());
     settings.push(("query_id", id.to_owned()));
-    Resident::open(conn, statement, input_schema, &settings).await
+    Resident::open(&endpoint(conn), statement, input_schema, &settings).await
 }
 
 /// Ends a statement and keeps its error, if it had one.

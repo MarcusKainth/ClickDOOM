@@ -1000,6 +1000,31 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
             shoot::reached::SPECHIT,
         ),
     );
+    // `P_KillMobj`'s own drop, for a shot that kills what it hits. The
+    // damage call's own base sits behind the shot's own draws and the
+    // puff or blood spot's, and `gs_hit`'s own count already reserves its
+    // last draw for the drop, so the spawn's own base is one short of
+    // what the call as a whole drew.
+    value(
+        "gs_drop",
+        mobj::spawn_mobj(
+            &format!(
+                "if(gs_hit.{drop} != -1, [(gs_hit.{drop}, toInt32(gs_m_x[greatest(gs_id, 1)]), \
+                 toInt32(gs_m_y[greatest(gs_id, 1)]), toInt32({onfloorz}), \
+                 toUInt32({} + gs_shot_draws + gs_spawn_draws + gs_hit.{draws} - 1))], [])",
+                at(firing::DRAWS),
+                drop = inter::hurt::DROP,
+                draws = inter::hurt::DRAWS,
+                onfloorz = mobj::ONFLOORZ,
+            ),
+            &mobj::Spawning {
+                floorheight: "gs_sec_floorheight",
+                ceilingheight: "gs_sec_ceilingheight",
+                prndindex: &s("prndindex"),
+                skill: "skill",
+            },
+        ),
+    );
 
     let hurt_into = |column: usize, member: usize, cast: &str| {
         format!(
@@ -1020,7 +1045,10 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         hurt_into(firing::TARGET, inter::hurt::TARGET, "toUInt32"),
         hurt_into(firing::THRESHOLD, inter::hurt::THRESHOLD, "toInt32"),
         hurt_into(firing::REACTIONTIME, inter::hurt::REACTIONTIME, "toInt32"),
-        format!("arrayConcat({}, gs_born)", at(firing::SPAWNED)),
+        format!(
+            "arrayConcat(arrayConcat({}, gs_born), gs_drop)",
+            at(firing::SPAWNED)
+        ),
         "gs_draws_now".to_owned(),
         format!(
             "toInt32({} + toInt32(gs_hit.{}))",

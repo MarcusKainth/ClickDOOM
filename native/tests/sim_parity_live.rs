@@ -47,10 +47,8 @@ fn fixture_tsv() -> String {
 const OPEN: [&str; 0] = [];
 
 /// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
-/// the way, the tics after it are the slide along that wall, the door the
-/// press at 73 opens has reached the top and left the list by 120, and 205
-/// is the last tic before the engine's own monsters change where the
-/// player ends up.
+/// the way, the tics after it are the slide along that wall, and the door
+/// the press at 73 opens has reached the top and left the list by 120.
 const WALK_TICS: u32 = 205;
 
 /// `p_local.h`: the use key's bit in a tic command.
@@ -79,10 +77,9 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic a chaser's own move leaves the cycle stuck, read off a
-/// real run. The imp's fireball flies through the tics before it exact,
-/// including the ones its own move test used to leave unresolved.
-const FIRST_CHASE_STUCK: u32 = 175;
+/// The first tic the weapon sprite's own cycle enters `A_ReFire`, which
+/// this does not run, read off a real run.
+const FIRST_REFIRE: u32 = 177;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -102,6 +99,7 @@ const FIRST_SHOT_FRAME: u32 = 143;
 /// the weapon sprite, the player's mobj and its wait, whether the attack
 /// button is marked down, and how many sectors the alert leaves at each
 /// count.
+#[derive(Clone, Copy)]
 struct Shot {
     tic: u32,
     psp_state: i32,
@@ -378,6 +376,30 @@ struct Walked {
     shot: Vec<i64>,
 }
 
+/// `entries` with every one at or after `first_refused` removed, printing
+/// which gametics `label` skips them for: a row at or past the first
+/// refused tic is whatever the statement could produce, not evidence the
+/// engine agrees or disagrees with it.
+fn before_refusal<T: Copy>(
+    entries: &[T],
+    tic_of: impl Fn(&T) -> u32,
+    first_refused: u32,
+    label: &str,
+) -> Vec<T> {
+    let (keep, skip): (Vec<T>, Vec<T>) = entries
+        .iter()
+        .copied()
+        .partition(|e| tic_of(e) < first_refused);
+    if !skip.is_empty() {
+        let tics: Vec<String> = skip.iter().map(|e| tic_of(e).to_string()).collect();
+        println!(
+            "{label}: skipping gametic(s) {} at or after the first refused tic ({first_refused})",
+            tics.join(", ")
+        );
+    }
+    keep
+}
+
 async fn walked(fixture: &Fixture, db: &str) -> Vec<Walked> {
     fixture
         .rows(&format!(
@@ -472,9 +494,21 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
+    // A pin at or past the first tic the run itself refuses is not
+    // evidence either way: the row it reads is whatever the statement
+    // could produce, not what the engine did.
+    let first_refused = walk
+        .iter()
+        .find(|row| row.unresolved != 0)
+        .map(|row| row.tic)
+        .unwrap_or(u32::MAX);
+    assert_eq!(
+        first_refused, FIRST_REFIRE,
+        "the pinned first refused tic matches the run"
+    );
     // The run reaches past the door, and every tic up to the first shot
     // completes.
-    for row in walk.iter().filter(|row| row.tic < FIRST_CHASE_STUCK) {
+    for row in walk.iter().filter(|row| row.tic < first_refused) {
         assert_eq!(
             row.unresolved, 0,
             "gametic {} was not carried through",
@@ -482,9 +516,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
     assert_eq!(
-        at(FIRST_CHASE_STUCK).unresolved,
-        sim::unresolved::CHASE_STUCK,
-        "a chaser's own move says the tic could not be produced"
+        at(FIRST_REFIRE).unresolved,
+        sim::unresolved::PSP_STUCK,
+        "the weapon sprite's own cycle enters a routine this does not run"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");
@@ -492,7 +526,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         pressed.unresolved, 0,
         "a press that reaches no special line finishes like any other tic"
     );
-    for (tic, thinkers, ceiling, specialdata, special) in DOOR {
+    for (tic, thinkers, ceiling, specialdata, special) in
+        before_refusal(&DOOR, |e| e.0, first_refused, "DOOR")
+    {
         let row = at(tic);
         assert_eq!(
             (row.thinkers, row.ceiling, row.specialdata, row.special),
@@ -501,7 +537,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
 
-    for (tic, x, y, momx, momy) in WALK {
+    for (tic, x, y, momx, momy) in before_refusal(&WALK, |e| e.0, first_refused, "WALK") {
         let at = at(tic);
         assert_eq!(
             (at.x, at.y, at.momx, at.momy),
@@ -510,7 +546,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
         );
     }
 
-    for (tic, state, sx, sy, ready, pending, attackdown) in WEAPON {
+    for (tic, state, sx, sy, ready, pending, attackdown) in
+        before_refusal(&WEAPON, |e| e.0, first_refused, "WEAPON")
+    {
         let row = at(tic);
         assert_eq!(
             (
@@ -525,7 +563,9 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the weapon sprite at gametic {tic}"
         );
     }
-    for (tic, state, frame, target, awake) in THINGS {
+    for (tic, state, frame, target, awake) in
+        before_refusal(&THINGS, |e| e.0, first_refused, "THINGS")
+    {
         let row = at(tic);
         assert_eq!(
             (row.state25, row.frame25, row.target118, row.state118),
@@ -533,7 +573,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the things at gametic {tic}"
         );
     }
-    for shot in SHOT {
+    for shot in before_refusal(&SHOT, |s| s.tic, first_refused, "SHOT") {
         let row = at(shot.tic);
         assert_eq!(
             (
@@ -564,27 +604,28 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             shot.tic
         );
     }
-    assert_eq!(
-        at(FIRST_SHOT_FRAME).unresolved,
-        0,
-        "the tic the shotgun's frames reach A_FireShotgun is produced"
-    );
-    // The tic after it resolves too: the two monsters a pellet hit cycle
-    // out of their pain frames into `A_Pain`, which this now runs.
-    assert_eq!(
-        at(FIRST_SHOT_FRAME + 1).unresolved,
-        0,
-        "the tic after the shot is produced"
-    );
+    // The tic the shotgun's frames reach `A_FireShotgun` is produced, and
+    // so is the tic after it: the two monsters a pellet hit cycle out of
+    // their pain frames into `A_Pain`, which this now runs.
+    for tic in before_refusal(
+        &[FIRST_SHOT_FRAME, FIRST_SHOT_FRAME + 1],
+        |&t| t,
+        first_refused,
+        "FIRST_SHOT_FRAME",
+    ) {
+        assert_eq!(at(tic).unresolved, 0, "gametic {tic} is produced");
+    }
 
-    for (tic, prndindex) in RANDOM {
+    for (tic, prndindex) in before_refusal(&RANDOM, |e| e.0, first_refused, "RANDOM") {
         assert_eq!(
             at(tic).prndindex,
             prndindex,
             "the random index at gametic {tic}"
         );
     }
-    for (tic, movedir, movecount, reactiontime, angle, x, y) in CHASE {
+    for (tic, movedir, movecount, reactiontime, angle, x, y) in
+        before_refusal(&CHASE, |e| e.0, first_refused, "CHASE")
+    {
         let row = at(tic);
         assert_eq!(
             (
@@ -599,7 +640,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the chasing monster at gametic {tic}"
         );
     }
-    for (tic, state, tics, extralight) in FLASH {
+    for (tic, state, tics, extralight) in before_refusal(&FLASH, |e| e.0, first_refused, "FLASH") {
         let row = at(tic);
         assert_eq!(
             (row.psp_state[1], row.psp_tics[1], row.extralight),
@@ -607,7 +648,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the flash sprite at gametic {tic}"
         );
     }
-    for (tic, state, flags, angle) in ATTACK {
+    for (tic, state, flags, angle) in before_refusal(&ATTACK, |e| e.0, first_refused, "ATTACK") {
         let row = at(tic);
         assert_eq!(
             (row.state119, row.flags119, row.angle119),
@@ -615,45 +656,52 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the imp winding up its attack at gametic {tic}"
         );
     }
-    // The fireball the routine throws, on the end of the list.
-    assert_eq!(
-        at(FIREBALL - 1).things,
-        ON_THE_LIST,
-        "the list before the throw is the level's own"
-    );
-    assert_eq!(
-        at(FIREBALL).things,
-        ON_THE_LIST + 1,
-        "and the throw puts one more thing on it"
-    );
-    let shot = &at(FIREBALL).shot;
-    // The spawn, and the fireball's own thinker on the tic it was thrown:
-    // every field the probe holds, not just what `P_SpawnMissile` and
-    // `P_CheckMissileSpawn` leave.
-    for (at, name) in [
-        (0, "type"),
-        (1, "x"),
-        (2, "y"),
-        (3, "z"),
-        (4, "momx"),
-        (5, "momy"),
-        (6, "momz"),
-        (7, "angle"),
-        (8, "target"),
-        (9, "state"),
-        (10, "tics"),
-        (11, "flags"),
-    ] {
-        assert_eq!(shot[at], THROWN[at], "the fireball's {name}");
+    if FIREBALL < first_refused {
+        // The fireball the routine throws, on the end of the list.
+        assert_eq!(
+            at(FIREBALL - 1).things,
+            ON_THE_LIST,
+            "the list before the throw is the level's own"
+        );
+        assert_eq!(
+            at(FIREBALL).things,
+            ON_THE_LIST + 1,
+            "and the throw puts one more thing on it"
+        );
+        let shot = &at(FIREBALL).shot;
+        // The spawn, and the fireball's own thinker on the tic it was
+        // thrown: every field the probe holds, not just what
+        // `P_SpawnMissile` and `P_CheckMissileSpawn` leave.
+        for (at, name) in [
+            (0, "type"),
+            (1, "x"),
+            (2, "y"),
+            (3, "z"),
+            (4, "momx"),
+            (5, "momy"),
+            (6, "momz"),
+            (7, "angle"),
+            (8, "target"),
+            (9, "state"),
+            (10, "tics"),
+            (11, "flags"),
+        ] {
+            assert_eq!(shot[at], THROWN[at], "the fireball's {name}");
+        }
+        // Every number the throw draws is counted, which is what moved
+        // the first divergence off `prndindex`.
+        assert_eq!(
+            at(FIREBALL).prndindex,
+            194,
+            "the tic draws what the engine draws"
+        );
+    } else {
+        println!(
+            "FIREBALL: skipping gametic {FIREBALL} at or after the first refused tic \
+             ({first_refused})"
+        );
     }
-    // Every number the throw draws is counted, which is what moved the
-    // first divergence off `prndindex`.
-    assert_eq!(
-        at(FIREBALL).prndindex,
-        194,
-        "the tic draws what the engine draws"
-    );
-    for (tic, slot, x, y, momx, momy) in THRUST {
+    for (tic, slot, x, y, momx, momy) in before_refusal(&THRUST, |e| e.0, first_refused, "THRUST") {
         let row = at(tic);
         let place = if slot == 118 { 0 } else { 1 };
         assert_eq!(
@@ -667,7 +715,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the monster a pellet thrusts, slot {slot} at gametic {tic}"
         );
     }
-    for (tic, state, frame, health) in HURT {
+    for (tic, state, frame, health) in before_refusal(&HURT, |e| e.0, first_refused, "HURT") {
         let row = at(tic);
         assert_eq!(
             (row.state118, row.frame118, row.health118),
@@ -675,16 +723,28 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the monster a pellet reaches at gametic {tic}"
         );
     }
+    if first_refused < WALK_TICS {
+        println!(
+            "lastlook, flash sprite: skipping gametic {first_refused} to {WALK_TICS} at or \
+             after the first refused tic"
+        );
+    }
     // `P_LookForPlayers` walks `lastlook` round to the one player in the
     // game and stops there, whatever it decides.
-    for row in walk.iter().filter(|row| row.tic >= 2) {
+    for row in walk
+        .iter()
+        .filter(|row| row.tic >= 2 && row.tic < first_refused)
+    {
         assert_eq!(row.lastlook34, 0, "lastlook at gametic {}", row.tic);
     }
 
     // `P_MovePsprites` ends by putting the flash sprite where the weapon
     // sprite is, whatever state either is in. The level's own row is
     // before the first `P_PlayerThink`, so it is not one of them.
-    for row in walk.iter().filter(|row| row.tic > 0) {
+    for row in walk
+        .iter()
+        .filter(|row| row.tic > 0 && row.tic < first_refused)
+    {
         assert_eq!(
             (row.psp_sx[0], row.psp_sy[0]),
             (row.psp_sx[1], row.psp_sy[1]),

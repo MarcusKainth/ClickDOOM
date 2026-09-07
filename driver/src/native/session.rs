@@ -57,7 +57,7 @@ pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the first tic a session runs may take, which is the simulation
 /// statement being analysed. Sized for a CI runner, about four times
 /// slower than a development machine.
-pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(300);
+pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How long a wait pauses between polls. The poll is a query round trip,
 /// which paces the loop on its own; this keeps a slow tic from turning into

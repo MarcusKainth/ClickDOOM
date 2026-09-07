@@ -19,6 +19,7 @@ use refemu::Cpu;
 #[cfg(feature = "rom-tests")]
 use refemu::trace::{Stop, collect};
 
+#[cfg(feature = "rom-tests")]
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }

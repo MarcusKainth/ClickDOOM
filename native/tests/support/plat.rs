@@ -1,5 +1,9 @@
 //! `T_PlatRaise` and the part of `T_MovePlane` it drives, read from
-//! `p_plats.c` and `p_floor.c`, and the row that puts one on the list.
+//! `p_plats.c` and `p_floor.c`; `EV_DoPlat`'s own field assignments, also
+//! from `p_plats.c`; and the row that puts one on the list. The
+//! `raiseToNearestAndChange` destination this hands in is not read out of
+//! `P_FindNextHighestFloor` (`p_spec.c`) here, since a fixed map value
+//! computed by hand from the same source stands in for it.
 
 use clickdoom_native::sql::sim;
 use clickdoom_spec::native_state::sector_thinker_kind;
@@ -14,8 +18,10 @@ const UP: i32 = 0;
 const DOWN: i32 = 1;
 const WAITING: i32 = 2;
 
-/// `p_spec.h`: `downWaitUpStay` in `plattype_e`.
+/// `p_spec.h`: `downWaitUpStay` and `raiseToNearestAndChange` in
+/// `plattype_e`.
 const DOWN_WAIT_UP_STAY: i32 = 1;
+const RAISE_TO_NEAREST_AND_CHANGE: i32 = 3;
 
 /// What one tic of the plat leaves behind.
 pub struct Step {
@@ -33,9 +39,15 @@ pub struct Plat {
     wait: i32,
     count: i32,
     status: i32,
+    kind: i32,
     /// Whether the run has covered each part, so a test can say it did.
     pub reached_bottom: bool,
     pub waited: bool,
+    /// Whether the thinker has come off the list. `raiseToNearestAndChange`
+    /// sets this the same tic it arrives, since `T_PlatRaise` calls
+    /// `P_RemoveActivePlat` for it as soon as it reports `pastdest`,
+    /// without ever entering `waiting` the way `downWaitUpStay` does.
+    pub done: bool,
 }
 
 impl Plat {
@@ -49,8 +61,28 @@ impl Plat {
             wait: TICRATE * PLATWAIT,
             count: 0,
             status: DOWN,
+            kind: DOWN_WAIT_UP_STAY,
             reached_bottom: false,
             waited: false,
+            done: false,
+        }
+    }
+
+    /// `EV_DoPlat` for `raiseToNearestAndChange`: it starts at its own
+    /// floor going up, at half speed, with no wait.
+    pub fn raise_to_nearest_and_change(floorheight: i32, high: i32) -> Plat {
+        Plat {
+            floorheight,
+            low: 0,
+            high,
+            speed: PLATSPEED / 2,
+            wait: 0,
+            count: 0,
+            status: UP,
+            kind: RAISE_TO_NEAREST_AND_CHANGE,
+            reached_bottom: false,
+            waited: false,
+            done: false,
         }
     }
 
@@ -70,8 +102,12 @@ impl Plat {
             UP => {
                 if self.floorheight + self.speed > self.high {
                     self.floorheight = self.high;
-                    self.count = self.wait;
-                    self.status = WAITING;
+                    if self.kind == RAISE_TO_NEAREST_AND_CHANGE {
+                        self.done = true;
+                    } else {
+                        self.count = self.wait;
+                        self.status = WAITING;
+                    }
                 } else {
                     self.floorheight += self.speed;
                 }

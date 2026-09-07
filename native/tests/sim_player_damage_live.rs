@@ -256,6 +256,8 @@ const GAMETIC_HIT: u32 = 206;
 const MISSILE_SLOT: usize = 265;
 /// The imp that threw it, `m_target` on both rows.
 const THROWER: u32 = 119;
+/// `d_player.h`: `pw_invulnerability`, one-based for `p_powers`.
+const PW_INVULNERABILITY: usize = 1;
 /// `mobjtype.tsv`
 const TROOPSHOT: i32 = 31;
 /// `p_pspr.c`'s own `S_TBALL1`/`S_TBALL2`, from the probe: the frame the
@@ -330,6 +332,15 @@ async fn hit_after_206(fixture: &Fixture, db: &str) -> Impact {
 }
 
 async fn seeded_fireball(name: &str, armortype: i64, armorpoints: i64) -> Impact {
+    seeded_fireball_with(name, armortype, armorpoints, false).await
+}
+
+async fn seeded_fireball_with(
+    name: &str,
+    armortype: i64,
+    armorpoints: i64,
+    invulnerable: bool,
+) -> Impact {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
     let fixture = Fixture::create(&format!("sim_player_damage_{name}")).await;
@@ -344,20 +355,30 @@ async fn seeded_fireball(name: &str, armortype: i64, armorpoints: i64) -> Impact
     }
     support::probe::load(&fixture, &probe_line(GAMETIC_BEFORE)).await;
 
+    let mut overrides: Vec<(&str, String)> = Vec::new();
     if armortype != 0 || armorpoints != 0 {
-        let overrides = seed::row(
-            &db,
-            GAMETIC_BEFORE,
-            GAMETIC_BEFORE,
-            &[
-                ("p_armortype", format!("toInt32({armortype})")),
-                ("p_armorpoints", format!("toInt32({armorpoints})")),
-            ],
-        )
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect::<Vec<_>>();
-        if let Err(error) = fixture.execute(&overrides).await {
+        overrides.push(("p_armortype", format!("toInt32({armortype})")));
+        overrides.push(("p_armorpoints", format!("toInt32({armorpoints})")));
+    }
+    if invulnerable {
+        // `player::powers`'s own per-tic decay runs ahead of the thinker
+        // stage this seeds the hit into, taking one tic off before the
+        // fireball ever reads it, so one tic of its own is not enough:
+        // seed several to survive the decay and still read nonzero.
+        overrides.push((
+            "p_powers",
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = {PW_INVULNERABILITY}, 5, v)), \
+                 p.p_powers, arrayEnumerate(p.p_powers))"
+            ),
+        ));
+    }
+    if !overrides.is_empty() {
+        let statements = seed::row(&db, GAMETIC_BEFORE, GAMETIC_BEFORE, &overrides)
+            .into_iter()
+            .map(sql::Statement::sql)
+            .collect::<Vec<_>>();
+        if let Err(error) = fixture.execute(&statements).await {
             fixture.finish().await;
             panic!("{error}");
         }
@@ -440,6 +461,36 @@ async fn a_fireball_reaches_the_player_through_its_own_armour() {
         );
         assert_eq!(after.p_damagecount, raw_damage - saved, "{name}");
     }
+}
+
+/// A god mode or invulnerable player's own return leaves the player's own
+/// fields, and the mobj's own shared health, untouched. The fireball's own
+/// impact is a different mobj's own move blocked, not `P_DamageMobj`'s
+/// doing, so it explodes and stops exactly as it does against a player who
+/// takes the hit.
+#[tokio::test]
+async fn an_invulnerable_player_is_still_pushed_but_not_hurt() {
+    let after = seeded_fireball_with("fireball_invulnerable", 0, 0, true).await;
+    assert_eq!(after.unresolved, 0, "an immune hit resolves too");
+    assert_eq!(after.p_health, 100, "the return skips the health");
+    assert_eq!(after.p_armorpoints, 0, "and the armour");
+    assert_eq!(after.p_armortype, 0);
+    assert_eq!(after.p_damagecount, 0, "and the tint");
+    assert_eq!(after.p_attacker, 0, "and the attacker");
+    assert_eq!(
+        after.player_health, 100,
+        "the shared health is not touched either"
+    );
+    assert_eq!(
+        after.missile_state, TBALL2,
+        "the fireball's own impact does not depend on the target's return"
+    );
+    assert_eq!(after.missile_flags, EXPLODED_FLAGS);
+    assert_eq!(
+        after.missile_momx, 0,
+        "its own move stops it, blocked or not"
+    );
+    assert_eq!(after.missile_momy, 0);
 }
 
 #[tokio::test]

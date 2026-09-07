@@ -1065,7 +1065,7 @@ pub fn damage_mobj(asks: &str, world: &Hurting<'_>) -> String {
 /// any of them is worked out. Nothing a call draws changes how many draws
 /// it makes, so the count is this much of the routine and no more.
 pub fn draws(asks: &str, world: &Hurting<'_>) -> String {
-    let body = "toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))";
+    let body = "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))";
     format!(
         "arrayMap(dm_ask -> {}, {asks})",
         bind::chain_in("dmd", &reach(world), body)
@@ -1118,8 +1118,9 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
                  dm_damage))"
             ),
         ),
-        // God mode and invulnerability return before anything else runs,
-        // under a damage this large.
+        // God mode and invulnerability return under a damage this large,
+        // once the push below has already run: the engine's own thrust
+        // code sits ahead of that return.
         (
             "dm_immune".to_owned(),
             format!(
@@ -1128,26 +1129,29 @@ fn reach(world: &Hurting<'_>) -> Vec<(String, String)> {
                 world.p_cheats, world.p_powers,
             ),
         ),
-        // The two early returns: a thing that cannot be shot, and one
-        // already dead, take nothing and draw nothing. A player's own god
-        // mode or invulnerability is the same kind of return.
+        // A thing that cannot be shot, and one already dead, take nothing
+        // and draw nothing.
         (
-            "dm_lands".to_owned(),
-            format!(
-                "toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0 \
-                 AND dm_immune = 0)"
-            ),
+            "dm_reaches".to_owned(),
+            format!("toUInt8(bitAnd(dm_flags, {MF_SHOOTABLE}) != 0 AND dm_health > 0)"),
         ),
         // The push. A call with no inflictor pushes nothing, and a
         // chainsaw in the source's hands holds its target in reach.
         (
             "dm_pushes".to_owned(),
             format!(
-                "toUInt8(dm_lands = 1 AND dm_inflictor != 0 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
+                "toUInt8(dm_reaches = 1 AND dm_inflictor != 0 \
+                 AND bitAnd(dm_flags, {MF_NOCLIP}) = 0 \
                  AND (dm_source = 0 OR {} = -1 OR {} != {WP_CHAINSAW}))",
                 credited(world.m_player),
                 world.readyweapon,
             ),
+        ),
+        // What reaches and is not a god mode or invulnerable player's own
+        // return lands: the armour, the health, and everything after them.
+        (
+            "dm_lands".to_owned(),
+            "toUInt8(dm_reaches = 1 AND dm_immune = 0)".to_owned(),
         ),
         // Falling forwards is the one draw a call makes before the damage
         // lands, and whether it is made is decided without reading it.
@@ -1492,7 +1496,7 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         "toUInt8(dm_killed)".to_owned(),
         format!("toUInt8(dm_killed = 1 AND bitAnd(dm_flags, {MF_COUNTKILL}) != 0)"),
         "toInt32(if(dm_killed = 1, dm_drop, -1))".to_owned(),
-        "toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))".to_owned(),
+        "toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))".to_owned(),
         "toUInt8(dm_stuck)".to_owned(),
         format!(
             "toInt32(if(dm_player_hit = 1, greatest(toInt32({player}.{}) - dm_damage_final, 0), \
@@ -1564,15 +1568,38 @@ mod damage_tests {
     }
 
     /// A call draws once where it lands and once more where the hit may
-    /// knock its target over, and nothing where it does not land. Every
-    /// draw after it in the tic sits behind that count.
+    /// knock its target over. A god mode or invulnerable player's own
+    /// return still may fell, since the push runs ahead of it, but never
+    /// lands, so it draws for the fall alone. A call that neither reaches
+    /// nor may fell draws nothing.
     #[test]
     fn a_call_draws_by_where_it_lands_and_whether_it_may_fell() {
         let (_, body) = damaged(&world(), "dm_held");
         assert!(
-            body.contains("toUInt32(if(dm_lands = 1, 1 + toUInt32(dm_may_fall), 0))"),
+            body.contains("toUInt32(toUInt32(dm_may_fall) + if(dm_lands = 1, 1, 0))"),
             "{body}"
         );
+    }
+
+    /// The push runs ahead of a player's own god mode or invulnerable
+    /// return, the way the engine's own thrust code sits ahead of it: only
+    /// `dm_lands` reads `dm_immune`.
+    #[test]
+    fn the_push_does_not_wait_on_a_player_s_own_immunity() {
+        let (values, _) = damaged(&world(), "dm_held");
+        let named = |name: &str| {
+            values
+                .iter()
+                .find(|(held, _)| held == name)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("the call names {name}"))
+        };
+        let pushes = named("dm_pushes");
+        assert!(!pushes.contains("dm_immune"), "{pushes}");
+        let may_fall = named("dm_may_fall");
+        assert!(!may_fall.contains("dm_immune"), "{may_fall}");
+        let lands = named("dm_lands");
+        assert!(lands.contains("dm_immune = 0"), "{lands}");
     }
 
     /// The push angle and the fall test read where the inflictor stands;

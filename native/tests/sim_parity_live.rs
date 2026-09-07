@@ -341,7 +341,7 @@ const WALK: [(u32, i32, i32, i32, i32); 8] = [
     (205, 10419829, 14857119, -31105, 38150),
 ];
 
-#[derive(Row, Deserialize)]
+#[derive(Row, Deserialize, Clone)]
 struct Divergence {
     field: String,
     kind: String,
@@ -411,7 +411,7 @@ struct Walked {
 /// which gametics `label` skips them for: a row at or past the first
 /// refused tic is whatever the statement could produce, not evidence the
 /// engine agrees or disagrees with it.
-fn before_refusal<T: Copy>(
+fn before_refusal<T: Clone>(
     entries: &[T],
     tic_of: impl Fn(&T) -> u32,
     first_refused: u32,
@@ -419,7 +419,7 @@ fn before_refusal<T: Copy>(
 ) -> Vec<T> {
     let (keep, skip): (Vec<T>, Vec<T>) = entries
         .iter()
-        .copied()
+        .cloned()
         .partition(|e| tic_of(e) < first_refused);
     if !skip.is_empty() {
         let tics: Vec<String> = skip.iter().map(|e| tic_of(e).to_string()).collect();
@@ -493,6 +493,21 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     let walk = walked(&fixture, &db).await;
     fixture.finish().await;
 
+    // A pin at or past the first tic the run itself refuses is not
+    // evidence either way: the row it reads is whatever the statement
+    // could produce, not what the engine did.
+    let first_refused = walk
+        .iter()
+        .find(|row| row.unresolved != 0)
+        .map(|row| row.tic)
+        .unwrap_or(u32::MAX);
+
+    // The committed fixture's own frame at or past the first refused tic
+    // is not evidence either way for the same reason a pinned array's own
+    // entry there is not: the field summary groups every differing tic
+    // under the field's first one, so filtering on `first_tic` alone never
+    // hides a divergence that started before the run gave up.
+    let summary = before_refusal(&summary, |d| d.first_tic, first_refused, "field_summary");
     let differ: Vec<&str> = summary.iter().map(|d| d.field.as_str()).collect();
     let unexpected: Vec<&Divergence> = summary
         .iter()
@@ -526,14 +541,6 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
-    // A pin at or past the first tic the run itself refuses is not
-    // evidence either way: the row it reads is whatever the statement
-    // could produce, not what the engine did.
-    let first_refused = walk
-        .iter()
-        .find(|row| row.unresolved != 0)
-        .map(|row| row.tic)
-        .unwrap_or(u32::MAX);
     assert_eq!(
         first_refused, FIRST_REFUSED,
         "the pinned first refused tic matches the run"

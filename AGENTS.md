@@ -1,8 +1,9 @@
 # ClickDOOM
 
-The 1993 id Software DOOM engine, compiled to bare-metal RV32IM, executing on a
-CPU implemented in ClickHouse SQL. Not a raycaster written in SQL. A CPU
-emulator in SQL running the real binary.
+ClickDOOM runs DOOM in ClickHouse SQL in two modes. Emulation mode executes
+the engine's RV32IM binary on a CPU implemented in SQL. Native mode implements
+the engine's simulation and renderer as SQL, checked against the real engine
+running in the reference emulator. `README.md` describes both modes.
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the contributor-facing entry point.
 [`DEVELOPING.md`](DEVELOPING.md) carries the build, test and benchmark mechanics
@@ -49,7 +50,9 @@ changes nothing a reader would do differently, it goes.
 - **Guardrails stay.** A check that looks redundant is usually the one that
   fired once.
 
-The same rules hold in commit messages. The em-dash used as a dramatic pause,
+Commit messages carry the rationale and relevant history; comments describe
+the code a reader has in front of them. The writing style applies to both.
+The em-dash used as a dramatic pause,
 the antithesis frame ("a bound on patience, not a deadline"), the evaluative
 tail (", which is the whole point") and intensifiers that add nothing all read
 as machine-written. Replacing one with another is not a fix.

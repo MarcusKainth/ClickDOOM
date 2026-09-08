@@ -15,6 +15,37 @@ const GLOWSPEED: i64 = 8;
 /// `p_lights.c`: how long a fire flicker holds each level.
 const FLICKER_COUNT: i64 = 4;
 
+/// Whether the thinker of kind `kind` draws this tic. `T_LightFlash` and
+/// `T_FireFlicker` each take one number when their count reaches zero;
+/// `T_StrobeFlash` and `T_Glow` take none.
+fn drew(kind: &str, count: &str) -> String {
+    format!(
+        "toUInt8({kind} IN ({}, {}) AND {count} - 1 = 0)",
+        kind::LIGHT_FLASH,
+        kind::FIRE_FLICKER
+    )
+}
+
+/// How many numbers the sector thinkers draw this tic, as one count the
+/// stages ahead of them read.
+///
+/// Every thinker reads its own count as the tic before left it, so this
+/// is decided by the state row alone. The mobj stage runs first and needs
+/// it, because a slot the sector thinkers run before counts these draws
+/// in its own base.
+pub fn draws(state: &State) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    vec![(
+        "lt_draws".to_owned(),
+        format!(
+            "toUInt32(arraySum(arrayMap((k, c) -> {}, {}, {})))",
+            drew("k", "c"),
+            s("s_kind"),
+            s("s_count"),
+        ),
+    )]
+}
+
 /// Where each part of the fold's accumulator sits.
 mod held {
     pub const LIGHTLEVEL: usize = 1;
@@ -28,8 +59,10 @@ mod held {
 ///
 /// Two of them draw from `P_Random` when their count runs out, so the
 /// accumulator carries how many draws the tic has made and each thinker
-/// reads the table at the index its own draw lands on.
-pub fn thinkers(state: &State) -> Vec<(String, String)> {
+/// reads the table at the index its own draw lands on. `index` is where
+/// the first of them starts, which is not where the mobj stage left the
+/// tic's own: the sector thinkers run partway up the list.
+pub fn thinkers(state: &State, index: &str) -> Vec<(String, String)> {
     let s = |column: &str| state.get(column);
     let at = |name: &str| format!("{}[j]", s(name));
     let sector = "1 + light_sector";
@@ -38,8 +71,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     let count = format!("{}[j]", held(held::COUNT));
     let direction = format!("{}[j]", held(held::DIRECTION));
     let draw = format!(
-        "toInt64(rnd[1 + bitAnd(toUInt32({}) + {} + 1, 255)])",
-        s("prndindex"),
+        "toInt64(rnd[1 + bitAnd(toUInt32({index}) + {} + 1, 255)])",
         held(held::DRAWS)
     );
 
@@ -132,14 +164,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                 maxlight = at("s_maxlight"),
             ),
         ),
-        (
-            "light_drew".to_owned(),
-            format!(
-                "toUInt8(light_fires = 1 AND light_kind IN ({}, {}))",
-                kind::LIGHT_FLASH,
-                kind::FIRE_FLICKER
-            ),
-        ),
+        ("light_drew".to_owned(), drew("light_kind", &count)),
     ];
     let put = |array: String, index: &str, value: &str| {
         format!("arrayMap((v, i) -> if(i = {index}, {value}, v), {array}, arrayEnumerate({array}))")
@@ -190,7 +215,7 @@ mod tests {
 
     #[test]
     fn the_thinkers_are_one_fold_over_the_list() {
-        let bindings = thinkers(&State::default());
+        let bindings = thinkers(&State::default(), "mt_light_index");
         let (_, ran) = bindings.iter().find(|(name, _)| name == "lights").unwrap();
         assert_eq!(ran.matches("arrayFold((light_at, j)").count(), 1);
         assert!(ran.contains("arrayEnumerate(prev_s_kind)"));
@@ -198,7 +223,7 @@ mod tests {
 
     #[test]
     fn only_the_two_that_draw_move_the_random_index() {
-        let bindings = thinkers(&State::default());
+        let bindings = thinkers(&State::default(), "mt_light_index");
         let (_, ran) = bindings.iter().find(|(name, _)| name == "lights").unwrap();
         assert!(ran.contains(&format!(
             "IN ({}, {})",
@@ -207,9 +232,47 @@ mod tests {
         )));
     }
 
+    /// The sector thinkers run partway up the thinker list, so the table
+    /// index each one reads comes off the base it is given rather than
+    /// off the index the mobj stage left.
+    #[test]
+    fn a_draw_reads_the_table_at_the_base_it_is_given() {
+        let bindings = thinkers(&State::default(), "mt_light_index");
+        let (_, ran) = bindings.iter().find(|(name, _)| name == "lights").unwrap();
+        assert!(
+            ran.contains("rnd[1 + bitAnd(toUInt32(mt_light_index)"),
+            "{ran}"
+        );
+        assert!(
+            !ran.contains("rnd[1 + bitAnd(toUInt32(prev_prndindex)"),
+            "{ran}"
+        );
+        // The tic's own total still moves by what the fold drew.
+        let (_, index) = bindings
+            .iter()
+            .find(|(name, _)| name == "now_prndindex")
+            .unwrap();
+        assert!(index.contains("prev_prndindex"), "{index}");
+    }
+
+    /// The count the stages ahead of the list read is the same rule the
+    /// fold applies, over the counts the tic starts with.
+    #[test]
+    fn the_count_reads_the_state_row_alone() {
+        let (name, count) = draws(&State::default()).into_iter().next().unwrap();
+        assert_eq!(name, "lt_draws");
+        assert_eq!(
+            count,
+            format!(
+                "toUInt32(arraySum(arrayMap((k, c) -> {}, prev_s_kind, prev_s_count)))",
+                drew("k", "c")
+            )
+        );
+    }
+
     #[test]
     fn every_binding_balances_its_parentheses() {
-        for (name, expr) in thinkers(&State::default()) {
+        for (name, expr) in thinkers(&State::default(), "mt_light_index") {
             let depth = expr.chars().fold(0i32, |d, c| match c {
                 '(' => d + 1,
                 ')' => d - 1,

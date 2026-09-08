@@ -117,10 +117,15 @@ mod tests {
     use super::*;
 
     /// The fixture's own header, which is the shape every probe file has.
-    const HEADER: &str = "# refemu-probe 1\n# state_schema_version\t1\n";
+    fn header() -> String {
+        format!(
+            "# refemu-probe 1\n# state_schema_version\t{}\n",
+            native_state::STATE_SCHEMA_VERSION
+        )
+    }
 
     fn file(columns: &[&str]) -> String {
-        format!("{HEADER}# columns\t{}\n0\t1\n", columns.join("\t"))
+        format!("{}# columns\t{}\n0\t1\n", header(), columns.join("\t"))
     }
 
     #[test]

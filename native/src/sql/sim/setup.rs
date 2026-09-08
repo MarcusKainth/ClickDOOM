@@ -637,6 +637,9 @@ fn row(db: &str) -> Vec<(&'static str, String)> {
             "toUInt32(mobjs.mobj_count + lights.light_count + 1)".to_owned(),
         ),
         ("next_linkseq", "toUInt32(mobjs.mobj_count + 1)".to_owned()),
+        // `P_SpawnSpecials` runs after `P_LoadThings`, so every thing the
+        // map spawned is ahead of the sector thinkers on the list.
+        ("setup_things", "toUInt32(mobjs.mobj_count)".to_owned()),
         ("paused", "toUInt8(0)".to_owned()),
         ("demo_end", "toUInt8(0)".to_owned()),
         ("totalkills", "mobjs.totalkills".to_owned()),

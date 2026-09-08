@@ -38,7 +38,9 @@ their C values. Mobjs and sector thinkers are parallel array columns indexed by
 slot in thinker-list order. A thinker's identity is the value of a global
 counter taken when it was added; pointers between thinkers hold that identity,
 0 for none. The probe cannot read identities out of RAM and writes 0 for them,
-so parity compares by slot and ignores the identity columns. A message the
+so parity compares by slot and ignores the identity columns. `setup_things`
+says how many mobj slots the thinker list holds ahead of the sector thinkers,
+and the probe reads that off its own walk, so parity compares it. A message the
 player or the heads-up display holds is stored as the xxh64 of its text, which
 is what the probe can compute from a C string.
 
@@ -50,7 +52,11 @@ from the demo lump; `source` 1 builds it from the key bits in
 `spec::native_state::key` and the mouse deltas, as `G_BuildTiccmd` does. The
 tic runs `P_PlayerThink`, the thinker list in creation order with the same
 random-number draws as the engine, `P_UpdateSpecials`, then the status bar,
-heads-up display and menu tickers.
+heads-up display and menu tickers. `P_SpawnSpecials` adds the sector thinkers
+after `P_LoadThings` and `P_AddThinker` appends, so the sector thinkers run
+after the first `setup_things` mobj slots and before anything spawned during
+play. The compaction takes that count down for each thing it drops at or below
+it. Nothing takes it up.
 
 ## 5. The frame
 

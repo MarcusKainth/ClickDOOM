@@ -660,6 +660,11 @@ pub struct Thinker {
 pub struct Walk {
     pub mobjs: Vec<Thinker>,
     pub sector_thinkers: Vec<Thinker>,
+    /// How many mobjs the list holds ahead of its first sector thinker.
+    /// `P_SpawnSpecials` adds the sector thinkers after `P_LoadThings`, and
+    /// `P_AddThinker` appends, so those are the mobjs the level setup
+    /// spawned that are still on the list.
+    pub setup_things: u32,
     slots: HashMap<u32, u32>,
     sector_slots: HashMap<u32, u32>,
 }
@@ -691,9 +696,13 @@ pub fn walk(engine: &Engine, cpu: &Cpu) -> Result<Walk, ProbeError> {
     let mut walk = Walk {
         mobjs: Vec::new(),
         sector_thinkers: Vec::new(),
+        setup_things: 0,
         slots: HashMap::new(),
         sector_slots: HashMap::new(),
     };
+    // Where the first sector thinker stood, or none where the list holds
+    // no sector thinker at all.
+    let mut split: Option<u32> = None;
 
     let mut at = ram.u32(cap + offsets.next, "thinkercap.next")?;
     let mut steps = 0u32;
@@ -731,12 +740,14 @@ pub fn walk(engine: &Engine, cpu: &Cpu) -> Result<Walk, ProbeError> {
             walk.mobjs.push(thinker);
             walk.slots.insert(at, walk.mobjs.len() as u32);
         } else {
+            split.get_or_insert(walk.mobjs.len() as u32);
             walk.sector_thinkers.push(thinker);
             walk.sector_slots
                 .insert(at, walk.sector_thinkers.len() as u32);
         }
         at = ram.u32(at + offsets.next, "a thinker's next link")?;
     }
+    walk.setup_things = split.unwrap_or(walk.mobjs.len() as u32);
     Ok(walk)
 }
 

@@ -231,6 +231,7 @@ fn game(row: &mut Row, frame: &Frame<'_>) -> Result<(), ProbeError> {
     row.put(next(), ram.i32(g.rndindex, "rndindex")?)?;
     row.put(next(), UNREADABLE)?;
     row.put(next(), UNREADABLE)?;
+    row.put(next(), frame.walk.setup_things)?;
     row.put(next(), ram.u32(g.paused, "paused")?)?;
     // The demo has ended once the engine has stopped playing one back.
     row.put(

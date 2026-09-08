@@ -158,6 +158,9 @@ fn bindings(db: &str) -> Tic {
     let think = player::think(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, think);
+    // The sector thinkers sit partway up the thinker list, so how many
+    // numbers they draw is known before the stage that steps over them.
+    tic.stage(lights::draws(&tic.state));
     let things = mobj::thinkers(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, things);
@@ -169,7 +172,7 @@ fn bindings(db: &str) -> Tic {
     let cross_plats = specials::cross_plats(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, cross_plats);
-    let thinkers = lights::thinkers(&tic.state);
+    let thinkers = lights::thinkers(&tic.state, "mt_light_index");
     let running = game::running(&tic.state);
     tic.stage_when(&running, thinkers);
     let planes = specials::planes(&tic.state);

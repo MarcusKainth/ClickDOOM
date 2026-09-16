@@ -3,7 +3,7 @@
 # Bumping the pin needs a `ci:` pull request carrying nightly deep-diff evidence.
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8.2.7@sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
+    image: clickhouse/clickhouse-server:26.8.6.5@sha256:a73b5c0fb6f88e02357aead0906ad53882b07e4d202327489798844ba745e64d
     container_name: clickdoom-ch
     ports:
       - "8123:8123"   # HTTP

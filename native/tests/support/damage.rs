@@ -10,6 +10,7 @@ use super::traverse::fixed_mul;
 
 const FRACUNIT: i64 = 1 << 16;
 /// `p_mobj.h`
+const MF_SOLID: i64 = 2;
 const MF_SHOOTABLE: i64 = 4;
 const MF_JUSTHIT: i64 = 64;
 const MF_NOGRAVITY: i64 = 512;
@@ -153,6 +154,9 @@ pub fn point_to_angle(dx: i64, dy: i64) -> i64 {
 /// `p_inter.c`: the damage tint stops here.
 const DAMAGECOUNT_LIMIT: i64 = 100;
 
+/// `d_player.h`: `PST_DEAD`.
+pub const PST_DEAD: i64 = 2;
+
 /// The player's own fields a hit reads and writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Player {
@@ -162,6 +166,7 @@ pub struct Player {
     pub damagecount: i64,
     /// The slot the hit is credited to, 0 for none.
     pub attacker: i64,
+    pub playerstate: i64,
 }
 
 impl Player {
@@ -186,6 +191,16 @@ impl Player {
         after.attacker = source;
         after.damagecount = (self.damagecount + damage).min(DAMAGECOUNT_LIMIT);
         (after, damage)
+    }
+
+    /// `P_KillMobj`'s player branch, for the fields a player has of its
+    /// own. The corpse's flags and its death frame are the same path any
+    /// target takes, and the weapon it drops is the psprite's.
+    pub fn killed(&self) -> Player {
+        Player {
+            playerstate: PST_DEAD,
+            ..self.clone()
+        }
     }
 }
 
@@ -285,10 +300,14 @@ impl World {
             };
             hurt.state = state;
             hurt.tics = (state_tics[state as usize] - (second & 3)).max(1);
-            // `P_KillMobj`'s own player branch is a different thing this
-            // does not run, so a hit that kills a player leaves the call
-            // stuck, over and above whatever the corpse's own frame does.
-            hurt.stuck = it.player != -1 || self.routine_is_unwritten(it.state, state);
+            // `P_KillMobj`'s player branch takes `MF_SOLID` off on top of
+            // what every corpse loses. The player's own death frames carry
+            // no routine, so the call is stuck on the same test as any
+            // other kill.
+            if it.player != -1 {
+                hurt.flags &= !MF_SOLID;
+            }
+            hurt.stuck = self.routine_is_unwritten(it.state, state);
             hurt.drop = match it.kind {
                 k if k == thing_type("MT_POSSESSED") || k == thing_type("MT_WOLFSS") => {
                     thing_type("MT_CLIP")

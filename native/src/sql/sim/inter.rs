@@ -9,6 +9,7 @@
 //! `P_DamageMobj` and `P_KillMobj` are here too: what a shot or a monster's
 //! own attack does to what it reaches.
 
+use super::player::PST_DEAD;
 use crate::sql::{bind, fixed};
 
 /// `p_inter.c`
@@ -859,6 +860,8 @@ const FALL_HEIGHT: i64 = 64 * FRACUNIT;
 const FALL_DAMAGE: i64 = 40;
 /// `d_player.h`
 const CF_GODMODE: i64 = 2;
+/// `p_mobj.h`
+const MF_SOLID: i64 = 2;
 /// `d_englsh.h`'s `skill_t`: `sk_baby`, one below the default `sk_medium`
 /// the demo header carries for `DEMO3`.
 const SK_BABY: i64 = 0;
@@ -928,6 +931,10 @@ pub mod hurt {
     /// that target left, for a later hit on the same target to carry on
     /// from rather than overwrite with the tic-start arrays.
     pub const HIT_RESULTS: usize = 25;
+    /// `player->playerstate`, which a hit that kills the player leaves at
+    /// `PST_DEAD`. Sits behind [`HIT_RESULTS`] rather than beside the
+    /// other `PL_` fields so nothing else in the tuple renumbers.
+    pub const PL_PLAYERSTATE: usize = 26;
 }
 
 /// The ClickHouse type of one [`hurt::HIT_RESULTS`] entry: [`hurt::HEALTH`]
@@ -941,7 +948,7 @@ pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int
                              Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8, Int32, \
                              Int32, Int32, Int32, UInt32, UInt8, UInt8, Array(UInt32), \
                              Array(Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
-                             Int32, UInt32, Int32)))";
+                             Int32, UInt32, Int32)), UInt8)";
 
 /// A call nobody made, for a caller that reads the first answer of a list
 /// that may be empty.
@@ -950,28 +957,32 @@ pub fn no_hurt() -> String {
         "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
-         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'))"
+         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
+         toUInt8(0))"
     )
 }
 
 /// The tic's own player fields, wrapped as a [`hurt`] tuple for the first
 /// [`damage_fold`] of the tic to start from: every other field the same as
 /// [`no_hurt`], since nothing but [`hurt::PL_HEALTH`] through
-/// [`hurt::PL_ATTACKER`] is ever read off a fold's own seed, and
-/// [`hurt::HIT_TARGETS`]/[`hurt::HIT_RESULTS`] start the tic empty.
+/// [`hurt::PL_ATTACKER`] and [`hurt::PL_PLAYERSTATE`] is ever read off a
+/// fold's own seed, and [`hurt::HIT_TARGETS`]/[`hurt::HIT_RESULTS`] start
+/// the tic empty.
 pub fn player_start(
     p_health: &str,
     p_armorpoints: &str,
     p_armortype: &str,
     p_damagecount: &str,
     p_attacker: &str,
+    p_playerstate: &str,
 ) -> String {
     format!(
         "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32({p_health}), toInt32({p_armorpoints}), \
          toInt32({p_armortype}), toInt32({p_damagecount}), toUInt32({p_attacker}), toUInt8(0), \
-         toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'))"
+         toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
+         toUInt8({p_playerstate}))"
     )
 }
 
@@ -1415,10 +1426,12 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
     value(
         "dm_corpse_flags",
         format!(
-            "toInt32(bitOr(bitAnd(dm_flags, if(dm_type != mt_skull, {}, {})), {}))",
+            "toInt32(bitAnd(bitOr(bitAnd(dm_flags, if(dm_type != mt_skull, {}, {})), {}), \
+             if(dm_is_player = 1, {}, -1)))",
             !(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY | MF_NOGRAVITY),
             !(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY),
             MF_CORPSE | MF_DROPOFF,
+            !MF_SOLID,
         ),
     );
     value(
@@ -1508,15 +1521,15 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
     // `A_Pain` and `A_Scream` only make a noise; any other leaves the call
     // stuck rather than guessed, which is what an `A_Chase` on a see frame
     // and an `A_Explode` on a barrel's death frame do. The player's own
-    // death is the same kind of stuck: `P_KillMobj`'s player branch is not
-    // written here.
+    // death frames carry no routine, so a killing hit on the player rests
+    // on the same test as any other.
     value(
         "dm_routine",
         "toInt32(if(dm_moves = 1, state_action[1 + dm_state], 0))".to_owned(),
     );
     value(
         "dm_stuck",
-        "toUInt8(dm_lands = 1 AND (dm_player_dies = 1 OR dm_sector11 = 1 \
+        "toUInt8(dm_lands = 1 AND (dm_sector11 = 1 \
          OR (dm_routine != 0 AND dm_routine != a_pain AND dm_routine != a_scream)))"
             .to_owned(),
     );
@@ -1625,6 +1638,13 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
             hurt::HIT_RESULTS,
             hurt::HIT_RESULTS,
         ),
+        // `P_KillMobj`'s player branch. The flags and the death frame are
+        // what the corpse path above already writes for any target;
+        // this is the field only a player has.
+        format!(
+            "toUInt8(if(dm_player_dies = 1, {PST_DEAD}, {player}.{}))",
+            hurt::PL_PLAYERSTATE,
+        ),
     ];
     (values, format!("({})", members.join(", ")))
 }
@@ -1724,17 +1744,39 @@ mod damage_tests {
         assert!(!chases.contains("dm_inflictor"), "{chases}");
     }
 
-    /// A hit that would kill the player leaves the call stuck rather than
-    /// guessed, because `P_KillMobj`'s player branch is not written here.
+    /// A hit that kills the player rests on the same routine test as any
+    /// other kill, since the player's own death frames carry no routine.
+    /// The sector 11 clamp is still a path this does not write.
     #[test]
-    fn a_hit_that_would_kill_the_player_leaves_the_call_stuck() {
-        let (values, _) = damaged(&world(), "dm_held");
+    fn a_hit_that_kills_the_player_is_not_stuck_for_being_a_player_s() {
+        let (values, body) = damaged(&world(), "dm_held");
         let stuck = values
             .iter()
             .find(|(name, _)| name == "dm_stuck")
             .expect("the call names what leaves it stuck");
-        assert!(stuck.1.contains("dm_player_dies = 1"), "{stuck:?}");
+        assert!(!stuck.1.contains("dm_player_dies"), "{stuck:?}");
         assert!(stuck.1.contains("dm_sector11 = 1"), "{stuck:?}");
+        assert!(
+            body.contains(&format!("if(dm_player_dies = 1, {PST_DEAD},")),
+            "the kill still leaves the player dead: {body}"
+        );
+    }
+
+    /// `P_KillMobj`'s player branch takes `MF_SOLID` off the corpse, over
+    /// and above the flags every corpse loses.
+    #[test]
+    fn a_dead_player_s_corpse_is_no_longer_solid() {
+        let (values, _) = damaged(&world(), "dm_held");
+        let flags = values
+            .iter()
+            .find(|(name, _)| name == "dm_corpse_flags")
+            .expect("the call names what a corpse carries");
+        assert!(
+            flags
+                .1
+                .contains(&format!("if(dm_is_player = 1, {}, -1)", !MF_SOLID)),
+            "{flags:?}"
+        );
     }
 
     /// The player's own armour, health, attacker and damage tint are
@@ -1883,12 +1925,12 @@ mod damage_tests {
         assert_eq!(depth, 0, "{sql}");
     }
 
-    /// [`HURT_TYPE`]'s own last field is [`HIT_RESULT_TYPE`] spelled a
-    /// second time, since a `const` cannot format one into the other.
-    /// This fails if the two are ever edited apart.
+    /// [`HURT_TYPE`] spells [`HIT_RESULT_TYPE`] a second time, since a
+    /// `const` cannot format one into the other. This fails if the two are
+    /// ever edited apart.
     #[test]
-    fn hurt_type_s_own_last_field_is_hit_result_type() {
-        let wrapped = format!("Array({HIT_RESULT_TYPE}))");
-        assert!(HURT_TYPE.ends_with(&wrapped), "{HURT_TYPE}\n{wrapped}");
+    fn hurt_type_spells_hit_result_type_a_second_time() {
+        let wrapped = format!("Array({HIT_RESULT_TYPE})");
+        assert!(HURT_TYPE.contains(&wrapped), "{HURT_TYPE}\n{wrapped}");
     }
 }

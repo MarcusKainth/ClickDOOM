@@ -1,8 +1,10 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
+use super::player::PST_DEAD;
 use super::{
-    State, attacks, enemy, inter, maputl, mask, missile, player, shoot, sight, specials, unresolved,
+    State, attacks, enemy, inter, maputl, mask, missile, player, pspr, shoot, sight, specials,
+    unresolved,
 };
 use crate::sql::Statement;
 use crate::sql::bind;
@@ -1547,6 +1549,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
                 &s("p_armortype"),
                 &s("p_damagecount"),
                 &s("p_attacker"),
+                &s("p_playerstate"),
             ),
             &hurting,
         ),
@@ -1777,6 +1780,14 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         skill: "skill",
     };
     bind("tk_drops", spawn_mobj("tk_drop_asks", &tk_spawning));
+    // `P_DropWeapon`, before the writeback, because it reads the tic's own
+    // starting `p_playerstate` and the writeback is what moves it.
+    for (name, expr) in pspr::drop_weapon(
+        state,
+        &format!("tk_players.{} = {PST_DEAD}", inter::hurt::PL_PLAYERSTATE),
+    ) {
+        bind(&name, expr);
+    }
     for (name, expr) in player::hurt_writeback("tk_players") {
         bind(&name, expr);
     }
@@ -1969,6 +1980,10 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
                         "arrayExists(t -> t.{} = 1, tk_thoughts)",
                         missile::thought::STUCK
                     ),
+                ),
+                (
+                    unresolved::PSP_STUCK,
+                    &format!("{} = 1", pspr::dropped::STUCK),
                 ),
                 (
                     unresolved::PLAYER_DIES,

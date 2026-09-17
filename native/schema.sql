@@ -867,6 +867,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_stage
     rndindex       UInt8,
     next_seq       UInt32,
     next_linkseq   UInt32,
+    setup_things   UInt32,
     paused         UInt8,
     demo_end       UInt8,
     totalkills     Int32,
@@ -1039,11 +1040,13 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_stage
     dbg_ran   Array(UInt32),
     dbg_prnd  Array(UInt8),
 
-    -- Past the contract: `cross_dispatch`'s own crossing inputs,
-    -- neither a `native_state` column, read back under these same bare
+    -- Past the contract: `cross_dispatch`'s own crossing inputs, and
+    -- where the sector thinkers start reading the random table. None is
+    -- a `native_state` column; all are read back under these same bare
     -- names by the second statement rather than through `state`.
     px_crossed_line  Int64,
-    tx_crossed_line  Array(Int64)
+    tx_crossed_line  Array(Int64),
+    mt_light_index   UInt8
 )
 ENGINE = Join(ANY, LEFT, tic)
 SETTINGS join_any_take_last_row = 1;

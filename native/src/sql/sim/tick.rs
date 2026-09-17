@@ -36,12 +36,15 @@ pub const STAGE_TABLE: &str = "native_stage";
 
 /// `name, type` for each column past the contract that [`STAGE_TABLE`]
 /// carries. `cross_dispatch`'s own crossing inputs: the player's own
-/// crossed line and the moved things' own, neither a `native_state`
-/// column, both read back under these same bare names rather than through
-/// `state`.
-pub const STAGE_EXTRA_COLUMNS: [(&str, &str); 2] = [
+/// crossed line and the moved things' own. `mt_light_index` is where the
+/// sector thinkers start reading the random table, which the mobj stage
+/// works out from arrays only it holds. None of the three is a
+/// `native_state` column, and all three are read back under these same
+/// bare names rather than through `state`.
+pub const STAGE_EXTRA_COLUMNS: [(&str, &str); 3] = [
     ("px_crossed_line", "Int64"),
     ("tx_crossed_line", "Array(Int64)"),
+    ("mt_light_index", "UInt8"),
 ];
 
 /// What a tic command comes from: the demo lump, or the keys and mouse
@@ -375,6 +378,39 @@ mod tests {
         assert!(stage2.contains("WHERE tic > 0"));
         assert!(stage2.contains("joinGet('nat.native_stage', 'leveltime', toUInt32(tic))"));
         assert!(stage2.contains("INSERT INTO nat.native_state"));
+    }
+
+    /// A `Join` table refuses `ALTER TABLE ... ADD COLUMN`, so
+    /// `native_stage`'s column list is kept beside `native_state`'s by
+    /// hand. A column added to one and not the other only shows up when a
+    /// statement runs, so this reads both lists out of the schema.
+    #[test]
+    fn the_stage_table_carries_the_contract_and_the_staged_scratch() {
+        let columns = |table: &str| -> Vec<(String, String)> {
+            crate::sql::schema_columns()
+                .into_iter()
+                .filter(|(declared, _, _)| *declared == table)
+                .map(|(_, column, kind)| (column, kind))
+                .collect()
+        };
+        let extra: Vec<(String, String)> = STAGE_EXTRA_COLUMNS
+            .iter()
+            .map(|(name, kind)| ((*name).to_owned(), (*kind).to_owned()))
+            .collect();
+        let want = [columns("native_state"), extra].concat();
+        let got = columns(STAGE_TABLE);
+        let only_in = |a: &[(String, String)], b: &[(String, String)]| -> Vec<String> {
+            a.iter()
+                .filter(|column| !b.contains(column))
+                .map(|(name, kind)| format!("{name} {kind}"))
+                .collect()
+        };
+        assert_eq!(
+            (only_in(&want, &got), only_in(&got, &want)),
+            (Vec::new(), Vec::new()),
+            "{STAGE_TABLE} is missing the first list and carries the second              beyond native_state and the staged scratch"
+        );
+        assert_eq!(want, got, "{STAGE_TABLE} declares its columns out of order");
     }
 
     /// One walk of the blockmap for the things and one for the lines is

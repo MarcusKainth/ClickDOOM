@@ -30,6 +30,7 @@ use serde::Deserialize;
 
 mod support;
 
+use support::damage::Player;
 use support::db::Fixture;
 use support::seed;
 
@@ -68,6 +69,18 @@ const ARMS: [(&str, u32, i64); 3] = [
     ("blue_armor", 400, ARMOR_BLUE),
 ];
 
+/// The same three arms for a claw that kills. A claw's own damage is three
+/// times one to eight, and blue armour saves the largest share of it, so
+/// one point of health dies to every roll in every arm.
+const KILLING_ARMS: [(&str, u32, i64); 3] = [
+    ("no_armor", 500, ARMOR_NONE),
+    ("green_armor", 600, ARMOR_GREEN),
+    ("blue_armor", 700, ARMOR_BLUE),
+];
+
+/// The health both the player and its mobj start a killing arm with.
+const DYING_HEALTH: i32 = 1;
+
 #[derive(Row, Deserialize)]
 struct Hit {
     tic: u32,
@@ -92,11 +105,55 @@ fn put(column: &'static str, slot: usize, value: String, cast: &str) -> (&'stati
     )
 }
 
-#[tokio::test]
-async fn a_claw_reaches_the_player_through_its_own_armour() {
+/// The imp beside the player in the frame whose next carries the routine,
+/// with one tic of wait left on it, and the player holding `health` on
+/// both the player's own field and its mobj's.
+fn claw_overrides(armortype: i64, health: i32) -> Vec<(&'static str, String)> {
+    vec![
+        put(
+            "m_x",
+            ATTACKER,
+            format!("p.m_x[p.p_mo] + toInt32({NEAR})"),
+            "toInt32",
+        ),
+        put("m_y", ATTACKER, "p.m_y[p.p_mo]".to_owned(), "toInt32"),
+        put("m_z", ATTACKER, "p.m_z[p.p_mo]".to_owned(), "toInt32"),
+        put("m_state", ATTACKER, FACE.to_string(), "toInt32"),
+        put("m_tics", ATTACKER, "1".to_owned(), "toInt32"),
+        put("m_target", ATTACKER, "p.p_mo".to_owned(), "toUInt32"),
+        (
+            "m_health",
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = p.p_mo, {health}, v)), \
+                 p.m_health, arrayEnumerate(p.m_health))"
+            ),
+        ),
+        ("p_health", format!("toInt32({health})")),
+        ("p_armortype", format!("toInt32({armortype})")),
+        (
+            "p_armorpoints",
+            format!(
+                "toInt32({})",
+                if armortype == ARMOR_NONE {
+                    0
+                } else {
+                    STARTING_ARMORPOINTS
+                }
+            ),
+        ),
+        ("p_damagecount", "toInt32(0)".to_owned()),
+        ("p_attacker", "toUInt32(0)".to_owned()),
+    ]
+}
+
+/// Seeds one claw arm per entry in `arms`, runs the tic after each and
+/// reads both rows back. The whole walk to [`BEFORE`] is paid once, so
+/// every arm's imp draws from the same `prndindex` and rolls the same
+/// damage.
+async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<Hit> {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_player_damage").await;
+    let fixture = Fixture::create(&format!("sim_player_damage_{suffix}")).await;
     let db = fixture.database.clone();
 
     let mut plan = load::plan(&db, &wad);
@@ -110,39 +167,10 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
     support::resident::run(&fixture, &walk, false).await;
 
     let mut statements: Vec<sql::Statement> = Vec::new();
-    for (_, at, armortype) in ARMS {
-        let overrides = [
-            // The imp beside the player, in the frame whose next carries
-            // the routine, with one tic of wait left on it.
-            put(
-                "m_x",
-                ATTACKER,
-                format!("p.m_x[p.p_mo] + toInt32({NEAR})"),
-                "toInt32",
-            ),
-            put("m_y", ATTACKER, "p.m_y[p.p_mo]".to_owned(), "toInt32"),
-            put("m_z", ATTACKER, "p.m_z[p.p_mo]".to_owned(), "toInt32"),
-            put("m_state", ATTACKER, FACE.to_string(), "toInt32"),
-            put("m_tics", ATTACKER, "1".to_owned(), "toInt32"),
-            put("m_target", ATTACKER, "p.p_mo".to_owned(), "toUInt32"),
-            ("p_health", "toInt32(100)".to_owned()),
-            ("p_armortype", format!("toInt32({armortype})")),
-            (
-                "p_armorpoints",
-                format!(
-                    "toInt32({})",
-                    if armortype == ARMOR_NONE {
-                        0
-                    } else {
-                        STARTING_ARMORPOINTS
-                    }
-                ),
-            ),
-            ("p_damagecount", "toInt32(0)".to_owned()),
-            ("p_attacker", "toUInt32(0)".to_owned()),
-        ];
+    for (_, at, armortype) in arms {
+        let overrides = claw_overrides(*armortype, health);
         statements.extend(
-            seed::row(&db, at, BEFORE, &overrides)
+            seed::row(&db, *at, BEFORE, &overrides)
                 .into_iter()
                 .map(sql::Statement::sql),
         );
@@ -156,7 +184,7 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
         panic!("{error}");
     }
 
-    let wanted: Vec<String> = ARMS
+    let wanted: Vec<String> = arms
         .iter()
         .flat_map(|(_, at, _)| [at.to_string(), (at + 1).to_string()])
         .collect();
@@ -172,9 +200,15 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
     fixture.finish().await;
     assert_eq!(
         rows.len(),
-        ARMS.len() * 2,
+        arms.len() * 2,
         "a seeded row and a tic from it for every arm"
     );
+    rows
+}
+
+#[tokio::test]
+async fn a_claw_reaches_the_player_through_its_own_armour() {
+    let rows = claw_arms("living", &ARMS, 100).await;
     let at = |tic: u32| {
         rows.iter()
             .find(|row| row.tic == tic)
@@ -241,6 +275,66 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
             after.p_damagecount,
             raw_damage - saved,
             "{name}: the tint takes the post-armour damage"
+        );
+    }
+}
+
+/// A claw that kills the player writes the same health, armour, tint and
+/// attacker a survivable hit writes.
+///
+/// The tic still refuses, since `P_KillMobj`'s player branch is not
+/// written, so this reads the refused row's own fields rather than a
+/// parity run, which skips a tic `unresolved` names.
+#[tokio::test]
+async fn a_claw_that_kills_the_player_still_writes_its_fields() {
+    let rows = claw_arms("killing", &KILLING_ARMS, DYING_HEALTH).await;
+    let at = |tic: u32| {
+        rows.iter()
+            .find(|row| row.tic == tic)
+            .unwrap_or_else(|| panic!("no row for tic {tic}"))
+    };
+    let refused = sim::unresolved::DM_STUCK | sim::unresolved::PLAYER_DIES;
+
+    // The bare arm names the roll the other two share: with no armour the
+    // tint takes the whole hit, so `p_damagecount` is the claw's own
+    // damage. `A_TroopAttack` rolls three times one to eight.
+    let (_, bare_at, _) = KILLING_ARMS[0];
+    let raw_damage = i64::from(at(bare_at + 1).p_damagecount);
+    assert!(
+        (3..=24).contains(&raw_damage) && raw_damage % 3 == 0,
+        "the claw's own damage is three times one to eight: {raw_damage}"
+    );
+
+    for (name, tic, armortype) in KILLING_ARMS {
+        let before = Player {
+            health: i64::from(DYING_HEALTH),
+            armorpoints: match armortype {
+                ARMOR_NONE => 0,
+                _ => STARTING_ARMORPOINTS,
+            },
+            armortype,
+            damagecount: 0,
+            attacker: 0,
+        };
+        let (want, taken) = before.hurt(raw_damage, ATTACKER as i64);
+        let after = at(tic + 1);
+        assert_eq!(after.unresolved, refused, "{name}");
+        assert_eq!(
+            Player {
+                health: i64::from(after.p_health),
+                armorpoints: i64::from(after.p_armorpoints),
+                armortype: i64::from(after.p_armortype),
+                damagecount: i64::from(after.p_damagecount),
+                attacker: i64::from(after.p_attacker),
+            },
+            want,
+            "{name}: the fields p_inter.c's own player block leaves"
+        );
+        assert_eq!(after.p_health, 0, "{name}: the health clamps at zero");
+        assert_eq!(
+            i64::from(after.player_health),
+            i64::from(DYING_HEALTH) - taken,
+            "{name}: the mobj's own health takes the same damage and keeps going past zero"
         );
     }
 }

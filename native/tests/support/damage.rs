@@ -140,6 +140,45 @@ pub fn point_to_angle(dx: i64, dy: i64) -> i64 {
     angle & (ANGLE_WRAP - 1)
 }
 
+/// `p_inter.c`: the damage tint stops here.
+const DAMAGECOUNT_LIMIT: i64 = 100;
+
+/// The player's own fields a hit reads and writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Player {
+    pub health: i64,
+    pub armorpoints: i64,
+    pub armortype: i64,
+    pub damagecount: i64,
+    /// The slot the hit is credited to, 0 for none.
+    pub attacker: i64,
+}
+
+impl Player {
+    /// `P_DamageMobj`'s player block, for a hit that reaches a player who
+    /// is neither in god mode nor invulnerable. Answers the fields it
+    /// leaves and the damage that goes on to reach the mobj's own health.
+    pub fn hurt(&self, damage: i64, source: i64) -> (Player, i64) {
+        let mut after = self.clone();
+        let mut damage = damage;
+        if self.armortype != 0 {
+            let saved = damage / if self.armortype == 1 { 3 } else { 2 };
+            let saved = if self.armorpoints <= saved {
+                after.armortype = 0;
+                self.armorpoints
+            } else {
+                saved
+            };
+            after.armorpoints = self.armorpoints - saved;
+            damage -= saved;
+        }
+        after.health = (self.health - damage).max(0);
+        after.attacker = source;
+        after.damagecount = (self.damagecount + damage).min(DAMAGECOUNT_LIMIT);
+        (after, damage)
+    }
+}
+
 /// The engine tables and the state a call reads around the two things.
 pub struct World {
     pub mobjs: Vec<Mobj>,

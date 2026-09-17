@@ -682,7 +682,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         ("m_x", "toInt32(mv_x)"),
         ("m_y", "toInt32(mv_y)"),
         ("m_z", "toInt32(mv_z)"),
-        ("m_angle", "toUInt32(pl_new_angle)"),
+        (
+            "m_angle",
+            "toUInt32(if(psp_punch_hit = 1, psp_punch_angle, pl_new_angle))",
+        ),
         ("m_momx", "toInt32(mv_momx)"),
         ("m_momy", "toInt32(mv_momy)"),
         ("m_momz", "toInt32(mv_momz)"),

@@ -1398,11 +1398,11 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         "dm_player_dies",
         "toUInt8(dm_is_player = 1 AND dm_killed = 1)".to_owned(),
     );
-    // A living player actually takes this hit: not immune, not a miss,
-    // and not the death this leaves stuck instead of guessing at.
+    // The player takes this hit: not immune, and not a miss. A killing
+    // hit writes the same fields a survivable one does.
     value(
         "dm_player_hit",
-        "toUInt8(dm_lands = 1 AND dm_is_player = 1 AND dm_player_dies = 0)".to_owned(),
+        "toUInt8(dm_lands = 1 AND dm_is_player = 1)".to_owned(),
     );
     // The second draw sits behind the fall's, where one was made.
     let second = format!(
@@ -1726,8 +1726,6 @@ mod damage_tests {
 
     /// A hit that would kill the player leaves the call stuck rather than
     /// guessed, because `P_KillMobj`'s player branch is not written here.
-    /// A living player's own hit is not: its armour, health, attacker and
-    /// damage tint are the fields threaded through `player`.
     #[test]
     fn a_hit_that_would_kill_the_player_leaves_the_call_stuck() {
         let (values, _) = damaged(&world(), "dm_held");
@@ -1737,6 +1735,24 @@ mod damage_tests {
             .expect("the call names what leaves it stuck");
         assert!(stuck.1.contains("dm_player_dies = 1"), "{stuck:?}");
         assert!(stuck.1.contains("dm_sector11 = 1"), "{stuck:?}");
+    }
+
+    /// The player's own armour, health, attacker and damage tint are
+    /// written for every hit that lands on the player, the killing one
+    /// included.
+    #[test]
+    fn a_killing_hit_writes_the_player_s_own_fields_too() {
+        let (values, body) = damaged(&world(), "dm_held");
+        let hit = values
+            .iter()
+            .find(|(name, _)| name == "dm_player_hit")
+            .expect("the call names a hit the player takes");
+        assert_eq!(hit.1, "toUInt8(dm_lands = 1 AND dm_is_player = 1)");
+        assert_eq!(
+            body.matches("dm_player_hit = 1").count(),
+            5,
+            "the health, both armour fields, the tint and the attacker: {body}"
+        );
     }
 
     /// A target this tic has already hit once leaves a later hit on it

@@ -380,6 +380,102 @@ mod tests {
         assert!(stage2.contains("INSERT INTO nat.native_state"));
     }
 
+    /// The count the mobj stage adds to a slot's base is what the light
+    /// fold goes on to draw. The two sit in different statements, so the
+    /// tic has to leave the sector thinkers alone between them, or append
+    /// only thinkers that draw nothing.
+    ///
+    /// The player's own use of a line runs ahead of the count, and a
+    /// crossing runs behind it in the second statement; both append. A
+    /// stage that writes a column is renamed to `s<n>_<column>`, so this
+    /// reads the binding names in the order the stages added them, and
+    /// follows what the crossing's own append reaches, since the kind it
+    /// writes sits in a binding of its own.
+    #[test]
+    fn nothing_drawing_joins_the_sector_thinkers_between_the_count_and_the_fold() {
+        use clickdoom_spec::native_state::sector_thinker_kind as kind;
+
+        let at = |bindings: &[(String, String)], want: &str| -> usize {
+            bindings
+                .iter()
+                .position(|(name, _)| name == want)
+                .unwrap_or_else(|| panic!("{want} is bound"))
+        };
+        let writes = |bindings: &[(String, String)], suffix: &str| -> Vec<(String, String)> {
+            bindings
+                .iter()
+                .filter(|(name, _)| name.ends_with(suffix) && !name.starts_with("prev_"))
+                .cloned()
+                .collect()
+        };
+
+        // Nothing writes either column after the count, so the row the
+        // first statement leaves is the one the count was taken over.
+        let stage1 = bindings_stage1("nat").bindings;
+        let count = at(&stage1, "lt_draws");
+        for suffix in ["_s_kind", "_s_count"] {
+            assert!(
+                writes(&stage1[count..], suffix).is_empty(),
+                "the first statement writes {suffix} after the count"
+            );
+            assert!(
+                !writes(&stage1[..count], suffix).is_empty(),
+                "nothing writes {suffix} at all, so this proves nothing"
+            );
+        }
+
+        // A crossing appends a door, a plat or a floor ahead of the fold.
+        // None of the three reaches the switch that draws, so the count
+        // the first statement took still says how many numbers the fold
+        // takes.
+        let stage2 = bindings_stage2("nat").bindings;
+        let fold = at(&stage2, "lights");
+        let before = &stage2[..fold];
+        let appends = writes(before, "_s_kind");
+        assert!(
+            !appends.is_empty(),
+            "nothing appends, so this proves nothing"
+        );
+        for (name, expr) in appends {
+            let reaches = reached(&expr, before);
+            let holds = |written: &str| reaches.iter().any(|text| text.contains(written));
+            for drawing in [kind::LIGHT_FLASH, kind::FIRE_FLICKER] {
+                assert!(
+                    !holds(&format!("toUInt8({drawing})")),
+                    "{name} appends a thinker of kind {drawing}, which draws"
+                );
+            }
+            // The kinds a crossing does append are reached this way, so a
+            // scan that found none of them would be finding nothing.
+            assert!(
+                holds(&format!("toUInt8({})", kind::DOOR)),
+                "{name} reaches no appended kind at all"
+            );
+        }
+    }
+
+    /// The text of `expr` and of every binding it reaches through the
+    /// bindings it names, so a constant a chain of aliases ends at is in
+    /// one of the strings this returns. The chain is walked by name
+    /// rather than by substitution, which would grow the text by the
+    /// product of the chain.
+    fn reached(expr: &str, bindings: &[(String, String)]) -> Vec<String> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut texts = vec![expr.to_owned()];
+        let mut queue = vec![expr.to_owned()];
+        while let Some(text) = queue.pop() {
+            for (name, of) in bindings {
+                if seen.contains(&name.as_str()) || !mentions(&text, name) {
+                    continue;
+                }
+                seen.push(name);
+                texts.push(of.clone());
+                queue.push(of.clone());
+            }
+        }
+        texts
+    }
+
     /// A `Join` table refuses `ALTER TABLE ... ADD COLUMN`, so
     /// `native_stage`'s column list is kept beside `native_state`'s by
     /// hand. A column added to one and not the other only shows up when a

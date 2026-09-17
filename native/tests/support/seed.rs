@@ -11,6 +11,9 @@ use clickdoom_native::sql::sim;
 /// The statements that write a copy of the row at `from` under `tic`, with
 /// each named column replaced by its expression. An expression may name
 /// the source row's columns through the `p` alias.
+///
+/// A borrowed slot keeps every field the arm does not override, so an arm
+/// that changes a thing's type sets its radius and height with it.
 pub fn row(db: &str, tic: u32, from: u32, overrides: &[(&str, String)]) -> Vec<String> {
     let mut named: Vec<&str> = Vec::new();
     for (column, _) in overrides {

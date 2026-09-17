@@ -71,6 +71,16 @@ lookahead= report it. A run without --stop-at-frame goes until the demo
 lump runs out of commands, which ends the run the same as reaching probe's
 last frame does.
 
+--times-out writes what a run spent, one line per tic and one per frame,
+as a TSV of kind, frame, tic, stage1_us, stage2_us, render_us and poll_us.
+A `tic` line splits the simulation across the two resident statements: the
+first statement's share runs to its `native_stage` row being readable and
+the second's is the rest. A `frame` line carries the renderer's own wait
+and the read-backs inside it. Columns a line does not use hold `-`. The
+tics and the frames are counted separately because the simulation runs
+ahead of the screen by up to --lookahead tics, so neither is a line of the
+other.
+
 --no-window runs headless, which is what --frame-dir and --hash-out are for:
 a PPM per frame, built in SQL, and a TSV of frame, tic and frame hash. The
 PPM is a query of its own per frame and the progress line reports what it
@@ -104,6 +114,9 @@ pub struct DemoCmd {
     /// Write `frame tic fb_hash` per frame here
     #[arg(long, value_name = "PATH")]
     pub hash_out: Option<PathBuf>,
+    /// Write what each tic and each frame took here, one line each
+    #[arg(long, value_name = "PATH")]
+    pub times_out: Option<PathBuf>,
     /// Stop once this frame has been drawn
     #[arg(long, value_name = "N")]
     pub stop_at_frame: Option<u32>,
@@ -385,6 +398,7 @@ async fn draw(
     run.counters.frames += 1;
     run.counters.render += waited.waited;
     run.counters.poll += waited.read;
+    out.frame_time(row.frame, row.tic, waited.waited, waited.read)?;
     if run.diverged.is_none()
         && cmd.expect_probe_fbhash
         && waited.frame.fb_hash != row.probe_fb_hash
@@ -419,7 +433,11 @@ enum Stop {
 
 /// One tic the feeder found, or how it stopped.
 enum TicOutcome {
-    Committed { elapsed: Duration },
+    Committed {
+        tic: u32,
+        elapsed: Duration,
+        staged: Duration,
+    },
     Stopped(Stop),
 }
 
@@ -470,7 +488,9 @@ async fn feed_ahead(session: &Session, highest: Arc<AtomicU32>, tx: mpsc::Sender
         highest.store(tic, Ordering::Relaxed);
         let sent = tx
             .send(TicOutcome::Committed {
+                tic,
                 elapsed: ran.elapsed,
+                staged: ran.staged,
             })
             .await;
         // The paced loop stopped reading, at `--stop-at-frame` or the
@@ -482,6 +502,23 @@ async fn feed_ahead(session: &Session, highest: Arc<AtomicU32>, tx: mpsc::Sender
     }
 }
 
+/// Folds one committed tic into the run's counters and, for a run that
+/// keeps them, writes what its two statements took.
+fn committed(
+    run: &mut Run,
+    out: &mut Output,
+    tic: u32,
+    elapsed: Duration,
+    staged: Duration,
+) -> Result<(), Stop> {
+    run.counters.tics += 1;
+    if let Some(sim) = &mut run.counters.sim {
+        *sim += elapsed;
+    }
+    out.tic_time(tic, elapsed, staged)
+        .map_err(|failure| Stop::Failed(failure.message))
+}
+
 /// Reads committed tics until `tic` is one of them, folding each into the
 /// run's own tic count and simulation time as it goes.
 async fn advance_to(
@@ -489,19 +526,19 @@ async fn advance_to(
     highest: &AtomicU32,
     tic: u32,
     run: &mut Run,
+    out: &mut Output,
 ) -> Result<(), Stop> {
     loop {
-        drain_ready(rx, run)?;
+        drain_ready(rx, run, out)?;
         if highest.load(Ordering::Relaxed) >= tic {
             return Ok(());
         }
         match rx.recv().await {
-            Some(TicOutcome::Committed { elapsed }) => {
-                run.counters.tics += 1;
-                if let Some(sim) = &mut run.counters.sim {
-                    *sim += elapsed;
-                }
-            }
+            Some(TicOutcome::Committed {
+                tic,
+                elapsed,
+                staged,
+            }) => committed(run, out, tic, elapsed, staged)?,
             Some(TicOutcome::Stopped(stop)) => return Err(stop),
             None => {
                 return Err(Stop::Failed(
@@ -521,15 +558,18 @@ async fn advance_to(
 /// only catch up whenever a later frame happens to need a tic far enough
 /// ahead to drain past them, and the run's very last tics never get
 /// credited at all.
-fn drain_ready(rx: &mut mpsc::Receiver<TicOutcome>, run: &mut Run) -> Result<(), Stop> {
+fn drain_ready(
+    rx: &mut mpsc::Receiver<TicOutcome>,
+    run: &mut Run,
+    out: &mut Output,
+) -> Result<(), Stop> {
     loop {
         match rx.try_recv() {
-            Ok(TicOutcome::Committed { elapsed }) => {
-                run.counters.tics += 1;
-                if let Some(sim) = &mut run.counters.sim {
-                    *sim += elapsed;
-                }
-            }
+            Ok(TicOutcome::Committed {
+                tic,
+                elapsed,
+                staged,
+            }) => committed(run, out, tic, elapsed, staged)?,
             Ok(TicOutcome::Stopped(stop)) => return Err(stop),
             Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
             Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -614,7 +654,7 @@ async fn drawing_loop(
     // before the clock starts, the way every paced native run's first
     // frame is.
     let tic0 = schedule::sim_tic(0, melt_frames);
-    match advance_to(rx, highest, tic0, run).await {
+    match advance_to(rx, highest, tic0, run, out).await {
         Ok(()) => {}
         Err(Stop::DemoEnded) => return Ok(Played { diverged: None }),
         Err(Stop::Refused(refusal)) => return Err(gate(refusal.to_string())),
@@ -649,7 +689,7 @@ async fn drawing_loop(
             break;
         }
         let tic = schedule::sim_tic(frame, melt_frames);
-        match advance_to(rx, highest, tic, run).await {
+        match advance_to(rx, highest, tic, run, out).await {
             Ok(()) => {}
             Err(Stop::DemoEnded) => break,
             Err(Stop::Refused(refusal)) => return Err(gate(refusal.to_string())),
@@ -684,7 +724,7 @@ async fn drawing_loop(
     // needed, so the closing line counts every tic it actually ran ahead
     // to. A stop past the last frame this run asked for is not this run's
     // to report.
-    let _ = drain_ready(rx, run);
+    let _ = drain_ready(rx, run, out);
     run.counters.late = pace.late();
     eprintln!("{}", stats.finish(run.counters));
     Ok(Played {
@@ -725,6 +765,7 @@ async fn draw_sim(
     run.counters.frames += 1;
     run.counters.render += waited.waited;
     run.counters.poll += waited.read;
+    out.frame_time(frame, tic, waited.waited, waited.read)?;
     if run.diverged.is_none()
         && let Some(theirs) = expect.and_then(|expect| expect.get(&frame))
         && waited.frame.fb_hash != *theirs
@@ -747,6 +788,7 @@ struct Output {
     window: Option<Window>,
     frame_dir: Option<PathBuf>,
     hashes: Option<(PathBuf, std::io::BufWriter<std::fs::File>)>,
+    times: Option<(PathBuf, std::io::BufWriter<std::fs::File>)>,
 }
 
 impl Output {
@@ -773,10 +815,25 @@ impl Output {
                 Some((path.clone(), writer))
             }
         };
+        let times = match &cmd.times_out {
+            None => None,
+            Some(path) => {
+                let file = std::fs::File::create(path)
+                    .map_err(|err| failed(format!("creating {}: {err}", path.display())))?;
+                let mut writer = std::io::BufWriter::new(file);
+                writeln!(
+                    writer,
+                    "kind\tframe\ttic\tstage1_us\tstage2_us\trender_us\tpoll_us"
+                )
+                .map_err(|err| failed(format!("writing {}: {err}", path.display())))?;
+                Some((path.clone(), writer))
+            }
+        };
         Ok(Output {
             window,
             frame_dir: cmd.frame_dir.clone(),
             hashes,
+            times,
         })
     }
 
@@ -810,6 +867,44 @@ impl Output {
         Ok(())
     }
 
+    /// One tic's line: what each of the two simulation statements took.
+    /// The first statement's share runs to its `native_stage` row being
+    /// readable, and the second's is whatever the tic took beyond it.
+    fn tic_time(&mut self, tic: u32, elapsed: Duration, staged: Duration) -> Result<(), Failure> {
+        let Some((path, writer)) = &mut self.times else {
+            return Ok(());
+        };
+        let stage2 = elapsed.saturating_sub(staged);
+        writeln!(
+            writer,
+            "tic\t-\t{tic}\t{}\t{}\t-\t-",
+            staged.as_micros(),
+            stage2.as_micros()
+        )
+        .map_err(|err| failed(format!("writing {}: {err}", path.display())))
+    }
+
+    /// One frame's line: what the renderer took, and the read-backs inside
+    /// it.
+    fn frame_time(
+        &mut self,
+        frame: u32,
+        tic: u32,
+        render: Duration,
+        poll: Duration,
+    ) -> Result<(), Failure> {
+        let Some((path, writer)) = &mut self.times else {
+            return Ok(());
+        };
+        writeln!(
+            writer,
+            "frame\t{frame}\t{tic}\t-\t-\t{}\t{}",
+            render.as_micros(),
+            poll.as_micros()
+        )
+        .map_err(|err| failed(format!("writing {}: {err}", path.display())))
+    }
+
     /// Whether the run should go on. A run with no window runs to its end.
     fn still_open(&self) -> bool {
         match &self.window {
@@ -819,13 +914,15 @@ impl Output {
     }
 
     fn finish(self) -> Result<(), Failure> {
-        let Some((path, mut writer)) = self.hashes else {
-            return Ok(());
-        };
-        writer
-            .flush()
-            .map_err(|err| failed(format!("writing {}: {err}", path.display())))?;
-        println!("{}", path.display());
+        for file in [self.hashes, self.times] {
+            let Some((path, mut writer)) = file else {
+                continue;
+            };
+            writer
+                .flush()
+                .map_err(|err| failed(format!("writing {}: {err}", path.display())))?;
+            println!("{}", path.display());
+        }
         Ok(())
     }
 }

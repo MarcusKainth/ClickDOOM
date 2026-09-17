@@ -82,6 +82,12 @@ const KILLING_ARMS: [(&str, u32, i64); 3] = [
 /// The health both the player and its mobj start a killing arm with.
 const DYING_HEALTH: i32 = 1;
 
+/// How many tics a killing arm runs from its seeded row. The second is
+/// what reads the tic after a death, which `P_DeathThink` owns and this
+/// does not run. A surviving arm runs one, since each tic past the first
+/// costs the tic statement's own analysis again.
+const KILLING_TICS: u32 = 2;
+
 /// `p_mobj.h`
 const MF_SOLID: i32 = 2;
 const MF_SHOOTABLE: i32 = 4;
@@ -196,11 +202,11 @@ fn claw_overrides(armortype: i64, health: i32) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Seeds one claw arm per entry in `arms`, runs the tic after each and
-/// reads both rows back. The whole walk to [`BEFORE`] is paid once, so
+/// Seeds one claw arm per entry in `arms`, runs `tics` tics from each and
+/// reads every row back. The whole walk to [`BEFORE`] is paid once, so
 /// every arm's imp draws from the same `prndindex` and rolls the same
 /// damage.
-async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<Hit> {
+async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32, tics: u32) -> Vec<Hit> {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
     let fixture = Fixture::create(&format!("sim_player_damage_{suffix}")).await;
@@ -224,10 +230,12 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
                 .into_iter()
                 .map(sql::Statement::sql),
         );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
+        for step in 1..=tics {
+            statements.extend(sim::tick::run_statement(
+                &db,
+                &[Input::keys(at + step, 0, (0, 0))],
+            ));
+        }
     }
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
@@ -236,7 +244,7 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
 
     let wanted: Vec<String> = arms
         .iter()
-        .flat_map(|(_, at, _)| [at.to_string(), (at + 1).to_string()])
+        .flat_map(|&(_, at, _)| (0..=tics).map(move |step| (at + step).to_string()))
         .collect();
     let rows: Vec<Hit> = fixture
         .rows(&format!(
@@ -254,15 +262,15 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
     fixture.finish().await;
     assert_eq!(
         rows.len(),
-        arms.len() * 2,
-        "a seeded row and a tic from it for every arm"
+        arms.len() * (tics as usize + 1),
+        "a seeded row and every tic run from it, for every arm"
     );
     rows
 }
 
 #[tokio::test]
 async fn a_claw_reaches_the_player_through_its_own_armour() {
-    let rows = claw_arms("living", &ARMS, 100).await;
+    let rows = claw_arms("living", &ARMS, 100, 1).await;
     let at = |tic: u32| {
         rows.iter()
             .find(|row| row.tic == tic)
@@ -336,19 +344,17 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
 /// A claw that kills the player writes the same health, armour, tint and
 /// attacker a survivable hit writes.
 ///
-/// The tic still refuses, on the death alone rather than on the damage
-/// call being stuck, so this reads the refused row's own fields rather
-/// than a parity run, which skips a tic `unresolved` names.
+/// The tic the kill lands on resolves, since `P_PlayerThink` had already
+/// taken its living branch by the time the hit arrived. The tic after it
+/// is `P_DeathThink`'s, which this does not run, and says so.
 #[tokio::test]
 async fn a_claw_that_kills_the_player_still_writes_its_fields() {
-    let rows = claw_arms("killing", &KILLING_ARMS, DYING_HEALTH).await;
+    let rows = claw_arms("killing", &KILLING_ARMS, DYING_HEALTH, KILLING_TICS).await;
     let at = |tic: u32| {
         rows.iter()
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("no row for tic {tic}"))
     };
-    let refused = sim::unresolved::PLAYER_DIES;
-
     // The bare arm names the roll the other two share: with no armour the
     // tint takes the whole hit, so `p_damagecount` is the claw's own
     // damage. `A_TroopAttack` rolls three times one to eight.
@@ -373,7 +379,10 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
         };
         let (want, taken) = before.hurt(raw_damage, ATTACKER as i64);
         let after = at(tic + 1);
-        assert_eq!(after.unresolved, refused, "{name}");
+        assert_eq!(
+            after.unresolved, 0,
+            "{name}: the tic the kill lands on is written whole"
+        );
         assert_eq!(
             Player {
                 health: i64::from(after.p_health),
@@ -442,6 +451,13 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
             after.weapon_sy,
             WEAPONTOP + LOWERSPEED,
             "{name}: and A_Lower takes one step down the screen"
+        );
+        // The tic after it is the one `P_DeathThink` owns, which this does
+        // not run, so it says so rather than writing a guess.
+        assert_eq!(
+            at(tic + 2).unresolved,
+            sim::unresolved::PLAYER_DEAD,
+            "{name}: the tic after the kill is P_DeathThink's"
         );
     }
 }

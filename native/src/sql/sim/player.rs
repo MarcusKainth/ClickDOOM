@@ -795,6 +795,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
                     (unresolved::PX_CROSSED, "px_crossed = 1"),
                     (unresolved::PX_MULTI_CROSSED, "px_crossed_count > 1"),
                     (unresolved::PL_HURTS, "pl_hurts = 1"),
+                    (
+                        unresolved::PLAYER_DEAD,
+                        &format!("{} = {PST_DEAD}", state.get("p_playerstate")),
+                    ),
                 ],
             ),
         ),
@@ -963,6 +967,26 @@ mod tests {
             expr.contains(&format!(
                 "if(pl_hurts = 1, toUInt64({}), toUInt64(0))",
                 unresolved::PL_HURTS
+            )),
+            "{expr}"
+        );
+    }
+
+    /// A tic that starts with the player dead runs `P_DeathThink` in place
+    /// of the rest of `P_PlayerThink`, which is not written, so the tic
+    /// says so. The tic a hit kills the player on is not one of these:
+    /// the stage reads the playerstate the tic began with.
+    #[test]
+    fn a_tic_that_starts_with_the_player_dead_says_so() {
+        let expr = think(&State::default())
+            .into_iter()
+            .find(|(name, _)| name == "now_unresolved")
+            .map(|(_, expr)| expr)
+            .expect("the stage writes now_unresolved");
+        assert!(
+            expr.contains(&format!(
+                "if(prev_p_playerstate = {PST_DEAD}, toUInt64({}), toUInt64(0))",
+                unresolved::PLAYER_DEAD
             )),
             "{expr}"
         );

@@ -918,23 +918,21 @@ pub mod hurt {
     pub const PL_DAMAGECOUNT: usize = 20;
     /// 0 for none, the same as [`hurting::SOURCE`].
     pub const PL_ATTACKER: usize = 21;
-    /// 1 where the hit leaves the player's own health at 0 or below.
-    pub const PL_DIES: usize = 22;
     /// 1 where the target's sector special is 11 and the damage reaches
     /// the clamp that keeps a hit there from killing outright.
-    pub const PL_SECTOR11: usize = 23;
+    pub const PL_SECTOR11: usize = 22;
     /// Every target a hit has landed on this tic, threaded the same way
     /// the player's own fields are.
-    pub const HIT_TARGETS: usize = 24;
+    pub const HIT_TARGETS: usize = 23;
     /// Each entry of [`HIT_TARGETS`]'s own latest answer, in the same
     /// order: the mobj fields (`HEALTH` through `THRESHOLD`) a hit on
     /// that target left, for a later hit on the same target to carry on
     /// from rather than overwrite with the tic-start arrays.
-    pub const HIT_RESULTS: usize = 25;
+    pub const HIT_RESULTS: usize = 24;
     /// `player->playerstate`, which a hit that kills the player leaves at
     /// `PST_DEAD`. Sits behind [`HIT_RESULTS`] rather than beside the
     /// other `PL_` fields so nothing else in the tuple renumbers.
-    pub const PL_PLAYERSTATE: usize = 26;
+    pub const PL_PLAYERSTATE: usize = 25;
 }
 
 /// The ClickHouse type of one [`hurt::HIT_RESULTS`] entry: [`hurt::HEALTH`]
@@ -946,7 +944,7 @@ const HIT_RESULT_TYPE: &str =
 /// through a fold or a wider tuple of its own.
 pub const HURT_TYPE: &str = "Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
                              Int32, UInt32, Int32, UInt8, UInt8, Int32, UInt32, UInt8, Int32, \
-                             Int32, Int32, Int32, UInt32, UInt8, UInt8, Array(UInt32), \
+                             Int32, Int32, Int32, UInt32, UInt8, Array(UInt32), \
                              Array(Tuple(Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, \
                              Int32, UInt32, Int32)), UInt8)";
 
@@ -957,7 +955,7 @@ pub fn no_hurt() -> String {
         "(toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), \
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), \
-         toUInt8(0), toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
+         toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
          toUInt8(0))"
     )
 }
@@ -981,7 +979,7 @@ pub fn player_start(
          toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toUInt8(0), toUInt8(0), toInt32(-1), \
          toUInt32(0), toUInt8(0), toInt32({p_health}), toInt32({p_armorpoints}), \
          toInt32({p_armortype}), toInt32({p_damagecount}), toUInt32({p_attacker}), toUInt8(0), \
-         toUInt8(0), CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
+         CAST([], 'Array(UInt32)'), CAST([], 'Array({HIT_RESULT_TYPE})'), \
          toUInt8({p_playerstate}))"
     )
 }
@@ -1624,7 +1622,6 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
             "toUInt32(if(dm_player_hit = 1, dm_source, {player}.{}))",
             hurt::PL_ATTACKER,
         ),
-        "toUInt8(dm_player_dies)".to_owned(),
         "toUInt8(dm_sector11)".to_owned(),
         format!(
             "if(dm_lands = 1, arrayPushBack({player}.{}, dm_target), {player}.{})",
@@ -1923,6 +1920,38 @@ mod damage_tests {
             _ => d,
         });
         assert_eq!(depth, 0, "{sql}");
+    }
+
+    /// How many fields a bracketed list holds at its own top level.
+    fn fields(text: &str) -> usize {
+        let inner = &text[text.find('(').expect("a list opens") + 1..text.len() - 1];
+        let mut depth = 0i32;
+        let mut count = 1;
+        for c in inner.chars() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => count += 1,
+                _ => {}
+            }
+        }
+        count
+    }
+
+    /// [`HURT_TYPE`], [`no_hurt`], [`player_start`] and the tuple a call
+    /// answers with all hold the same fields, and [`hurt`] names the last
+    /// of them. Four spellings of one shape, so this fails if any of them
+    /// is edited alone.
+    #[test]
+    fn every_spelling_of_a_hurt_tuple_holds_the_same_fields() {
+        let (_, body) = damaged(&world(), "dm_held");
+        assert_eq!(fields(HURT_TYPE), hurt::PL_PLAYERSTATE);
+        assert_eq!(fields(&no_hurt()), hurt::PL_PLAYERSTATE);
+        assert_eq!(
+            fields(&player_start("h", "ap", "at", "dc", "a", "ps")),
+            hurt::PL_PLAYERSTATE
+        );
+        assert_eq!(fields(&body), hurt::PL_PLAYERSTATE);
     }
 
     /// [`HURT_TYPE`] spells [`HIT_RESULT_TYPE`] a second time, since a

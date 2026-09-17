@@ -94,10 +94,14 @@ fn seed_row(gametic: u32) -> Vec<u8> {
 #[derive(Row, Deserialize)]
 struct Ran {
     setup_things: u32,
+    prndindex: u8,
     s_count: Vec<i32>,
     state: i32,
     tics: i32,
     flags: i32,
+    health: i32,
+    damagecount: i32,
+    attacker: u32,
     unresolved: u64,
 }
 
@@ -117,15 +121,17 @@ async fn a_light_flash_draws_between_a_map_thing_and_a_thrown_one() {
     }
     support::probe::load(&fixture, &seed_row(SEED_TIC)).await;
     let run = sim::tick::demo_statement(&db, RUN_TIC, RUN_TIC);
-    if let Err(error) = fixture.execute(&[run]).await {
+    if let Err(error) = fixture.execute(&run).await {
         fixture.finish().await;
         panic!("{error}");
     }
 
     let ran: Ran = fixture
         .scalar(&format!(
-            "SELECT setup_things, s_count, m_state[{FIREBALL}] AS state, \
-             m_tics[{FIREBALL}] AS tics, m_flags[{FIREBALL}] AS flags, unresolved \
+            "SELECT setup_things, prndindex, s_count, m_state[{FIREBALL}] AS state, \
+             m_tics[{FIREBALL}] AS tics, m_flags[{FIREBALL}] AS flags, \
+             p_health AS health, p_damagecount AS damagecount, \
+             p_attacker AS attacker, unresolved \
              FROM {db}.native_state WHERE tic = {RUN_TIC}"
         ))
         .await;
@@ -141,6 +147,7 @@ async fn a_light_flash_draws_between_a_map_thing_and_a_thrown_one() {
             .collect()
     };
     let at = |column: &str| -> i32 { array(column)[FIREBALL - 1] };
+    let number = |column: &str| -> i32 { theirs(column).parse().expect("a number") };
 
     // Nothing comes off the list this tic, so the boundary the seeded
     // row carries stands.
@@ -161,7 +168,28 @@ async fn a_light_flash_draws_between_a_map_thing_and_a_thrown_one() {
     assert_eq!(ran.tics, at("m_tics"), "the wait its death frame took");
     assert_eq!(ran.flags, at("m_flags"), "MF_MISSILE is off");
 
-    // The hit lands on the player, a path the missile thinker does not
-    // resolve.
-    assert_eq!(ran.unresolved, sim::unresolved::MISSILE_STUCK);
+    // What the hit left on the player: the damage the impact's own roll
+    // came to, and the thing that threw it.
+    assert_eq!(ran.health, number("p_health"), "the player's health");
+    assert_eq!(
+        ran.damagecount,
+        number("p_damagecount"),
+        "the red the hit puts on the screen"
+    );
+    assert_eq!(
+        ran.attacker,
+        number("p_attacker") as u32,
+        "the fireball's own shooter"
+    );
+
+    // Every draw the tic made, in the engine's own order: the flash's
+    // stands between the map's own things and the fireball's.
+    assert_eq!(
+        ran.prndindex,
+        number("prndindex") as u8,
+        "where the tic left the random table"
+    );
+
+    // Nothing the tic reaches is a path the statement leaves unrun.
+    assert_eq!(ran.unresolved, 0, "the tic is compared in full");
 }

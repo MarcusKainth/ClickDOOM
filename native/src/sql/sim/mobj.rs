@@ -1117,6 +1117,17 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             ),
             None => held,
         };
+        // `P_SetMobjState` writes the entered state's picture along with
+        // the state, so a target the claw put into its pain or its death
+        // frames shows that state's picture.
+        let held = match picture(column) {
+            Some(table) => format!(
+                "arrayMap((k, v) -> toInt32(if(at_clawed = 1 AND k = at_target, \
+                 {table}[1 + mt_hurt.{state}], v)), mt_slots, {held})",
+                state = inter::hurt::STATE,
+            ),
+            None => held,
+        };
         // What a missile already on the list moves for its own slot, and
         // for a target its impact reached.
         let held = match flown(column) {
@@ -1126,19 +1137,14 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
             ),
             None => held,
         };
-        let held = match column {
-            "m_sprite" | "m_frame" => format!(
+        let held = match picture(column) {
+            Some(table) => format!(
                 "arrayMap((k, v) -> toInt32(if(indexOf(mt_missiles, k) != 0, \
-                 state_{table}[1 + mt_missile_thoughts[indexOf(mt_missiles, k)].{state}], v)), \
+                 {table}[1 + mt_missile_thoughts[indexOf(mt_missiles, k)].{state}], v)), \
                  mt_slots, {held})",
-                table = if column == "m_sprite" {
-                    "sprite"
-                } else {
-                    "frame"
-                },
                 state = missile::thought::STATE,
             ),
-            _ => held,
+            None => held,
         };
         // `indexOf` answers the first missile whose own impact reached a
         // slot; two in the same list landing on it means the last carries
@@ -1151,6 +1157,17 @@ fn removed(state: &State, player: &str) -> Vec<(String, String)> {
                  indexOf(arrayReverse(mt_missile_hurt_targets), k) + 1].{hurt}.{member}, v)), \
                  mt_slots, {held})",
                 hurt = missile::thought::HURT,
+            ),
+            None => held,
+        };
+        let held = match picture(column) {
+            Some(table) => format!(
+                "arrayMap((k, v) -> toInt32(if(indexOf(arrayReverse(mt_missile_hurt_targets), \
+                 k) != 0, {table}[1 + mt_missile_thoughts[length(mt_missile_hurt_targets) - \
+                 indexOf(arrayReverse(mt_missile_hurt_targets), k) + 1].{hurt}.{state}], v)), \
+                 mt_slots, {held})",
+                hurt = missile::thought::HURT,
+                state = inter::hurt::STATE,
             ),
             None => held,
         };
@@ -1240,6 +1257,15 @@ fn clawed(column: &str) -> Option<usize> {
         "m_threshold" => inter::hurt::THRESHOLD,
         _ => return None,
     })
+}
+
+/// The engine table a picture column reads, for a state a routine entered.
+fn picture(column: &str) -> Option<&'static str> {
+    match column {
+        "m_sprite" => Some("state_sprite"),
+        "m_frame" => Some("state_frame"),
+        _ => None,
+    }
 }
 
 /// Where a column a missile already on the list moves sits in its own
@@ -1702,14 +1728,16 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         hurt_state = inter::hurt::STATE,
     );
     bind("now_m_state", append_drops("m_state", &moved));
-    // The state cycle moves the picture; a hit reaches no sprite or frame
-    // of its own, matching the claw's damage fold. A drop's own sprite and
-    // frame come from its own spawn state, through `append_drops`.
+    // `P_SetMobjState` writes the entered state's picture along with the
+    // state, for the thrower's own slot and for a target its hit put into
+    // a frame of its own. A drop's own sprite and frame come from its own
+    // spawn state, through `append_drops`.
     for (column, table) in [("m_sprite", "state_sprite"), ("m_frame", "state_frame")] {
         let held = s(column);
         let moved = format!(
-            "arrayMap((k, i) -> toInt32(if(i = 0, {held}[k], {table}[1 + now_m_state[k]])), \
-             arrayEnumerate({held}), tk_at)"
+            "arrayMap((k, i, h) -> toInt32(if(i = 0 AND h = 0, {held}[k], \
+             {table}[1 + now_m_state[k]])), \
+             arrayEnumerate({held}), tk_at, tk_hurt_at)"
         );
         bind(&format!("now_{column}"), append_drops(column, &moved));
     }
@@ -3494,6 +3522,49 @@ mod tests {
             mt_one.contains("indexOf(mt_missiles, k) != 0 OR tc = -1, tc, tc - 1"),
             "{mt_one}"
         );
+    }
+
+    /// `P_SetMobjState` writes the picture with the state, so every place
+    /// a hit sets `m_state` sets `m_sprite` and `m_frame` from the same
+    /// state: the claw's own target, a missile's impact target, and a
+    /// thrown missile's own first-tic hit.
+    #[test]
+    fn a_hit_moves_its_target_s_picture_wherever_it_moves_the_state() {
+        let named = |bindings: &[(String, String)], want: &str| {
+            bindings
+                .iter()
+                .find(|(binding, _)| binding == want)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("{want} is bound"))
+        };
+        let state = inter::hurt::STATE;
+        let hurt = missile::thought::HURT;
+        for column in ["m_sprite", "m_frame"] {
+            let table = picture(column).expect("the column has a picture table");
+
+            let thinkers = thinkers(&State::default());
+            let scattered = named(&thinkers, &format!("now_{column}"));
+            assert!(
+                scattered.contains(&format!(
+                    "at_clawed = 1 AND k = at_target, {table}[1 + mt_hurt.{state}]"
+                )),
+                "the claw's own target: {scattered}"
+            );
+            assert!(
+                scattered.contains(&format!("+ 1].{hurt}.{state}]")),
+                "a missile's own impact target: {scattered}"
+            );
+
+            let thrown = thrown_thinks(&State::default());
+            let hit = named(&thrown, &format!("now_{column}"));
+            assert!(
+                hit.contains(&format!(
+                    "if(i = 0 AND h = 0, {held}[k], {table}[1 + now_m_state[k]])",
+                    held = State::default().get(column),
+                )),
+                "a thrown missile's own hit: {hit}"
+            );
+        }
     }
 
     /// `damaged` leaves a hit on the player unresolved, because the armour,

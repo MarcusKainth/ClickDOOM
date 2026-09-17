@@ -208,7 +208,7 @@ is worse than no gate.
 A timing is only as good as the machine it was taken on, so one holder at a
 time announces that the machine is theirs.
 
-    make machine-lock                                 # who holds it
+    make machine-lock                                 # who holds it, and how busy the machine is
     ./scripts/machine-lock.sh acquire <holder> <why>  # take it
     ./scripts/machine-lock.sh release <holder>        # give it back
     ./scripts/machine-lock.sh break                   # clear a dead holder
@@ -225,6 +225,26 @@ callers racing, one wins and the other is told who holds it and exits
 non-zero. It does not wait. `release` refuses unless the `holder:` line
 matches the name given, so only the holder gives it back. A lock left behind
 by a run that died is cleared with `break`, which prints what it removed.
+
+Holding the lock says the machine is yours. It does not say the machine is
+quiet, so `acquire` reads two more things and refuses when either says
+otherwise: another lane's running container, and a 1-minute load average
+above `MACHINE_LOCK_MAX_LOAD`, which defaults to 3. It names what it found
+and exits non-zero. `status` prints every running `clickdoom-` container and
+the load beside the holder, so one reading covers the lock and the machine.
+
+Another lane's container counts whatever it is doing, an idle server
+included, because the memory and the threads are gone either way. Two
+containers are not another lane's and do not refuse. `clickdoom-ch`, the
+compose service, sits on the development machine all day and costs a timing
+nothing while it is idle, and the load average catches it when it is not.
+`clickdoom-<holder>` is the acquirer's own, which its timing run needs up
+and may have started either side of taking the lock.
+
+`--force` goes through both refusals and records its reason in the lock
+file. `run` takes it in the same place. A host where the load average cannot
+be read is not refused on that ground, since every `acquire` there would
+fail.
 
 `make bench-canonical-throughput` holds the lock for the length of its run and
 releases it whether the run succeeds, fails or is interrupted.

@@ -9,14 +9,19 @@
 #                  native_* suites: the SQL CPU, the executor, the reference
 #                  emulator and the driver's emulation side, then the ROM
 #                  suites that need a release build
-#   native-sim-a   the compaction, door, floor, parity and shot suites
-#   native-sim-b   every simulation suite the other groups do not name
-#   native-sim-c   the gunshot-kill-drop, move, pain, player-damage, removal
-#                  and thrust suites
-#   native-sim-d   the kills-and-drops, lights, missile-same-target and plat
+#   native-sim-a   the compact, missile, missile-wall and refire
 #                  suites
-#   native-sim-e   the hearing, justattacked, missile-kill-drop, missile-wall,
-#                  refire and tic suites
+#   native-sim-b   the door, missile-kill-drop, move and player-damage
+#                  suites
+#   native-sim-c   the gunshot-kill-drop, pain, punch, shot, thinker-
+#                  order and troop suites
+#   native-sim-d   the floor, hearing, justattacked, lights, thrust
+#                  and tic suites
+#   native-sim-e   the blast, claw, fall, gunshot, hitscan, input,
+#                  kills-and-drops, missile-same-target, setup, spawn,
+#                  throw, traverse and use suites
+#   native-sim-f   the aim, damage, impact, noise, parity, plat,
+#                  removed and sight suites
 #   native-rest    everything native outside the simulation: the native
 #                  crate's loader, renderer and table suites, and the
 #                  driver's native_* suites (load, render, demo, play, diff,
@@ -57,13 +62,26 @@ else
 fi
 
 # The simulation suites the lettered groups name, one per line so a move
-# between groups is one line of diff. native-sim-b is every simulation suite
+# between groups is one line of diff. native-sim-e is every simulation suite
 # not listed here, so a suite added to a lettered group has to be added here
-# in the same commit or it runs twice.
-sim_a='binary(sim_compact_live) | binary(sim_door_live) | binary(sim_floor_live) | binary(sim_parity_live) | binary(sim_shot_live)'
-sim_c='binary(sim_gunshot_kill_drop_live) | binary(sim_move_live) | binary(sim_pain_live) | binary(sim_player_damage_live) | binary(sim_removed_live) | binary(sim_thrust_live)'
-sim_d='binary(sim_kills_and_drops_live) | binary(sim_lights_live) | binary(sim_missile_same_target_live) | binary(sim_plat_live)'
-sim_e='binary(sim_hearing_live) | binary(sim_justattacked_live) | binary(sim_missile_kill_drop_live) | binary(sim_missile_wall_live) | binary(sim_refire_live) | binary(sim_tic_live)'
+# in the same commit or it runs twice, and a suite added to none of them runs
+# in native-sim-e rather than in nothing.
+#
+# The packing is over each group's own thread schedule, longest test first
+# over TEST_THREADS, taken on the median of every test across five main
+# runs. A group's cost is not its total: a test cannot be split, so a group
+# holding one very long test costs at least that test however little else it
+# carries. Five of the suites here are a single test of 14 to 21 minutes.
+#
+# native-sim-e, by name: sim_blast_live, sim_claw_live, sim_fall_live, sim_gunshot_live,
+# sim_hitscan_live, sim_input_live, sim_kills_and_drops_live,
+# sim_missile_same_target_live, sim_setup_live, sim_spawn_live,
+# sim_throw_live, sim_traverse_live, sim_use_live.
+sim_a='binary(sim_compact_live) | binary(sim_missile_live) | binary(sim_missile_wall_live) | binary(sim_refire_live)'
+sim_b='binary(sim_door_live) | binary(sim_missile_kill_drop_live) | binary(sim_move_live) | binary(sim_player_damage_live)'
+sim_c='binary(sim_gunshot_kill_drop_live) | binary(sim_pain_live) | binary(sim_punch_live) | binary(sim_shot_live) | binary(sim_thinker_order_live) | binary(sim_troop_live)'
+sim_d='binary(sim_floor_live) | binary(sim_hearing_live) | binary(sim_justattacked_live) | binary(sim_lights_live) | binary(sim_thrust_live) | binary(sim_tic_live)'
+sim_f='binary(sim_aim_live) | binary(sim_damage_live) | binary(sim_impact_live) | binary(sim_noise_live) | binary(sim_parity_live) | binary(sim_plat_live) | binary(sim_removed_live) | binary(sim_sight_live)'
 
 case "$group" in
     emulator)
@@ -93,7 +111,7 @@ case "$group" in
     native-sim-b)
         # shellcheck disable=SC2086
         run $live --test-threads "${TEST_THREADS:-4}" \
-            -E "package(clickdoom-native) and binary(/^sim_/) and not ($sim_a | $sim_c | $sim_d | $sim_e)"
+            -E "package(clickdoom-native) and ($sim_b)"
         ;;
     native-sim-c)
         # shellcheck disable=SC2086
@@ -108,7 +126,12 @@ case "$group" in
     native-sim-e)
         # shellcheck disable=SC2086
         run $live --test-threads "${TEST_THREADS:-4}" \
-            -E "package(clickdoom-native) and ($sim_e)"
+            -E "package(clickdoom-native) and binary(/^sim_/) and not ($sim_a | $sim_b | $sim_c | $sim_d | $sim_f)"
+        ;;
+    native-sim-f)
+        # shellcheck disable=SC2086
+        run $live --test-threads "${TEST_THREADS:-4}" \
+            -E "package(clickdoom-native) and ($sim_f)"
         ;;
     native-rest)
         # shellcheck disable=SC2086
@@ -116,7 +139,7 @@ case "$group" in
             -E '(package(clickdoom-native) and not binary(/^sim_/)) or (package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live))'
         ;;
     *)
-        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-rest" >&2
+        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-sim-f|native-rest" >&2
         exit 2
         ;;
 esac

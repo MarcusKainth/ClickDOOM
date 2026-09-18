@@ -1102,9 +1102,11 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         "now_prndindex",
         format!(
             "toUInt8(bitAnd(toUInt32({}) + arraySum(mt_pure_draws) \
-             + arraySum(arrayMap(c -> c.{}, cw_chased)), 255))",
+             + arraySum(arrayMap(c -> c.{}, cw_chased)) \
+             + arraySum(arrayMap(g -> toUInt32(g.{}), cw_gunned)), 255))",
             s("prndindex"),
-            enemy::chased::DRAWS
+            enemy::chased::DRAWS,
+            attacks::gunned::DRAWS
         ),
     );
     for (name, expr) in removed(state, &slot) {
@@ -3640,6 +3642,10 @@ mod tests {
         assert!(
             index.contains(&format!("c.{}, cw_chased", enemy::chased::DRAWS)),
             "the chase's own draws are counted too: {index}"
+        );
+        assert!(
+            index.contains(&format!("g.{}), cw_gunned", attacks::gunned::DRAWS)),
+            "and a gun attacker's own, which the fold answers separately: {index}"
         );
     }
 

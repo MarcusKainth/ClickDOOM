@@ -1458,11 +1458,13 @@ fn damaged(world: &Hurting<'_>, player: &str) -> (Vec<(String, String)>, String)
         ),
     );
     // The chase after whatever hit it. An archvile's target is never taken
-    // off it, and one is never chased.
+    // off it, and one is never chased. The player turns on what hit it the
+    // same way anything else does: `P_DamageMobj` runs this for whatever
+    // it reached.
     value(
         "dm_chases",
         format!(
-            "toUInt8(dm_lands = 1 AND dm_killed = 0 AND dm_is_player = 0 \
+            "toUInt8(dm_lands = 1 AND dm_killed = 0 \
              AND ({} = 0 OR dm_type = mt_vile) \
              AND dm_source != 0 AND dm_source != dm_target AND {} != mt_vile)",
             carried(hurt::THRESHOLD, world.m_threshold),

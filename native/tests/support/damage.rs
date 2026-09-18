@@ -330,8 +330,7 @@ impl World {
         }
         hurt.reactiontime = 0;
         let vile = thing_type("MT_VILE");
-        let chases = it.player == -1
-            && (it.threshold == 0 || it.kind == vile)
+        let chases = (it.threshold == 0 || it.kind == vile)
             && source != 0
             && source != target
             && credited.is_some_and(|from| from.kind != vile);

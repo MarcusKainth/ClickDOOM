@@ -176,9 +176,10 @@ its bits named in `sim::unresolved`; `native_state.unimplemented` says the
 level itself carries a path native mode does not model, decided once when
 the level loads, with its bits named in `sim::unimplemented`. `native diff`
 reads both columns for every tic it ran and stops at the first tic either
-sets, before any field is compared, with exit 3 and a message naming the tic
-and the bits. `native demo` and `native play` stop at the same tic rather
-than drawing past it.
+sets, with exit 3 and a message naming the tic and the bits. The tics before
+it are compared, and a field differing there is what the run reports instead,
+with the refusal named as where it stopped. `native demo` and `native play`
+stop at the same tic rather than drawing past it.
 
 ## 8. Determinism
 

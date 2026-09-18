@@ -78,10 +78,12 @@ reads the state row for `tic - 1` and writes one row per tic into
 `native_stage`, keyed by `tic` the same way `native_state` is. The second
 carries the specials and `G_Ticker`: it reads that same tic's own row back out
 of `native_stage` and writes `native_state`. `native_stage` holds every column
-`native_state` holds, in the same order, plus `px_crossed_line` and
-`tx_crossed_line`, the two values the first resident computes that the second
-reads and that neither table's own contract otherwise carries. A `Join` engine
-table refuses `ALTER TABLE ... ADD COLUMN`, so the two column lists are
+`native_state` holds, in the same order, plus `px_crossed_line`,
+`tx_crossed_line` and `mt_light_index`: the player's own crossed line, the
+moved things' own, and where the sector thinkers start reading the random
+table. The first resident computes them, the second reads them, and neither
+table's own contract otherwise carries them. A `Join` engine table refuses
+`ALTER TABLE ... ADD COLUMN`, so the two column lists are
 declared separately in `schema.sql`, and a change to one is a change to both.
 
 Each resident is one long-lived `INSERT INTO ... SELECT ... FROM input(...)`

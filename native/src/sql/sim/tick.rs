@@ -201,6 +201,17 @@ pub mod bench {
         Command,
         /// After the player, before the sector thinkers' own draw count.
         Think,
+        /// Inside the player, before each stage `P_PlayerThink` runs.
+        Move,
+        Height,
+        Sector,
+        Use,
+        Psprites,
+        Shots,
+        Weapon,
+        Powers,
+        Thinker,
+        Writeback,
         /// After that count, before the thing thinkers.
         Lights,
         /// Inside the thing thinkers, before each named piece.
@@ -221,8 +232,18 @@ pub mod bench {
 
     impl Cut {
         /// Every cut, in the order the statement computes them.
-        pub const ALL: [Cut; 15] = [
+        pub const ALL: [Cut; 25] = [
             Cut::Command,
+            Cut::Move,
+            Cut::Height,
+            Cut::Sector,
+            Cut::Use,
+            Cut::Psprites,
+            Cut::Shots,
+            Cut::Weapon,
+            Cut::Powers,
+            Cut::Thinker,
+            Cut::Writeback,
             Cut::Think,
             Cut::Lights,
             Cut::Moves,
@@ -243,6 +264,16 @@ pub mod bench {
         pub fn name(self) -> &'static str {
             match self {
                 Cut::Command => "command",
+                Cut::Move => "move",
+                Cut::Height => "height",
+                Cut::Sector => "sector",
+                Cut::Use => "use",
+                Cut::Psprites => "psprites",
+                Cut::Shots => "shots",
+                Cut::Weapon => "weapon",
+                Cut::Powers => "powers",
+                Cut::Thinker => "thinker",
+                Cut::Writeback => "writeback",
                 Cut::Think => "think",
                 Cut::Lights => "lights",
                 Cut::Moves => "moves",
@@ -360,39 +391,28 @@ fn bindings_stage1(db: &str, cut: Option<&'static str>) -> Tic {
     let special = game::special_buttons(&tic.state);
     tic.stage(special);
     if cut == Some("command") {
-        tic.stage(uncrossed(true, true));
-        return tic;
+        return uncrossed(tic);
     }
-    let think = player::think(&tic.state);
+    let think = player::think_cut(&tic.state, cut.filter(|name| inside_think(name)));
     let running = game::running(&tic.state);
     tic.stage_when(&running, think);
-    if cut == Some("think") {
-        tic.stage(uncrossed(true, true));
-        return tic;
+    if cut == Some("think") || cut.is_some_and(inside_think) {
+        return uncrossed(tic);
     }
     // The sector thinkers sit partway up the thinker list, so how many
     // numbers they draw is known before the stage that steps over them.
     tic.stage(lights::draws(&tic.state));
     if cut == Some("lights") {
-        tic.stage(uncrossed(true, true));
-        return tic;
+        return uncrossed(tic);
     }
     let things = match cut.and_then(inside_thinkers) {
         None => mobj::thinkers(&tic.state),
         Some(marker) => cut_before(mobj::thinkers(&tic.state), marker),
     };
-    // Which of the boundary's own scratch columns this cut still reaches.
-    // Asking the bindings rather than naming the cuts means a stage that
-    // moves cannot leave a cut quietly missing one.
-    let has = |column: &str| things.iter().any(|(name, _)| name == column);
-    let (crossings, light_index) = (has("tx_crossed_line"), has("mt_light_index"));
     let running = game::running(&tic.state);
     tic.stage_when(&running, things);
-    if !crossings || !light_index {
-        tic.stage(uncrossed(!crossings, !light_index));
-    }
     if cut == Some("thinkers") || cut.and_then(inside_thinkers).is_some() {
-        return tic;
+        return uncrossed(tic);
     }
     // Runs the tic's own throw's thinker, at the slot the compaction
     // inside `things` appended it to.
@@ -435,23 +455,49 @@ fn cut_before(bindings: Vec<(String, String)>, marker: &str) -> Vec<(String, Str
     bindings[..at].to_vec()
 }
 
-/// The [`STAGE_EXTRA_COLUMNS`] a cut stage never wrote: no line crossed,
-/// and the sector thinkers reading the random table where the tic left it.
-/// Only a cut statement needs them, and a cut that keeps the stage which
-/// writes one passes `false` for it.
-fn uncrossed(crossings: bool, light_index: bool) -> Vec<(String, String)> {
-    let mut stubs = Vec::new();
-    if crossings {
+/// Each cut that stops inside `player::think`, which names its own stages.
+const THINK_CUTS: [&str; 10] = [
+    "move",
+    "height",
+    "sector",
+    "use",
+    "psprites",
+    "shots",
+    "weapon",
+    "powers",
+    "thinker",
+    "writeback",
+];
+
+/// Whether `cut` stops inside `player::think`.
+fn inside_think(cut: &str) -> bool {
+    THINK_CUTS.contains(&cut)
+}
+
+/// Fills in whichever [`STAGE_EXTRA_COLUMNS`] the stages this cut kept did
+/// not write, as "nothing happened": no line crossed, and the sector
+/// thinkers reading the random table where the tic left it.
+///
+/// Which ones are missing is read off the bindings rather than worked out
+/// per cut. A stage that moves takes its columns with it, and a list of
+/// cuts would go stale without saying so, where this cannot.
+fn uncrossed(mut tic: Tic) -> Tic {
+    let wrote = |tic: &Tic, column: &str| tic.bindings.iter().any(|(name, _)| name == column);
+    let mut stubs: Vec<(String, String)> = Vec::new();
+    if !wrote(&tic, "px_crossed_line") {
         stubs.push(("px_crossed_line".to_owned(), "toInt64(-1)".to_owned()));
+    }
+    if !wrote(&tic, "tx_crossed_line") {
         stubs.push((
             "tx_crossed_line".to_owned(),
             "arrayMap(v -> toInt64(-1), prev_m_x)".to_owned(),
         ));
     }
-    if light_index {
+    if !wrote(&tic, "mt_light_index") {
         stubs.push(("mt_light_index".to_owned(), "prev_prndindex".to_owned()));
     }
-    stubs
+    tic.stage(stubs);
+    tic
 }
 
 /// The second statement's own bindings: the specials, then `G_Ticker`'s

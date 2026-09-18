@@ -100,9 +100,10 @@ pub async fn at_tic(fixture: &Fixture, tic: u32, cuts: &[Option<bench::Cut>]) ->
 /// the server spent on it.
 ///
 /// Every row is the same tic, so each reads the same `native_state` row and
-/// does the same work. `native_stage` is a `Join(ANY, LEFT, tic)` and keeps
-/// the first row for a tic, so the repeats leave nothing behind and the
-/// world the next cut reads is the one this cut read.
+/// does the same work. `native_stage` is a `Join(ANY, LEFT, tic)` under
+/// `join_any_take_last_row`, so each repeat replaces the tic's row rather
+/// than adding one: the table stays one row per tic however many times a
+/// tic runs, and the world the next cut reads is the one this cut read.
 async fn run_rows(fixture: &Fixture, tic: u32, cut: Option<bench::Cut>, rows: u32) -> Timed {
     let feed: Vec<Input> = (0..rows).map(|_| Input::demo(tic)).collect();
     let statement = bench::stage1(&fixture.database, cut, &feed);

@@ -130,10 +130,11 @@ const USE_INTO_NOTHING: u32 = 42;
 /// which runs on the same tic.
 const FIRST_CHASE: u32 = 77;
 
-/// The first tic DEMO3 leaves unresolved, read off a real run: `A_Chase`
-/// reaches a path this does not run. `driver/tests/native_diff_live.rs`'s
-/// own `FIRST_REFUSED_TIC` is the same fact, read the same way.
-const FIRST_REFUSED: u32 = 181;
+/// The first tic DEMO3 leaves unresolved, read off a real run: the
+/// player's own body frame carries an action once its cycle has run.
+/// `driver/tests/native_diff_live.rs`'s own `FIRST_REFUSED_TIC` is the
+/// same fact, read the same way.
+const FIRST_REFUSED: u32 = 210;
 
 /// The tic the reference run's random-call log records
 /// `P_CheckMissileRange`'s draw for the distance on. The row it produces
@@ -587,8 +588,8 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     }
     assert_eq!(
         at(FIRST_REFUSED).unresolved,
-        sim::unresolved::CHASE_STUCK,
-        "A_Chase reaches a path this does not run"
+        sim::unresolved::PL_ACTION_NEEDED,
+        "the player's own body frame carries an action once its cycle has run"
     );
     let pressed = at(USE_INTO_NOTHING);
     assert_eq!(pressed.buttons & BT_USE, BT_USE, "the use key is down");

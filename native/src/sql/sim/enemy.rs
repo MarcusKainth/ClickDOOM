@@ -5,6 +5,7 @@
 //! that wakes runs its first chase on the same tic.
 
 use crate::sql::sim::map::{self, World, answer};
+use crate::sql::sim::{attacks, inter, shoot};
 use crate::sql::{Statement, bind, fixed};
 
 /// `p_local.h`: how close is close enough to react to something behind.
@@ -210,6 +211,10 @@ mod shape {
     /// and missile checks and runs `P_NewChaseDir` on its own, below
     /// nightmare skill.
     pub const JUSTATTACKED: usize = 20;
+    /// Whether `P_CheckMeleeRange` answers yes. The thing enters its own
+    /// `meleestate` and returns, the same as the missile check's own yes
+    /// does with `missilestate`.
+    pub const MELEE: usize = 21;
 }
 
 /// Where each field of one mover's answer sits.
@@ -244,11 +249,17 @@ pub struct Chasing<'a> {
     pub entries: &'a str,
     /// How many numbers every routine whose own count does not depend on
     /// a draw of its own made this tic, by slot: `A_Look`'s shout and the
-    /// one attack, if either reached this slot. A thing that wakes shouts
-    /// before it chases, so its own shout is behind it, and a chaser
-    /// after the attacker's own slot counts the attack's draws the same
-    /// way.
+    /// one melee attack, if either reached this slot. A thing that wakes
+    /// shouts before it chases, so its own shout is behind it, and a
+    /// chaser after the melee attacker's own slot counts its draws the
+    /// same way. A gun attacker's own draws are not here: `A_PosAttack`
+    /// and `A_SPosAttack` draw for what their own shots reach, which is
+    /// not known ahead of the trace that reads them, so the fold below
+    /// carries them itself instead.
     pub shouts: &'a str,
+    /// The slots whose state cycle entered `A_PosAttack` or
+    /// `A_SPosAttack`, in list order.
+    pub gun_attackers: &'a str,
     pub m_x: &'a str,
     pub m_y: &'a str,
     pub m_z: &'a str,
@@ -276,24 +287,51 @@ pub struct Chasing<'a> {
 /// walk asks about for each mover.
 const DIRECTIONS: i64 = 8;
 
-/// Where the fold holds the movers and their answers.
+/// Where the fold holds the movers, their answers and the gun attackers'
+/// own.
 mod ran {
     pub const MOVERS: usize = 1;
     pub const CHASED: usize = 2;
+    pub const GUNNED: usize = 3;
 }
 
-/// `A_Chase` over every thing whose cycle entered a state carrying it.
+/// A [`chased`] tuple for a slot the fold never reached: no move, no
+/// attack, no draw.
+fn no_chase() -> String {
+    "(toInt32(0), toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toInt32(0), toInt32(0), \
+     toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), toUInt8(0), toInt32(-1), \
+     toInt32(0))"
+        .to_owned()
+}
+
+/// `A_Chase` over every thing whose cycle entered a state carrying it,
+/// together with `A_PosAttack` and `A_SPosAttack` over every thing whose
+/// cycle entered one of those, in slot order.
 ///
 /// `P_Move` and every `P_TryWalk` inside `P_NewChaseDir` ask the same
 /// question of the same position, because the search stops at the first
 /// direction that works and nothing moves until one does. So one call of
-/// the move test answers for all eight directions of every mover, and what
-/// is left is which of them the engine would have reached first.
+/// the move test answers for all eight directions of one mover, and what
+/// is left is which of them the engine would have reached first. The call
+/// runs inside the fold, against the world the steps before it have left,
+/// which is the world the engine's own `P_Move` reads.
+///
+/// A gun attacker's own draws depend on what its own shots reach, so its
+/// count is not known ahead of the fold the way a melee attacker's or a
+/// shout's is (`attacks::hitscan`'s own doc says why). The fold below is
+/// the tic's one sequential carrier for both: it walks `state.movers` and
+/// `state.gun_attackers` together, in slot order, threading one running
+/// draw count through whichever of the two a step is. A gun step does not
+/// move anything, so it leaves the world a later mover reads alone.
 ///
 /// The whole of it is the body of a fold over a list of one entry or none,
-/// so a tic with nothing to chase does not pay for the move test. The body
-/// reads the fold's own parameter, without which it would be evaluated
-/// outside the fold anyway.
+/// so a tic with nothing to chase or shoot does not pay for the move test.
+/// The body reads the fold's own parameter, without which it would be
+/// evaluated outside the fold anyway. Inside the sequential fold, a step
+/// answers for a mover or a gun attacker but never both, so each reads a
+/// nested fold of its own, over a list of one entry where this step is its
+/// kind and none where it is not: the search and the trace walk are each
+/// paid for only on the steps that need them.
 ///
 /// Two of the engine's own branches are never reached and are not
 /// written. `netgame` is false, so the chase does not look for a new
@@ -301,11 +339,15 @@ mod ran {
 /// so the skill alone decides whether a thing waits its move count out.
 ///
 /// Everything this cannot answer for leaves the tic unresolved: a thing
-/// with no target or one that cannot be shot, a melee attack, a missile
-/// check that needs a draw, a floating thing, a move that crosses a
-/// special line, and a mover whose own eight answers an earlier mover in
-/// the same fold actually moved into or out of.
-pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
+/// with no target or one that cannot be shot, a floating thing, and a
+/// move that crosses a special line.
+pub fn chase(
+    state: &Chasing<'_>,
+    world: &World<'_>,
+    gun_world: &attacks::Attacking<'_>,
+    gun_targets: &shoot::Targets<'_>,
+    gun_hurting: &inter::Hurting<'_>,
+) -> Vec<(String, String)> {
     let at = |array: &str, slot: &str| format!("{array}[{slot}]");
     let mut values: Vec<(String, String)> = Vec::new();
     let mut value = |name: &str, expr: String| values.push((name.to_owned(), expr));
@@ -338,18 +380,6 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
             ),
         ),
     );
-    value("cf_answers", map::try_moves("cf_asks", world));
-    // One mover's eight answers, so the passes below read their own and
-    // copy nothing per direction.
-    value(
-        "cf_walks",
-        format!(
-            "arrayMap(i -> arraySlice(cf_answers, 1 + (i - 1) * {DIRECTIONS}, {DIRECTIONS}), \
-             arrayEnumerate(cf_movers))"
-        ),
-    );
-    // One mover's own eight candidate destinations, the same way
-    // `cf_walks` holds its own eight answers.
     value(
         "cf_positions",
         format!(
@@ -357,99 +387,167 @@ pub fn chase(state: &Chasing<'_>, world: &World<'_>) -> Vec<(String, String)> {
              arrayEnumerate(cf_movers))"
         ),
     );
+    // A draw the tic has already made stands ahead of this thing's own:
+    // every shout and every melee attack up to and including this slot.
+    // A gun attacker's own draws and a chase's own are not in this array;
+    // the fold below carries both forward itself, because how many
+    // numbers either one draws is not known until its own first draw is
+    // read.
+    value("cf_shouts", format!("arrayCumSum({})", state.shouts));
+    // The tic's own movers and gun attackers, tagged and merged back into
+    // one list in slot order: 1 for a mover, 2 for a gun attacker. A
+    // slot's state cycle enters at most one of the two, so the tag is
+    // never ambiguous.
     value(
-        "cf_shape",
+        "cf_all",
         format!(
-            "arrayMap((k, w) -> ({}), cf_movers, cf_walks)",
-            shape(state)
+            "arraySort(t -> t.1, arrayConcat(arrayMap(ck -> (ck, 1), cf_movers), \
+             arrayMap(ck -> (ck, 2), {})))",
+            state.gun_attackers
         ),
     );
-    // A draw the tic has already made stands ahead of this thing's own:
-    // every shout and every attack up to and including this slot, and
-    // every chase before it. How many a chase makes is not known until
-    // its own first draw is read, because a thing whose missile check
-    // answers yes attacks and returns rather than walking, so the running
-    // index is a fold rather than a sum over counts worked out in
-    // advance.
-    value("cf_shouts", format!("arrayCumSum({})", state.shouts));
-    let step_values = vec![
-        ("k".to_owned(), "cf_movers[i]".to_owned()),
-        ("w".to_owned(), "cf_walks[i]".to_owned()),
-        ("sh".to_owned(), "cf_shape[i]".to_owned()),
+
+    // The mover branch: the move test and `chased`'s own computation,
+    // over a list of one entry where this step is a mover and none where
+    // it is not, so a step that is not a mover pays for neither. `mvk`
+    // carries the fold's own slot back into the body, without which the
+    // fold would be evaluated outside it regardless of length.
+    //
+    // The engine asks `P_Move` once, against the world as it stands when
+    // the thing's own thinker runs, so the move test runs here rather
+    // than over every mover ahead of the fold: an earlier mover in this
+    // same fold has already moved by the time a later one is asked.
+    // `fb.2`'s own moved slots, scattered over the tic-start positions,
+    // are that world; the blockmap cell a position falls in follows from
+    // the arrays themselves, so the walk sees the moved slots' own new
+    // cells without asking for them separately.
+    let running_world = World {
+        m_x: "cr_running_x",
+        m_y: "cr_running_y",
+        m_radius: world.m_radius,
+        m_flags: world.m_flags,
+        m_linkseq: world.m_linkseq,
+        alive: world.alive,
+        floorheight: world.floorheight,
+        ceilingheight: world.ceilingheight,
+        line_special: world.line_special,
+    };
+    let mover_step_values = vec![
+        ("cr_moved".to_owned(), "arrayMap(m -> m.1, fb.2)".to_owned()),
         (
-            "base".to_owned(),
-            "cf_shouts[cf_movers[i]] + fb.1".to_owned(),
+            "cr_running_x".to_owned(),
+            format!(
+                "arrayMap((cr_at, cr_v) -> if(indexOf(cr_moved, cr_at) = 0, cr_v, \
+                 fb.2[indexOf(cr_moved, cr_at)].4), arrayEnumerate({x}), {x})",
+                x = state.m_x,
+            ),
+        ),
+        (
+            "cr_running_y".to_owned(),
+            format!(
+                "arrayMap((cr_at, cr_v) -> if(indexOf(cr_moved, cr_at) = 0, cr_v, \
+                 fb.2[indexOf(cr_moved, cr_at)].5), arrayEnumerate({y}), {y})",
+                y = state.m_y,
+            ),
+        ),
+        (
+            "cr_w".to_owned(),
+            map::try_moves("cf_positions[indexOf(cf_movers, mvk)]", &running_world),
         ),
     ];
-    let step = bind::chain_in("cs", &step_values, &chased(state));
+    // `map::try_moves`'s own text carries its own, unrelated `k`, so `k`
+    // and `w` cannot be chain-bound names beside it: a chain's own
+    // substitution cannot tell its own name from one a called
+    // primitive's own text happens to introduce fresh, and did rewrite
+    // the primitive's own. Reading them back as a real lambda's own
+    // parameters keeps the two apart.
+    let mover_inner = format!(
+        "arrayMap((k, w) -> {}, [mvk], [cr_w])[1]",
+        bind::chain_in(
+            "cr",
+            &[
+                ("sh".to_owned(), shape(state)),
+                ("base".to_owned(), "cf_shouts[mvk] + fb.1".to_owned()),
+            ],
+            &chased(state),
+        ),
+    );
+    let mover_branch = format!(
+        "arrayFold((mv, mvk) -> {}, if(cf_kind = 1, [cf_k], CAST([], 'Array(UInt32)')), {})",
+        bind::chain_in("cs", &mover_step_values, &mover_inner),
+        no_chase(),
+    );
+
+    // The gun branch: `attacks::hitscan` over a list of one ask or none,
+    // the same one-or-none shape the mover branch reads. `hitscan`'s own
+    // fold already pays for the aim and the shots only where its own ask
+    // list holds one, so this asks it for the one attacker this step
+    // might be and reads its one answer.
+    let gun_asks = "if(cf_kind = 2, [(toUInt32(cf_k), toInt32(state_action[1 + mt_next[cf_k]]), \
+         toUInt32(cf_shouts[cf_k] + fb.1))], CAST([], 'Array(Tuple(UInt32, Int32, UInt32))'))";
+    let gun_branch = format!(
+        "if(cf_kind = 2, ({})[1], {})",
+        attacks::hitscan(gun_asks, gun_world, gun_targets, gun_hurting),
+        attacks::no_gunshot(),
+    );
+
+    let per_step_values = vec![
+        ("cf_k".to_owned(), "cf_all[i].1".to_owned()),
+        ("cf_kind".to_owned(), "toUInt8(cf_all[i].2)".to_owned()),
+        ("cf_mover".to_owned(), mover_branch),
+        ("cf_gun".to_owned(), gun_branch),
+    ];
+    let per_step_body = format!(
+        "(toUInt32(fb.1 + if(cf_kind = 1, cf_mover.{draws}, cf_gun.{gdraws})), \
+         if(cf_kind = 1 AND (cf_mover.{x} != toInt32({mx}[cf_k]) \
+         OR cf_mover.{y} != toInt32({my}[cf_k])), \
+         arrayPushBack(fb.2, (cf_k, toInt32({mx}[cf_k]), toInt32({my}[cf_k]), \
+         cf_mover.{x}, cf_mover.{y}, toUInt32({mr}[cf_k]))), fb.2), \
+         if(cf_kind = 1, arrayPushBack(fb.3, cf_mover), fb.3), \
+         if(cf_kind = 2, arrayPushBack(fb.4, cf_gun), fb.4))",
+        draws = chased::DRAWS,
+        gdraws = attacks::gunned::DRAWS,
+        x = chased::X,
+        y = chased::Y,
+        mx = state.m_x,
+        my = state.m_y,
+        mr = state.m_radius,
+    );
+    let step = bind::chain_in("cq", &per_step_values, &per_step_body);
     value(
         "cf_run",
         format!(
-            "arrayFold((fb, i) -> arrayMap(r -> (toUInt32(fb.1 + r.{draws}), \
-             if(r.{x} != toInt32({mx}[cf_movers[i]]) OR r.{y} != toInt32({my}[cf_movers[i]]), \
-             arrayPushBack(fb.2, (toInt32({mx}[cf_movers[i]]), toInt32({my}[cf_movers[i]]), \
-             toInt32(r.{x}), toInt32(r.{y}), toUInt32({mr}[cf_movers[i]]))), fb.2), \
-             arrayPushBack(fb.3, r)), [{step}])[1], arrayEnumerate(cf_movers), \
-             (toUInt32(0), CAST([], 'Array(Tuple(Int32, Int32, Int32, Int32, UInt32))'), \
-             CAST([], 'Array(Tuple({types}))')))",
-            draws = chased::DRAWS,
-            x = chased::X,
-            y = chased::Y,
-            mx = state.m_x,
-            my = state.m_y,
-            mr = state.m_radius,
-            types = CHASED_TYPES.join(", "),
+            "arrayFold((fb, i) -> {step}, arrayEnumerate(cf_all), \
+             (toUInt32(0), CAST([], 'Array(Tuple(UInt32, Int32, Int32, Int32, Int32, UInt32))'), \
+             CAST([], 'Array(Tuple({ctypes}))'), CAST([], 'Array({gtype})')))",
+            ctypes = CHASED_TYPES.join(", "),
+            gtype = attacks::gunned_type(),
         ),
     );
     value("cf_chased", "cf_run.3".to_owned());
+    value("cf_gunned", "cf_run.4".to_owned());
 
-    let body = "(cf_movers, cf_chased)";
+    let body = "(cf_movers, cf_chased, cf_gunned)";
     let start = format!(
-        "({}, CAST([], 'Array(Tuple({}))'))",
+        "({}, CAST([], 'Array(Tuple({}))'), CAST([], 'Array({})'))",
         state.movers,
-        CHASED_TYPES.join(", ")
+        CHASED_TYPES.join(", "),
+        attacks::gunned_type(),
     );
     vec![
         (
             "cw".to_owned(),
             format!(
-                "arrayFold((cw_at, cw_step) -> {}, range(least(length({}), 1)), {start})",
+                "arrayFold((cw_at, cw_step) -> {}, \
+                 range(least(length({}) + length({}), 1)), {start})",
                 bind::chain_in("cf", &values, body),
-                state.movers
+                state.movers,
+                state.gun_attackers,
             ),
         ),
         ("cw_chased".to_owned(), format!("cw.{}", ran::CHASED)),
+        ("cw_gunned".to_owned(), format!("cw.{}", ran::GUNNED)),
     ]
-}
-
-/// Whether an earlier mover's real move in this fold could have changed
-/// one of the destinations this mover's own search actually reached.
-///
-/// A destination the search never tried cannot have changed what it
-/// decided, so this reads `cc_tried` rather than all eight: the
-/// continuing move where the move count carried it, the direct diagonal
-/// where that was tried, and the search up to and including whichever
-/// destination won or, where none did, all of it.
-///
-/// `PIT_CheckThing` stops at things closer than the two radii, on either
-/// axis, so a mover disturbs a destination only where its own old or new
-/// position reaches that close to it.
-fn disturbs(state: &Chasing<'_>) -> String {
-    let axis = |c_field: usize, m_field: usize| {
-        format!(
-            "abs(toInt64(cf_positions[i][1 + d].{c_field}) - toInt64(m.{m_field})) < \
-             toInt64({r}[k]) + toInt64(m.5)",
-            r = state.m_radius,
-        )
-    };
-    format!(
-        "toUInt8(arrayExists(d -> d != {DI_NODIR} AND arrayExists(m -> ({} AND {}) OR ({} AND {}), \
-         fb.2), cc_tried))",
-        axis(map::ask::X, 1),
-        axis(map::ask::Y, 2),
-        axis(map::ask::X, 3),
-        axis(map::ask::Y, 4),
-    )
 }
 
 /// The type of one mover's answer, in the order [`chased`] names it. The
@@ -589,8 +687,9 @@ fn shape(state: &Chasing<'_>) -> String {
         ),
     );
     // `P_CheckMeleeRange` measures first and only looks when the target is
-    // close enough, so a distant target costs no line of sight. A melee
-    // attack itself is not written.
+    // close enough, so a distant target costs no line of sight. A yes
+    // enters `meleestate` and returns before the missile check runs, the
+    // same as the missile check's own yes does with `missilestate`.
     value(
         "cs_melee",
         format!(
@@ -674,8 +773,7 @@ fn shape(state: &Chasing<'_>) -> String {
              OR cs_target = 0 \
              OR bitAnd(toInt64({}[cs_target]), {MF_SHOOTABLE}) = 0 \
              OR bitAnd(cs_flags, {MF_FLOAT}) != 0 \
-             OR bitAnd(toInt64({}[cs_target]), {MF_SHADOW}) != 0 \
-             OR cs_melee = 1)",
+             OR bitAnd(toInt64({}[cs_target]), {MF_SHADOW}) != 0)",
             format_args!("{}[k]", state.entries),
             state.m_flags,
             state.m_flags,
@@ -705,22 +803,29 @@ fn shape(state: &Chasing<'_>) -> String {
         "toInt64(cs_missile_dist)".to_owned(),
         "toUInt8(cs_missile_hit)".to_owned(),
         "toUInt8(cs_justattacked)".to_owned(),
+        "toUInt8(cs_melee)".to_owned(),
     ];
     bind::chain_in("cs", &values, &format!("({})", members.join(", ")))
 }
 
 /// How many random numbers one mover draws.
 ///
-/// `P_CheckMissileRange` draws once for the distance where it gets that
-/// far. `P_NewChaseDir` draws once for the swap unless the direct route
-/// carried it, once more for the direction the search runs in, and once
-/// for the move count whenever a direction works. Which of the two axes
-/// the swap puts first changes the order the search runs in and not
-/// whether one of them works, so the count does not depend on either
-/// number.
-fn draws(field: &dyn Fn(usize) -> String, attacked: &str) -> String {
+/// `P_CheckMeleeRange` draws nothing; a yes returns before the missile
+/// check and the walk both. `P_CheckMissileRange` draws once for the
+/// distance where it gets that far. `P_NewChaseDir` draws once for the
+/// swap unless the direct route carried it, once more for the direction
+/// the search runs in, and once for the move count whenever a direction
+/// works. Which of the two axes the swap puts first changes the order the
+/// search runs in and not whether one of them works, so the count does
+/// not depend on either number.
+///
+/// `stops` is the condition a caller's own `cc_attacked` and `cc_meleed`
+/// read: a full boolean expression, not a name this appends `= 1` to,
+/// because a mover that returns on either one draws nothing past the
+/// missile check's own distance number.
+fn draws(field: &dyn Fn(usize) -> String, stops: &str) -> String {
     format!(
-        "toUInt32({} + if({attacked} = 1, 0, \
+        "toUInt32({} + if({stops}, 0, \
          multiIf({} = 0, 0, {} = 1, 1, {} = 1, 2, {} = 1 OR {} = 1, 3, 2) + {}))",
         field(shape::MISSILEDRAW),
         field(shape::NEWCHASE),
@@ -767,7 +872,13 @@ fn chased(state: &Chasing<'_>) -> String {
             shape::MISSILEDIST,
         ),
     );
-    value("cc_draws", draws(&sh, "cc_attacked"));
+    // `P_CheckMeleeRange` runs, and can answer yes, before the missile
+    // check is even asked (`shape`'s own `cs_missile_asked` already reads
+    // `cs_melee = 0`), so a yes here draws nothing the missile check's own
+    // distance number would have: `cc_missile_draw` is read by nothing
+    // below where this is 1.
+    value("cc_meleed", format!("toUInt8(sh.{} = 1)", shape::MELEE));
+    value("cc_draws", draws(&sh, "cc_attacked = 1 OR cc_meleed = 1"));
     value(
         "cc_count_draw",
         draw(&format!("cc_draws - toUInt32(sh.{}) - 1", shape::SOUND)),
@@ -814,7 +925,7 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_moved",
         format!(
-            "toUInt8(cc_attacked = 0 AND multiIf({just} = 1 AND {new} = 0, 0, \
+            "toUInt8(cc_attacked = 0 AND cc_meleed = 0 AND multiIf({just} = 1 AND {new} = 0, 0, \
              {new} = 0, 1, {} = 1, 1, cc_won != 0))",
             sh(shape::DIRECT),
             just = sh(shape::JUSTATTACKED),
@@ -845,11 +956,6 @@ fn chased(state: &Chasing<'_>) -> String {
             diag = sh(shape::DIAG),
         ),
     );
-    // `w` and `sh` were worked out against the tic-start world, which is
-    // wrong for a destination the search reached only where an earlier
-    // mover in this same fold actually moved somewhere `PIT_CheckThing`
-    // would have read differently.
-    value("cc_disturbed", disturbs(state));
     // A move that crosses a special line runs it, and a blocked one that
     // reached one opens it. Neither is written.
     value(
@@ -864,7 +970,7 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_movedir",
         format!(
-            "toInt64(multiIf(cc_attacked = 1, {}, {} = 0, {}, cc_dir))",
+            "toInt64(multiIf(cc_attacked = 1 OR cc_meleed = 1, {}, {} = 0, {}, cc_dir))",
             sh(shape::MOVEDIR),
             sh(shape::NEWCHASE),
             sh(shape::MOVEDIR)
@@ -876,7 +982,7 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_movecount",
         format!(
-            "toInt64(multiIf(cc_attacked = 1, {held}, \
+            "toInt64(multiIf(cc_attacked = 1 OR cc_meleed = 1, {held}, \
              {just} = 1 AND cc_moved = 0, {held}, \
              {new} = 0, {count}, cc_moved = 0, {count}, bitAnd(cc_count_draw, 15)))",
             held = at(state.m_movecount),
@@ -954,7 +1060,8 @@ fn chased(state: &Chasing<'_>) -> String {
     value(
         "cc_angle",
         format!(
-            "toUInt32(multiIf(cc_attacked = 1, cc_faced, {} < {DI_NODIR}, cc_turned, {}))",
+            "toUInt32(multiIf(cc_attacked = 1 OR cc_meleed = 1, cc_faced, \
+             {} < {DI_NODIR}, cc_turned, {}))",
             sh(shape::MOVEDIR),
             at(state.m_angle)
         ),
@@ -1001,27 +1108,28 @@ fn chased(state: &Chasing<'_>) -> String {
             at(state.m_subsector)
         ),
         "toUInt32(cc_draws)".to_owned(),
+        format!("toUInt8({} = 1 OR cc_special = 1)", sh(shape::STUCK)),
         format!(
-            "toUInt8({} = 1 OR cc_special = 1 OR cc_disturbed = 1)",
-            sh(shape::STUCK)
-        ),
-        format!(
-            "toInt32(if(cc_attacked = 1, mobj_missilestate[1 + {}], -1))",
-            at(state.m_type)
+            "toInt32(multiIf(cc_attacked = 1, mobj_missilestate[1 + {t}], \
+             cc_meleed = 1, mobj_meleestate[1 + {t}], -1))",
+            t = at(state.m_type),
         ),
         // A thing carrying `MF_JUSTATTACKED` clears it before anything
         // else this branch does. `P_CheckMissileRange` sets the mark back
         // on the branch that answers yes without drawing, and
-        // `A_FaceTarget` takes the thing off ambush as it turns.
+        // `A_FaceTarget` takes the thing off ambush as it turns, both
+        // branches alike. `P_CheckMeleeRange` never sets it.
         format!(
-            "toInt32(if({just} = 1, bitAnd(toInt64({flags}), {not_just}), \
-             if(cc_attacked = 1, bitOr(bitAnd(toInt64({flags}), \
-             if(sh.{} = 1, {}, {})), {MF_JUSTATTACKED}), toInt64({flags}))))",
+            "toInt32(multiIf({just} = 1, bitAnd(toInt64({flags}), {not_just}), \
+             cc_attacked = 1, bitOr(bitAnd(toInt64({flags}), \
+             if(sh.{} = 1, {}, {})), {MF_JUSTATTACKED}), \
+             cc_meleed = 1, bitAnd(toInt64({flags}), {ambush_off}), toInt64({flags})))",
             shape::MISSILEHIT,
             !(MF_AMBUSH | MF_JUSTHIT),
             !MF_AMBUSH,
             just = sh(shape::JUSTATTACKED),
             not_just = !MF_JUSTATTACKED,
+            ambush_off = !MF_AMBUSH,
             flags = at(state.m_flags),
         ),
     ];
@@ -1058,6 +1166,7 @@ mod tests {
             movers: "mt_movers",
             entries: "mt_entries",
             shouts: "mt_shouts",
+            gun_attackers: "at_gun",
             m_x: "w_x",
             m_y: "w_y",
             m_z: "w_z",
@@ -1094,27 +1203,105 @@ mod tests {
         }
     }
 
+    fn gun_world() -> attacks::Attacking<'static> {
+        attacks::Attacking {
+            m_x: "w_x",
+            m_y: "w_y",
+            m_z: "w_z",
+            m_angle: "w_angle",
+            m_height: "w_height",
+            m_flags: "w_flags",
+            m_type: "w_type",
+            m_health: "w_health",
+            m_target: "w_target",
+            prndindex: "w_prndindex",
+        }
+    }
+
+    fn gun_targets() -> shoot::Targets<'static> {
+        shoot::Targets {
+            m_x: "w_x",
+            m_y: "w_y",
+            m_z: "w_z",
+            m_radius: "w_radius",
+            m_height: "w_height",
+            m_flags: "w_flags",
+            m_linkseq: "w_linkseq",
+            alive: "w_alive",
+            floorheight: "w_floor",
+            ceilingheight: "w_ceiling",
+            line_special: "w_special",
+        }
+    }
+
+    fn gun_hurting() -> inter::Hurting<'static> {
+        inter::Hurting {
+            m_x: "w_x",
+            m_y: "w_y",
+            m_z: "w_z",
+            m_momx: "w_momx",
+            m_momy: "w_momy",
+            m_momz: "w_momz",
+            m_reactiontime: "w_reactiontime",
+            m_type: "w_type",
+            m_state: "w_state",
+            m_tics: "w_tics",
+            m_flags: "w_flags",
+            m_health: "w_health",
+            m_height: "w_height",
+            m_target: "w_target",
+            m_threshold: "w_threshold",
+            m_player: "w_player",
+            m_subsector: "w_subsector",
+            prndindex: "w_prndindex",
+            readyweapon: "w_readyweapon",
+            p_cheats: "w_cheats",
+            p_powers: "w_powers",
+            sec_special: "w_special",
+        }
+    }
+
+    fn chase_bindings() -> Vec<(String, String)> {
+        chase(
+            &chasing(),
+            &world(),
+            &gun_world(),
+            &gun_targets(),
+            &gun_hurting(),
+        )
+    }
+
     /// The whole of the chase is the body of a fold over a list of one
     /// entry or none, and the body reads the fold's own parameter. A body
     /// that read neither parameter would be evaluated outside the fold
     /// whatever the fold did, and the move test would cost every tic.
     #[test]
     fn the_chase_is_one_fold_over_a_list_of_one_entry_or_none() {
-        let bindings = chase(&chasing(), &world());
+        let bindings = chase_bindings();
         let (_, fold) = bindings
             .iter()
             .find(|(name, _)| name == "cw")
             .expect("the fold");
         assert!(fold.starts_with("arrayFold((cw_at, cw_step) ->"), "{fold}");
         assert!(
-            fold.contains("range(least(length(mt_movers), 1))"),
+            fold.contains("range(least(length(mt_movers) + length(at_gun), 1))"),
             "{fold}"
         );
         assert!(
             fold.contains(&format!("cw_at.{}", ran::MOVERS)),
             "the body reads the fold's parameter"
         );
-        assert_eq!(fold.matches("arrayMap(mv ->").count(), 1, "one move test");
+        assert_eq!(
+            fold.matches("arrayMap(mv ->").count(),
+            1,
+            "one move test, inside the fold, against the world the steps before it left"
+        );
+        assert_eq!(
+            fold.matches(&format!("({})", CHASED_TYPES.join(", ")))
+                .count(),
+            2,
+            "one `chased` answer shape for the fold's start and one for its list"
+        );
         assert!(
             fold.contains("arrayMap(cf_dir -> (toUInt32(cf_k)"),
             "eight asks a mover"
@@ -1130,8 +1317,14 @@ mod tests {
     /// number again.
     #[test]
     fn the_draw_count_names_the_attack_rather_than_the_number() {
-        let count = draws(&|field| format!("sh.{field}"), "cc_attacked");
-        assert!(count.contains("cc_attacked"), "{count}");
+        let count = draws(
+            &|field| format!("sh.{field}"),
+            "cc_attacked = 1 OR cc_meleed = 1",
+        );
+        assert!(
+            count.contains("cc_attacked = 1 OR cc_meleed = 1"),
+            "{count}"
+        );
         assert!(!count.contains("rnd"), "{count}");
         for member in [
             shape::NEWCHASE,
@@ -1147,7 +1340,7 @@ mod tests {
 
     #[test]
     fn the_chase_balances_its_parentheses() {
-        for (name, expr) in chase(&chasing(), &world()) {
+        for (name, expr) in chase_bindings() {
             let depth = expr.chars().fold(0i32, |d, c| match c {
                 '(' => d + 1,
                 ')' => d - 1,

@@ -2515,6 +2515,11 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
     // special that list does not name. `cross_plats` already runs the ones
     // `unhandled_crossable` takes out, below.
     let monster_unhandled = specials::unhandled_crossable(&specials::MONSTER_CROSSABLE_SPECIALS);
+    // `PLAT_TRIGGER_SPECIALS` is what a crossing runs, and it is the
+    // player's list: 22 is on it and is not one a monster's own crossing
+    // ever reaches. A move here is a monster's, so the list it dispatches
+    // against is narrowed to what the allow-list names.
+    let monster_plats = specials::crossable_by_monsters(&specials::PLAT_TRIGGER_SPECIALS);
     bind(
         "tx_special",
         by_place(&format!(
@@ -2554,7 +2559,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
             "tx_y_one[i]",
             &format!("tx_one[i].{}", answer::SPECHIT),
             world.line_special,
-            &specials::PLAT_TRIGGER_SPECIALS,
+            &monster_plats,
         )),
     );
     bind(
@@ -2566,7 +2571,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
             "tx_y[i]",
             &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
             world.line_special,
-            &specials::PLAT_TRIGGER_SPECIALS,
+            &monster_plats,
         )),
     );
     bind(
@@ -2588,7 +2593,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
             "tx_y_one[i]",
             &format!("tx_one[i].{}", answer::SPECHIT),
             world.line_special,
-            &specials::PLAT_TRIGGER_SPECIALS,
+            &monster_plats,
         )),
     );
     bind(
@@ -2600,7 +2605,7 @@ pub fn thing_moves(state: &State, world: &World<'_>, player: &str) -> Vec<(Strin
             "tx_y[i]",
             &format!("tx_two[greatest(tx_two_at[i], 1)].{}", answer::SPECHIT),
             world.line_special,
-            &specials::PLAT_TRIGGER_SPECIALS,
+            &monster_plats,
         )),
     );
     bind(

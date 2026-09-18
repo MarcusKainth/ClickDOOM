@@ -23,21 +23,25 @@ const IDENTITIES: [&str; 5] = ["m_id", "s_seq", "next_seq", "next_linkseq", "m_l
 /// contract field starts with this, so the two sides never collide.
 const THEIRS: &str = "probe__";
 
-/// The first field that differs, earliest tic first.
+/// The first field that differs, earliest tic first, over the tics up to
+/// and including `upto`.
 ///
-/// One row, or none when every compared tic agrees.
-pub fn first_divergence(db: &str) -> String {
+/// One row, or none when every compared tic agrees. A caller with a reason
+/// to stop short of what the tables hold passes it as `upto`; one that
+/// wants every tic they hold passes `u32::MAX`.
+pub fn first_divergence(db: &str, upto: u32) -> String {
     format!(
         "SELECT tic, d.2 AS kind, d.4 AS slot, d.3 AS field, d.5 AS ours, d.6 AS theirs\n\
          FROM\n(\n{}\n)\nWHERE d.7 = 1\nORDER BY tic ASC, d.1 ASC\nLIMIT 1",
-        indent(&comparison(db))
+        indent(&comparison(db, upto))
     )
 }
 
-/// Every field that ever differs, with the tic it first does and the values
-/// there. Earliest tic first, then the contract's order, so the summary
-/// reads the way the first divergence does.
-pub fn field_summary(db: &str) -> String {
+/// Every field that ever differs over the tics up to and including `upto`,
+/// with the tic it first does and the values there. Earliest tic first,
+/// then the contract's order, so the summary reads the way the first
+/// divergence does.
+pub fn field_summary(db: &str, upto: u32) -> String {
     format!(
         "SELECT\n    \
          d.3 AS field,\n    \
@@ -49,19 +53,19 @@ pub fn field_summary(db: &str) -> String {
          argMin(d.6, tic) AS theirs\n\
          FROM\n(\n{}\n)\nWHERE d.7 = 1\nGROUP BY field\n\
          ORDER BY first_tic ASC, any(d.1) ASC",
-        indent(&comparison(db))
+        indent(&comparison(db, upto))
     )
 }
 
 /// One row per `(tic, compared field)`: the field's position in the
 /// contract, its group, its name, the slot, both values, and whether they
 /// differ.
-fn comparison(db: &str) -> String {
+fn comparison(db: &str, upto: u32) -> String {
     let verdicts: Vec<String> = compared().iter().enumerate().map(verdict).collect();
     format!(
         "SELECT tic, arrayJoin([\n{}\n]) AS d\nFROM\n(\n{}\n)",
         verdicts.join(",\n"),
-        indent(&joined(db))
+        indent(&joined(db, upto))
     )
 }
 
@@ -136,7 +140,7 @@ fn door_count_mask() -> String {
 ///
 /// The melt commits many frames within one tic and the state does not move
 /// between them, so the last row of a `gametic` is the state that tic left.
-fn joined(db: &str) -> String {
+fn joined(db: &str, upto: u32) -> String {
     let theirs: Vec<String> = compared()
         .iter()
         .map(|field| {
@@ -149,8 +153,8 @@ fn joined(db: &str) -> String {
     format!(
         "SELECT *\nFROM\n(\n    \
          SELECT\n        gametic AS tic,\n{}\n    \
-         FROM {db}.probe_state\n    GROUP BY gametic\n) AS p\n\
-         INNER JOIN (SELECT * FROM {db}.native_state) AS s ON s.tic = p.tic",
+         FROM {db}.probe_state\n    WHERE gametic <= {upto}\n    GROUP BY gametic\n) AS p\n\
+         INNER JOIN (SELECT * FROM {db}.native_state WHERE tic <= {upto}) AS s ON s.tic = p.tic",
         theirs.join(",\n")
     )
 }
@@ -285,7 +289,7 @@ mod state_tests {
             .map(|f| f.name)
             .collect();
         assert_eq!(masked, ["s_count"]);
-        let sql = first_divergence("nat");
+        let sql = first_divergence("nat", 100);
         assert_eq!(
             sql.matches("s_direction[k] = 1").count(),
             4,
@@ -295,7 +299,7 @@ mod state_tests {
 
     #[test]
     fn the_first_divergence_names_the_columns_the_report_carries() {
-        let sql = first_divergence("nat");
+        let sql = first_divergence("nat", 100);
         for column in ["tic", "kind", "slot", "field", "ours", "theirs"] {
             assert!(sql.contains(&format!("AS {column}")), "{column}");
         }
@@ -306,7 +310,7 @@ mod state_tests {
 
     #[test]
     fn an_identity_column_appears_nowhere_in_either_query() {
-        for sql in [first_divergence("nat"), field_summary("nat")] {
+        for sql in [first_divergence("nat", 100), field_summary("nat", 100)] {
             for identity in IDENTITIES {
                 assert!(!sql.contains(identity), "{identity} is still compared");
             }
@@ -315,7 +319,7 @@ mod state_tests {
 
     #[test]
     fn both_queries_balance_their_parentheses() {
-        for sql in [first_divergence("nat"), field_summary("nat")] {
+        for sql in [first_divergence("nat", 100), field_summary("nat", 100)] {
             let depth = sql.chars().fold(0i32, |d, c| match c {
                 '(' => d + 1,
                 ')' => d - 1,

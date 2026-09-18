@@ -48,8 +48,12 @@ What `make help` does not say:
   into nextest archives, then runs `scripts/test-group.sh` once per group on
   its own runner from those archives, so the native simulation suites do not
   queue behind the SQL CPU's and no test job compiles. The script's header
-  lists the groups. `make test-group GROUP=native-sim-a` runs one group the
-  way CI does, building what it needs (`cargo install cargo-nextest
+  lists the groups. One of them takes every simulation suite the others do
+  not name, so a suite added to the tree runs there until somebody packs
+  it; `native/tests/group_coverage.rs` fails if that group stops existing,
+  or if two groups name the same suite. `make test-group
+  GROUP=native-sim-a` runs one group the way CI does, building what it
+  needs (`cargo install cargo-nextest
   --locked` first); `make test` runs every suite in one pass. Two repository
   variables pick the machine the groups run on: `CLICKDOOM_TEST_RUNNER` is
   the `runs-on` label (a standard runner unless set) and

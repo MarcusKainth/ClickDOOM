@@ -211,6 +211,11 @@ pub struct Waited {
 #[derive(Debug)]
 pub struct Ran {
     pub elapsed: Duration,
+    /// How much of `elapsed` the first statement took: from the tic's row
+    /// being sent to its `native_stage` row being readable. The second
+    /// statement's own share is the rest. Zero for a tic already committed
+    /// when the wait began, which stages nothing.
+    pub staged: Duration,
     pub refusal: Option<super::Refusal>,
     pub demo_end: bool,
 }
@@ -430,15 +435,18 @@ impl Session {
     pub async fn wait_sim(&self, tic: u32, timeout: Duration) -> Result<Ran, SessionError> {
         let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
         let mut fed_second = false;
+        let mut staged = Duration::ZERO;
         loop {
             if !fed_second && self.staged(tic).await? {
                 self.feed_sim2(tic)?;
                 fed_second = true;
+                staged = started.elapsed();
             }
             let committed = self.committed().await?;
             if committed.tic >= tic {
                 return Ok(Ran {
                     elapsed: started.elapsed(),
+                    staged,
                     refusal: super::Refusal::at(
                         committed.tic,
                         committed.unresolved,

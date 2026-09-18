@@ -589,6 +589,115 @@ struct Pressed {
     texture: i16,
 }
 
+/// A monster's own crossing of the W1 special 22 line spawns nothing.
+///
+/// `P_CrossSpecialLine` returns before its switch for a non-player
+/// crossing a special its own allow-list does not name, and 22 is not on
+/// that list: only 4, 10, 39, 88, 97, 125 and 126 are. So the same
+/// crossing that raises the plat for the player above leaves it alone for
+/// a monster, and the tic is not unresolved either, because the engine
+/// reaches nothing to run.
+///
+/// The one line on this level carrying special 22 is the one the arm above
+/// crosses, so this seeds the same geometry and moves a monster over it
+/// rather than the player.
+#[tokio::test]
+async fn a_monsters_crossing_of_the_type_22_line_spawns_nothing() {
+    let bytes = support::doom1();
+    let wad = Wad::parse(&bytes).unwrap();
+    let fixture = Fixture::create("sim_plat_monster_22").await;
+    let db = fixture.database.clone();
+
+    let mut plan = load::plan(&db, &wad);
+    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
+    plan.extend(sim::load_statements(&db));
+    plan.extend(sim::tick::demo_statement(&db, 1, 1));
+    if let Err(error) = fixture.execute(&plan).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+
+    // The first live zombieman, moved onto the player's own crossing path
+    // and given its momentum. A thrust is what carries a monster over a
+    // line, so the momentum is what makes this a crossing at all.
+    const MONSTER: &str = "arrayFirstIndex((t, h) -> t = 1 AND h > 0, p.m_type, p.m_health)";
+    fn put(column: &'static str, value: String) -> (&'static str, String) {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> if(k = {MONSTER}, {value}, v), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    }
+    let overrides = [
+        put("m_x", format!("toInt32({RAISE_OLD_X})")),
+        put("m_y", format!("toInt32({RAISE_OLD_Y})")),
+        put("m_momx", format!("toInt32({RAISE_MOMX})")),
+        put("m_momy", format!("toInt32({RAISE_MOMY})")),
+        put("m_z", format!("toInt32({RAISE_FLOORZ})")),
+        put("m_floorz", format!("toInt32({RAISE_FLOORZ})")),
+        put("m_ceilingz", format!("toInt32({RAISE_CEILINGZ})")),
+    ];
+    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
+        .into_iter()
+        .map(sql::Statement::sql)
+        .collect();
+    if let Err(error) = fixture.execute(&seeded).await {
+        fixture.finish().await;
+        panic!("{error}");
+    }
+    // Long enough for the thrust to carry the monster over the line, and
+    // for a plat to have shown itself if one were spawned.
+    const TICS: u32 = 20;
+    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + TICS)
+        .map(|tic| Input::keys(tic, 0, (0, 0)))
+        .collect();
+    support::resident::run(&fixture, &inputs, false).await;
+
+    let rows: Vec<Raised> = fixture
+        .rows(&format!(
+            "SELECT tic, \
+             arrayFirstIndex((k, t) -> k = {PLAT} AND t = 7, s_kind, s_tag) AS slot, \
+             sec_floorheight[{sector}] AS floor, \
+             if(slot = 0, -1, s_status[slot]) AS status, \
+             if(slot = 0, -1, s_count[slot]) AS count, \
+             sec_floorpic[{sector}] AS floorpic, \
+             sec_special[{sector}] AS special, \
+             unresolved \
+             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
+            PLAT = sector_thinker_kind::PLAT,
+            sector = RAISED_SECTOR + 1,
+        ))
+        .await;
+    fixture.finish().await;
+
+    assert_eq!(rows.len(), TICS as usize, "every tic ran");
+    for row in &rows {
+        assert_eq!(
+            row.slot, 0,
+            "tic {} spawned a plat for a crossing the engine does not run",
+            row.tic
+        );
+        assert_eq!(
+            row.floor, RAISED_FLOOR,
+            "tic {} moved the sector's own floor",
+            row.tic
+        );
+        assert_ne!(
+            row.special, 0,
+            "tic {} cleared the sector's own special, which only the spawn does",
+            row.tic
+        );
+        assert_eq!(
+            row.unresolved & sim::unresolved::TX_CROSSED,
+            0,
+            "tic {} refused a crossing the engine reaches nothing for",
+            row.tic
+        );
+    }
+}
+
 /// A switch that was pressed puts its old picture back when the timer runs
 /// out, and its slot is freed.
 ///

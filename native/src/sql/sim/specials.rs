@@ -120,6 +120,22 @@ pub const FLOOR_TRIGGER_SPECIALS: [i64; 2] = [91, 98];
 /// `specials` minus [`PLAT_TRIGGER_SPECIALS`], [`DOOR_TRIGGER_SPECIALS`]
 /// and [`FLOOR_TRIGGER_SPECIALS`]: what still leaves a crossing unresolved
 /// once `cross_dispatch` runs the rest of them.
+/// `specials` narrowed to the ones a monster's own crossing reaches at
+/// all, which is [`MONSTER_CROSSABLE_SPECIALS`].
+///
+/// A dispatch list is what a crossing runs, so a list built for the player
+/// has to be narrowed before a monster's crossing is run against it:
+/// `P_CrossSpecialLine` returns before its switch for a non-player
+/// crossing a special the allow-list does not name, so running one would
+/// be a plat the engine never raises.
+pub fn crossable_by_monsters(specials: &[i64]) -> Vec<i64> {
+    specials
+        .iter()
+        .copied()
+        .filter(|special| MONSTER_CROSSABLE_SPECIALS.contains(special))
+        .collect()
+}
+
 pub fn unhandled_crossable(specials: &[i64]) -> Vec<i64> {
     specials
         .iter()
@@ -1615,6 +1631,28 @@ mod tests {
     fn the_monster_triggered_plat_is_on_both_lists() {
         assert!(CROSSABLE_SPECIALS.contains(&88));
         assert!(MONSTER_CROSSABLE_SPECIALS.contains(&88));
+    }
+
+    /// A monster's crossing runs the plat triggers the allow-list names
+    /// and no others.
+    ///
+    /// `PLAT_TRIGGER_SPECIALS` is the player's list. 22 is on it, because a
+    /// player crossing a 22 line raises the plat, and off the non-player
+    /// allow-list, because `P_CrossSpecialLine` returns before its switch
+    /// for a monster there. A dispatch list that kept it would raise a plat
+    /// the engine leaves alone.
+    #[test]
+    fn a_monster_crossing_runs_the_plat_triggers_its_allow_list_names() {
+        let monster_plats = crossable_by_monsters(&PLAT_TRIGGER_SPECIALS);
+        assert_eq!(monster_plats, vec![10, 88]);
+        assert!(
+            PLAT_TRIGGER_SPECIALS.contains(&22) && !MONSTER_CROSSABLE_SPECIALS.contains(&22),
+            "22 is the one this narrowing takes out, and it is what makes it necessary"
+        );
+        for special in &monster_plats {
+            assert!(MONSTER_CROSSABLE_SPECIALS.contains(special));
+            assert!(PLAT_TRIGGER_SPECIALS.contains(special));
+        }
     }
 
     /// `p_spec.c`'s non-player pre-check (lines 530-542) names exactly

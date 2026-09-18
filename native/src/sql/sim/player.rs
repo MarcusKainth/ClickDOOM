@@ -91,22 +91,38 @@ pub fn guards(db: &str) -> Vec<Statement> {
 
 /// `P_PlayerThink` and the mobj thinker that follows it.
 pub fn think(state: &State) -> Vec<(String, String)> {
+    think_cut(state, None)
+}
+
+/// [`think`], stopping before the stage `cut` names.
+///
+/// The names are the generator's own and the cuts they belong to live in
+/// `tick`. A stage left out writes none of its columns, and what reads
+/// them falls back to the tic before, so a cut is a statement doing less
+/// rather than a broken one.
+pub fn think_cut(state: &State, cut: Option<&str>) -> Vec<(String, String)> {
     let mut bindings = read(state);
-    bindings.extend(move_player(state));
-    bindings.extend(calc_height(state));
-    bindings.extend(special_sector(state));
-    bindings.extend(weapon_and_use(state));
-    bindings.extend(pspr::move_psprites(
-        state,
-        "now_p_bob",
-        "pl_buttons",
-        "pl_pendingweapon",
-    ));
-    bindings.extend(pspr::fire_shots(state));
-    bindings.extend(fire_weapon(state));
-    bindings.extend(powers(state));
-    bindings.extend(mobj_thinker(state));
-    bindings.extend(writeback(state));
+    macro_rules! stage {
+        ($name:literal, $stage:expr) => {
+            if cut == Some($name) {
+                return bindings;
+            }
+            bindings.extend($stage);
+        };
+    }
+    stage!("move", move_player(state));
+    stage!("height", calc_height(state));
+    stage!("sector", special_sector(state));
+    stage!("use", weapon_and_use(state));
+    stage!(
+        "psprites",
+        pspr::move_psprites(state, "now_p_bob", "pl_buttons", "pl_pendingweapon")
+    );
+    stage!("shots", pspr::fire_shots(state));
+    stage!("weapon", fire_weapon(state));
+    stage!("powers", powers(state));
+    stage!("thinker", mobj_thinker(state));
+    stage!("writeback", writeback(state));
     bindings
 }
 

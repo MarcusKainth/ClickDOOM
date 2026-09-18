@@ -92,6 +92,9 @@ struct Hit {
     player_health: i32,
     attacker_state: i32,
     unresolved: u64,
+    player_state: i32,
+    player_sprite: i32,
+    player_frame: i32,
 }
 
 /// A column of one slot replaced, leaving every other slot alone.
@@ -192,7 +195,8 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
         .rows(&format!(
             "SELECT tic, p_health, p_armorpoints, p_armortype, p_damagecount, p_attacker, \
              m_health[p_mo] AS player_health, m_state[{ATTACKER}] AS attacker_state, \
-             unresolved \
+             unresolved, m_state[p_mo] AS player_state, m_sprite[p_mo] AS player_sprite, \
+             m_frame[p_mo] AS player_frame \
              FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
             wanted.join(", ")
         ))
@@ -335,6 +339,21 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
             i64::from(after.player_health),
             i64::from(DYING_HEALTH) - taken,
             "{name}: the mobj's own health takes the same damage and keeps going past zero"
+        );
+        // `P_SetMobjState` writes the picture with the state, so the
+        // player's mobj shows the death frame the kill put it in.
+        assert_ne!(
+            after.player_state,
+            at(tic).player_state,
+            "{name}: the kill moves the player into its death frames"
+        );
+        assert_eq!(
+            (
+                i64::from(after.player_sprite),
+                i64::from(after.player_frame)
+            ),
+            support::damage::picture(i64::from(after.player_state)),
+            "{name}: and the picture follows that state"
         );
     }
 }

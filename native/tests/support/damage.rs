@@ -82,6 +82,16 @@ fn column(table: &str, name: &str) -> Vec<i64> {
         .expect("the column is an integer")
 }
 
+/// The picture `P_SetMobjState` puts on a thing entering `state`: the
+/// sprite and the frame the engine's own table gives that state.
+pub fn picture(state: i64) -> (i64, i64) {
+    let at = state as usize;
+    (
+        column("states", "sprite")[at],
+        column("states", "frame")[at],
+    )
+}
+
 /// The `action_functions` id the engine's own table gives a routine.
 fn named(name: &str) -> i64 {
     let actions = tables::table("action_functions").expect("the table is committed");

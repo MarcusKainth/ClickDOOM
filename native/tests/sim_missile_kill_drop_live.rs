@@ -106,6 +106,9 @@ struct Kill {
     drop_x: i32,
     drop_y: i32,
     drop_z: i32,
+    target_state: i32,
+    target_sprite: i32,
+    target_frame: i32,
 }
 
 #[tokio::test]
@@ -226,7 +229,9 @@ async fn an_in_flight_fireball_that_kills_a_zombieman_counts_it_and_drops_a_clip
              p_killcount AS killcount, unresolved, \
              toUInt64(length(m_x)) AS things, m_type[length(m_type)] AS drop_type, \
              m_flags[length(m_flags)] AS drop_flags, m_x[length(m_x)] AS drop_x, \
-             m_y[length(m_y)] AS drop_y, m_z[length(m_z)] AS drop_z \
+             m_y[length(m_y)] AS drop_y, m_z[length(m_z)] AS drop_z, \
+             m_state[{TARGET}] AS target_state, m_sprite[{TARGET}] AS target_sprite, \
+             m_frame[{TARGET}] AS target_frame \
              FROM {db}.native_state WHERE tic IN ({at}, {}) ORDER BY tic",
             at + 1
         ))
@@ -277,5 +282,16 @@ async fn an_in_flight_fireball_that_kills_a_zombieman_counts_it_and_drops_a_clip
     assert_eq!(
         after.drop_z, before.target_z,
         "on the floor beneath the corpse, which already rests on it"
+    );
+    // `P_SetMobjState` writes the picture with the state, so the corpse
+    // shows its death frame rather than the one it was walking in.
+    assert_ne!(
+        after.target_state, before.target_state,
+        "the kill moves the target into its death frames"
+    );
+    assert_eq!(
+        (after.target_sprite as i64, after.target_frame as i64),
+        support::damage::picture(after.target_state as i64),
+        "and the corpse's picture follows that state"
     );
 }

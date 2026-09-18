@@ -143,13 +143,18 @@ jobs:
     runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # The slowest group ran 41 minutes over the five main runs the packing
-    # was taken from. Packed over six groups every group's own tests
-    # schedule in 19.8 to 20.6 minutes, and a job runs 3.4 minutes longer
-    # than its tests at the median, 8.8 at the worst seen. A test's own time
-    # moves 17% run to run, so this is a backstop at about 1.5x the worst
-    # group a run is expected to produce rather than at the median.
-    timeout-minutes: 35
+    # A backstop against a job that hangs, not a budget. Packed over six
+    # groups every group's own tests schedule in 19.8 to 20.6 minutes on
+    # the median of five main runs, and a job runs 3.4 minutes longer than
+    # its tests at the median, 8.8 at the worst seen. That says nothing
+    # about the worst a runner produces: a test's own time moves 17% run to
+    # run at the median and 35% at the extreme, a slow runner has taken a
+    # whole group 30% past those medians, and the slowest group on record
+    # ran 41 minutes. So this sits above the observed worst rather than
+    # above the modelled one. A group that is merely slow has to finish and
+    # report; cancelling it reads as a timeout and says nothing about any
+    # test.
+    timeout-minutes: 45
     env:
       TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:

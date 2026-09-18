@@ -28,7 +28,8 @@ ROM hash check, every suite in `make test`, and `smoke`. Those are the jobs
 `ci.yml` runs on a pull request. It takes upwards of ten minutes, most of it the
 ROM build and the smoke diff.
 
-`lint` also runs `check-adr` and `actionlint`, which have no CI job of their own.
+`lint` also runs `check-adr`, `actionlint` and `check-bare`, which have no CI
+job of their own.
 
 The benches, `fuzz`, the milestone targets and the nightly deep-diff sit outside
 `gates`, by cost or by what they need. A timing run needs a quiet machine, and

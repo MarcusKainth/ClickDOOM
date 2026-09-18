@@ -293,7 +293,7 @@ check-adr: ## The ADR set is numbered contiguously and fully indexed
 
 ##@ Lint
 
-lint: check-purity shellcheck format clippy typos check-adr actionlint zizmor ## Every static check. No container, no ROM
+lint: check-purity shellcheck format clippy typos check-adr actionlint zizmor check-bare ## Every check that needs no container and no ROM
 
 check-purity: ## Mechanical enforcement of PURITY.md
 	./scripts/check_purity.sh
@@ -311,6 +311,12 @@ clippy: ## Rust lints. --all-targets so the test files are covered too
 	# built, because a host with no window system builds the other one.
 	cargo clippy --locked -p clickdoom-driver --no-default-features --all-targets \
 	    --features clickhouse-tests -- -D warnings
+
+check-bare: ## The workspace with no features, which DEVELOPING.md says works without a container
+	# clippy runs --all-features, so nothing else builds this shape. The live
+	# suites compile to nothing here and report zero tests rather than being
+	# skipped, which is the part the sentence promises.
+	cargo test --locked --workspace
 
 typos: ## Spelling, over prose and identifiers. _typos.toml holds the exceptions
 	cargo install --locked --quiet typos-cli@1.50.0

@@ -633,7 +633,9 @@ pub fn cross_dispatch(state: &State) -> Vec<(String, String)> {
 
     bind(
         "cx_lines",
-        "arrayFilter(l -> l != -1, arrayConcat([px_crossed_line], tx_crossed_line))".to_owned(),
+        "arrayFilter(l -> l != -1, \
+         arrayConcat([px_crossed_line], tx_crossed_line, cw_crossed_line))"
+            .to_owned(),
     );
     // `line_tag` is loaded fresh from `lv_lines` every tic rather than
     // carried in `native_state`, so it is read by its own name rather than

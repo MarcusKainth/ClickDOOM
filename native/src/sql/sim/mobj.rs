@@ -772,6 +772,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
         m_ceilingz: "tx_m_ceilingz",
         m_subsector: "tx_m_subsector",
         sees_target: "mt_sees_target",
+        line_special: &s("line_special"),
         prndindex: &s("prndindex"),
     };
     // A gun attacker's own facing and flags read the same values a melee
@@ -866,7 +867,7 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
             "tx_m_subsector".to_owned(),
         ),
     ];
-    let mut standing: Vec<String> = vec![String::new(); enemy::chased::FLAGS];
+    let mut standing: Vec<String> = vec![String::new(); enemy::chased::CROSS_LINE];
     for (_, member, cast, array) in &held {
         standing[member - 1] = format!("{cast}({array}[k])");
     }
@@ -880,8 +881,20 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
     // A thing no chase reaches attacks nothing and keeps its flags.
     standing[enemy::chased::STATE - 1] = "toInt32(-1)".to_owned();
     standing[enemy::chased::FLAGS - 1] = format!("toInt32({}[k])", s("m_flags"));
+    // A thing no chase reaches moved nowhere, so it crossed nothing.
+    standing[enemy::chased::CROSS_LINE - 1] = "toInt64(-1)".to_owned();
     // What the chase left, put back where the mover stands, as one value
     // per slot. A slot no mover holds keeps what the cycle left it.
+    // `P_TryMove` runs the crossing for the move that landed, and the
+    // chase's own move is one. The dispatch takes a list, so this joins
+    // the player's and the thrust movers' rather than standing up its own.
+    bind(
+        "cw_crossed_line",
+        format!(
+            "arrayMap(c -> toInt64(c.{}), cw_chased)",
+            enemy::chased::CROSS_LINE
+        ),
+    );
     bind(
         "cw_slot",
         format!(

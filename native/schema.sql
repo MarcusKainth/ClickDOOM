@@ -1046,6 +1046,7 @@ CREATE TABLE IF NOT EXISTS {{DB}}.native_stage
     -- names by the second statement rather than through `state`.
     px_crossed_line  Int64,
     tx_crossed_line  Array(Int64),
+    cw_crossed_line  Array(Int64),
     mt_light_index   UInt8
 )
 ENGINE = Join(ANY, LEFT, tic)

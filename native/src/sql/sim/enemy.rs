@@ -5,7 +5,7 @@
 //! that wakes runs its first chase on the same tic.
 
 use crate::sql::sim::map::{self, World, answer};
-use crate::sql::sim::{attacks, inter, shoot};
+use crate::sql::sim::{attacks, inter, shoot, specials};
 use crate::sql::{Statement, bind, fixed};
 
 /// `p_local.h`: how close is close enough to react to something behind.
@@ -237,6 +237,10 @@ pub mod chased {
     /// attack.
     pub const STATE: usize = 14;
     pub const FLAGS: usize = 15;
+    /// The line this mover's own move crossed, for `cross_dispatch` to run,
+    /// or -1. Only a line `P_CrossSpecialLine`'s non-player allow-list names
+    /// and whose special the dispatch has a case for reaches this.
+    pub const CROSS_LINE: usize = 16;
 }
 
 /// The state a chase reads, as the names the tic binds the arrays under.
@@ -285,6 +289,8 @@ pub struct Chasing<'a> {
     /// Whether the thing can see the target it holds, by slot, from the
     /// one sight call the tic makes.
     pub sees_target: &'a str,
+    /// Each line's own special, for the crossing a landed move runs.
+    pub line_special: &'a str,
     pub prndindex: &'a str,
 }
 
@@ -305,7 +311,7 @@ mod ran {
 fn no_chase() -> String {
     "(toInt32(0), toInt32(0), toInt32(0), toUInt32(0), toInt32(0), toInt32(0), toInt32(0), \
      toInt32(0), toInt32(0), toInt32(0), toInt32(0), toUInt32(0), toUInt8(0), toInt32(-1), \
-     toInt32(0))"
+     toInt32(0), toInt64(-1))"
         .to_owned()
 }
 
@@ -567,9 +573,9 @@ pub fn chase(
 /// The type of one mover's answer, in the order [`chased`] names it. The
 /// fold starts from an empty list of them, and a list has to carry its
 /// type.
-const CHASED_TYPES: [&str; 15] = [
+const CHASED_TYPES: [&str; 16] = [
     "Int32", "Int32", "Int32", "UInt32", "Int32", "Int32", "Int32", "Int32", "Int32", "Int32",
-    "Int32", "UInt32", "UInt8", "Int32", "Int32",
+    "Int32", "UInt32", "UInt8", "Int32", "Int32", "Int64",
 ];
 
 /// What one mover's eight answers and its own state decide before any
@@ -970,13 +976,56 @@ fn chased(state: &Chasing<'_>) -> String {
             diag = sh(shape::DIAG),
         ),
     );
-    // A move that crosses a special line runs it, and a blocked one that
-    // reached one opens it. Neither is written.
+    // Where the move lands, which the members below read back rather than
+    // working out a second time.
+    let stepped = |axis: &str, from: &str| {
+        format!(
+            "toInt64(if(cc_moved = 1, toInt64({from}) + toInt64(mobj_speed[1 + {}]) \
+             * toInt64(dir_{axis}speed[1 + cc_dir]), toInt64({from})))",
+            at(state.m_type),
+        )
+    };
+    value("cc_new_x", stepped("x", &at(state.m_x)));
+    value("cc_new_y", stepped("y", &at(state.m_y)));
+    // `P_TryMove` runs `P_CrossSpecialLine` for the lines the move that
+    // landed crosses, so only the direction the walk ends on counts and
+    // only where the side the thing stands on actually flips: touching a
+    // line's bounding box fills `spechit` without crossing anything. A
+    // direction the search tried and the walk refused moves nothing, and
+    // `P_CheckPosition` clears `spechit` before the next one.
+    //
+    // `P_CrossSpecialLine` then returns before its switch for anything off
+    // its own non-player allow-list, so most of a level's special lines do
+    // nothing for a monster at all.
+    let monster_unhandled = specials::unhandled_crossable(&specials::MONSTER_CROSSABLE_SPECIALS);
+    let monster_plats = specials::crossable_by_monsters(&specials::PLAT_TRIGGER_SPECIALS);
+    let crossing =
+        |specials: &[i64], f: fn(&str, &str, &str, &str, &str, &str, &[i64]) -> String| {
+            f(
+                &at(state.m_x),
+                &at(state.m_y),
+                "cc_new_x",
+                "cc_new_y",
+                &format!("cc_answer.{}", answer::SPECHIT),
+                state.line_special,
+                specials,
+            )
+        };
+    // The ones the dispatch has a case for, which it runs.
+    value(
+        "cc_cross_line",
+        format!(
+            "toInt64(if(cc_moved = 1, {}, toInt64(-1)))",
+            crossing(&monster_plats, specials::crossed_line),
+        ),
+    );
+    // The ones it does not, which leave the tic unresolved rather than
+    // being guessed.
     value(
         "cc_special",
         format!(
-            "toUInt8(arrayExists(d -> d != {DI_NODIR} AND notEmpty(w[1 + d].{}), cc_tried))",
-            answer::SPECHIT
+            "toUInt8(cc_moved = 1 AND {})",
+            crossing(&monster_unhandled, specials::crosses_special),
         ),
     );
     // The direction the walk ends on. `P_NewChaseDir` leaves `DI_NODIR`
@@ -1082,20 +1131,8 @@ fn chased(state: &Chasing<'_>) -> String {
     );
 
     let members = [
-        format!(
-            "toInt32(if(cc_moved = 1, toInt64({}) + toInt64(mobj_speed[1 + {}]) \
-             * toInt64(dir_xspeed[1 + cc_dir]), toInt64({})))",
-            at(state.m_x),
-            at(state.m_type),
-            at(state.m_x)
-        ),
-        format!(
-            "toInt32(if(cc_moved = 1, toInt64({}) + toInt64(mobj_speed[1 + {}]) \
-             * toInt64(dir_yspeed[1 + cc_dir]), toInt64({})))",
-            at(state.m_y),
-            at(state.m_type),
-            at(state.m_y)
-        ),
+        "toInt32(cc_new_x)".to_owned(),
+        "toInt32(cc_new_y)".to_owned(),
         format!(
             "toInt32(if(cc_moved = 1, cc_answer.{}, toInt64({})))",
             answer::FLOORZ,
@@ -1146,6 +1183,7 @@ fn chased(state: &Chasing<'_>) -> String {
             ambush_off = !MF_AMBUSH,
             flags = at(state.m_flags),
         ),
+        "toInt64(cc_cross_line)".to_owned(),
     ];
     bind::chain_in("cc", &values, &format!("({})", members.join(", ")))
 }
@@ -1201,6 +1239,7 @@ mod tests {
             m_ceilingz: "w_ceilingz",
             m_subsector: "w_subsector",
             sees_target: "w_sees_target",
+            line_special: "w_special",
             prndindex: "w_prndindex",
         }
     }

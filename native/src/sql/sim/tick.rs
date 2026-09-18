@@ -36,14 +36,15 @@ pub const STAGE_TABLE: &str = "native_stage";
 
 /// `name, type` for each column past the contract that [`STAGE_TABLE`]
 /// carries. `cross_dispatch`'s own crossing inputs: the player's own
-/// crossed line and the moved things' own. `mt_light_index` is where the
-/// sector thinkers start reading the random table, which the mobj stage
-/// works out from arrays only it holds. None of the three is a
-/// `native_state` column, and all three are read back under these same
-/// bare names rather than through `state`.
-pub const STAGE_EXTRA_COLUMNS: [(&str, &str); 3] = [
+/// crossed line, the moved things' own and the chasing movers' own.
+/// `mt_light_index` is where the sector thinkers start reading the random
+/// table, which the mobj stage works out from arrays only it holds. None
+/// of the four is a `native_state` column, and all four are read back
+/// under these same bare names rather than through `state`.
+pub const STAGE_EXTRA_COLUMNS: [(&str, &str); 4] = [
     ("px_crossed_line", "Int64"),
     ("tx_crossed_line", "Array(Int64)"),
+    ("cw_crossed_line", "Array(Int64)"),
     ("mt_light_index", "UInt8"),
 ];
 
@@ -446,6 +447,10 @@ fn uncrossed(crossings: bool, light_index: bool) -> Vec<(String, String)> {
         stubs.push((
             "tx_crossed_line".to_owned(),
             "arrayMap(v -> toInt64(-1), prev_m_x)".to_owned(),
+        ));
+        stubs.push((
+            "cw_crossed_line".to_owned(),
+            "CAST([], 'Array(Int64)')".to_owned(),
         ));
     }
     if light_index {

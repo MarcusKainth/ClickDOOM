@@ -54,6 +54,9 @@ const ATTACK: i32 = 454;
 /// the player's own radius; four units is inside its reach.
 const NEAR: i64 = 4 * 65536;
 
+/// `p_local.h`: how long a thing chases what hit it before it looks
+/// elsewhere.
+const BASETHRESHOLD: i32 = 100;
 /// `doomdef.h`
 const ARMOR_NONE: i64 = 0;
 const ARMOR_GREEN: i64 = 1;
@@ -132,6 +135,8 @@ struct Hit {
     weapon_state: i32,
     weapon_tics: i32,
     weapon_sy: i32,
+    player_target: u32,
+    player_threshold: i32,
 }
 
 /// A column of one slot replaced, leaving every other slot alone.
@@ -254,7 +259,8 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32, tics: u
              m_frame[p_mo] AS player_frame, p_playerstate AS playerstate, \
              m_flags[p_mo] AS player_flags, m_height[p_mo] AS player_height, \
              p_readyweapon AS readyweapon, psp_state[1] AS weapon_state, \
-             psp_tics[1] AS weapon_tics, psp_sy[1] AS weapon_sy \
+             psp_tics[1] AS weapon_tics, psp_sy[1] AS weapon_sy, \
+             m_target[p_mo] AS player_target, m_threshold[p_mo] AS player_threshold \
              FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
             wanted.join(", ")
         ))
@@ -310,6 +316,21 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
     assert_eq!(
         after.p_attacker, ATTACKER as u32,
         "the player's own attacker is the imp that clawed it"
+    );
+    // `P_DamageMobj` turns whatever it reached onto what hit it, and the
+    // player is not excepted: the mobj's own target and threshold move
+    // the way any monster's do.
+    assert_eq!(
+        before.player_target, 0,
+        "the seeded player has nothing on its mind"
+    );
+    assert_eq!(
+        after.player_target, ATTACKER as u32,
+        "and turns onto the imp that clawed it"
+    );
+    assert_eq!(
+        after.player_threshold, BASETHRESHOLD,
+        "holding it for the threshold's worth of tics"
     );
 
     // The armoured arms save a third or a half of the same roll.

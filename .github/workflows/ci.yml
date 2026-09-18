@@ -189,6 +189,27 @@ jobs:
           chmod +x target/release/refemu
           scripts/test-group.sh "$GROUP"
 
+  native-smoke:
+    # The driver's own path to a frame: load the schema and the committed
+    # probe fixture, render the frame the fixture's metadata names, compare
+    # against the hash the probe recorded beside that frame's row.
+    #
+    # The renderer's pixels are pinned by `native/tests/render_live.rs` in
+    # the native-rest group. This job checks the load and render path around
+    # them and the fixture's own metadata. No ROM is built: the target's
+    # prerequisites are `up` and `build-clickdoom`.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Render the first gameplay frame and check its hash
+        run: make native-smoke
+
   differential-smoke:
     # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
     # full checkpoint trace at every CHECKPOINT_INTERVAL rather than a sample.

@@ -22,6 +22,7 @@ pub fn doom1() -> Vec<u8> {
 pub mod patch;
 
 pub mod attacks;
+#[cfg(feature = "clickhouse-tests")]
 pub mod cost;
 pub mod damage;
 pub mod door;

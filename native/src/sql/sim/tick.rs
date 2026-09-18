@@ -146,7 +146,10 @@ const BATCH_SETTINGS: &str = "\nSETTINGS max_block_size = 1, max_insert_block_si
 /// session sends as URL parameters, and here they travel with the
 /// statement. A run is two statements because the transform is analysed
 /// per statement and executed per row, exactly as a session's two are.
-pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
+/// The first statement over `rows`, cut short at `cut`. Shared by
+/// [`run_statement`] and the cut statements the bench module builds, so a
+/// measured statement differs from the shipped one only by the cut.
+fn stage1_over(db: &str, rows: &[Input], cut: Option<&'static str>) -> Statement {
     // The rows come out of `numbers`, which honours the block size the
     // session runs under. A table of literal rows does not, and rows that
     // share a block all read the state from before it.
@@ -156,9 +159,9 @@ pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
             rows.iter().map(of).collect::<Vec<_>>().join(", ")
         )
     };
-    let stage1 = Statement::sql(format!(
+    Statement::sql(format!(
         "{}{BATCH_SETTINGS}",
-        transform_stage1(
+        transform_stage1_cut(
             db,
             &format!(
                 "(\n    SELECT\n        {} AS tic,\n        {} AS source,\n        \
@@ -171,9 +174,118 @@ pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
                 column("toInt16", &|row: &Input| row.mouse.1.to_string()),
                 rows.len()
             ),
+            cut,
         )
     ))
-    .with(&PARSE_SETTINGS);
+    .with(&PARSE_SETTINGS)
+}
+
+/// Building the first statement cut short, for measuring what each of its
+/// stages costs. Behind the test feature, so the release surface carries
+/// none of it.
+///
+/// A cut leaves out everything from that point on, and the columns the cut
+/// stages would have written fall back to the tic before. Every cut is
+/// therefore a statement writing the same row as the shipped one, over the
+/// same input, differing only in what it computes.
+#[cfg(feature = "clickhouse-tests")]
+pub mod bench {
+    use super::{Input, Statement};
+
+    /// Where the first statement can be cut short, in the order it
+    /// computes them. The cost of a stage is the difference between the
+    /// cut that ends before it and the cut after it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Cut {
+        /// After the tic command, before the player thinks.
+        Command,
+        /// After the player, before the sector thinkers' own draw count.
+        Think,
+        /// After that count, before the thing thinkers.
+        Lights,
+        /// Inside the thing thinkers, before each named piece.
+        Moves,
+        Falls,
+        Look,
+        Sight,
+        Chase,
+        Draws,
+        Crowd,
+        Strikes,
+        Missile,
+        Compact,
+        Project,
+        /// After every thing thinker, before the tic's own throw runs.
+        Thinkers,
+    }
+
+    impl Cut {
+        /// Every cut, in the order the statement computes them.
+        pub const ALL: [Cut; 15] = [
+            Cut::Command,
+            Cut::Think,
+            Cut::Lights,
+            Cut::Moves,
+            Cut::Falls,
+            Cut::Look,
+            Cut::Sight,
+            Cut::Chase,
+            Cut::Draws,
+            Cut::Crowd,
+            Cut::Strikes,
+            Cut::Missile,
+            Cut::Compact,
+            Cut::Project,
+            Cut::Thinkers,
+        ];
+
+        /// The name the generator knows this cut by.
+        pub fn name(self) -> &'static str {
+            match self {
+                Cut::Command => "command",
+                Cut::Think => "think",
+                Cut::Lights => "lights",
+                Cut::Moves => "moves",
+                Cut::Falls => "falls",
+                Cut::Look => "look",
+                Cut::Sight => "sight",
+                Cut::Chase => "chase",
+                Cut::Draws => "draws",
+                Cut::Crowd => "crowd",
+                Cut::Strikes => "strikes",
+                Cut::Missile => "missile",
+                Cut::Compact => "compact",
+                Cut::Project => "project",
+                Cut::Thinkers => "thinkers",
+            }
+        }
+    }
+
+    /// The first statement over `rows`, cut short at `cut`, in the shape
+    /// [`super::run_statement`] builds: driven from `numbers()` and
+    /// reading the tic before out of `native_state`. `None` gives the
+    /// statement as it ships.
+    ///
+    /// Reading the tic before out of the table is what keeps a cut
+    /// comparable: the caller puts a known row there, so every cut runs
+    /// the same tic over the same world instead of each one drifting into
+    /// a world of its own.
+    pub fn stage1(db: &str, cut: Option<Cut>, rows: &[Input]) -> Statement {
+        super::stage1_over(db, rows, cut.map(Cut::name))
+    }
+}
+
+pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
+    // The rows come out of `numbers`, which honours the block size the
+    // session runs under. A table of literal rows does not, and rows that
+    // share a block all read the state from before it.
+    let column = |cast: &str, of: &dyn Fn(&Input) -> String| {
+        format!(
+            "{cast}([{}][1 + number])",
+            rows.iter().map(of).collect::<Vec<_>>().join(", ")
+        )
+    };
+    let stage1 = stage1_over(db, rows, None);
     let stage2 = Statement::sql(format!(
         "{}{BATCH_SETTINGS}",
         transform_stage2(
@@ -196,7 +308,13 @@ pub fn demo_statement(db: &str, first: u32, last: u32) -> [Statement; 2] {
 }
 
 fn transform_stage1(db: &str, from: &str) -> String {
-    let tic = bindings_stage1(db);
+    transform_stage1_cut(db, from, None)
+}
+
+/// [`transform_stage1`], cut short at `cut`. `None` is the statement as it
+/// ships, which is the only one a release build asks for.
+fn transform_stage1_cut(db: &str, from: &str, cut: Option<&'static str>) -> String {
+    let tic = bindings_stage1(db, cut);
     let row = row(&tic.state);
     let extra: Vec<(&str, String)> = STAGE_EXTRA_COLUMNS
         .iter()
@@ -229,28 +347,111 @@ fn transform_stage2(db: &str, from: &str) -> String {
 /// The first statement's own bindings: the player and the thinkers, which
 /// is `P_Ticker` up to the point `P_RunThinkers` has run every thinker the
 /// tic itself made room for.
-fn bindings_stage1(db: &str) -> Tic {
+///
+/// `cut` leaves out everything from that point on. A column the cut stage
+/// would have written falls back to the tic before through `prev_`, so a
+/// cut statement writes the same row and differs only in what it computes
+/// for it. `None` builds the statement as it ships.
+fn bindings_stage1(db: &str, cut: Option<&'static str>) -> Tic {
     let mut tic = Tic::new(previous(db));
     tic.stage(super::constants(db));
     let command = game::command(&tic.state, db);
     tic.stage(command);
     let special = game::special_buttons(&tic.state);
     tic.stage(special);
+    if cut == Some("command") {
+        tic.stage(uncrossed(true, true));
+        return tic;
+    }
     let think = player::think(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, think);
+    if cut == Some("think") {
+        tic.stage(uncrossed(true, true));
+        return tic;
+    }
     // The sector thinkers sit partway up the thinker list, so how many
     // numbers they draw is known before the stage that steps over them.
     tic.stage(lights::draws(&tic.state));
-    let things = mobj::thinkers(&tic.state);
+    if cut == Some("lights") {
+        tic.stage(uncrossed(true, true));
+        return tic;
+    }
+    let things = match cut.and_then(inside_thinkers) {
+        None => mobj::thinkers(&tic.state),
+        Some(marker) => cut_before(mobj::thinkers(&tic.state), marker),
+    };
+    // Which of the boundary's own scratch columns this cut still reaches.
+    // Asking the bindings rather than naming the cuts means a stage that
+    // moves cannot leave a cut quietly missing one.
+    let has = |column: &str| things.iter().any(|(name, _)| name == column);
+    let (crossings, light_index) = (has("tx_crossed_line"), has("mt_light_index"));
     let running = game::running(&tic.state);
     tic.stage_when(&running, things);
+    if !crossings || !light_index {
+        tic.stage(uncrossed(!crossings, !light_index));
+    }
+    if cut == Some("thinkers") || cut.and_then(inside_thinkers).is_some() {
+        return tic;
+    }
     // Runs the tic's own throw's thinker, at the slot the compaction
     // inside `things` appended it to.
     let thrown = mobj::thrown_thinks(&tic.state);
     let running = game::running(&tic.state);
     tic.stage_when(&running, thrown);
     tic
+}
+
+/// Each cut that stops inside `mobj::thinkers`, and the binding it stops
+/// before, in the order that stage computes them.
+const THINKER_CUTS: [(&str, &str); 11] = [
+    ("moves", "tx_moving"),
+    ("falls", "tz_falling"),
+    ("look", "mt_cycles"),
+    ("sight", "mt_pairs"),
+    ("chase", "mc_m_angle"),
+    ("draws", "mt_shouts"),
+    ("crowd", "mt_entries"),
+    ("strikes", "at_asks"),
+    ("missile", "mt_missile_asks"),
+    ("compact", "mt_gone"),
+    ("project", "now_m_x"),
+];
+
+/// The binding `cut` stops before, for a cut inside `mobj::thinkers`.
+fn inside_thinkers(cut: &'static str) -> Option<&'static str> {
+    THINKER_CUTS
+        .iter()
+        .find(|(name, _)| *name == cut)
+        .map(|(_, marker)| *marker)
+}
+
+/// `bindings` up to the first one named `marker`.
+fn cut_before(bindings: Vec<(String, String)>, marker: &str) -> Vec<(String, String)> {
+    let at = bindings
+        .iter()
+        .position(|(name, _)| name == marker)
+        .unwrap_or_else(|| panic!("no binding named {marker} to cut before"));
+    bindings[..at].to_vec()
+}
+
+/// The [`STAGE_EXTRA_COLUMNS`] a cut stage never wrote: no line crossed,
+/// and the sector thinkers reading the random table where the tic left it.
+/// Only a cut statement needs them, and a cut that keeps the stage which
+/// writes one passes `false` for it.
+fn uncrossed(crossings: bool, light_index: bool) -> Vec<(String, String)> {
+    let mut stubs = Vec::new();
+    if crossings {
+        stubs.push(("px_crossed_line".to_owned(), "toInt64(-1)".to_owned()));
+        stubs.push((
+            "tx_crossed_line".to_owned(),
+            "arrayMap(v -> toInt64(-1), prev_m_x)".to_owned(),
+        ));
+    }
+    if light_index {
+        stubs.push(("mt_light_index".to_owned(), "prev_prndindex".to_owned()));
+    }
+    stubs
 }
 
 /// The second statement's own bindings: the specials, then `G_Ticker`'s
@@ -411,7 +612,7 @@ mod tests {
 
         // Nothing writes either column after the count, so the row the
         // first statement leaves is the one the count was taken over.
-        let stage1 = bindings_stage1("nat").bindings;
+        let stage1 = bindings_stage1("nat", None).bindings;
         let count = at(&stage1, "lt_draws");
         for suffix in ["_s_kind", "_s_count"] {
             assert!(
@@ -593,10 +794,52 @@ mod tests {
         })
     }
 
+    /// Every cut has to build a statement the server could run: its
+    /// bindings written before they are read, its parentheses balanced,
+    /// and the `native_stage` row still written. A cut that names a
+    /// binding the stage no longer computes panics while building, which
+    /// is what catches a cut left behind by a stage that moved.
+    #[cfg(feature = "clickhouse-tests")]
+    #[test]
+    fn every_cut_builds_a_statement_the_server_could_run() {
+        for cut in bench::Cut::ALL {
+            let name = cut.name();
+            let with = bindings_stage1("nat", Some(name)).bindings;
+            let mut written: Vec<&str> = Vec::new();
+            for (binding, expr) in &with {
+                for (earlier, _) in &with {
+                    if earlier != binding && mentions(expr, earlier) {
+                        assert!(
+                            written.contains(&earlier.as_str()),
+                            "cut {name}: {binding} reads {earlier} before it is written"
+                        );
+                    }
+                }
+                written.push(binding);
+            }
+            for (binding, expr) in &with {
+                let depth = expr.chars().fold(0i64, |at, c| match c {
+                    '(' => at + 1,
+                    ')' => at - 1,
+                    _ => at,
+                });
+                assert_eq!(depth, 0, "cut {name}: {binding} does not balance");
+            }
+            let sql = bench::stage1("nat", Some(cut), &[Input::demo(1)]).sql;
+            assert!(
+                sql.contains(&format!("INSERT INTO nat.{STAGE_TABLE}")),
+                "cut {name} writes no {STAGE_TABLE} row"
+            );
+            for (column, _) in STAGE_EXTRA_COLUMNS {
+                assert!(sql.contains(column), "cut {name} drops {column}");
+            }
+        }
+    }
+
     #[test]
     fn a_binding_is_only_read_after_it_is_written() {
         for with in [
-            bindings_stage1("nat").bindings,
+            bindings_stage1("nat", None).bindings,
             bindings_stage2("nat").bindings,
         ] {
             let mut written: Vec<&str> = Vec::new();
@@ -654,7 +897,7 @@ mod tests {
     #[test]
     fn a_subquery_names_nothing_bound_outside_it() {
         for with in [
-            bindings_stage1("nat").bindings,
+            bindings_stage1("nat", None).bindings,
             bindings_stage2("nat").bindings,
         ] {
             let names: Vec<&str> = with.iter().map(|(name, _)| name.as_str()).collect();
@@ -688,7 +931,7 @@ mod tests {
     /// only untracked names allowed to.
     #[test]
     fn no_bare_alias_but_the_staged_ones_crosses_the_boundary() {
-        let stage1 = bindings_stage1("nat").bindings;
+        let stage1 = bindings_stage1("nat", None).bindings;
         let stage2 = bindings_stage2("nat").bindings;
         let stage2_names: Vec<&str> = stage2.iter().map(|(name, _)| name.as_str()).collect();
         let scratch: Vec<&str> = stage1
@@ -731,7 +974,7 @@ mod expansion {
     /// of them starts being copied instead.
     #[test]
     fn no_large_binding_is_copied() {
-        for tic in [bindings_stage1("lanew"), bindings_stage2("lanew")] {
+        for tic in [bindings_stage1("lanew", None), bindings_stage2("lanew")] {
             check_no_large_binding_is_copied(&tic);
         }
     }

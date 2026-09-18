@@ -73,10 +73,10 @@ async fn every_cut_runs_the_same_tic_against_the_same_world() {
     }
 
     assert_eq!(costs.len(), CUTS.len(), "every cut was timed");
-    // `native_stage` is a `Join(ANY, LEFT, tic)`, which keeps the first
-    // row for a tic and drops the rest, so the cuts after the first leave
-    // no row of their own however much work they did. What the table shows
-    // is that the tic under measurement was reached at all.
+    // `native_stage` is a `Join(ANY, LEFT, tic)` under
+    // `join_any_take_last_row`, so every cut writing the tic replaces the
+    // row rather than adding one. What the table shows is that the tic
+    // under measurement was reached, not how many cuts reached it.
     assert_eq!(at_tic, 1, "no cut wrote the tic under measurement");
     assert_eq!(
         staged,

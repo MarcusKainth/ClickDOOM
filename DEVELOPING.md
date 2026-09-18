@@ -227,24 +227,39 @@ matches the name given, so only the holder gives it back. A lock left behind
 by a run that died is cleared with `break`, which prints what it removed.
 
 Holding the lock says the machine is yours. It does not say the machine is
-quiet, so `acquire` reads two more things and refuses when either says
-otherwise: another lane's running container, and a 1-minute load average
-above `MACHINE_LOCK_MAX_LOAD`, which defaults to 3. It names what it found
-and exits non-zero. `status` prints every running `clickdoom-` container and
-the load beside the holder, so one reading covers the lock and the machine.
+quiet, so `acquire` reads what the machine is doing and refuses when it is
+busy, naming what it found. `status` prints the same reading beside the
+holder, so one look covers the lock and the machine.
 
-Another lane's container counts whatever it is doing, an idle server
-included, because the memory and the threads are gone either way. Two
-containers are not another lane's and do not refuse. `clickdoom-ch`, the
-compose service, sits on the development machine all day and costs a timing
-nothing while it is idle, and the load average catches it when it is not.
-`clickdoom-<holder>` is the acquirer's own, which its timing run needs up
-and may have started either side of taking the lock.
+A clickdoom container counts by what it is using rather than by being
+there. `acquire` refuses on one above `MACHINE_LOCK_MAX_CONTAINER_CPU`
+percent of a CPU, 10 by default. A ClickHouse with nothing asked of it
+reads a few percent here, from its background merges. A server somebody
+left running after their own work finished costs the next holder almost
+nothing, and judging containers this way needs no list of names to forgive
+as lanes come and go.
 
-`--force` goes through both refusals and records its reason in the lock
-file. `run` takes it in the same place. A host where the load average cannot
-be read is not refused on that ground, since every `acquire` there would
-fail.
+`MACHINE_LOCK_MAX_LOAD` is 3 against a machine that idles at 0.75, the
+median of 21 readings taken 15 seconds apart over five minutes with the
+lock held and no clickdoom container running. The rest of that load is the
+Docker VM and whatever else the host runs, about three quarters of a core.
+
+The reading above it is almost always a run that has already finished. The
+load average is the 1-minute one and it decays over about a minute, so it
+reads 2.4 to 5.6 straight after a run on a machine with nothing on it,
+which is exactly when the next lane wants the lock. `acquire` waits that
+out rather than refusing on it, looking every 5 seconds for up to
+`MACHINE_LOCK_SETTLE` seconds, 180 by default, and taking the lock the
+moment the load falls under the threshold. The default is that long because
+a handover straight after a full demo run read 7.88 and took over two
+minutes to come down. A container at work is not
+something waiting fixes, so that refuses at once, during the wait as well
+as before it.
+
+`--force` takes the lock at once through both refusals and records its
+reason in the lock file. `run` takes it in the same place. A host where the
+load average cannot be read is not refused on that ground, since every
+`acquire` there would fail.
 
 `make bench-canonical-throughput` holds the lock for the length of its run and
 releases it whether the run succeeds, fails or is interrupted.

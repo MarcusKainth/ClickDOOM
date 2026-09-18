@@ -143,16 +143,19 @@ jobs:
     runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # The slowest group runs about 23 minutes and a job's own overhead around
-    # that run reaches 7 minutes, so this is a backstop at about 1.5x a full
-    # group.
-    timeout-minutes: 45
+    # The slowest group ran 41 minutes over the five main runs the packing
+    # was taken from. Packed over six groups every group's own tests
+    # schedule in 19.8 to 20.6 minutes, and a job runs 3.4 minutes longer
+    # than its tests at the median, 8.8 at the worst seen. A test's own time
+    # moves 17% run to run, so this is a backstop at about 1.5x the worst
+    # group a run is expected to produce rather than at the median.
+    timeout-minutes: 35
     env:
       TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:
       fail-fast: false
       matrix:
-        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-rest]
+        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f, native-rest]
     name: test (${{ matrix.group }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,8 +1,10 @@
 //! What a thing does with its momentum and its states, from `p_mobj.c`.
 
 use super::map::{self, World, answer};
+use super::player::PST_DEAD;
 use super::{
-    State, attacks, enemy, inter, maputl, mask, missile, player, shoot, sight, specials, unresolved,
+    State, attacks, enemy, inter, maputl, mask, missile, player, pspr, shoot, sight, specials,
+    unresolved,
 };
 use crate::sql::Statement;
 use crate::sql::bind;
@@ -1117,15 +1119,6 @@ pub fn thinkers(state: &State) -> Vec<(String, String)> {
                         ),
                     ),
                     (
-                        unresolved::PLAYER_DIES,
-                        &format!(
-                            "arrayExists(t -> t.{hurt}.{dies} = 1, mt_missile_thoughts) \
-                             OR mt_hurt.{dies} = 1",
-                            hurt = missile::thought::HURT,
-                            dies = inter::hurt::PL_DIES,
-                        ),
-                    ),
-                    (
                         unresolved::SECTOR11_STUCK,
                         &format!(
                             "arrayExists(t -> t.{hurt}.{sec} = 1, mt_missile_thoughts) \
@@ -1547,6 +1540,7 @@ fn strikes(state: &State, map: &World<'_>) -> Vec<(String, String)> {
                 &s("p_armortype"),
                 &s("p_damagecount"),
                 &s("p_attacker"),
+                &s("p_playerstate"),
             ),
             &hurting,
         ),
@@ -1777,6 +1771,14 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
         skill: "skill",
     };
     bind("tk_drops", spawn_mobj("tk_drop_asks", &tk_spawning));
+    // `P_DropWeapon`, before the writeback, because it reads the tic's own
+    // starting `p_playerstate` and the writeback is what moves it.
+    for (name, expr) in pspr::drop_weapon(
+        state,
+        &format!("tk_players.{} = {PST_DEAD}", inter::hurt::PL_PLAYERSTATE),
+    ) {
+        bind(&name, expr);
+    }
     for (name, expr) in player::hurt_writeback("tk_players") {
         bind(&name, expr);
     }
@@ -1971,12 +1973,8 @@ pub fn thrown_thinks(state: &State) -> Vec<(String, String)> {
                     ),
                 ),
                 (
-                    unresolved::PLAYER_DIES,
-                    &format!(
-                        "arrayExists(t -> t.{hurt}.{dies} = 1, tk_thoughts)",
-                        hurt = missile::thought::HURT,
-                        dies = inter::hurt::PL_DIES,
-                    ),
+                    unresolved::PSP_STUCK,
+                    &format!("{} = 1", pspr::dropped::STUCK),
                 ),
                 (
                     unresolved::SECTOR11_STUCK,
@@ -3748,10 +3746,12 @@ mod tests {
         );
     }
 
-    /// A hit that would kill the player, from a claw or a missile already
-    /// in flight, is its own bit rather than folded into `DM_STUCK`.
+    /// The tic a hit kills the player on names no bit of its own. The
+    /// kill is written, and what `P_DeathThink` does on the tics after it
+    /// is what `PLAYER_DEAD` stands for, decided in the player's own
+    /// stage from the playerstate the tic started with.
     #[test]
-    fn a_hit_that_would_kill_the_player_is_its_own_bit() {
+    fn the_tic_a_kill_lands_on_names_no_bit_of_its_own() {
         let bindings = thinkers(&State::default());
         let now_unresolved = bindings
             .iter()
@@ -3759,15 +3759,7 @@ mod tests {
             .map(|(_, expr)| expr.clone())
             .unwrap_or_else(|| panic!("now_unresolved is bound"));
         assert!(
-            now_unresolved.contains(&format!("mt_hurt.{} = 1", inter::hurt::PL_DIES)),
-            "{now_unresolved}"
-        );
-        assert!(
-            now_unresolved.contains(&format!(
-                "t.{}.{} = 1, mt_missile_thoughts",
-                missile::thought::HURT,
-                inter::hurt::PL_DIES,
-            )),
+            !now_unresolved.contains(&unresolved::PLAYER_DEAD.to_string()),
             "{now_unresolved}"
         );
     }

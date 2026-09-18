@@ -98,7 +98,20 @@ fn guards(db: &str) -> Vec<Statement> {
          AND tics > 0 AND misc1 = 0\n\
          AND action = (SELECT id FROM {db}.action_functions WHERE name = 'A_Raise')"
     );
-    [unknown_type, one_player, raises]
+    // `P_DropWeapon` puts the ready weapon's down state on the weapon
+    // sprite, and `P_SetPsprite` runs that state's action on entry. The
+    // drop applies `A_Lower` once and stops there, which holds only while
+    // every weapon's down state lowers, sets no coordinate and has a tic
+    // to wait.
+    let lowers = format!(
+        "SELECT throwIf(count() > 0, \
+         'P_DropWeapon: a weapon does not lower')\n\
+         FROM {db}.weaponinfo AS w\n\
+         INNER JOIN {db}.states AS s ON s.id = w.downstate\n\
+         WHERE NOT (s.tics > 0 AND s.misc1 = 0\n\
+         AND s.action = (SELECT id FROM {db}.action_functions WHERE name = 'A_Lower'))"
+    );
+    [unknown_type, one_player, raises, lowers]
         .into_iter()
         .map(Statement::sql)
         .collect()

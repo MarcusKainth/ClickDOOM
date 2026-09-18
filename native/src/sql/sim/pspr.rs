@@ -9,6 +9,7 @@
 use crate::sql::bind;
 use crate::sql::fixed;
 
+use super::player::PST_DEAD;
 use super::{State, inter, maputl, mask, mobj, shoot, unresolved};
 
 /// `p_pspr.c`
@@ -34,8 +35,6 @@ const WP_SUPERSHOTGUN: i64 = 8;
 const AM_NOAMMO: i64 = 5;
 /// `p_pspr.c`: what one shot of the BFG costs.
 const BFGCELLS: i64 = 40;
-/// `d_player.h`: `PST_DEAD`.
-const PST_DEAD: i64 = 2;
 /// `p_pspr.h`: the two sprites, one-based for the arrays that hold both.
 const PS_WEAPON: usize = 1;
 const PS_FLASH: usize = 2;
@@ -722,6 +721,84 @@ mod tests {
             assert_eq!(depth, 0, "{name}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// P_DropWeapon
+// ---------------------------------------------------------------------------
+
+/// `P_DropWeapon`, for the tic a hit leaves the player dead.
+///
+/// `P_KillMobj` calls it from the middle of the thinker list, well after
+/// `P_MovePsprites` has run, so this writes the weapon sprite a second
+/// time over what the player's own stage left. `P_SetPsprite` runs the
+/// entered state's own routine before it returns, and every weapon's down
+/// state carries `A_Lower` with a tic to wait, so the sprite also takes
+/// one step down the screen here.
+///
+/// `died` is 1 where the player is dead at the end of the tic;
+/// `p_playerstate` is read for the tic's own starting value, so a player
+/// already dead when the tic began drops nothing a second time.
+///
+/// `A_Lower`'s own branch for a sprite that reaches the bottom of the
+/// screen is not written, so a drop that would reach it leaves the tic
+/// unresolved through [`dropped::STUCK`].
+pub mod dropped {
+    /// The binding holding 1 where this tic's own drop hit a path the
+    /// weapon sprite does not run here.
+    pub const STUCK: &str = "pd_stuck";
+}
+
+pub fn drop_weapon(state: &State, died: &str) -> Vec<(String, String)> {
+    let s = |column: &str| state.get(column);
+    let put = |array: String, value: &str| {
+        format!(
+            "arrayMap((v, k) -> if(k = {PS_WEAPON}, {value}, v), {array}, arrayEnumerate({array}))"
+        )
+    };
+    let sy = format!("{}[{PS_WEAPON}]", s("psp_sy"));
+    vec![
+        (
+            "pd_drops".to_owned(),
+            format!("toUInt8({died} AND {} != {PST_DEAD})", s("p_playerstate")),
+        ),
+        (
+            "pd_down".to_owned(),
+            format!("toInt32(weapon_downstate[1 + {}])", s("p_readyweapon")),
+        ),
+        (
+            "pd_sy".to_owned(),
+            format!("toInt32(toInt64({sy}) + {LOWERSPEED})"),
+        ),
+        (
+            dropped::STUCK.to_owned(),
+            format!("toUInt8(pd_drops = 1 AND pd_sy >= {WEAPONBOTTOM})"),
+        ),
+        (
+            "now_psp_state".to_owned(),
+            format!(
+                "if(pd_drops = 1, {}, {})",
+                put(s("psp_state"), "toInt32(pd_down)"),
+                s("psp_state")
+            ),
+        ),
+        (
+            "now_psp_tics".to_owned(),
+            format!(
+                "if(pd_drops = 1, {}, {})",
+                put(s("psp_tics"), "toInt32(state_tics[1 + pd_down])"),
+                s("psp_tics")
+            ),
+        ),
+        (
+            "now_psp_sy".to_owned(),
+            format!(
+                "if(pd_drops = 1, {}, {})",
+                put(s("psp_sy"), "toInt32(pd_sy)"),
+                s("psp_sy")
+            ),
+        ),
+    ]
 }
 
 // ---------------------------------------------------------------------------

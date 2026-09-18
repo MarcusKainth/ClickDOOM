@@ -159,8 +159,11 @@ pub mod unresolved {
     /// The same, for a monster's own move. A monster's own crossing never
     /// reaches a door special, so only `PLAT_TRIGGER_SPECIALS` applies.
     pub const TX_MULTI_CROSSED: u64 = 1 << 33;
-    /// `P_DamageMobj`: a hit on the player leaves its health at 0 or below.
-    pub const PLAYER_DIES: u64 = 1 << 34;
+    /// `P_PlayerThink`: the tic starts with the player dead, so
+    /// `P_DeathThink` runs in place of the rest of the routine. The tic a
+    /// hit kills the player on is not this: `P_KillMobj` has run by then
+    /// and `P_PlayerThink` had already taken its living branch.
+    pub const PLAYER_DEAD: u64 = 1 << 34;
     /// `P_DamageMobj`: the target's sector special is 11, and the damage
     /// reaches the clamp that keeps a hit there from killing outright.
     pub const SECTOR11_STUCK: u64 = 1 << 35;
@@ -213,7 +216,7 @@ const UNRESOLVED_BITS: [(u64, &str); 37] = [
     (unresolved::MISSILE_STUCK, "MISSILE_STUCK"),
     (unresolved::PX_MULTI_CROSSED, "PX_MULTI_CROSSED"),
     (unresolved::TX_MULTI_CROSSED, "TX_MULTI_CROSSED"),
-    (unresolved::PLAYER_DIES, "PLAYER_DIES"),
+    (unresolved::PLAYER_DEAD, "PLAYER_DEAD"),
     (unresolved::SECTOR11_STUCK, "SECTOR11_STUCK"),
     (unresolved::GN_STUCK, "GN_STUCK"),
     (

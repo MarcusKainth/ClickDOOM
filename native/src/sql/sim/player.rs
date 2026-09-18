@@ -19,6 +19,9 @@ const ANG90: i64 = 0x4000_0000;
 const ANGLETOFINESHIFT: u32 = 19;
 /// `d_player.h`
 const CF_NOCLIP: i64 = 1;
+/// `d_player.h`: `PST_DEAD`. The player's own stage decides it and three
+/// others read it, so it is stated here and imported there.
+pub(crate) const PST_DEAD: i64 = 2;
 /// `p_mobj.h`
 const MF_NOCLIP: i64 = 0x1000;
 /// `d_event.h`
@@ -654,12 +657,12 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
     bindings
 }
 
-/// The player's own health, armour, damagecount and attacker, off the
-/// last of the tic's own damage folds to run: the thinker stage's claw, an
-/// in-flight missile's own impact and the thrown thinker's, each reading
-/// what the one before it left. `hurt` is that last fold's own final
-/// tuple, which carries the tic's starting row unchanged where nothing
-/// hit the player at all.
+/// The player's own health, armour, damagecount, attacker and playerstate,
+/// off the last of the tic's own damage folds to run: the thinker stage's
+/// claw, an in-flight missile's own impact and the thrown thinker's, each
+/// reading what the one before it left. `hurt` is that last fold's own
+/// final tuple, which carries the tic's starting row unchanged where
+/// nothing hit the player at all.
 pub fn hurt_writeback(hurt: &str) -> Vec<(String, String)> {
     let field = |name: &str, cast: &str, member: usize| {
         (name.to_owned(), format!("{cast}({hurt}.{member})"))
@@ -670,6 +673,7 @@ pub fn hurt_writeback(hurt: &str) -> Vec<(String, String)> {
         field("now_p_armortype", "toInt32", inter::hurt::PL_ARMORTYPE),
         field("now_p_damagecount", "toInt32", inter::hurt::PL_DAMAGECOUNT),
         field("now_p_attacker", "toUInt32", inter::hurt::PL_ATTACKER),
+        field("now_p_playerstate", "toUInt8", inter::hurt::PL_PLAYERSTATE),
     ]
 }
 
@@ -791,6 +795,10 @@ fn writeback(state: &State) -> Vec<(String, String)> {
                     (unresolved::PX_CROSSED, "px_crossed = 1"),
                     (unresolved::PX_MULTI_CROSSED, "px_crossed_count > 1"),
                     (unresolved::PL_HURTS, "pl_hurts = 1"),
+                    (
+                        unresolved::PLAYER_DEAD,
+                        &format!("{} = {PST_DEAD}", state.get("p_playerstate")),
+                    ),
                 ],
             ),
         ),
@@ -959,6 +967,26 @@ mod tests {
             expr.contains(&format!(
                 "if(pl_hurts = 1, toUInt64({}), toUInt64(0))",
                 unresolved::PL_HURTS
+            )),
+            "{expr}"
+        );
+    }
+
+    /// A tic that starts with the player dead runs `P_DeathThink` in place
+    /// of the rest of `P_PlayerThink`, which is not written, so the tic
+    /// says so. The tic a hit kills the player on is not one of these:
+    /// the stage reads the playerstate the tic began with.
+    #[test]
+    fn a_tic_that_starts_with_the_player_dead_says_so() {
+        let expr = think(&State::default())
+            .into_iter()
+            .find(|(name, _)| name == "now_unresolved")
+            .map(|(_, expr)| expr)
+            .expect("the stage writes now_unresolved");
+        assert!(
+            expr.contains(&format!(
+                "if(prev_p_playerstate = {PST_DEAD}, toUInt64({}), toUInt64(0))",
+                unresolved::PLAYER_DEAD
             )),
             "{expr}"
         );

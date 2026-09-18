@@ -1,4 +1,5 @@
-//! `P_DamageMobj`'s player branch, against a real ClickHouse server.
+//! `P_DamageMobj`'s player branch and the kill it runs into, against a
+//! real ClickHouse server.
 //!
 //! A claw is seeded the way `native/tests/sim_troop_live.rs` seeds one,
 //! aimed at the player instead of a second imp: an imp beside the player,
@@ -24,7 +25,7 @@
 
 use clickdoom_native::sql::sim;
 use clickdoom_native::sql::sim::tick::Input;
-use clickdoom_native::{load, sql, wad::Wad};
+use clickdoom_native::{load, sql, tables, wad::Wad};
 use clickhouse::Row;
 use serde::Deserialize;
 
@@ -81,6 +82,35 @@ const KILLING_ARMS: [(&str, u32, i64); 3] = [
 /// The health both the player and its mobj start a killing arm with.
 const DYING_HEALTH: i32 = 1;
 
+/// How many tics a killing arm runs from its seeded row. The second is
+/// what reads the tic after a death, which `P_DeathThink` owns and this
+/// does not run. A surviving arm runs one, since each tic past the first
+/// costs the tic statement's own analysis again.
+const KILLING_TICS: u32 = 2;
+
+/// `p_mobj.h`
+const MF_SOLID: i32 = 2;
+const MF_SHOOTABLE: i32 = 4;
+const MF_CORPSE: i32 = 0x10_0000;
+const MF_DROPOFF: i32 = 0x400;
+/// `p_pspr.c`: how far `A_Lower` takes the weapon sprite down the screen
+/// in one step, and where `A_WeaponReady` holds it for a player who is
+/// not moving.
+const LOWERSPEED: i32 = 6 << 16;
+const WEAPONTOP: i32 = 32 << 16;
+
+/// The frame and its wait that the weapon sprite goes to when the player
+/// dies, from the engine's own tables: `weaponinfo[readyweapon].downstate`
+/// and that state's own tics.
+fn downstate(readyweapon: i32) -> (i32, i32) {
+    let weapons = tables::table("weaponinfo").expect("the table is committed");
+    let down =
+        weapons.ints("downstate").expect("downstate is an integer")[readyweapon as usize] as i32;
+    let states = tables::table("states").expect("the table is committed");
+    let tics = states.ints("tics").expect("tics is an integer")[down as usize] as i32;
+    (down, tics)
+}
+
 #[derive(Row, Deserialize)]
 struct Hit {
     tic: u32,
@@ -95,6 +125,13 @@ struct Hit {
     player_state: i32,
     player_sprite: i32,
     player_frame: i32,
+    playerstate: u8,
+    player_flags: i32,
+    player_height: i32,
+    readyweapon: i32,
+    weapon_state: i32,
+    weapon_tics: i32,
+    weapon_sy: i32,
 }
 
 /// A column of one slot replaced, leaving every other slot alone.
@@ -131,6 +168,22 @@ fn claw_overrides(armortype: i64, health: i32) -> Vec<(&'static str, String)> {
                  p.m_health, arrayEnumerate(p.m_health))"
             ),
         ),
+        // The player stands still, so `P_CalcHeight` leaves the bob at
+        // zero and `A_WeaponReady` puts the weapon sprite at `WEAPONTOP`
+        // exactly. The drop below is then a number rather than a number
+        // plus whatever the bob happened to be that tic.
+        (
+            "m_momx",
+            "arrayMap((v, k) -> toInt32(if(k = p.p_mo, 0, v)), \
+             p.m_momx, arrayEnumerate(p.m_momx))"
+                .to_owned(),
+        ),
+        (
+            "m_momy",
+            "arrayMap((v, k) -> toInt32(if(k = p.p_mo, 0, v)), \
+             p.m_momy, arrayEnumerate(p.m_momy))"
+                .to_owned(),
+        ),
         ("p_health", format!("toInt32({health})")),
         ("p_armortype", format!("toInt32({armortype})")),
         (
@@ -149,11 +202,11 @@ fn claw_overrides(armortype: i64, health: i32) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Seeds one claw arm per entry in `arms`, runs the tic after each and
-/// reads both rows back. The whole walk to [`BEFORE`] is paid once, so
+/// Seeds one claw arm per entry in `arms`, runs `tics` tics from each and
+/// reads every row back. The whole walk to [`BEFORE`] is paid once, so
 /// every arm's imp draws from the same `prndindex` and rolls the same
 /// damage.
-async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<Hit> {
+async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32, tics: u32) -> Vec<Hit> {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
     let fixture = Fixture::create(&format!("sim_player_damage_{suffix}")).await;
@@ -177,10 +230,12 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
                 .into_iter()
                 .map(sql::Statement::sql),
         );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
+        for step in 1..=tics {
+            statements.extend(sim::tick::run_statement(
+                &db,
+                &[Input::keys(at + step, 0, (0, 0))],
+            ));
+        }
     }
     if let Err(error) = fixture.execute(&statements).await {
         fixture.finish().await;
@@ -189,14 +244,17 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
 
     let wanted: Vec<String> = arms
         .iter()
-        .flat_map(|(_, at, _)| [at.to_string(), (at + 1).to_string()])
+        .flat_map(|&(_, at, _)| (0..=tics).map(move |step| (at + step).to_string()))
         .collect();
     let rows: Vec<Hit> = fixture
         .rows(&format!(
             "SELECT tic, p_health, p_armorpoints, p_armortype, p_damagecount, p_attacker, \
              m_health[p_mo] AS player_health, m_state[{ATTACKER}] AS attacker_state, \
              unresolved, m_state[p_mo] AS player_state, m_sprite[p_mo] AS player_sprite, \
-             m_frame[p_mo] AS player_frame \
+             m_frame[p_mo] AS player_frame, p_playerstate AS playerstate, \
+             m_flags[p_mo] AS player_flags, m_height[p_mo] AS player_height, \
+             p_readyweapon AS readyweapon, psp_state[1] AS weapon_state, \
+             psp_tics[1] AS weapon_tics, psp_sy[1] AS weapon_sy \
              FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
             wanted.join(", ")
         ))
@@ -204,15 +262,15 @@ async fn claw_arms(suffix: &str, arms: &[(&str, u32, i64)], health: i32) -> Vec<
     fixture.finish().await;
     assert_eq!(
         rows.len(),
-        arms.len() * 2,
-        "a seeded row and a tic from it for every arm"
+        arms.len() * (tics as usize + 1),
+        "a seeded row and every tic run from it, for every arm"
     );
     rows
 }
 
 #[tokio::test]
 async fn a_claw_reaches_the_player_through_its_own_armour() {
-    let rows = claw_arms("living", &ARMS, 100).await;
+    let rows = claw_arms("living", &ARMS, 100, 1).await;
     let at = |tic: u32| {
         rows.iter()
             .find(|row| row.tic == tic)
@@ -286,19 +344,17 @@ async fn a_claw_reaches_the_player_through_its_own_armour() {
 /// A claw that kills the player writes the same health, armour, tint and
 /// attacker a survivable hit writes.
 ///
-/// The tic still refuses, since `P_KillMobj`'s player branch is not
-/// written, so this reads the refused row's own fields rather than a
-/// parity run, which skips a tic `unresolved` names.
+/// The tic the kill lands on resolves, since `P_PlayerThink` had already
+/// taken its living branch by the time the hit arrived. The tic after it
+/// is `P_DeathThink`'s, which this does not run, and says so.
 #[tokio::test]
 async fn a_claw_that_kills_the_player_still_writes_its_fields() {
-    let rows = claw_arms("killing", &KILLING_ARMS, DYING_HEALTH).await;
+    let rows = claw_arms("killing", &KILLING_ARMS, DYING_HEALTH, KILLING_TICS).await;
     let at = |tic: u32| {
         rows.iter()
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("no row for tic {tic}"))
     };
-    let refused = sim::unresolved::DM_STUCK | sim::unresolved::PLAYER_DIES;
-
     // The bare arm names the roll the other two share: with no armour the
     // tint takes the whole hit, so `p_damagecount` is the claw's own
     // damage. `A_TroopAttack` rolls three times one to eight.
@@ -319,10 +375,14 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
             armortype,
             damagecount: 0,
             attacker: 0,
+            playerstate: 0,
         };
         let (want, taken) = before.hurt(raw_damage, ATTACKER as i64);
         let after = at(tic + 1);
-        assert_eq!(after.unresolved, refused, "{name}");
+        assert_eq!(
+            after.unresolved, 0,
+            "{name}: the tic the kill lands on is written whole"
+        );
         assert_eq!(
             Player {
                 health: i64::from(after.p_health),
@@ -330,8 +390,9 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
                 armortype: i64::from(after.p_armortype),
                 damagecount: i64::from(after.p_damagecount),
                 attacker: i64::from(after.p_attacker),
+                playerstate: i64::from(after.playerstate),
             },
-            want,
+            want.killed(),
             "{name}: the fields p_inter.c's own player block leaves"
         );
         assert_eq!(after.p_health, 0, "{name}: the health clamps at zero");
@@ -354,6 +415,49 @@ async fn a_claw_that_kills_the_player_still_writes_its_fields() {
             ),
             support::damage::picture(i64::from(after.player_state)),
             "{name}: and the picture follows that state"
+        );
+        // `P_KillMobj`: the corpse loses `MF_SOLID` on top of what any
+        // corpse loses, and drops to a quarter of its height.
+        let before = at(tic);
+        assert_eq!(
+            after.player_flags & (MF_SOLID | MF_SHOOTABLE),
+            0,
+            "{name}: the corpse is neither solid nor shootable"
+        );
+        assert_eq!(
+            after.player_flags & (MF_CORPSE | MF_DROPOFF),
+            MF_CORPSE | MF_DROPOFF,
+            "{name}: and carries both corpse flags"
+        );
+        assert_eq!(
+            after.player_height,
+            before.player_height >> 2,
+            "{name}: and stands a quarter as tall"
+        );
+        // `P_DropWeapon`, and the `A_Lower` that `P_SetPsprite` runs on
+        // the way into the frame it enters.
+        let (down, tics) = downstate(after.readyweapon);
+        assert_eq!(
+            (after.weapon_state, after.weapon_tics),
+            (down, tics),
+            "{name}: the weapon sprite goes to its own down state"
+        );
+        // The seeded player stands still, so `P_CalcHeight` leaves the bob
+        // at zero and `A_WeaponReady` puts the sprite at `WEAPONTOP`
+        // before `P_DropWeapon` runs. The seeded row itself carries
+        // whatever the bob was at the tic it was copied from, so the
+        // number to read is the one the tic left.
+        assert_eq!(
+            after.weapon_sy,
+            WEAPONTOP + LOWERSPEED,
+            "{name}: and A_Lower takes one step down the screen"
+        );
+        // The tic after it is the one `P_DeathThink` owns, which this does
+        // not run, so it says so rather than writing a guess.
+        assert_eq!(
+            at(tic + 2).unresolved,
+            sim::unresolved::PLAYER_DEAD,
+            "{name}: the tic after the kill is P_DeathThink's"
         );
     }
 }

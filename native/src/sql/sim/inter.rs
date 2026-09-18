@@ -1761,6 +1761,38 @@ mod damage_tests {
         );
     }
 
+    /// `P_DamageMobj`'s chase block enters the see frame for a target
+    /// standing in its spawn frame, and it tests the state the pain block
+    /// has already written. The player is not excepted from either: it
+    /// goes from `S_PLAY` to `S_PLAY_RUN1` where the pain roll misses.
+    #[test]
+    fn a_target_standing_in_its_spawn_frame_wakes_whoever_it_is() {
+        let (values, _) = damaged(&world(), "dm_held");
+        let named = |want: &str| {
+            values
+                .iter()
+                .find(|(name, _)| name == want)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("the call names {want}"))
+        };
+        let wakes = named("dm_wakes");
+        assert!(!wakes.contains("dm_is_player"), "{wakes}");
+        assert!(wakes.contains("dm_chases = 1"), "{wakes}");
+        assert!(wakes.contains("dm_after_pain = mobj_spawnstate"), "{wakes}");
+        let chases = named("dm_chases");
+        assert!(!chases.contains("dm_is_player"), "{chases}");
+        // The see frame is picked ahead of the pain frame, so a target
+        // that does both ends in the see frame.
+        let state = named("dm_state");
+        let wake_at = state
+            .find("dm_wakes = 1")
+            .expect("the state reads the wake");
+        let pain_at = state
+            .find("dm_pained = 1")
+            .expect("the state reads the pain");
+        assert!(wake_at < pain_at, "{state}");
+    }
+
     /// `P_KillMobj`'s player branch takes `MF_SOLID` off the corpse, over
     /// and above the flags every corpse loses.
     #[test]

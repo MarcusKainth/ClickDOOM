@@ -9,8 +9,8 @@
 #                  native_* suites: the SQL CPU, the executor, the reference
 #                  emulator and the driver's emulation side, then the ROM
 #                  suites that need a release build
-#   native-sim-a   the compact, missile, missile-wall and refire
-#                  suites
+#   native-sim-a   the compact, missile, missile-wall, player-frames and
+#                  refire suites
 #   native-sim-b   the door, missile-kill-drop, move and player-damage
 #                  suites
 #   native-sim-c   the gunshot-kill-drop, pain, punch, shot, thinker-
@@ -77,7 +77,7 @@ fi
 # sim_hitscan_live, sim_input_live, sim_kills_and_drops_live,
 # sim_missile_same_target_live, sim_setup_live, sim_spawn_live,
 # sim_throw_live, sim_traverse_live, sim_use_live.
-sim_a='binary(sim_compact_live) | binary(sim_missile_live) | binary(sim_missile_wall_live) | binary(sim_refire_live)'
+sim_a='binary(sim_compact_live) | binary(sim_missile_live) | binary(sim_missile_wall_live) | binary(sim_player_frames_live) | binary(sim_refire_live)'
 sim_b='binary(sim_door_live) | binary(sim_missile_kill_drop_live) | binary(sim_move_live) | binary(sim_player_damage_live)'
 sim_c='binary(sim_gunshot_kill_drop_live) | binary(sim_pain_live) | binary(sim_punch_live) | binary(sim_shot_live) | binary(sim_thinker_order_live) | binary(sim_troop_live)'
 sim_d='binary(sim_floor_live) | binary(sim_hearing_live) | binary(sim_justattacked_live) | binary(sim_lights_live) | binary(sim_thrust_live) | binary(sim_tic_live)'

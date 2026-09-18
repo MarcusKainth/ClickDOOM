@@ -9,7 +9,7 @@ use crate::sql::{Statement, bind, fixed};
 
 use super::map::World;
 use super::mobj::{self, Mover, Pickups};
-use super::{State, inter, maputl, mask, noise, pspr, unresolved};
+use super::{State, attacks, inter, maputl, mask, noise, pspr, unresolved};
 
 /// `p_local.h`
 const VIEWHEIGHT: i64 = 41 << 16;
@@ -24,6 +24,7 @@ const CF_NOCLIP: i64 = 1;
 pub(crate) const PST_DEAD: i64 = 2;
 /// `p_mobj.h`
 const MF_NOCLIP: i64 = 0x1000;
+const MF_SHADOW: i64 = 0x4_0000;
 /// `d_event.h`
 const BT_SPECIAL: i64 = 128;
 const BT_CHANGE: i64 = 4;
@@ -72,6 +73,16 @@ pub fn constants(db: &str) -> Vec<(String, String)> {
         (
             "skill".to_owned(),
             format!("toInt32(assumeNotNull((SELECT h.skill FROM {db}.demo_header AS h)))"),
+        ),
+        // The one routine the player's own frames carry that nothing else
+        // in the tic binds. `A_Pain`, `A_Fall` and `A_XScream` come from
+        // the damage and attack stages' own constants.
+        (
+            "a_playerscream".to_owned(),
+            format!(
+                "assumeNotNull((SELECT id FROM {db}.action_functions \
+                 WHERE name = 'A_PlayerScream'))"
+            ),
         ),
     ]
 }
@@ -660,13 +671,26 @@ fn mobj_thinker(state: &State) -> Vec<(String, String)> {
              mv_tics_stopped = -1, -1, mv_tics_stopped - 1))"
                 .to_owned(),
         ),
-        // Nothing the player's own frames run has an action or a zero
-        // wait, so a state that does is one this cannot carry through.
+        // The player's own pain and death frames carry `A_Pain`,
+        // `A_PlayerScream`, `A_XScream` and `A_Fall`. The first three make
+        // a noise and nothing else; `A_Fall` takes `MF_SOLID` off, which
+        // the writeback does. Any other routine, or a frame with no wait,
+        // is one this cannot carry through.
         (
             "pl_action_needed".to_owned(),
-            "toUInt8(mv_cycles = 1 AND (state_action[1 + mv_state] != 0 \
-             OR state_tics[1 + mv_state] = 0))"
+            "toUInt8(mv_cycles = 1 AND (state_tics[1 + mv_state] = 0 \
+             OR (state_action[1 + mv_state] != 0 \
+             AND state_action[1 + mv_state] != a_pain \
+             AND state_action[1 + mv_state] != a_playerscream \
+             AND state_action[1 + mv_state] != a_xscream \
+             AND state_action[1 + mv_state] != a_fall)))"
                 .to_owned(),
+        ),
+        // `A_Fall` is the one routine the cycle above enters that leaves a
+        // flag behind.
+        (
+            "pl_falls".to_owned(),
+            "toUInt8(mv_cycles = 1 AND state_action[1 + mv_state] = a_fall)".to_owned(),
         ),
     ]);
     bindings.extend(super::specials::use_special_line(state, "psp_unresolved"));
@@ -697,6 +721,18 @@ pub fn hurt_writeback(hurt: &str) -> Vec<(String, String)> {
 /// the mobj arrays with the player moved, and the list without whatever it
 /// picked up.
 fn writeback(state: &State) -> Vec<(String, String)> {
+    // The invisibility power puts `MF_SHADOW` on the player's mobj and
+    // takes it off again, and `A_Fall` on a death frame takes `MF_SOLID`
+    // off. A corpse the kill already made insolid stays that way.
+    let shadowed = format!(
+        "toInt32(if(pk.14 = 1, bitOr(pl_flags_noclip, {MF_SHADOW}), \
+         bitAnd(pl_flags_noclip, {})))",
+        !MF_SHADOW
+    );
+    let flags = format!(
+        "toInt32(if(pl_falls = 1, {}, {shadowed}))",
+        attacks::fallen(&shadowed)
+    );
     // What the move left, column by column.
     let moved: Vec<(&str, &str)> = vec![
         ("m_x", "toInt32(mv_x)"),
@@ -717,11 +753,7 @@ fn writeback(state: &State) -> Vec<(String, String)> {
         ("m_sprite", "toInt32(state_sprite[1 + mv_state])"),
         ("m_frame", "toInt32(state_frame[1 + mv_state])"),
         ("m_health", "toInt32(pk.1)"),
-        (
-            "m_flags",
-            "toInt32(if(pk.14 = 1, bitOr(pl_flags_noclip, 262144), \
-             bitAnd(pl_flags_noclip, -262145)))",
-        ),
+        ("m_flags", flags.as_str()),
     ];
     // What the shots left, for the columns the damage moves. Every other
     // column is what the tic came in with.
@@ -1005,6 +1037,34 @@ mod tests {
                 unresolved::PLAYER_DEAD
             )),
             "{expr}"
+        );
+    }
+
+    /// The player's own pain and death frames carry four routines, and
+    /// the cycle runs them rather than refusing. Anything else, or a frame
+    /// with no wait, still says the tic could not be produced.
+    #[test]
+    fn the_player_s_own_frame_routines_do_not_refuse_the_tic() {
+        let bindings = think(&State::default());
+        let named = |want: &str| {
+            bindings
+                .iter()
+                .find(|(name, _)| name == want)
+                .map(|(_, expr)| expr.clone())
+                .unwrap_or_else(|| panic!("the stage names {want}"))
+        };
+        let needed = named("pl_action_needed");
+        for action in ["a_pain", "a_playerscream", "a_xscream", "a_fall"] {
+            assert!(
+                needed.contains(&format!("state_action[1 + mv_state] != {action}")),
+                "{action}: {needed}"
+            );
+        }
+        assert!(needed.contains("state_tics[1 + mv_state] = 0"), "{needed}");
+        assert!(
+            named("pl_falls").contains("state_action[1 + mv_state] = a_fall"),
+            "{}",
+            named("pl_falls")
         );
     }
 

@@ -261,6 +261,11 @@ struct StagedRow {
 #[derive(Row, Deserialize)]
 struct CommittedRow {
     tic: u32,
+}
+
+/// What `native_state` says about one tic, read once the row is there.
+#[derive(Row, Deserialize)]
+struct TicRow {
     unresolved: u64,
     unimplemented: u64,
     demo_end: u8,
@@ -442,17 +447,13 @@ impl Session {
                 fed_second = true;
                 staged = started.elapsed();
             }
-            let committed = self.committed().await?;
-            if committed.tic >= tic {
+            if self.committed_at(tic).await? {
+                let row = self.tic_outcome(tic).await?;
                 return Ok(Ran {
                     elapsed: started.elapsed(),
                     staged,
-                    refusal: super::Refusal::at(
-                        committed.tic,
-                        committed.unresolved,
-                        committed.unimplemented,
-                    ),
-                    demo_end: committed.demo_end != 0,
+                    refusal: super::Refusal::at(tic, row.unresolved, row.unimplemented),
+                    demo_end: row.demo_end != 0,
                 });
             }
             let waited = started.elapsed();
@@ -575,7 +576,7 @@ impl Session {
     /// The tic a resumed session starts from: one past the highest tic
     /// `native_state` holds, and 1 when it holds none.
     pub async fn resume_point(&self) -> Result<u32, SessionError> {
-        Ok(self.committed().await?.tic + 1)
+        Ok(self.highest_committed().await?.tic + 1)
     }
 
     /// Ends the statements and opens them again.
@@ -688,17 +689,54 @@ impl Session {
     /// in the one query.
     ///
     /// Retried the same way [`Session::poll_frame`] is.
-    async fn committed(&self) -> Result<CommittedRow, SessionError> {
+    async fn highest_committed(&self) -> Result<CommittedRow, SessionError> {
         let table = format!("{}.{STATE_TABLE}", self.database);
-        let sql = format!(
-            "SELECT tic, \
-                    joinGet('{table}', 'unresolved', tic) AS unresolved, \
-                    joinGet('{table}', 'unimplemented', tic) AS unimplemented, \
-                    joinGet('{table}', 'demo_end', tic) AS demo_end \
-             FROM (SELECT max(tic) AS tic FROM {table})"
-        );
+        let sql = format!("SELECT max(tic) AS tic FROM {table}");
         self.db
             .fetch_one_reconnecting::<CommittedRow>(&sql)
+            .await
+            .map_err(|source| self.read_error(STATE_TABLE, source))
+    }
+
+    /// Whether `native_state` holds the row for `tic` yet.
+    ///
+    /// One lookup and nothing else, because this is what the wait loop
+    /// runs until the tic lands. `native_state` is a `Join` engine with no
+    /// index to answer `max(tic)` from, so asking for the highest tic
+    /// reads the table through: 1.12 ms against 0.14 for a lookup, at
+    /// about ninety polls a tic. Each further `joinGet` in the same query
+    /// costs about as much again, so what the tic says is read separately,
+    /// once it is there, rather than on every poll that finds nothing.
+    ///
+    /// Asking about the awaited tic is also what the caller wants: the
+    /// feeder runs ahead, so the highest committed row can belong to a
+    /// later tic, and its refusal is not this tic's to report.
+    async fn committed_at(&self, tic: u32) -> Result<bool, SessionError> {
+        let table = format!("{}.{STATE_TABLE}", self.database);
+        let sql = format!(
+            "SELECT toUInt8(joinGetOrNull('{table}', 'unresolved', toUInt32({tic})) \
+             IS NOT NULL) AS present"
+        );
+        let row = self
+            .db
+            .fetch_one_reconnecting::<StagedRow>(&sql)
+            .await
+            .map_err(|source| self.read_error(STATE_TABLE, source))?;
+        Ok(row.present != 0)
+    }
+
+    /// What `native_state` says about `tic`, which [`Session::committed_at`]
+    /// has already found. One query per tic rather than per poll.
+    async fn tic_outcome(&self, tic: u32) -> Result<TicRow, SessionError> {
+        let table = format!("{}.{STATE_TABLE}", self.database);
+        let at = format!("toUInt32({tic})");
+        let sql = format!(
+            "SELECT joinGet('{table}', 'unresolved', {at}) AS unresolved, \
+                    joinGet('{table}', 'unimplemented', {at}) AS unimplemented, \
+                    joinGet('{table}', 'demo_end', {at}) AS demo_end"
+        );
+        self.db
+            .fetch_one_reconnecting::<TicRow>(&sql)
             .await
             .map_err(|source| self.read_error(STATE_TABLE, source))
     }

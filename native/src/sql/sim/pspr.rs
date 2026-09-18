@@ -730,6 +730,11 @@ mod tests {
 
 /// `p_local.h`: how far a hitscan reaches.
 const MISSILERANGE: i64 = 32 * 64 * FRACUNIT;
+
+/// `p_local.h`: how far a punch reaches.
+const MELEERANGE: i64 = 64 * FRACUNIT;
+/// `d_player.h`: `pw_strength`, one-based for `p_powers`.
+const PW_STRENGTH: usize = 2;
 /// `p_pspr.c`: how far a shot that is not aimed spreads.
 const SPREADSHIFT: u32 = 18;
 /// `p_mobj.h`
@@ -759,6 +764,10 @@ mod firing {
     pub const STUCK: usize = 15;
     /// The slope `P_BulletSlope` found, which every shot leaves at.
     pub const SLOPE: usize = 16;
+    /// The player's own facing, turned to whatever a punch's aim reached.
+    pub const ANGLE: usize = 17;
+    /// 1 where a punch's aim reached a thing, which is what turns the angle.
+    pub const HIT: usize = 18;
 }
 
 /// `P_GunShot` for each shot the weapon's own routine sent, in order.
@@ -817,12 +826,36 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         )
     };
     value("gs_aiming", "toUInt8(gs_i = 0)".to_owned());
-    value("gs_damage", format!("toInt32(5 * ({} % 3 + 1))", draw("1")));
-    // An inaccurate shot spreads either side of where the weapon points.
+    // `A_Punch` reaches `MELEERANGE` and a gun's shot `MISSILERANGE`. The
+    // range also picks the puff `P_SpawnPuff` leaves, so it travels into
+    // the spawn as well as into the trace.
+    value(
+        "gs_range",
+        format!("toInt32(if(psp_punched = 1, {MELEERANGE}, {MISSILERANGE}))"),
+    );
+    // `P_GunShot`'s `5*(P_Random()%3+1)`, or `A_Punch`'s
+    // `(P_Random()%10+1)<<1` taken tenfold under berserk strength. Both
+    // read the same first draw.
+    value(
+        "gs_damage",
+        format!(
+            "toInt32(if(psp_punched = 1, \
+             ({d} % 10 + 1) * 2 * if({p}[{PW_STRENGTH}] != 0, 10, 1), \
+             5 * ({d} % 3 + 1)))",
+            d = draw("1"),
+            p = s("p_powers"),
+        ),
+    );
+    // An inaccurate shot spreads either side of where the weapon points,
+    // and a punch always does.
+    value(
+        "gs_spread",
+        "toUInt8(psp_punched = 1 OR psp_accurate = 0)".to_owned(),
+    );
     value(
         "gs_angle",
         format!(
-            "toUInt32(bitAnd(toUInt64(pl_new_angle) + if(psp_accurate = 1, 0, \
+            "toUInt32(bitAnd(toUInt64(pl_new_angle) + if(gs_spread = 0, 0, \
              toUInt64(bitAnd(bitShiftLeft({} - {}, {SPREADSHIFT}), {}))), {}))",
             draw("2"),
             draw("3"),
@@ -832,12 +865,12 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
     );
     value(
         "gs_shot_draws",
-        "toUInt32(multiIf(gs_aiming = 1, 0, psp_accurate = 1, 1, 3))".to_owned(),
+        "toUInt32(multiIf(gs_aiming = 1, 0, gs_spread = 1, 3, 1))".to_owned(),
     );
-    // One walk serves the aim and the shots. Step 0 asks the three angles
-    // `P_BulletSlope` tries and every step after it asks the one the shot
-    // leaves at, so the trace, its intercepts and their order are in the
-    // statement once.
+    // One walk serves the aim and the shots. Step 0 asks what the aim
+    // tries and every step after it asks the one the shot leaves at, so
+    // the trace, its intercepts and their order are in the statement
+    // once.
     let aim = |by: i64| {
         shoot::asking(
             "pl_slot",
@@ -853,10 +886,23 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
             &shoot::AIMRANGE.to_string(),
         )
     };
+    // `A_Punch` aims once, along the angle it just spread, and takes what
+    // that answers however little it reached. `P_BulletSlope`'s three
+    // tries cover for each other and all start from where the weapon
+    // points.
     value(
         "gs_asks",
         format!(
-            "if(gs_aiming = 1, [{}, {}, {}], [{}])",
+            "multiIf(gs_aiming = 1 AND psp_punched = 1, [{}], gs_aiming = 1, [{}, {}, {}], [{}])",
+            shoot::asking(
+                "pl_slot",
+                "pl_x",
+                "pl_y",
+                "pl_z",
+                "pl_height",
+                "gs_angle",
+                "gs_range",
+            ),
             aim(0),
             aim(shoot::AIMSWING),
             aim(-shoot::AIMSWING),
@@ -867,7 +913,7 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
                 "pl_z",
                 "pl_height",
                 "gs_angle",
-                &MISSILERANGE.to_string(),
+                "gs_range",
                 &at(firing::SLOPE),
             )
         ),
@@ -919,7 +965,7 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         mobj::spawn_debris(
             &format!(
                 "arraySlice([(gs_blood, toInt32(gs_reached.{}), toInt32(gs_reached.{}), \
-                 toInt32(gs_reached.{}), gs_damage, toInt32({MISSILERANGE}), \
+                 toInt32(gs_reached.{}), gs_damage, gs_range, \
                  toUInt32({} + gs_shot_draws))], 1, toUInt8(gs_kind != 0))",
                 shoot::reached::X,
                 shoot::reached::Y,
@@ -1027,6 +1073,33 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         ),
     );
 
+    // `A_Punch` turns the player to face `linetarget`, which is what its
+    // `P_AimLineAttack` left and not what the attack after it reached. A
+    // swing whose aim found nothing leaves the angle where it stood.
+    value(
+        "gs_punch_target",
+        format!(
+            "toInt32(if(gs_aiming = 1 AND psp_punched = 1, gs_answers[1].{}, 0))",
+            shoot::reached::TARGET,
+        ),
+    );
+    value(
+        "gs_punch_angle_now",
+        format!(
+            "toUInt32(if(gs_punch_target != 0, {}, {}))",
+            fixed::point_to_angle(
+                "toInt64(gs_m_x[greatest(gs_punch_target, 1)]) - toInt64(pl_x)",
+                "toInt64(gs_m_y[greatest(gs_punch_target, 1)]) - toInt64(pl_y)",
+                "tantoangle",
+            ),
+            at(firing::ANGLE),
+        ),
+    );
+    value(
+        "gs_punch_hit_now",
+        format!("toUInt8(gs_punch_target != 0 OR {} = 1)", at(firing::HIT)),
+    );
+
     let hurt_into = |column: usize, member: usize, cast: &str| {
         format!(
             "arrayMap((v, k) -> {cast}(if(gs_kind = 2 AND k = gs_id, gs_hit.{member}, v)), \
@@ -1058,11 +1131,13 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         ),
         "gs_stuck_now".to_owned(),
         "gs_slope_now".to_owned(),
+        "gs_punch_angle_now".to_owned(),
+        "gs_punch_hit_now".to_owned(),
     ];
     let empty_spawns = format!("CAST([], 'Array({})')", mobj::BORN_TYPE);
     let start = format!(
         "({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, toUInt32(0), toInt32(0), toUInt8(0), \
-         toInt32(0))",
+         toInt32(0), toUInt32(pl_new_angle), toUInt8(0))",
         s("m_health"),
         s("m_flags"),
         s("m_state"),
@@ -1080,7 +1155,8 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         "gs_ran",
         format!(
             "arrayFold((gs_at, gs_i) -> {}, \
-             range(toUInt32(if(psp_shots > 0, psp_shots + 1, 0))), {start})",
+             range(toUInt32(multiIf(psp_punched = 1, 2, psp_shots > 0, psp_shots + 1, 0))), \
+             {start})",
             bind::chain_in("gsa", &values, &format!("({})", members.join(", ")))
         ),
     );
@@ -1120,7 +1196,7 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
     bind(
         "gs_p_ammo",
         format!(
-            "arrayMap((v, k) -> toInt32(if(psp_shots > 0 \
+            "arrayMap((v, k) -> toInt32(if(psp_shots > 0 AND psp_punched = 0 \
              AND k = 1 + weapon_ammo[1 + now_p_readyweapon], v - 1, v)), {a}, arrayEnumerate({a}))",
             a = s("p_ammo")
         ),
@@ -1129,6 +1205,11 @@ pub fn fire_shots(state: &State) -> Vec<(String, String)> {
         "now_p_killcount",
         format!("toInt32({} + {})", s("p_killcount"), ran(firing::KILLS)),
     );
+    bind(
+        "psp_punch_angle",
+        format!("toUInt32({})", ran(firing::ANGLE)),
+    );
+    bind("psp_punch_hit", format!("toUInt8({})", ran(firing::HIT)));
     bind(
         "gs_unresolved",
         mask(

@@ -47,13 +47,17 @@ fn fixture_tsv() -> String {
 /// named here that agrees, so the list cannot outlive what it excuses.
 const OPEN: [&str; 0] = [];
 
-/// How far the walk runs. Gametic 32 is where demo3 first puts a wall in
-/// the way, the tics after it are the slide along that wall, and the door
-/// the press at 73 opens has reached the top and left the list by 120. A
-/// second, normal door opens from a press this fixture does not otherwise
-/// name, waits at the top and closes on its own, off the list by 926. A
-/// third door, the yellow one at gametic 1097, is off the list by 1316.
-const WALK_TICS: u32 = 1320;
+/// How far the walk runs: through the first refused tic, so the suite
+/// checks what the refusal leaves on it. A row past that tic is whatever
+/// the statement could produce, so no pin past it is evidence either way.
+const WALK_TICS: u32 = FIRST_REFUSED;
+
+// Every pin before the first refused tic has a row to read, so the only
+// pins the walk leaves out are the ones `before_refusal` skips.
+const _: () = assert!(
+    WALK_TICS >= FIRST_REFUSED,
+    "the walk stops before the first refused tic"
+);
 
 /// `p_local.h`: the use key's bit in a tic command.
 const BT_USE: u8 = 2;
@@ -77,15 +81,6 @@ const DOOR: [(u32, usize, i32, u32, i16); 6] = [
 /// one at gametic 73, its line's special is one of `vld_normal`'s (1, 26,
 /// 27 or 28), so it opens, waits at the top, and closes on its own rather
 /// than leaving the list once open.
-///
-/// `plane_ticks` only ever named a plat as something that acts on a tic
-/// the plane pass moves nothing for; a door's own count and direction,
-/// both computed every tic regardless, only ever reached `now_s_count`
-/// and `now_s_direction` while `plane_runs` held (`s_direction != 0`).
-/// Once this door reached the top and started waiting, both froze and it
-/// never closed. `WALK_TICS` did not reach this far until now, so this is
-/// a divergence the parity gate itself never caught, not one this fixes
-/// without a live check on the fix.
 const NORMAL_DOOR: [(u32, usize, i32, u32); 9] = [
     (706, 17, 3670016, 0),
     (707, 18, 3801088, 18),
@@ -379,6 +374,12 @@ struct Divergence {
     theirs: String,
 }
 
+/// A gametic the committed fixture holds a frame for.
+#[derive(Row, Deserialize, Clone)]
+struct Frame {
+    tic: u32,
+}
+
 #[derive(Row, Deserialize)]
 struct Walked {
     tic: u32,
@@ -437,9 +438,9 @@ struct Walked {
 }
 
 /// `entries` with every one at or after `first_refused` removed, printing
-/// which gametics `label` skips them for: a row at or past the first
-/// refused tic is whatever the statement could produce, not evidence the
-/// engine agrees or disagrees with it.
+/// which gametics `label` checks and which it skips: a row at or past the
+/// first refused tic is whatever the statement could produce, not evidence
+/// the engine agrees or disagrees with it.
 fn before_refusal<T: Clone>(
     entries: &[T],
     tic_of: impl Fn(&T) -> u32,
@@ -450,11 +451,20 @@ fn before_refusal<T: Clone>(
         .iter()
         .cloned()
         .partition(|e| tic_of(e) < first_refused);
+    let tics = |entries: &[T]| {
+        entries
+            .iter()
+            .map(|e| tic_of(e).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !keep.is_empty() {
+        println!("{label}: checking gametic(s) {}", tics(&keep));
+    }
     if !skip.is_empty() {
-        let tics: Vec<String> = skip.iter().map(|e| tic_of(e).to_string()).collect();
         println!(
             "{label}: skipping gametic(s) {} at or after the first refused tic ({first_refused})",
-            tics.join(", ")
+            tics(&skip)
         );
     }
     keep
@@ -522,17 +532,37 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     support::resident::run(&fixture, &walk, false).await;
 
     let summary: Vec<Divergence> = fixture.rows(&parity::field_summary(&db)).await;
+    let frames: Vec<Frame> = fixture
+        .rows(&format!(
+            "SELECT DISTINCT gametic AS tic FROM {db}.probe_state ORDER BY tic"
+        ))
+        .await;
     let walk = walked(&fixture, &db).await;
     fixture.finish().await;
 
     // A pin at or past the first tic the run itself refuses is not
     // evidence either way: the row it reads is whatever the statement
     // could produce, not what the engine did.
-    let first_refused = walk
+    let Some(first_refused) = walk
         .iter()
         .find(|row| row.unresolved != 0)
         .map(|row| row.tic)
-        .unwrap_or(u32::MAX);
+    else {
+        panic!(
+            "every tic the walk ran, up to gametic {}, was carried through, so the \
+             first refused tic is past FIRST_REFUSED ({FIRST_REFUSED}); move \
+             FIRST_REFUSED to the tic a longer walk first refuses",
+            walk.last().map_or(0, |row| row.tic)
+        );
+    };
+    assert_eq!(
+        first_refused, FIRST_REFUSED,
+        "the pinned first refused tic matches the run"
+    );
+
+    // The comparison joins the fixture's frames to the walk on the tic, so
+    // a frame the walk does not reach drops out of it.
+    before_refusal(&frames, |f| f.tic, first_refused, "fixture");
 
     // The committed fixture's own frame at or past the first refused tic
     // is not evidence either way for the same reason a pinned array's own
@@ -573,10 +603,6 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             .find(|row| row.tic == tic)
             .unwrap_or_else(|| panic!("gametic {tic} ran"))
     };
-    assert_eq!(
-        first_refused, FIRST_REFUSED,
-        "the pinned first refused tic matches the run"
-    );
     // The run reaches past the door, and every tic up to the first shot
     // completes.
     for row in walk.iter().filter(|row| row.tic < first_refused) {
@@ -819,12 +845,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
             "the monster a pellet reaches at gametic {tic}"
         );
     }
-    if first_refused < WALK_TICS {
-        println!(
-            "lastlook, flash sprite: skipping gametic {first_refused} to {WALK_TICS} at or \
-             after the first refused tic"
-        );
-    }
+    println!("lastlook, flash sprite: checking every gametic before {first_refused}");
     // `P_LookForPlayers` walks `lastlook` round to the one player in the
     // game and stops there, whatever it decides.
     for row in walk

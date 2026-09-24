@@ -266,3 +266,26 @@ jobs:
           ./target/release/clickdoom emulation diff 100000 --host localhost --port 8123 \
               --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
               --refemu-bin target/release/refemu
+
+  ci-passed:
+    # Succeeds only when every other job in this workflow succeeded. A job that
+    # failed, was skipped or was cancelled fails it. The test matrix reports one
+    # result, which is a failure if any group failed. A job added to this
+    # workflow goes in `needs`, or a branch rule that requires this check does
+    # not wait for it.
+    needs: [lint, build-rom, build-refemu, build-tests, test, native-smoke, differential-smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(" ")')
+          if [ -n "$failed" ]; then
+            echo "::error::Not successful: $failed"
+            exit 1
+          fi

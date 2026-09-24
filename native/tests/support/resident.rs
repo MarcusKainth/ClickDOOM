@@ -12,6 +12,7 @@
 //! feeding the next tic, opening each statement once rather than once per
 //! tic.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant}; // purity-ok: pacing and timeouts in the test harness, never a value a statement reads
 
 use bytes::Bytes;
@@ -39,7 +40,7 @@ const POLL_SLEEP: Duration = Duration::from_millis(1);
 /// generates a statement that reads the same columns through `input(...)`.
 const RENDER_INPUT_SCHEMA: &str = "frame UInt32, tic UInt32, melt_step UInt8, pad String";
 
-/// What one run left: the last tic fed, and how long the first tic took
+/// What one session left: the last tic fed, and how long the first tic took
 /// against the mean of the rest, so a suite can print the analysis cost it
 /// paid apart from the steady-state cost.
 pub struct Ran {
@@ -53,76 +54,117 @@ struct Present {
     present: u8,
 }
 
-/// Feeds `rows` through the simulation's two statements, one tic at a
-/// time, the second statement's row for a tic fed only once the first
-/// statement's own row for it is visible. Also drives the renderer, one
-/// frame per tic, when `render` is set.
-///
-/// Opens every statement once against `fixture`'s own database and closes
-/// them before returning. The fixture is `fixture`'s caller's: this reads
-/// and writes its tables but never closes it.
+/// Feeds `rows` through one [`Session`] opened and closed around them.
 pub async fn run(fixture: &Fixture, rows: &[Input], render: bool) -> Ran {
-    let endpoint = super::db::endpoint(&fixture.database);
-    let (stage1_sql, stage2_sql) = tick::resident_statements(&fixture.database);
-    let render_sql = render::frame_transform(&fixture.database);
+    let mut session = Session::open(fixture, render).await;
+    session.feed(rows).await;
+    session.close().await
+}
 
-    let (stage1, stage2, renderer) = tokio::join!(
-        open(&endpoint, &stage1_sql, tick::INPUT_SCHEMA),
-        open(&endpoint, &stage2_sql, tick::STAGE2_INPUT_SCHEMA),
-        async {
-            match render {
-                true => Some(open(&endpoint, &render_sql, RENDER_INPUT_SCHEMA).await),
-                false => None,
+/// The simulation's two statements, and the renderer when `render` is set,
+/// open against `fixture`'s own database until [`Session::close`].
+///
+/// A row another statement inserts between two feeds, such as a seeded
+/// state row, is read by the next tic fed. The fixture is the caller's:
+/// this reads and writes its tables but never closes it.
+pub struct Session<'a> {
+    fixture: &'a Fixture,
+    stage1: Resident,
+    stage2: Resident,
+    renderer: Option<Resident>,
+    fed: BTreeSet<u32>,
+    last: u32,
+    first: Duration,
+    rest: Duration,
+}
+
+impl<'a> Session<'a> {
+    pub async fn open(fixture: &'a Fixture, render: bool) -> Session<'a> {
+        let endpoint = super::db::endpoint(&fixture.database);
+        let (stage1_sql, stage2_sql) = tick::resident_statements(&fixture.database);
+        let render_sql = render::frame_transform(&fixture.database);
+
+        let (stage1, stage2, renderer) = tokio::join!(
+            open(&endpoint, &stage1_sql, tick::INPUT_SCHEMA),
+            open(&endpoint, &stage2_sql, tick::STAGE2_INPUT_SCHEMA),
+            async {
+                match render {
+                    true => Some(open(&endpoint, &render_sql, RENDER_INPUT_SCHEMA).await),
+                    false => None,
+                }
             }
+        );
+        Session {
+            fixture,
+            stage1,
+            stage2,
+            renderer,
+            fed: BTreeSet::new(),
+            last: 0,
+            first: Duration::ZERO,
+            rest: Duration::ZERO,
         }
-    );
+    }
 
-    let mut first = Duration::ZERO;
-    let mut rest = Duration::ZERO;
-    let mut tic = 0;
-    for (index, input) in rows.iter().enumerate() {
-        let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
-        let timeout = match index {
-            0 => FIRST_TIC_TIMEOUT,
-            _ => TIC_TIMEOUT,
+    /// Feeds `rows` in order, one tic at a time, and returns once the last
+    /// one's rows are visible. Panics on a tic this session has already
+    /// fed, whose rows would be present before it ran.
+    pub async fn feed(&mut self, rows: &[Input]) {
+        let fixture = self.fixture;
+        for input in rows {
+            assert!(
+                self.fed.insert(input.tic),
+                "tic {} is fed twice in one session",
+                input.tic
+            );
+            let started = Instant::now(); // purity-ok: measuring what this call waits, see the import
+            let timeout = match self.fed.len() {
+                1 => FIRST_TIC_TIMEOUT,
+                _ => TIC_TIMEOUT,
+            };
+
+            self.stage1
+                .send(input_row(input))
+                .unwrap_or_else(|err| panic!("feeding tic {}: {err}", input.tic));
+            wait(timeout, || present(fixture, "native_stage", input.tic)).await;
+
+            self.stage2.send(tic_row(input.tic)).unwrap_or_else(|err| {
+                panic!("feeding tic {} to the second statement: {err}", input.tic)
+            });
+            wait(timeout, || present(fixture, "native_state", input.tic)).await;
+
+            if let Some(renderer) = &self.renderer {
+                renderer
+                    .send(render_row(input.tic))
+                    .unwrap_or_else(|err| panic!("feeding frame {}: {err}", input.tic));
+                wait(timeout, || present(fixture, "native_frames", input.tic)).await;
+            }
+
+            match self.fed.len() {
+                1 => self.first = started.elapsed(),
+                _ => self.rest += started.elapsed(),
+            }
+            self.last = input.tic;
+        }
+    }
+
+    /// Closes every statement the session opened.
+    pub async fn close(self) -> Ran {
+        close(self.stage1).await;
+        close(self.stage2).await;
+        if let Some(renderer) = self.renderer {
+            close(renderer).await;
+        }
+        let mean = match self.fed.len() {
+            0 | 1 => Duration::ZERO,
+            n => self.rest / (n as u32 - 1),
         };
-
-        stage1
-            .send(input_row(input))
-            .unwrap_or_else(|err| panic!("feeding tic {}: {err}", input.tic));
-        wait(timeout, || present(fixture, "native_stage", input.tic)).await;
-
-        stage2.send(tic_row(input.tic)).unwrap_or_else(|err| {
-            panic!("feeding tic {} to the second statement: {err}", input.tic)
-        });
-        wait(timeout, || present(fixture, "native_state", input.tic)).await;
-
-        if let Some(renderer) = &renderer {
-            renderer
-                .send(render_row(input.tic))
-                .unwrap_or_else(|err| panic!("feeding frame {}: {err}", input.tic));
-            wait(timeout, || present(fixture, "native_frames", input.tic)).await;
+        Ran {
+            tic: self.last,
+            first: self.first,
+            mean,
         }
-
-        let elapsed = started.elapsed();
-        match index {
-            0 => first = elapsed,
-            _ => rest += elapsed,
-        }
-        tic = input.tic;
     }
-    let mean = match rows.len() {
-        0 | 1 => Duration::ZERO,
-        n => rest / (n as u32 - 1),
-    };
-
-    close(stage1).await;
-    close(stage2).await;
-    if let Some(renderer) = renderer {
-        close(renderer).await;
-    }
-
-    Ran { tic, first, mean }
 }
 
 async fn open(endpoint: &Endpoint, statement: &str, input_schema: &str) -> Resident {
@@ -164,7 +206,7 @@ fn render_row(tic: u32) -> Bytes {
 
 /// Whether `table` holds a row for `tic` yet, read through a real column
 /// rather than the key, the way the driver's own presence checks do.
-async fn present(fixture: &Fixture, table: &str, tic: u32) -> bool {
+pub async fn present(fixture: &Fixture, table: &str, tic: u32) -> bool {
     let column = match table {
         "native_frames" => "fb_hash",
         _ => "leveltime",

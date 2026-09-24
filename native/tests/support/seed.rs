@@ -12,6 +12,9 @@ use clickdoom_native::sql::sim;
 /// each named column replaced by its expression. An expression may name
 /// the source row's columns through the `p` alias.
 ///
+/// Each call stages its own copy of the row at `from`, so calls with
+/// different sources in one database each seed from their own.
+///
 /// A borrowed slot keeps every field the arm does not override, so an arm
 /// that changes a thing's type sets its radius and height with it.
 pub fn row(db: &str, tic: u32, from: u32, overrides: &[(&str, String)]) -> Vec<String> {
@@ -39,8 +42,9 @@ pub fn row(db: &str, tic: u32, from: u32, overrides: &[(&str, String)]) -> Vec<S
         })
         .collect();
     vec![
+        format!("DROP TABLE IF EXISTS {db}.seed_row"),
         format!(
-            "CREATE TABLE IF NOT EXISTS {db}.seed_row ENGINE = Memory AS \
+            "CREATE TABLE {db}.seed_row ENGINE = Memory AS \
              SELECT * FROM {db}.native_state WHERE tic = {from}"
         ),
         format!(

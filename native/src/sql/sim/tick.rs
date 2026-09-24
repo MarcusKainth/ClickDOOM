@@ -1006,6 +1006,236 @@ mod tests {
     }
 }
 
+/// What a tic reads and which tics it names, from the resident statements'
+/// own text.
+///
+/// A tic reads `native_state` only at the tic before and `native_stage`
+/// only at its own tic. Every other place the statements name `tic` is the
+/// row's own key passing through, the demo lump indexed by tic, or the
+/// melt on [`MELT_TIC`]. A run may then place tics anywhere the demo and
+/// the melt do not reach, and each tic still reads only its own
+/// predecessor.
+#[cfg(test)]
+mod reads {
+    use super::*;
+
+    const DB: &str = "nat";
+
+    /// One `joinGet` on a tic table: the table, the column and the key.
+    struct Read {
+        table: String,
+        column: String,
+        key: String,
+    }
+
+    /// Each `joinGet` in `sql` on `native_state` or [`STAGE_TABLE`], and
+    /// `sql` with each of them replaced by `JOINGET`.
+    fn tic_table_reads(sql: &str) -> (Vec<Read>, String) {
+        let tables = [format!("{DB}.native_state"), format!("{DB}.{STAGE_TABLE}")];
+        let mut reads = Vec::new();
+        let mut rest = String::with_capacity(sql.len());
+        let mut from = 0;
+        for (at, _) in sql.match_indices("joinGet") {
+            if at < from {
+                continue;
+            }
+            let open = at + sql[at..].find('(').expect("a joinGet has arguments");
+            let (args, close) = arguments(sql, open);
+            let unquote = |arg: &str| arg.trim().trim_matches('\'').to_owned();
+            let table = unquote(&args[0]);
+            if !tables.contains(&table) {
+                continue;
+            }
+            assert_eq!(args.len(), 3, "joinGet on {table} takes three arguments");
+            reads.push(Read {
+                table,
+                column: unquote(&args[1]),
+                key: args[2].trim().to_owned(),
+            });
+            rest.push_str(&sql[from..at]);
+            rest.push_str("JOINGET");
+            from = close + 1;
+        }
+        rest.push_str(&sql[from..]);
+        (reads, rest)
+    }
+
+    /// The top-level arguments of the call whose `(` is at `open`, and
+    /// where its `)` is.
+    fn arguments(sql: &str, open: usize) -> (Vec<String>, usize) {
+        let mut depth = 1;
+        let mut quoted = false;
+        let mut args = vec![String::new()];
+        for (offset, c) in sql[open + 1..].char_indices() {
+            match c {
+                '\'' => quoted = !quoted,
+                '(' if !quoted => depth += 1,
+                ')' if !quoted => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (args, open + 1 + offset);
+                    }
+                }
+                ',' if !quoted && depth == 1 => {
+                    args.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            args.last_mut().expect("one argument at least").push(c);
+        }
+        panic!("the call at byte {open} does not close");
+    }
+
+    /// Where `sql` names `tic` as an identifier of its own.
+    fn tic_names(sql: &str) -> Vec<usize> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+        sql.match_indices("tic")
+            .map(|(at, _)| at)
+            .filter(|&at| {
+                !sql[..at].chars().next_back().is_some_and(ident)
+                    && !sql[at + 3..].chars().next().is_some_and(ident)
+            })
+            .collect()
+    }
+
+    /// Why a statement names `tic` where it does.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Use {
+        /// The row's own key, taken from the input and written to the row.
+        Key,
+        /// `G_ReadDemoTiccmd`: the lump indexed by tic, its length, and
+        /// the lump's own tic column the array is sorted by.
+        Demo,
+        /// `wipe_initMelt` on [`MELT_TIC`].
+        Melt,
+    }
+
+    /// Every text a statement may name `tic` in, apart from the tic tables'
+    /// own keys, with why.
+    fn allowed() -> Vec<(String, Use)> {
+        let mut allowed = vec![
+            (format!("input('{INPUT_SCHEMA}')"), Use::Key),
+            (format!("input('{STAGE2_INPUT_SCHEMA}')"), Use::Key),
+            ("WHERE tic > 0".to_owned(), Use::Key),
+            ("(tic) AS tic".to_owned(), Use::Key),
+            (
+                "source = 0 AND tic <= length(demo_forwardmove)".to_owned(),
+                Use::Demo,
+            ),
+            (
+                "source = 0 AND tic > length(demo_forwardmove)".to_owned(),
+                Use::Demo,
+            ),
+            (format!("if(tic = {MELT_TIC}, {MELT_DRAWS}, 0)"), Use::Melt),
+        ];
+        for name in ["forwardmove", "sidemove", "angleturn", "buttons"] {
+            allowed.push((format!("demo_{name}[tic]"), Use::Demo));
+            allowed.push((format!("groupArray((tic, {name}))"), Use::Demo));
+        }
+        allowed
+    }
+
+    /// Why `sql` names `tic` at `at`, or `None` if it has no reason to.
+    fn use_at(sql: &str, at: usize) -> Option<Use> {
+        let start = sql[..at].rfind('\n').map_or(0, |n| n + 1);
+        let end = sql[at..].find('\n').map_or(sql.len(), |n| at + n);
+        if matches!(sql[start..end].trim(), "tic" | "tic,") {
+            return Some(Use::Key);
+        }
+        allowed().into_iter().find_map(|(text, why)| {
+            tic_names(&text)
+                .into_iter()
+                .any(|offset| at >= offset && sql[at - offset..].starts_with(&text))
+                .then_some(why)
+        })
+    }
+
+    /// Each place `sql` names `tic` outside the tic tables' keys, with why.
+    /// Panics on one with no reason.
+    fn uses(sql: &str) -> Vec<Use> {
+        tic_names(sql)
+            .into_iter()
+            .map(|at| {
+                use_at(sql, at).unwrap_or_else(|| {
+                    let around = sql.get(at.saturating_sub(60)..(at + 60).min(sql.len()));
+                    panic!("the statement names tic for no known reason at: {around:?}")
+                })
+            })
+            .collect()
+    }
+
+    fn statements() -> [(&'static str, String); 2] {
+        let (stage1, stage2) = resident_statements(DB);
+        [
+            ("the first statement", stage1),
+            ("the second statement", stage2),
+        ]
+    }
+
+    #[test]
+    fn a_tic_reads_the_state_before_it_and_its_own_stage_row() {
+        let columns = state_columns().len() - 1;
+        for (which, sql) in statements() {
+            let (reads, rest) = tic_table_reads(&sql);
+            for read in &reads {
+                let want = match read.table.strip_prefix(&format!("{DB}.")) {
+                    Some("native_state") => "toUInt32(tic - 1)",
+                    Some(STAGE_TABLE) => "toUInt32(tic)",
+                    _ => unreachable!("only the tic tables are collected"),
+                };
+                assert_eq!(
+                    read.key, want,
+                    "{which} reads {}.{} at {}",
+                    read.table, read.column, read.key
+                );
+            }
+            // Past the joinGets, a tic table is only ever written.
+            for table in ["native_state", STAGE_TABLE] {
+                let named = format!("{DB}.{table}");
+                for (at, _) in rest.match_indices(&named) {
+                    assert!(
+                        rest[..at].ends_with("INSERT INTO "),
+                        "{which} reads {named} other than through joinGet"
+                    );
+                }
+            }
+        }
+        // The first statement reads every state column the tic before, and
+        // the second every one of them and the staged scratch at its own
+        // tic, so a scan finding fewer is not finding them.
+        let (stage1, stage2) = resident_statements(DB);
+        let on = |sql: &str, table: &str| {
+            tic_table_reads(sql)
+                .0
+                .iter()
+                .filter(|read| read.table == format!("{DB}.{table}"))
+                .count()
+        };
+        assert!(on(&stage1, "native_state") >= columns);
+        assert!(on(&stage2, STAGE_TABLE) >= columns + STAGE_EXTRA_COLUMNS.len());
+    }
+
+    #[test]
+    fn a_tic_names_no_tic_but_the_demo_s_and_the_melt_s() {
+        let mut found: Vec<Use> = Vec::new();
+        for (_, sql) in statements() {
+            let (_, rest) = tic_table_reads(&sql);
+            found.extend(uses(&rest));
+        }
+        let count = |want: Use| found.iter().filter(|found| **found == want).count();
+        assert_eq!(count(Use::Melt), 1, "the scan found the melt once");
+        // Four fields each read by index, and each sorted by the lump's own
+        // tic, plus the two length tests on each field and the demo's end.
+        assert!(
+            count(Use::Demo) >= 13,
+            "the scan found {} demo reads, fewer than the demo's own fields take",
+            count(Use::Demo)
+        );
+        assert!(count(Use::Key) > 0, "the scan found no row key at all");
+    }
+}
+
 #[cfg(test)]
 mod expansion {
     use super::*;

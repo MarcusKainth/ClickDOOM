@@ -39,4 +39,4 @@ jobs:
           cat batch-bin.txt
       - name: Probe
         run: |
-          BATCH_BIN=$(cat batch-bin.txt) scripts/probe-analysis-cost.sh
+          BATCH_BIN=$(cat batch-bin.txt) bash scripts/probe-analysis-cost.sh

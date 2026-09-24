@@ -11,17 +11,18 @@
 //! comparable.
 //!
 //! So this advances the simulation to the tic before the one under
-//! measurement, once, with the statement as it ships, and then runs each
-//! cut over that single tic. Every cut reads the same `native_state` row
-//! and does the same tic's work.
+//! measurement, once, with the statements as they ship in a resident
+//! session, and then runs each cut over that single tic. Every cut reads
+//! the same `native_state` row and does the same tic's work.
 
 use std::time::Duration; // purity-ok: carrying what the server reported it spent, never a value a statement reads
 
-use clickdoom_native::sql::sim::tick::{self, Input, bench};
+use clickdoom_native::sql::sim::tick::{Input, bench};
 use clickhouse::Row;
 use serde::Deserialize;
 
 use super::db::Fixture;
+use super::resident;
 
 /// How many times the tic runs in the longer of the two statements. The
 /// marginal cost is the slope between one and this.
@@ -58,25 +59,60 @@ impl Cost {
 }
 
 #[derive(Row, Deserialize)]
+struct Walked {
+    rows: u64,
+    leveltime: i32,
+    start: i32,
+    things: u64,
+}
+
+/// Panics unless `native_state` holds a row at `tic` that the simulation
+/// walked to from the level's own row at tic 0: one row, `tic` tics of
+/// `leveltime` past tic 0's, and the level's things still on the list.
+///
+/// A tic whose first statement read a `native_state` row that did not
+/// exist yet reads every column at its default, so its row starts
+/// `leveltime` over and carries no things.
+async fn assert_walked(fixture: &Fixture, tic: u32) {
+    let db = &fixture.database;
+    let walked: Walked = fixture
+        .scalar(&format!(
+            "SELECT toUInt64(count()) AS rows, \
+             toInt32(any(leveltime)) AS leveltime, \
+             toInt32(joinGet('{db}.native_state', 'leveltime', toUInt32(0))) AS start, \
+             toUInt64(any(length(m_x))) AS things \
+             FROM {db}.native_state WHERE tic = {tic}"
+        ))
+        .await;
+    assert_eq!(walked.rows, 1, "no state row at tic {tic}");
+    assert!(
+        walked.leveltime == walked.start + tic as i32 && walked.things > 0,
+        "the state row at tic {tic} is not one the simulation walked to: \
+         leveltime {} from {} at tic 0, {} things",
+        walked.leveltime,
+        walked.start,
+        walked.things
+    );
+}
+
+#[derive(Row, Deserialize)]
 struct Timing {
     duration_ms: u64,
     analysis_us: u64,
 }
 
-/// Runs the simulation forward to the tic before `tic` with the statement
-/// as it ships, then times each of `cuts` over `tic` alone.
+/// Runs the simulation forward to the tic before `tic` through the resident
+/// session, checks the row it left is a walked one, then times each of
+/// `cuts` over `tic` alone.
 ///
 /// The caller has already loaded the level. `tic` is one-based the way the
 /// session counts, so the smallest useful one is 2: tic 1 has no earlier
 /// row to read and pays for it.
 pub async fn at_tic(fixture: &Fixture, tic: u32, cuts: &[Option<bench::Cut>]) -> Vec<Cost> {
     assert!(tic > 1, "tic {tic} has no earlier state row to read");
-    let db = &fixture.database;
     let ahead: Vec<Input> = (1..tic).map(Input::demo).collect();
-    fixture
-        .execute(&tick::run_statement(db, &ahead))
-        .await
-        .unwrap_or_else(|e| panic!("running up to tic {}: {e}", tic - 1));
+    resident::run(fixture, &ahead, false).await;
+    assert_walked(fixture, tic - 1).await;
 
     let mut costs = Vec::new();
     for cut in cuts {

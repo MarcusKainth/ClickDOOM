@@ -89,7 +89,7 @@ pub const TIC_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the first tic after a resident statement opens may take, which
 /// is the statement being analysed. Sized for a CI runner under load,
 /// several times slower than a quiet development machine.
-pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(600);
+pub const FIRST_TIC_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Anything that stops a resident statement from opening or from taking
 /// another row.

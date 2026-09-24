@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
+use crate::native::refusal::Refusal;
 use crate::native::session::STAGE_TABLE;
 use crate::native::{Session, plan, probe, refusal, schema};
 use crate::stats::{Clock, Monotonic};
@@ -38,12 +39,15 @@ The tic commands come from the demo lump, so the run is the one the probe
 recorded. --summary also lists every field that ever differs, with the tic
 each first did.
 
-A tic native_state marks unresolved or unimplemented is checked before any
-field is, since a tic the statement could not produce exactly is not one
-to compare.
+A tic native_state marks unresolved or unimplemented is not compared,
+since a tic the statement could not produce exactly is not one to hold
+against the probe. The tics before it are compared first, so a field that
+differs ahead of a refusal is reported rather than hidden by it, and the
+refusal is what the run stops on.
 
 Exit codes: 0 the two agree over TICS tics, 1 the run failed, 3 a tic
-refused or the two diverged."
+refused or the two diverged. A run that refuses exits 3 whether or not a
+field differed, and says which of the two it is."
 )]
 pub struct DiffCmd {
     /// Tics to run and compare
@@ -116,17 +120,26 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
         (Err(failure), Ok(())) => return Err(failure),
     }
 
-    // A refused tic is checked before the fields are, because a tic the
-    // statement itself could not produce is not one to compare field by
-    // field against the probe.
-    if let Some(refusal) = refusal::first(&db, database, cmd.tics)
+    // A refused tic is not compared, because a tic the statement could not
+    // produce exactly is not one to hold against the probe. The tics
+    // before it are, and they are already in the table, so the comparison
+    // runs over them first and the refusal is what the run stops on rather
+    // than what it reports instead of comparing.
+    let refused = refusal::first(&db, database, cmd.tics)
         .await
-        .map_err(|err| failed(format!("reading whether a tic refused: {err}")))?
-    {
-        return Err(gate(refusal.to_string()));
+        .map_err(|err| failed(format!("reading whether a tic refused: {err}")))?;
+    let upto = match &refused {
+        Some(refusal) => refusal.tic.saturating_sub(1),
+        None => cmd.tics,
+    };
+    if upto == 0 {
+        let refusal = refused.expect("upto is only 0 where tic 1 refused");
+        return Err(gate(format!(
+            "{refusal}, which is the first tic this ran, so no tic was compared"
+        )));
     }
 
-    report(cmd, &db).await
+    report(cmd, &db, upto, refused.as_ref()).await
 }
 
 /// Empties `native_state` and `native_stage` and writes the level's first
@@ -198,13 +211,13 @@ async fn simulate(session: &Session, tics: u32) -> Result<(), Failure> {
 ///
 /// A run whose probe covers none of its tics finds no divergence, which
 /// reads exactly like agreement. The count is what tells the two apart.
-async fn compared(cmd: &DiffCmd, db: &Db) -> Result<u64, Failure> {
+async fn compared(cmd: &DiffCmd, db: &Db, upto: u32) -> Result<u64, Failure> {
     let database = &cmd.conn.database;
     db.fetch_one::<u64>(&format!(
         "SELECT uniqExact(gametic) FROM {database}.{} \
-         WHERE gametic <= {} AND gametic IN (SELECT tic FROM {database}.{})",
+         WHERE gametic <= {upto} AND gametic IN \
+         (SELECT tic FROM {database}.{} WHERE tic <= {upto})",
         probe::STAGING_TABLE,
-        cmd.tics,
         probe::STATE_TABLE
     ))
     .await
@@ -212,10 +225,26 @@ async fn compared(cmd: &DiffCmd, db: &Db) -> Result<u64, Failure> {
 }
 
 /// The comparison itself, which is one query per question.
-async fn report(cmd: &DiffCmd, db: &Db) -> Result<Exit, Failure> {
+///
+/// `upto` is the last tic to compare: the tic before a refusal, or every
+/// tic the run was asked for. `refused` is what stopped the run, and it is
+/// reported after the comparison rather than instead of it, so a field that
+/// differs before the refusal is what a caller hears about.
+async fn report(
+    cmd: &DiffCmd,
+    db: &Db,
+    upto: u32,
+    refused: Option<&Refusal>,
+) -> Result<Exit, Failure> {
     let database = &cmd.conn.database;
-    let compared = compared(cmd, db).await?;
+    let compared = compared(cmd, db, upto).await?;
     if compared == 0 {
+        if let Some(refusal) = refused {
+            return Err(gate(format!(
+                "{refusal}, and the probe records none of the {upto} tics \
+                 before it, so no tic was compared"
+            )));
+        }
         return Err(failed(format!(
             "the probe records none of the {} tics this ran, so nothing was \
              compared. Run more tics, or point --probe at a file that covers \
@@ -225,7 +254,7 @@ async fn report(cmd: &DiffCmd, db: &Db) -> Result<Exit, Failure> {
     }
     if cmd.summary {
         let fields: Vec<FieldRow> = db
-            .fetch_all(&parity::field_summary(database))
+            .fetch_all(&parity::field_summary(database, upto))
             .await
             .map_err(|err| failed(format!("reading the field summary: {err}")))?;
         for row in &fields {
@@ -237,12 +266,18 @@ async fn report(cmd: &DiffCmd, db: &Db) -> Result<Exit, Failure> {
     }
 
     let first: Vec<Divergence> = db
-        .fetch_all(&parity::first_divergence(database))
+        .fetch_all(&parity::first_divergence(database, upto))
         .await
         .map_err(|err| failed(format!("reading the first divergence: {err}")))?;
     let Some(first) = first.first() else {
-        println!("no divergence: every field agrees over the {compared} tics both sides hold");
-        return Ok(Exit::Ok);
+        let Some(refusal) = refused else {
+            println!("no divergence: every field agrees over the {compared} tics both sides hold");
+            return Ok(Exit::Ok);
+        };
+        return Err(gate(format!(
+            "{refusal}. Every field agrees over the {compared} tics both sides \
+             hold up to tic {upto}"
+        )));
     };
     Err(gate(format!(
         "tic {} {} slot {} {}: {} against the probe's {}",

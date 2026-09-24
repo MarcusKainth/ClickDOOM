@@ -6,8 +6,11 @@
 //!     differs, with the tic and both values, and exits 3;
 //!   * the probe rows land in `probe_state` and not in `native_state`,
 //!     because the two are the sides of the comparison;
-//!   * a tic `native_state` marks unresolved stops the run there, before
-//!     any field is compared.
+//!   * a tic `native_state` marks unresolved stops the run there, after
+//!     every tic before it has been compared, and the report says both
+//!     what agreed and where it stopped;
+//!   * a field planted to differ ahead of that refusal is reported, so the
+//!     comparison is shown to run rather than merely to be claimed.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -129,32 +132,75 @@ async fn a_differential_run_reports_the_first_field_that_differs() {
 }
 
 /// A tic `native_state` marks unresolved stops the run there, with exit 3
-/// and a message naming the tic and the column, before any field is
-/// compared against the probe.
+/// and a message naming the tic and the column. The tics before it are
+/// compared first, and the message says so, because a run that reports a
+/// refusal and compares nothing cannot be told from one that compared and
+/// agreed.
 ///
-/// The committed fixture covers only a handful of gametics, far short of
-/// `FIRST_REFUSED_TIC`, but the refusal is checked before the comparison
-/// needs the probe to cover anything, so it does not need a fuller one.
+/// The committed fixture records gametics far short of `FIRST_REFUSED_TIC`,
+/// so the comparison covers those and the refusal stops the run well after
+/// them.
 #[tokio::test]
-async fn a_tic_that_refuses_stops_before_the_field_comparison() {
+async fn a_tic_that_refuses_stops_the_run_after_the_tics_before_it_are_compared() {
     let database = format!("clickdoom_native_diff_refusal_{}", std::process::id());
     let (code, printed) = clickdoom(&database, &["native", "load", "--fresh"]);
     assert_eq!(code, 0, "{printed}");
 
     let fixture = committed_fixture();
     let probe = fixture.to_str().expect("a path");
-    let tics = (FIRST_REFUSED_TIC + 8).to_string();
+    let tics = (FIRST_REFUSED_TIC + 10).to_string();
     let (code, printed) = clickdoom(&database, &["native", "diff", &tics, "--probe", probe]);
     assert_eq!(code, 3, "{printed}");
     assert!(
         printed.contains(&format!("tic {FIRST_REFUSED_TIC} unresolved")),
-        "{printed}"
+        "the refusal is named: {printed}"
     );
     assert!(
-        !printed.contains("no divergence") && !printed.contains("against the probe's"),
-        "a refused tic is reported before any field is compared: {printed}"
+        printed.contains("Every field agrees over the"),
+        "the report says what it compared, not only where it stopped: {printed}"
+    );
+    assert!(
+        printed.contains(&format!("up to tic {}", FIRST_REFUSED_TIC - 1)),
+        "the compared span ends at the tic before the refusal: {printed}"
     );
 
+    conn_args("default")
+        .connect()
+        .run(&format!("DROP DATABASE IF EXISTS {database}"))
+        .await
+        .expect("the database is dropped");
+}
+
+/// A field planted to differ before the refusal is reported, and the
+/// refusal is not.
+///
+/// Without this the test above proves only that a sentence is printed. The
+/// comparison has to be shown to reach a tic ahead of the refusal and bite
+/// there, since a comparison that runs over nothing also reports that every
+/// field agrees.
+#[tokio::test]
+async fn a_field_that_differs_before_the_refusal_is_what_the_run_reports() {
+    let database = format!("clickdoom_native_diff_before_{}", std::process::id());
+    let (code, printed) = clickdoom(&database, &["native", "load", "--fresh"]);
+    assert_eq!(code, 0, "{printed}");
+
+    let fixture = committed_fixture();
+    let moved = moved_fixture(&fixture, FIRST_RECORDED_TIC, "leveltime");
+    let probe = moved.to_str().expect("a path");
+    let tics = (FIRST_REFUSED_TIC + 10).to_string();
+    let (code, printed) = clickdoom(&database, &["native", "diff", &tics, "--probe", probe]);
+    assert_eq!(code, 3, "{printed}");
+    assert!(
+        printed.contains(&format!("tic {FIRST_RECORDED_TIC} ")) && printed.contains("leveltime"),
+        "the planted field is reported: {printed}"
+    );
+    assert!(
+        !printed.contains(&format!("tic {FIRST_REFUSED_TIC} unresolved")),
+        "a field that differs first is what the run reports, not the refusal \
+         behind it: {printed}"
+    );
+
+    std::fs::remove_file(&moved).expect("the moved fixture is removed");
     conn_args("default")
         .connect()
         .run(&format!("DROP DATABASE IF EXISTS {database}"))

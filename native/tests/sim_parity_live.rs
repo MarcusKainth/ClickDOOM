@@ -521,7 +521,7 @@ async fn the_tic_matches_the_engine_where_the_fixture_reaches() {
     let walk: Vec<Input> = (1..=WALK_TICS).map(Input::demo).collect();
     support::resident::run(&fixture, &walk, false).await;
 
-    let summary: Vec<Divergence> = fixture.rows(&parity::field_summary(&db)).await;
+    let summary: Vec<Divergence> = fixture.rows(&parity::field_summary(&db, u32::MAX)).await;
     let walk = walked(&fixture, &db).await;
     fixture.finish().await;
 

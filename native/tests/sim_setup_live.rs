@@ -284,7 +284,7 @@ async fn the_differential_reports_what_the_probe_disagrees_with(fixture: &Fixtur
         .execute(&[probe::insert(db, &agrees).unwrap()])
         .await
         .unwrap();
-    let none: Vec<Divergence> = fixture.rows(&parity::first_divergence(db)).await;
+    let none: Vec<Divergence> = fixture.rows(&parity::first_divergence(db, u32::MAX)).await;
     assert!(
         none.is_empty(),
         "a row that repeats the state diverges from it: {:?}",
@@ -308,7 +308,7 @@ async fn the_differential_reports_what_the_probe_disagrees_with(fixture: &Fixtur
         .await
         .unwrap();
 
-    let first: Vec<Divergence> = fixture.rows(&parity::first_divergence(db)).await;
+    let first: Vec<Divergence> = fixture.rows(&parity::first_divergence(db, u32::MAX)).await;
     let first = first.first().expect("the moved fields are reported");
     assert_eq!(first.tic, 0);
     assert_eq!(first.field, "prndindex");
@@ -319,7 +319,7 @@ async fn the_differential_reports_what_the_probe_disagrees_with(fixture: &Fixtur
         first.theirs.parse::<i32>().unwrap()
     );
 
-    let summary: Vec<FieldSummary> = fixture.rows(&parity::field_summary(db)).await;
+    let summary: Vec<FieldSummary> = fixture.rows(&parity::field_summary(db, u32::MAX)).await;
     let fields: Vec<&str> = summary.iter().map(|row| row.field.as_str()).collect();
     assert_eq!(fields, ["prndindex", "m_x"], "{summary:?}");
     let m_x = &summary[1];

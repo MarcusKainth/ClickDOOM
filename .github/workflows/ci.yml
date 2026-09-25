@@ -1,291 +1,94 @@
-# ClickDOOM CI.
-#
-# ClickHouse comes from docker-compose.yml through `make up`, so the image
-# digest and the server configuration are pinned in that one file. Bumping the
-# pin needs a `ci:` pull request with nightly deep-diff evidence.
-#
-# Every third-party action is pinned to a full commit SHA. `zizmor` fails the
-# lint job if a pin or a token scope regresses.
+# Throwaway measurement workflow: where the test archive build spends its
+# time and bytes. Not for merging.
 
 name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
-
-# Superseded pull request runs are cancelled. Pushes to main are left to finish.
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
 
-env:
-  CLICKHOUSE_USER: default
-  # Local-only. This database holds an emulator's RAM and nothing secret.
-  # docker-compose.yml carries the same value.
-  CLICKHOUSE_PASSWORD: clickdoom
-  CLICKHOUSE_DATABASE: clickdoom
-
 jobs:
-  lint:
+  probe:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Non-Rust lint tools
-        # shellcheck, clang-format and actionlint have no cargo distribution.
-        # `make lint` installs typos and zizmor through cargo itself.
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q shellcheck clang-format
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-              | bash -s -- 1.7.12
-          sudo install -m 0755 actionlint /usr/local/bin/actionlint
-      - name: Every static check
-        # The same target a contributor runs, so CI and local cannot drift.
-        run: make lint
-
-  build-rom:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build ROM (dockerized rv32 toolchain)
-        run: make -C rom
-      - name: Verify the ELF is byte-reproducible
-        # Through rom/Makefile, so the second build runs in the same pinned
-        # toolchain image under the same flags as the first. It rebuilds the
-        # ROM and then links once more, so the step costs two ROM builds.
-        run: make -C rom check-elf-reproducible
-      - name: Verify reproducible-build hash pin
-        # Recomputed here rather than calling `make -C rom check-pinned-hash`,
-        # so the pin is checked by something other than the tool that built it.
-        run: |
-          built=$(sha256sum rom/build/doom-rv32im.bin | cut -d' ' -f1)
-          pinned=$(cat rom/PINNED_HASH)
-          if [ "$built" != "$pinned" ]; then
-            echo "::error::ROM hash mismatch: built=$built pinned=$pinned."
-            echo "::error::Either the build went nondeterministic (P0) or the ROM changed without rom/PINNED_HASH being updated in the same PR."
-            exit 1
-          fi
-      - name: Upload ROM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rom
-          path: |
-            rom/build/doom-rv32im.bin
-            rom/build/doom-rv32im.elf
-            rom/build/manifest.json
-
-  build-refemu:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build the reference emulator
-        run: cargo build --locked --release -p refemu
-      - name: Upload refemu artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: refemu
-          path: target/release/refemu
-
-  build-tests:
-    # Every test binary, compiled once into two nextest archives: the
-    # workspace with the live suites, and the reference emulator's release
-    # ROM suites. The test jobs run from the archives and compile nothing.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
-        with:
-          tool: cargo-nextest@0.9.140
-      - name: Archive the suites
-        run: |
-          mkdir -p target/nextest
-          cargo nextest archive --locked --workspace --features clickhouse-tests \
-              --archive-file target/nextest/tests.tar.zst
-          cargo nextest archive --locked --release -p refemu --features rom-tests \
-              --archive-file target/nextest/rom-suites.tar.zst
-      - name: Upload the archives
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-archives
-          path: target/nextest/*.tar.zst
-
-  test:
-    # Every suite, in the groups scripts/test-group.sh names, one runner per
-    # group with its own ClickHouse, run from the archives build-tests made.
-    # Throwaway databases only; never `clickdoom`. `make test` runs the same
-    # suites in one pass locally.
-    needs: [build-tests, build-rom, build-refemu]
-    # The repository variables CLICKDOOM_TEST_RUNNER (a runs-on label) and
-    # CLICKDOOM_TEST_THREADS (tests per simulation group at once) pick the
-    # machine the groups run on; unset, a standard runner at four.
-    runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
-    permissions:
-      contents: read
-    # A backstop against a job that hangs, not a budget. Packed over six
-    # groups every group's own tests schedule in 19.8 to 20.6 minutes on
-    # the median of five main runs, and a job runs 3.4 minutes longer than
-    # its tests at the median, 8.8 at the worst seen. That says nothing
-    # about the worst a runner produces: a test's own time moves 17% run to
-    # run at the median and 35% at the extreme, a slow runner has taken a
-    # whole group 30% past those medians, and the slowest group on record
-    # ran 41 minutes. So this sits above the observed worst rather than
-    # above the modelled one. A group that is merely slow has to finish and
-    # report; cancelling it reads as a timeout and says nothing about any
-    # test.
-    timeout-minutes: 45
-    env:
-      TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:
       fail-fast: false
       matrix:
-        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f, native-rest]
-    name: test (${{ matrix.group }})
+        include:
+          - { variant: base,      debug: "",                  nativeopt: "", scope: all,    level: 6 }
+          - { variant: lines,     debug: "line-tables-only",  nativeopt: "", scope: all,    level: 0 }
+          - { variant: nodebug,   debug: "0",                 nativeopt: "", scope: all,    level: 0 }
+          - { variant: lines-n1,  debug: "line-tables-only",  nativeopt: "1", scope: all,   level: 0 }
+          - { variant: lines-n0,  debug: "line-tables-only",  nativeopt: "0", scope: all,   level: 0 }
+          - { variant: n1-native, debug: "line-tables-only",  nativeopt: "1", scope: native, level: 0 }
+          - { variant: n1-rest,   debug: "line-tables-only",  nativeopt: "1", scope: rest,  level: 0 }
+    name: probe (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.variant }}
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: cargo-nextest@0.9.140
-      - name: Start the pinned ClickHouse
-        run: make up
-      - name: Download the test archives
+      - name: Archive
+        env:
+          DEBUG: ${{ matrix.debug }}
+          NATIVEOPT: ${{ matrix.nativeopt }}
+          SCOPE: ${{ matrix.scope }}
+        run: |
+          mkdir -p target/nextest
+          flags=()
+          if [ -n "$DEBUG" ]; then export CARGO_PROFILE_TEST_DEBUG="$DEBUG"; fi
+          if [ -n "$NATIVEOPT" ]; then flags+=(--config "profile.test.package.clickdoom-native.opt-level=$NATIVEOPT"); fi
+          case "$SCOPE" in
+            all) flags+=(--workspace) ;;
+            native) flags+=(-p clickdoom-native) ;;
+            rest) flags+=(--workspace --exclude clickdoom-native) ;;
+          esac
+          start=$(date +%s)
+          cargo nextest archive --locked "${flags[@]}" --features clickhouse-tests --timings \
+              --archive-file target/nextest/tests.tar.zst
+          echo "archive_seconds=$(( $(date +%s) - start ))"
+          ls -l target/nextest
+          echo "largest binaries in the archive:"
+          tar -I zstd -tvf target/nextest/tests.tar.zst | sort -k3 -n | tail -25
+          echo "total uncompressed:"
+          tar -I zstd -tvf target/nextest/tests.tar.zst | awk '{s+=$3} END {print s}'
+          echo "by package prefix:"
+          tar -I zstd -tvf target/nextest/tests.tar.zst | awk '{n=$6; sub(/.*\//,"",n); sub(/-[0-9a-f]{16}$/,"",n); print $3, n}' | sort -k1 -n -r | head -100
+      - name: Upload the archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archive-${{ matrix.variant }}
+          path: target/nextest/tests.tar.zst
+          compression-level: ${{ matrix.level }}
+          retention-days: 1
+      - name: Upload the timings
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: timings-${{ matrix.variant }}
+          path: target/cargo-timings/cargo-timing.html
+          retention-days: 3
+
+  download:
+    needs: probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, lines, lines-n1, n1-native]
+    name: download (${{ matrix.variant }})
+    steps:
+      - name: Download the archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: test-archives
+          name: archive-${{ matrix.variant }}
           path: target/nextest
-      - name: Download ROM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: rom
-          path: rom/build
-      - name: Download refemu artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: refemu
-          path: target/release
-      - name: The group's suites
-        env:
-          CLICKHOUSE_HOST: localhost
-          CLICKHOUSE_HTTP_PORT: "8123"
-          CLICKHOUSE_PASSWORD: clickdoom
-          GROUP: ${{ matrix.group }}
-          NEXTEST_ARCHIVE_DIR: target/nextest
-        run: |
-          chmod +x target/release/refemu
-          scripts/test-group.sh "$GROUP"
-
-  native-smoke:
-    # The driver's own path to a frame: load the schema and the committed
-    # probe fixture, render the frame the fixture's metadata names, compare
-    # against the hash the probe recorded beside that frame's row.
-    #
-    # The renderer's pixels are pinned by `native/tests/render_live.rs` in
-    # the native-rest group. This job checks the load and render path around
-    # them and the fixture's own metadata. No ROM is built: the target's
-    # prerequisites are `up` and `build-clickdoom`.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Render the first gameplay frame and check its hash
-        run: make native-smoke
-
-  differential-smoke:
-    # N instructions of the DOOM ROM on refemu against sqlcpu, comparing the
-    # full checkpoint trace at every CHECKPOINT_INTERVAL rather than a sample.
-    #
-    # A GREEN RUN HERE MEANS "registers and control flow agreed over 24
-    # comparisons". IT DOES NOT MEAN "the engines agree". 100,000 instructions
-    # at CHECKPOINT_INTERVAL=4,096 spacing reaches no RAM_HASH_INTERVAL
-    # (1,048,576) boundary, so `ramhash` and `fbhash` are never compared. That
-    # leaves uncaught a corrupt RAM word which keeps every register
-    # bit-identical. Only nightly's deep-diff exercises memory.
-    #
-    # N=100,000 because clickdoom emulation diff clamps every sqlcpu batch to
-    # <= CHECKPOINT_INTERVAL so it cannot skip a checkpoint row. Measured at
-    # 990 instructions/sec, 101 seconds. Reaching the first memory comparison
-    # would take about 13.9 minutes on every pull request. timeout-minutes is a
-    # safety net for runner variance, not a substitute for that measurement.
-    needs: [build-rom, build-refemu]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # The cache restores target/ whole, so it goes before anything is
-      # downloaded into it.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Start the pinned ClickHouse
-        run: make up
-      - name: Download ROM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: rom
-          path: rom/build
-      - name: Download refemu artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: refemu
-          path: target/release
-      - name: Build clickdoom
-        run: cargo build --locked --release -p clickdoom-driver
-      - name: Smoke diff (100,000 instructions, full checkpoint trace)
-        run: |
-          chmod +x target/release/refemu
-          ./target/release/clickdoom emulation diff 100000 --host localhost --port 8123 \
-              --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
-              --refemu-bin target/release/refemu
-
-  ci-passed:
-    # Succeeds only when every other job in this workflow succeeded. A job that
-    # failed, was skipped or was cancelled fails it. The test matrix reports one
-    # result, which is a failure if any group failed. A job added to this
-    # workflow goes in `needs`, or a branch rule that requires this check does
-    # not wait for it.
-    needs: [lint, build-rom, build-refemu, build-tests, test, native-smoke, differential-smoke]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions: {}
-    timeout-minutes: 5
-    steps:
-      - name: Every needed job succeeded
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          failed=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(" ")')
-          if [ -n "$failed" ]; then
-            echo "::error::Not successful: $failed"
-            exit 1
-          fi
+      - run: ls -l target/nextest

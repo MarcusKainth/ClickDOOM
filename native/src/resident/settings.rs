@@ -8,6 +8,11 @@
 /// transport appends to the statement and the newline after it.
 pub const QUERY_SIZE_SLACK: usize = 64;
 
+/// Settings that change how the server analyses a tic statement. A
+/// resident sends them, and so does a tic statement issued on its own, so
+/// both are analysed the same way.
+pub const ANALYSIS_SETTINGS: [(&str, &str); 1] = [("optimize_and_compare_chain", "0")];
+
 /// Every setting a resident statement needs, for a statement of
 /// `statement_bytes` bytes.
 ///
@@ -16,7 +21,7 @@ pub const QUERY_SIZE_SLACK: usize = 64;
 /// `max_query_size` covers the statement text, which leads the request
 /// body.
 pub fn resident_settings(statement_bytes: usize) -> Vec<(&'static str, String)> {
-    vec![
+    let mut settings = vec![
         ("max_insert_block_size", "1".to_owned()),
         ("min_insert_block_size_rows", "1".to_owned()),
         ("min_insert_block_size_bytes", "1".to_owned()),
@@ -31,7 +36,13 @@ pub fn resident_settings(statement_bytes: usize) -> Vec<(&'static str, String)> 
         ),
         ("max_ast_elements", "4000000".to_owned()),
         ("max_expanded_ast_elements", "40000000".to_owned()),
-    ]
+    ];
+    settings.extend(
+        ANALYSIS_SETTINGS
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_owned())),
+    );
+    settings
 }
 
 #[cfg(test)]

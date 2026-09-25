@@ -14,6 +14,7 @@
 //! The transform is the same whether it runs inside the resident statement
 //! or over a single row, so a test issues exactly what a session runs.
 
+use crate::resident::ANALYSIS_SETTINGS;
 use crate::sql::Statement;
 
 use super::{Tic, game, hud, lights, mobj, player, spec, specials, state_columns};
@@ -178,6 +179,7 @@ fn stage1_over(db: &str, rows: &[Input], cut: Option<&'static str>) -> Statement
         )
     ))
     .with(&PARSE_SETTINGS)
+    .with(&ANALYSIS_SETTINGS)
 }
 
 /// Building the first statement cut short, for measuring what each of its
@@ -328,7 +330,8 @@ pub fn run_statement(db: &str, rows: &[Input]) -> [Statement; 2] {
             ),
         )
     ))
-    .with(&PARSE_SETTINGS);
+    .with(&PARSE_SETTINGS)
+    .with(&ANALYSIS_SETTINGS);
     [stage1, stage2]
 }
 
@@ -611,6 +614,29 @@ fn row(state: &super::State) -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resident::resident_settings;
+
+    /// A test's tic statements and a session's residents are analysed
+    /// under the same settings, so a test pays the analysis a session pays.
+    #[test]
+    fn a_test_s_statements_are_analysed_as_a_session_s_are() {
+        let setting = ("optimize_and_compare_chain", "0");
+        let session = resident_settings(0);
+        assert!(
+            session.iter().any(|(n, v)| (*n, v.as_str()) == setting),
+            "a resident session does not send {setting:?}"
+        );
+        let [stage1, stage2] = demo_statement("nat", 1, 2);
+        for (name, statement) in [("first", stage1), ("second", stage2)] {
+            assert!(
+                statement
+                    .settings
+                    .iter()
+                    .any(|(n, v)| (n.as_str(), v.as_str()) == setting),
+                "the {name} statement run_statement builds does not carry {setting:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_resident_statements_read_the_session_s_rows() {

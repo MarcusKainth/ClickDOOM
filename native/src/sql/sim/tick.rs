@@ -73,7 +73,7 @@ pub mod source {
 /// `f_wipe.c`: `wipe_initMelt` draws one number per screen column, and the
 /// melt runs once, on the tic the first frame is displayed after.
 const MELT_DRAWS: u32 = 320;
-const MELT_TIC: u32 = 2;
+pub const MELT_TIC: u32 = 2;
 
 /// The tic's own two resident statements, paired: the second's own input
 /// depends on rows only the first writes, so nothing outside this crate

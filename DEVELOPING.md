@@ -195,9 +195,15 @@ last recorded commit again first.
 
 The `native-record` job appends the new lines to
 `native/bench/regression/results.jsonl` on the `regression-data` branch, which
-is never merged into main. It is the only job with write access, and it runs no
-repository code. With `max_commits` at 0 the walk measures only the last
-recorded commit.
+is never merged into main. It files an issue from `1b-native-divergence.yml` for
+a correctness regression and from `3-performance.yml` for a cost one, once per
+metric and commit. It is the only job with write access, and it runs no
+repository code.
+
+Dispatching the nightly with `inject_regression` judges one more line: a copy of
+the last measured line, with its refusal one tic earlier, under the commit name
+`self-test-<run id>`. The issue it files says so. The copy is not recorded.
+With `max_commits` at 0 the walk measures only the last recorded commit.
 
 The walk runs locally against `make up`:
 `scripts/native-regression-walk.sh HISTORY OUT`, with `HISTORY` a copy of the

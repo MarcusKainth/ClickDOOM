@@ -7,9 +7,10 @@
 #
 # native-regression runs `native diff --record` on each main commit not yet
 # recorded and judges each line against the one before it. native-record
-# appends the lines to the `regression-data` branch. Cost is judged only
-# between a parent and its child measured one after the other in the same
-# job, never against a number from another runner.
+# appends the lines to the `regression-data` branch and files an issue for
+# each regression. Cost is judged only between a parent and its child
+# measured one after the other in the same job, never against a number from
+# another runner.
 #
 # Throughput is not benchmarked here. A shared runner cannot give the timing a
 # quiet machine gives. Run `bench-canonical-throughput` on a quiet box instead.
@@ -32,6 +33,10 @@ on:
       max_commits:
         description: "Main commits native-regression walks after the last recorded one"
         default: "8"
+      inject_regression:
+        description: "Also judge a copy of the night's last line with its refusal one tic earlier, and file what that finds"
+        type: boolean
+        default: false
 
 concurrency:
   group: nightly-${{ github.ref }}
@@ -132,8 +137,27 @@ jobs:
           CLICKDOOM_DATABASE: regress
         run: scripts/native-regression-walk.sh "$RUNNER_TEMP/history.jsonl" regression
       - name: Judge the night
+        env:
+          INJECT: ${{ github.event.inputs.inject_regression || 'false' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ ! -s regression/night.jsonl ]; then
+          judged=regression/night.jsonl
+          if [ "$INJECT" = true ]; then
+            # The last measured line, tonight's or the history's, under a
+            # commit that is not one, with its first refusal one tic earlier.
+            cat "$RUNNER_TEMP/history.jsonl" regression/night.jsonl \
+                | jq -c 'select(.error == null)' | tail -n 1 \
+                | jq -c --arg commit "self-test-$GITHUB_RUN_ID" \
+                    '.commit = $commit | .first_refused_tic = ((.first_refused_tic // 2001) - 1)' \
+                    >regression/injected.jsonl
+            if [ ! -s regression/injected.jsonl ]; then
+              echo "::error::no measured line to inject a regression into"
+              exit 1
+            fi
+            cat regression/night.jsonl regression/injected.jsonl >regression/judged.jsonl
+            judged=regression/judged.jsonl
+          fi
+          if [ ! -s "$judged" ]; then
             echo "nothing walked, so nothing to judge"
             exit 0
           fi
@@ -142,13 +166,19 @@ jobs:
             history=(--history "$RUNNER_TEMP/history.jsonl")
           fi
           status=0
-          "$RUNNER_TEMP/clickdoom-judge" native regress regression/night.jsonl "${history[@]}" \
-              || status=$?
-          case "$status" in
-            0) ;;
-            3) echo "::warning::a recorded line regressed; the lines above name it" ;;
-            *) exit "$status" ;;
-          esac
+          "$RUNNER_TEMP/clickdoom-judge" native regress "$judged" "${history[@]}" \
+              --findings regression/findings.jsonl || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+            exit "$status"
+          fi
+          if [ "$INJECT" = true ] \
+              && ! jq -e --arg commit "self-test-$GITHUB_RUN_ID" 'select(.commit == $commit)' \
+                  regression/findings.jsonl >/dev/null; then
+            echo "::error::the injected regression was not found"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/history.jsonl" "$judged" >regression/lines.jsonl
+          scripts/native-regression-issues.sh regression/findings.jsonl regression/lines.jsonl regression/issues
       - name: Upload what the night found
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -158,12 +188,14 @@ jobs:
           if-no-files-found: error
 
   native-record:
-    # Writes the branch, and runs no repository code: it checks nothing out,
-    # and reads only the artifact native-regression uploaded.
+    # Writes the branch and the issues, and runs no repository code: it
+    # checks nothing out, and reads only the artifact native-regression
+    # uploaded.
     needs: native-regression
     runs-on: ubuntu-latest
     permissions:
       contents: write # appends to the regression-data branch
+      issues: write # files an issue for each regression
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
@@ -220,3 +252,33 @@ jobs:
                 -f ref="refs/heads/$REGRESSION_BRANCH" -f sha="$commit"
           fi
           echo "recorded $count line(s) on $REGRESSION_BRANCH"
+      - name: File an issue for each regression
+        run: |
+          shopt -s nullglob
+          failed=0
+          for dir in regression/issues/*/; do
+            title=$(cat "$dir/title")
+            # The title ends with the metric and the commit in parentheses.
+            marker="(${title##*(}"
+            filed=$(gh issue list --repo "$REPO" --state all --limit 20 \
+                --search "\"$marker\" in:title" --json number,title \
+                | jq -r --arg marker "$marker" '[.[] | select(.title | endswith($marker)) | .number] | first // empty')
+            if [ -n "$filed" ]; then
+              echo "already filed as #$filed: $title"
+              continue
+            fi
+            labels=()
+            while IFS= read -r label; do
+              labels+=(--label "$label")
+            done <"$dir/labels"
+            url=$(gh issue create --repo "$REPO" --title "$title" --body-file "$dir/body.md" "${labels[@]}")
+            echo "filed $url: $title"
+            # A label the token may not apply is dropped without an error.
+            want=$(sort "$dir/labels" | paste -sd, -)
+            got=$(gh issue view "$url" --json labels --jq '[.labels[].name] | sort | join(",")')
+            if [ "$got" != "$want" ]; then
+              echo "::error::$url carries labels '$got', not '$want'"
+              failed=1
+            fi
+          done
+          exit "$failed"

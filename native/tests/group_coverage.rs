@@ -161,14 +161,22 @@ fn listed_groups(script: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_owned).collect()
 }
 
-/// The `group: [...]` list of the test matrix in ci.yml.
+/// The groups every `group: [...]` line of ci.yml's test matrices lists.
 fn matrix_groups(workflow: &str) -> Vec<String> {
-    let line = workflow
+    let lines: Vec<&str> = workflow
         .lines()
-        .find_map(|line| line.trim().strip_prefix("group: ["))
-        .and_then(|rest| rest.strip_suffix(']'))
-        .expect("ci.yml's test matrix lists its groups on one `group: [...]` line");
-    line.split(',').map(|g| g.trim().to_owned()).collect()
+        .filter_map(|line| line.trim().strip_prefix("group: ["))
+        .map(|rest| {
+            rest.strip_suffix(']')
+                .expect("a test matrix lists its groups on one `group: [...]` line")
+        })
+        .collect();
+    assert!(!lines.is_empty(), "ci.yml has no `group: [...]` line");
+    lines
+        .iter()
+        .flat_map(|line| line.split(','))
+        .map(|g| g.trim().to_owned())
+        .collect()
 }
 
 #[test]
@@ -194,7 +202,7 @@ fn ci_runs_every_group_the_script_defines() {
     );
     assert_eq!(
         matrix, listed,
-        "ci.yml's test matrix and the script's groups line name different groups"
+        "ci.yml's test matrices and the script's groups line name different groups"
     );
     for (name, _) in named_by_group(&script) {
         assert!(

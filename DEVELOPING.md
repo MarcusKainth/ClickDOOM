@@ -52,7 +52,10 @@ What `make help` does not say:
   lists the groups. One of them takes every simulation suite the others do
   not name, so a suite added to the tree runs there until somebody packs
   it; `native/tests/group_coverage.rs` fails if that group stops existing,
-  or if two groups name the same suite. `make test-group
+  if two groups name the same suite, or if the CI matrix and the script
+  name different groups. `scripts/test-group.sh --check`, which CI runs
+  against the archives, fails if any test in any package is in no group or
+  in two, or if a group selects nothing. `make test-group
   GROUP=native-sim-a` runs one group the way CI does, building what it
   needs (`cargo install cargo-nextest
   --locked` first); `make test` runs every suite in one pass. Two repository

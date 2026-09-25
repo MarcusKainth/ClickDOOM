@@ -27,6 +27,7 @@ mod support;
 use support::db::Fixture;
 use support::missile::{Missile, Reached, Stopped, World as Oracle};
 use support::mobj::thing_type;
+use support::resident::Session;
 use support::seed;
 
 const FRACUNIT: i64 = 1 << 16;
@@ -526,7 +527,8 @@ async fn a_missile_that_went_off_runs_out_its_death_frames() {
         panic!("{error}");
     }
     let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let mut session = Session::open(&fixture, false).await;
+    session.feed(&walk).await;
 
     // The chain `P_ExplodeMissile` leaves the thing at the top of, and how
     // long it takes to run out.
@@ -577,7 +579,8 @@ async fn a_missile_that_went_off_runs_out_its_death_frames() {
     }
     let last = SEED_TIC + 1 + waits as u32;
     let run: Vec<Input> = (SEED_TIC + 1..=last).map(Input::demo).collect();
-    support::resident::run(&fixture, &run, false).await;
+    session.feed(&run).await;
+    session.close().await;
 
     // The seeded thing is followed by its type, not by the slot it stands
     // in: a removal anywhere below it moves it down, and `m_id` holds the

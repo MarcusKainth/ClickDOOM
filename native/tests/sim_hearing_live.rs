@@ -3,7 +3,8 @@
 //! `demo3` leaves every sector's sound target at 0 until the player fires,
 //! so the branch is seeded into a state row: the sound target, the deaf
 //! flag and a thing that cannot be shot each go in on their own and one
-//! tic is run from each.
+//! tic is run from each. Every arm runs in one session, so the suite pays
+//! the tic statement's analysis once.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT`
 //! / `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123` with no
@@ -19,8 +20,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The last tic the demo drives. The row it leaves sends more things into
 /// `A_Look` than any other tic of the idle window, and none of them has a
@@ -36,9 +38,7 @@ const MF_AMBUSH: i32 = 32;
 /// of that walk leaves 0.
 const SEEDED_LASTLOOK: i32 = 3;
 
-/// One arm per seeded row: where the copy of `BEFORE` lands and which tic
-/// runs from it. The tics are far apart so the arms cannot read each
-/// other's rows.
+/// One arm per seeded row: its name and where the copy of `BEFORE` lands.
 const ARMS: [(&str, u32); 4] = [
     ("quiet", 200),
     ("alert", 300),
@@ -72,6 +72,53 @@ fn targeted(ran: &Ran, lastlook: i32) -> usize {
         .count()
 }
 
+/// Each arm is the same world with the sound target replaced, so what it
+/// leaves differs by exactly what the hearing branch does with it.
+/// `lastlook` is seeded away from the player's index in every arm, because
+/// a thing that wakes on what it heard never reaches the walk that would
+/// put it back.
+fn arms() -> Arms {
+    let arms = ARMS
+        .into_iter()
+        .map(|(name, at)| {
+            let mut overrides: Vec<(&str, String)> = vec![(
+                "m_lastlook",
+                format!("arrayMap(v -> toInt32({SEEDED_LASTLOOK}), p.m_lastlook)"),
+            )];
+            if name != "quiet" {
+                let target = if name == "unshootable" {
+                    // The first thing on the list that cannot be shot,
+                    // which is what the branch refuses to wake on.
+                    format!(
+                        "indexOf(arrayMap(f -> toUInt8(bitAnd(f, {MF_SHOOTABLE}) = 0), \
+                         p.m_flags), toUInt8(1))"
+                    )
+                } else {
+                    "p.p_mo".to_owned()
+                };
+                overrides.push((
+                    "sec_soundtarget",
+                    format!("arrayMap(v -> toUInt32({target}), p.sec_soundtarget)"),
+                ));
+            }
+            if name == "deaf" {
+                overrides.push((
+                    "m_flags",
+                    format!("arrayMap(v -> toInt32(bitOr(v, {MF_AMBUSH})), p.m_flags)"),
+                ));
+            }
+            Arm {
+                name,
+                from: BEFORE,
+                overrides,
+                at,
+                inputs: vec![Input::keys(at + 1, 0, (0, 0))],
+            }
+        })
+        .collect();
+    Arms::new((1..=BEFORE).map(Input::demo).collect(), arms)
+}
+
 #[tokio::test]
 async fn a_look_wakes_on_what_its_sector_heard() {
     let bytes = support::doom1();
@@ -86,138 +133,111 @@ async fn a_look_wakes_on_what_its_sector_heard() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
-
-    // Each arm is the same world with the sound target replaced, so what
-    // it leaves differs by exactly what the hearing branch does with it.
-    // `lastlook` is seeded away from the player's index in every arm,
-    // because a thing that wakes on what it heard never reaches the walk
-    // that would put it back.
-    let mut statements: Vec<sql::Statement> = Vec::new();
-    for (arm, at) in ARMS {
-        let mut overrides: Vec<(&str, String)> = vec![(
-            "m_lastlook",
-            format!("arrayMap(v -> toInt32({SEEDED_LASTLOOK}), p.m_lastlook)"),
-        )];
-        if arm != "quiet" {
-            let target = if arm == "unshootable" {
-                // The first thing on the list that cannot be shot, which
-                // is what the branch refuses to wake on.
-                format!(
-                    "indexOf(arrayMap(f -> toUInt8(bitAnd(f, {MF_SHOOTABLE}) = 0), p.m_flags), \
-                     toUInt8(1))"
-                )
-            } else {
-                "p.p_mo".to_owned()
-            };
-            overrides.push((
-                "sec_soundtarget",
-                format!("arrayMap(v -> toUInt32({target}), p.sec_soundtarget)"),
-            ));
-        }
-        if arm == "deaf" {
-            overrides.push((
-                "m_flags",
-                format!("arrayMap(v -> toInt32(bitOr(v, {MF_AMBUSH})), p.m_flags)"),
-            ));
-        }
-        statements.extend(
-            seed::row(&db, at, BEFORE, &overrides)
-                .into_iter()
-                .map(sql::Statement::sql),
-        );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
-    }
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    let arms = arms();
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
     let columns = "tic, prndindex, p_mo, m_target, m_lastlook";
-    let wanted: Vec<String> = ARMS.iter().map(|(_, at)| (at + 1).to_string()).collect();
-    let rows: Vec<Ran> = fixture
-        .rows(&format!(
-            "SELECT {columns} FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", ")
-        ))
-        .await;
-    let seeded: Vec<Ran> = fixture
-        .rows(&format!(
-            "SELECT {columns} FROM {db}.native_state WHERE tic = {BEFORE}"
-        ))
-        .await;
+    let mut ran: Vec<Vec<Ran>> = Vec::new();
+    for arm in arms.all() {
+        ran.push(arm.rows(&fixture, "native_state", columns).await);
+    }
     fixture.finish().await;
 
-    assert_eq!(rows.len(), ARMS.len(), "every arm ran");
-    let before = seeded.first().expect("the row the arms copy");
-    let at = |arm: &str| {
-        let (_, tic) = ARMS.iter().find(|(name, _)| *name == arm).unwrap();
-        rows.iter().find(|row| row.tic == tic + 1).unwrap()
-    };
-    let drew = |arm: &str| at(arm).prndindex.wrapping_sub(before.prndindex);
-
-    let quiet = at("quiet");
-    let alert = at("alert");
-    assert!(
-        before.m_target.iter().all(|target| *target == 0),
-        "nothing holds a target before the arms run"
-    );
-    assert!(quiet.looked() > 0, "the walk over the players runs at all");
-
-    assert!(
-        drew("alert") > drew("quiet"),
-        "a sector that heard something wakes things a look alone does not: \
-         {} draws against {}",
-        drew("alert"),
-        drew("quiet")
-    );
-    assert!(
-        alert.looked() < quiet.looked(),
-        "a thing that wakes on what it heard never reaches the walk over \
-         the players: {} walked against {}",
-        alert.looked(),
-        quiet.looked()
-    );
-    for slot in 1..=alert.m_target.len() {
-        let target = alert.m_target[slot - 1];
-        assert!(
-            target == 0 || target == alert.p_mo,
-            "slot {slot} takes what its sector heard as its target, not {target}"
+    for (arm, rows) in arms.all().iter().zip(&ran) {
+        let tics: Vec<u32> = rows.iter().map(|row| row.tic).collect();
+        assert_eq!(
+            tics,
+            Vec::from_iter(arm.tics()),
+            "arm {} left its seeded row and the tic run from it",
+            arm.name
         );
     }
-    assert!(
+    // Every seeded row carries the walked row's own index and targets,
+    // since no arm replaces them.
+    let pair = |name: &str| {
+        let rows = &ran[arms.all().iter().position(|arm| arm.name == name).unwrap()];
+        (&rows[0], &rows[1])
+    };
+    let at = |name: &str| pair(name).1;
+    let drew = |name: &str| {
+        let (seeded, after) = pair(name);
+        after.prndindex.wrapping_sub(seeded.prndindex)
+    };
+    let mut checks = arms.checks();
+
+    let (before, quiet) = pair("quiet");
+    let alert = at("alert");
+    let mut arm = checks.arm("quiet");
+    arm.check(
+        before.m_target.iter().all(|target| *target == 0),
+        "nothing holds a target before the arms run",
+    );
+    arm.check(quiet.looked() > 0, "the walk over the players runs at all");
+
+    let mut arm = checks.arm("alert");
+    arm.check(
+        drew("alert") > drew("quiet"),
+        format_args!(
+            "a sector that heard something wakes things a look alone does not: \
+             {} draws against {}",
+            drew("alert"),
+            drew("quiet")
+        ),
+    );
+    arm.check(
+        alert.looked() < quiet.looked(),
+        format_args!(
+            "a thing that wakes on what it heard never reaches the walk over \
+             the players: {} walked against {}",
+            alert.looked(),
+            quiet.looked()
+        ),
+    );
+    let strays: Vec<(usize, u32)> = (1..)
+        .zip(alert.m_target.iter().copied())
+        .filter(|(_, target)| *target != 0 && *target != alert.p_mo)
+        .collect();
+    arm.eq(
+        strays,
+        Vec::new(),
+        "the (slot, target) pairs that take something other than what their \
+         sector heard as their target",
+    );
+    arm.check(
         targeted(alert, SEEDED_LASTLOOK) > 0,
-        "something takes a target without reaching the walk over the players"
+        "something takes a target without reaching the walk over the players",
     );
 
     // A deaf thing takes what it heard as its target before it asks
     // whether it can see it, and stays where it is when it cannot.
     let deaf = at("deaf");
-    assert!(
+    let mut arm = checks.arm("deaf");
+    arm.check(
         drew("deaf") < drew("alert"),
-        "a deaf thing wakes on what it heard only where it can see it: \
-         {} draws against {}",
-        drew("deaf"),
-        drew("alert")
+        format_args!(
+            "a deaf thing wakes on what it heard only where it can see it: \
+             {} draws against {}",
+            drew("deaf"),
+            drew("alert")
+        ),
     );
-    assert!(
+    arm.check(
         targeted(deaf, 0) > 0,
         "a deaf thing that cannot see what it heard still holds it and \
-         walks the players"
+         walks the players",
     );
 
     let unshootable = at("unshootable");
-    assert_eq!(
+    checks.arm("unshootable").eq(
         (
             unshootable.prndindex,
             &unshootable.m_target,
-            &unshootable.m_lastlook
+            &unshootable.m_lastlook,
         ),
         (quiet.prndindex, &quiet.m_target, &quiet.m_lastlook),
-        "a sound target that cannot be shot wakes nothing"
+        "a sound target that cannot be shot wakes nothing",
     );
+    checks.finish();
 }

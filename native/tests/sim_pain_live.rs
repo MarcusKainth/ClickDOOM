@@ -22,8 +22,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The tic every arm copies its row from. Gametic 40 is early enough that
 /// no monster has woken and the list still holds the level's own things.
@@ -47,9 +48,8 @@ const DIE4: i32 = 460;
 /// `p_mobj.h`
 const MF_SOLID: i32 = 2;
 
-/// One arm per seeded row: its name and the state it starts from, one tic
-/// of wait left on it. The tics are far apart so the arms cannot read each
-/// other's rows.
+/// One arm per seeded row: its name, where the copy of `BEFORE` lands and
+/// the state it starts from, one tic of wait left on it.
 const ARMS: [(&str, u32, i32); 3] = [
     ("pain", 200, PAIN1),
     ("scream", 300, DIE1),
@@ -77,6 +77,23 @@ fn put(column: &'static str, slot: usize, value: String, cast: &str) -> (&'stati
     )
 }
 
+fn arms() -> Arms {
+    let arms = ARMS
+        .into_iter()
+        .map(|(name, at, start)| Arm {
+            name,
+            from: BEFORE,
+            overrides: vec![
+                put("m_state", SUBJECT, start.to_string(), "toInt32"),
+                put("m_tics", SUBJECT, "1".to_owned(), "toInt32"),
+            ],
+            at,
+            inputs: vec![Input::keys(at + 1, 0, (0, 0))],
+        })
+        .collect();
+    Arms::new((1..=BEFORE).map(Input::demo).collect(), arms)
+}
+
 #[tokio::test]
 async fn a_pain_and_a_death_frame_run_through_a_tic() {
     let bytes = support::doom1();
@@ -91,93 +108,80 @@ async fn a_pain_and_a_death_frame_run_through_a_tic() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let arms = arms();
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let mut statements: Vec<sql::Statement> = Vec::new();
-    for (_, at, start) in ARMS {
-        let overrides = [
-            put("m_state", SUBJECT, start.to_string(), "toInt32"),
-            put("m_tics", SUBJECT, "1".to_owned(), "toInt32"),
-        ];
-        statements.extend(
-            seed::row(&db, at, BEFORE, &overrides)
-                .into_iter()
-                .map(sql::Statement::sql),
-        );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
-    }
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-
-    let wanted: Vec<String> = ARMS
-        .iter()
-        .flat_map(|(_, at, _)| [at.to_string(), (at + 1).to_string()])
-        .collect();
-    let rows: Vec<Cycled> = fixture
-        .rows(&format!(
-            "SELECT tic, m_state[{SUBJECT}] AS state, m_tics[{SUBJECT}] AS tics, \
-             m_flags[{SUBJECT}] AS flags, prndindex, unresolved \
-             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", ")
-        ))
-        .await;
-    fixture.finish().await;
-    assert_eq!(
-        rows.len(),
-        ARMS.len() * 2,
-        "a seeded row and a tic from it for every arm"
+    let columns = format!(
+        "tic, m_state[{SUBJECT}] AS state, m_tics[{SUBJECT}] AS tics, \
+         m_flags[{SUBJECT}] AS flags, prndindex, unresolved"
     );
-    let at = |tic: u32| {
-        rows.iter()
-            .find(|row| row.tic == tic)
-            .unwrap_or_else(|| panic!("no row for tic {tic}"))
+    let mut ran: Vec<Vec<Cycled>> = Vec::new();
+    for arm in arms.all() {
+        ran.push(arm.rows(&fixture, "native_state", &columns).await);
+    }
+    fixture.finish().await;
+
+    for (arm, rows) in arms.all().iter().zip(&ran) {
+        let tics: Vec<u32> = rows.iter().map(|row| row.tic).collect();
+        assert_eq!(
+            tics,
+            Vec::from_iter(arm.tics()),
+            "arm {} left its seeded row and the tic run from it",
+            arm.name
+        );
+    }
+    let pair = |name: &str| {
+        let rows = &ran[arms.all().iter().position(|arm| arm.name == name).unwrap()];
+        (&rows[0], &rows[1])
     };
+    let mut checks = arms.checks();
 
     // `A_Pain` plays a sound and nothing else, so the cycle reaches its
     // frame with the table's own wait and draws no number.
-    let (before, after) = (at(200), at(201));
-    assert_eq!(
-        before.state, PAIN1,
-        "the seeded row is a tic from the pain frame"
+    let (before, after) = pair("pain");
+    let mut arm = checks.arm("pain");
+    arm.eq(
+        before.state,
+        PAIN1,
+        "the seeded row is a tic from the pain frame",
     );
-    assert_eq!(after.state, PAIN2, "and the cycle reaches it");
-    assert_eq!(after.tics, 2, "the entered frame's own wait");
-    assert_eq!(after.unresolved, 0, "a routine this recognises resolves");
-    assert_eq!(after.prndindex, before.prndindex, "A_Pain draws no number");
+    arm.eq(after.state, PAIN2, "and the cycle reaches it");
+    arm.eq(after.tics, 2, "the entered frame's own wait");
+    arm.eq(after.unresolved, 0, "a routine this recognises resolves");
+    arm.eq(after.prndindex, before.prndindex, "A_Pain draws no number");
 
     // `A_Scream` draws once for the sound: the imp's own death sound is
     // `sfx_bgdth1`, one of the two the switch draws between.
-    let (before, after) = (at(300), at(301));
-    assert_eq!(
-        before.state, DIE1,
-        "the seeded row is a tic from the scream"
+    let (before, after) = pair("scream");
+    let mut arm = checks.arm("scream");
+    arm.eq(
+        before.state,
+        DIE1,
+        "the seeded row is a tic from the scream",
     );
-    assert_eq!(after.state, DIE2, "and the cycle reaches it");
-    assert_eq!(after.tics, 8, "the entered frame's own wait");
-    assert_eq!(after.unresolved, 0, "a routine this recognises resolves");
-    assert_eq!(
+    arm.eq(after.state, DIE2, "and the cycle reaches it");
+    arm.eq(after.tics, 8, "the entered frame's own wait");
+    arm.eq(after.unresolved, 0, "a routine this recognises resolves");
+    arm.eq(
         after.prndindex,
         before.prndindex.wrapping_add(1),
-        "A_Scream draws once for the sound"
+        "A_Scream draws once for the sound",
     );
 
     // `A_Fall` clears the one flag it clears and draws nothing.
-    let (before, after) = (at(400), at(401));
-    assert_eq!(before.state, DIE3, "the seeded row is a tic from the fall");
-    assert_eq!(after.state, DIE4, "and the cycle reaches it");
-    assert_eq!(after.tics, 6, "the entered frame's own wait");
-    assert_eq!(after.unresolved, 0, "a routine this recognises resolves");
-    assert_ne!(
-        before.flags & MF_SOLID,
-        0,
-        "the seeded row still blocks a walk into it"
+    let (before, after) = pair("falls");
+    let mut arm = checks.arm("falls");
+    arm.eq(before.state, DIE3, "the seeded row is a tic from the fall");
+    arm.eq(after.state, DIE4, "and the cycle reaches it");
+    arm.eq(after.tics, 6, "the entered frame's own wait");
+    arm.eq(after.unresolved, 0, "a routine this recognises resolves");
+    arm.check(
+        before.flags & MF_SOLID != 0,
+        "the seeded row still blocks a walk into it",
     );
-    assert_eq!(after.flags & MF_SOLID, 0, "and A_Fall takes that off");
-    assert_eq!(after.prndindex, before.prndindex, "A_Fall draws no number");
+    arm.eq(after.flags & MF_SOLID, 0, "and A_Fall takes that off");
+    arm.eq(after.prndindex, before.prndindex, "A_Fall draws no number");
+    checks.finish();
 }

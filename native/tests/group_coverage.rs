@@ -93,7 +93,7 @@ fn catch_all(script: &str) -> String {
         {
             case = Some(name.to_owned());
         }
-        if line.contains("binary(/^sim_/) and not (") {
+        if line.contains("package(clickdoom-native) and not (") {
             let name = case
                 .clone()
                 .expect("the catch-all filter sits inside a native-sim-<name> case");

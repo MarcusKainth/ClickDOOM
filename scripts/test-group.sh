@@ -24,15 +24,15 @@
 #                  order and troop suites
 #   native-sim-d   the floor, hearing, justattacked, lights, thrust
 #                  and tic suites
-#   native-sim-e   the blast, claw, fall, gunshot, hitscan, input,
-#                  kills-and-drops, missile-same-target, setup, spawn,
-#                  throw, traverse and use suites
+#   native-sim-e   every native crate suite the other native-sim groups
+#                  do not name: the blast, claw, cost, fall, gunshot,
+#                  hitscan, input, kills-and-drops, missile-same-target,
+#                  setup, spawn, throw, traverse and use suites, and the
+#                  crate's loader, renderer, session and table suites
 #   native-sim-f   the aim, damage, impact, noise, parity, plat,
 #                  removed and sight suites
-#   native-rest    everything native outside the simulation: the native
-#                  crate's loader, renderer and table suites, and the
-#                  driver's native_* suites (load, render, demo, play, diff,
-#                  session and stream). The connection suite runs in
+#   driver-native  the driver's native_* suites (load, render, demo, play,
+#                  diff, session and stream). The connection suite runs in
 #                  `emulator`, where nothing runs beside it
 #
 # Every group but `emulator` needs a reachable ClickHouse
@@ -42,7 +42,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-groups=(emulator native-sim-a native-sim-b native-sim-c native-sim-d native-sim-e native-sim-f native-rest)
+groups=(emulator native-sim-a native-sim-b native-sim-c native-sim-d native-sim-e native-sim-f driver-native)
 
 verb=run
 if [ "${1-}" = --list ]; then
@@ -98,10 +98,10 @@ else
 fi
 
 # The simulation suites the lettered groups name, one per line so a move
-# between groups is one line of diff. native-sim-e is every simulation suite
-# not listed here, so a suite added to a lettered group has to be added here
-# in the same commit or it runs twice, and a suite added to none of them runs
-# in native-sim-e rather than in nothing.
+# between groups is one line of diff. native-sim-e is every native crate
+# suite not listed here, so a suite added to a lettered group has to be
+# added here in the same commit or it runs twice, and a suite added to none
+# of them runs in native-sim-e rather than in nothing.
 #
 # The packing is over each group's own thread schedule, longest test first
 # over TEST_THREADS, taken on the median of every test across five main
@@ -189,19 +189,18 @@ case "$group" in
     native-sim-e)
         # shellcheck disable=SC2086
         run_native $live --test-threads "${TEST_THREADS:-4}" \
-            -E "package(clickdoom-native) and binary(/^sim_/) and not ($sim_a | $sim_b | $sim_c | $sim_d | $sim_f)"
+            -E "package(clickdoom-native) and not ($sim_a | $sim_b | $sim_c | $sim_d | $sim_f)"
         ;;
     native-sim-f)
         # shellcheck disable=SC2086
         run_native $live --test-threads "${TEST_THREADS:-4}" \
             -E "package(clickdoom-native) and ($sim_f)"
         ;;
-    native-rest)
+    driver-native)
+        # The driver's sessions pay the same analysis, so this runs as many
+        # at once as a simulation group.
         # shellcheck disable=SC2086
-        run_native $live --test-threads 2 \
-            -E 'package(clickdoom-native) and not binary(/^sim_/)'
-        # shellcheck disable=SC2086
-        run_workspace $live --test-threads 2 \
+        run_workspace $live --test-threads "${TEST_THREADS:-4}" \
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)

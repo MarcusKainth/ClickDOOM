@@ -15,7 +15,8 @@
 #   emulator       every suite outside the native crate and the driver's
 #                  native_* suites: the SQL CPU, the executor, the reference
 #                  emulator and the driver's emulation side, then the ROM
-#                  suites that need a release build
+#                  suites that need a release build. The driver's
+#                  connection and stream suites run here too
 #   native-sim-a   the compact, missile, missile-wall, player-frames and
 #                  refire suites
 #   native-sim-b   the door, missile-kill-drop, move and player-damage
@@ -24,16 +25,16 @@
 #                  order and troop suites
 #   native-sim-d   the floor, hearing, justattacked, lights, thrust
 #                  and tic suites
-#   native-sim-e   the blast, claw, fall, gunshot, hitscan, input,
-#                  kills-and-drops, missile-same-target, setup, spawn,
-#                  throw, traverse and use suites
+#   native-sim-e   every native crate suite the other native-sim groups
+#                  do not name: the blast, claw, cost, fall, gunshot,
+#                  hitscan, input, kills-and-drops, missile-same-target,
+#                  setup, spawn, throw, traverse and use suites, and the
+#                  crate's loader, renderer, session and table suites
 #   native-sim-f   the aim, damage, impact, noise, parity, plat,
 #                  removed and sight suites
-#   native-rest    everything native outside the simulation: the native
-#                  crate's loader, renderer and table suites, and the
-#                  driver's native_* suites (load, render, demo, play, diff,
-#                  session and stream). The connection suite runs in
-#                  `emulator`, where nothing runs beside it
+#   driver-native  the driver's native_* suites (load, render, demo, play,
+#                  diff and session). The connection and stream suites run
+#                  in `emulator`, where nothing runs beside them
 #
 # Every group but `emulator` needs a reachable ClickHouse
 # (CLICKHOUSE_HOST/CLICKHOUSE_HTTP_PORT/CLICKHOUSE_PASSWORD); `emulator`
@@ -42,7 +43,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-groups=(emulator native-sim-a native-sim-b native-sim-c native-sim-d native-sim-e native-sim-f native-rest)
+groups=(emulator native-sim-a native-sim-b native-sim-c native-sim-d native-sim-e native-sim-f driver-native)
 
 verb=run
 if [ "${1-}" = --list ]; then
@@ -98,10 +99,10 @@ else
 fi
 
 # The simulation suites the lettered groups name, one per line so a move
-# between groups is one line of diff. native-sim-e is every simulation suite
-# not listed here, so a suite added to a lettered group has to be added here
-# in the same commit or it runs twice, and a suite added to none of them runs
-# in native-sim-e rather than in nothing.
+# between groups is one line of diff. native-sim-e is every native crate
+# suite not listed here, so a suite added to a lettered group has to be
+# added here in the same commit or it runs twice, and a suite added to none
+# of them runs in native-sim-e rather than in nothing.
 #
 # The packing is over each group's own thread schedule, longest test first
 # over TEST_THREADS, taken on the median of every test across five main
@@ -150,11 +151,13 @@ case "$group" in
     emulator)
         # One test at a time: the SQL CPU's suite and the executor's share
         # the server's compiled-expression cache, which a second run beside
-        # them would warm or cool, and the connection suite counts the
-        # server's connections, which a neighbour's session would move.
+        # them would warm or cool, the connection suite counts the server's
+        # connections, which a neighbour's session would move, and the
+        # stream suite asserts a send-to-visible latency, which a
+        # neighbour's analysis would slow on the same cores.
         # shellcheck disable=SC2086 # $live is a list of flags or nothing
         run_workspace $live --test-threads 1 \
-            -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live))'
+            -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live) or binary(native_stream_live))'
         # The ROM suites are the reference emulator's, so only it is built
         # in release.
         run_rom \
@@ -189,20 +192,19 @@ case "$group" in
     native-sim-e)
         # shellcheck disable=SC2086
         run_native $live --test-threads "${TEST_THREADS:-4}" \
-            -E "package(clickdoom-native) and binary(/^sim_/) and not ($sim_a | $sim_b | $sim_c | $sim_d | $sim_f)"
+            -E "package(clickdoom-native) and not ($sim_a | $sim_b | $sim_c | $sim_d | $sim_f)"
         ;;
     native-sim-f)
         # shellcheck disable=SC2086
         run_native $live --test-threads "${TEST_THREADS:-4}" \
             -E "package(clickdoom-native) and ($sim_f)"
         ;;
-    native-rest)
+    driver-native)
+        # The driver's sessions pay the same analysis, so this runs as many
+        # at once as a simulation group.
         # shellcheck disable=SC2086
-        run_native $live --test-threads 2 \
-            -E 'package(clickdoom-native) and not binary(/^sim_/)'
-        # shellcheck disable=SC2086
-        run_workspace $live --test-threads 2 \
-            -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
+        run_workspace $live --test-threads "${TEST_THREADS:-4}" \
+            -E 'package(clickdoom-driver) and binary(/^native_/) and not (binary(native_connections_live) | binary(native_stream_live))'
         ;;
     *)
         echo "usage: scripts/test-group.sh [--list] $(IFS='|'; echo "${groups[*]}") | --check" >&2

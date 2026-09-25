@@ -17,13 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { variant: base,      debug: "",                  nativeopt: "", scope: all,    level: 6 }
-          - { variant: lines,     debug: "line-tables-only",  nativeopt: "", scope: all,    level: 0 }
-          - { variant: nodebug,   debug: "0",                 nativeopt: "", scope: all,    level: 0 }
-          - { variant: lines-n1,  debug: "line-tables-only",  nativeopt: "1", scope: all,   level: 0 }
-          - { variant: lines-n0,  debug: "line-tables-only",  nativeopt: "0", scope: all,   level: 0 }
-          - { variant: n1-native, debug: "line-tables-only",  nativeopt: "1", scope: native, level: 0 }
-          - { variant: n1-rest,   debug: "line-tables-only",  nativeopt: "1", scope: rest,  level: 0 }
+          - { variant: base,          key: base,    debug: "",  nativeopt: "",  scope: all,      level: 6 }
+          - { variant: nodebug,       key: nodebug, debug: "0", nativeopt: "",  scope: all,      level: 0 }
+          - { variant: nodebug-n0,    key: nodebug, debug: "0", nativeopt: "0", scope: all,      level: 0 }
+          - { variant: n0-native,     key: nodebug, debug: "0", nativeopt: "0", scope: native,   level: 0 }
+          - { variant: n0-rest,       key: nodebug, debug: "0", nativeopt: "0", scope: rest,     level: 0 }
+          - { variant: n0-rest-bare,  key: nodebug, debug: "0", nativeopt: "0", scope: restbare, level: 0 }
     name: probe (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.variant }}
+          key: ${{ matrix.key }}
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: cargo-nextest@0.9.140
@@ -49,6 +48,7 @@ jobs:
             all) flags+=(--workspace) ;;
             native) flags+=(-p clickdoom-native) ;;
             rest) flags+=(--workspace --exclude clickdoom-native) ;;
+            restbare) flags+=(--workspace --exclude clickdoom-native --no-default-features) ;;
           esac
           start=$(date +%s)
           cargo nextest archive --locked "${flags[@]}" --features clickhouse-tests --timings \
@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [base, lines, lines-n1, n1-native]
+        variant: [base, nodebug, n0-native, n0-rest]
     name: download (${{ matrix.variant }})
     steps:
       - name: Download the archive

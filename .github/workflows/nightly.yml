@@ -1,14 +1,18 @@
-# The long differential run, nightly. It does not block merges.
+# The long runs, nightly. They do not block merges.
 #
-# This is the only job that compares memory. ci.yml's differential-smoke stops
-# well short of the first RAM_HASH_INTERVAL boundary, so `ramhash` and `fbhash`
-# are exercised here and nowhere else. A failure here needs a divergence-report
-# issue opened by hand; nothing files one automatically.
+# deep-diff is the only job that compares memory. ci.yml's differential-smoke
+# stops well short of the first RAM_HASH_INTERVAL boundary, so `ramhash` and
+# `fbhash` are exercised here and nowhere else. A failure there needs a
+# divergence-report issue opened by hand.
 #
-# Throughput is deliberately not benchmarked here. A shared runner cannot give
-# a timing a quiet machine gives, and a gate that fails for reasons unrelated to
-# the change is worse than no gate. Run `bench-canonical-throughput` on a quiet
-# box instead.
+# native-regression runs `native diff --record` on each main commit not yet
+# recorded and judges each line against the one before it. native-record
+# appends the lines to the `regression-data` branch. Cost is judged only
+# between a parent and its child measured one after the other in the same
+# job, never against a number from another runner.
+#
+# Throughput is not benchmarked here. A shared runner cannot give the timing a
+# quiet machine gives. Run `bench-canonical-throughput` on a quiet box instead.
 
 name: nightly
 
@@ -25,6 +29,9 @@ on:
         # 91.6 minutes, a 3.28x margin inside the 300-minute timeout, and
         # crosses 4 RAM_HASH_INTERVAL boundaries.
         default: "5000000"
+      max_commits:
+        description: "Main commits native-regression walks after the last recorded one"
+        default: "8"
 
 concurrency:
   group: nightly-${{ github.ref }}
@@ -37,6 +44,10 @@ env:
   # Local-only. This database holds an emulator's RAM and nothing secret.
   CLICKHOUSE_PASSWORD: clickdoom
   CLICKHOUSE_DATABASE: clickdoom
+  # The branch the native-regression lines are kept on, and the file on it.
+  # The branch is never merged into main.
+  REGRESSION_BRANCH: regression-data
+  REGRESSION_PATH: native/bench/regression/results.jsonl
 
 jobs:
   deep-diff:
@@ -65,3 +76,147 @@ jobs:
           ./target/release/clickdoom emulation diff "$INSTRUCTIONS" --host localhost --port 8123 \
               --bin rom/build/doom-rv32im.bin --manifest rom/build/manifest.json \
               --refemu-bin target/release/refemu
+
+  native-regression:
+    # Reads the repository and writes nothing to it. What it found goes to
+    # native-record as an artifact.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Start the pinned ClickHouse
+        run: make up
+      - name: Build ROM
+        run: make -C rom
+      - name: Build the judge
+        # The walk rebuilds target/release/clickdoom for every commit, so the
+        # binary that judges the night is kept apart.
+        run: |
+          cargo build --locked --release -p clickdoom-driver
+          cp target/release/clickdoom "$RUNNER_TEMP/clickdoom-judge"
+      - name: Name main's probe trace
+        id: probe
+        run: |
+          echo "key=$(git rev-parse origin/main:rom/PINNED_HASH)-$(git rev-parse origin/main:refemu/probe)" >>"$GITHUB_OUTPUT"
+      - name: Restore the probe traces
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/traces
+          key: probe-trace-${{ steps.probe.outputs.key }}
+      - name: Read what is recorded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api "repos/$REPO/branches/$REGRESSION_BRANCH" --silent 2>"$RUNNER_TEMP/err"; then
+            gh api -H "Accept: application/vnd.github.raw" \
+                "repos/$REPO/contents/$REGRESSION_PATH?ref=$REGRESSION_BRANCH" >"$RUNNER_TEMP/history.jsonl"
+            echo "$(wc -l <"$RUNNER_TEMP/history.jsonl") line(s) recorded"
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/err"; then
+            echo "no $REGRESSION_BRANCH branch yet"
+            : >"$RUNNER_TEMP/history.jsonl"
+          else
+            cat "$RUNNER_TEMP/err" >&2
+            exit 1
+          fi
+      - name: Walk the commits not yet recorded
+        env:
+          MAX_COMMITS: ${{ github.event.inputs.max_commits || '8' }}
+          TRACES: ${{ runner.temp }}/traces
+          CLICKDOOM_DATABASE: regress
+        run: scripts/native-regression-walk.sh "$RUNNER_TEMP/history.jsonl" regression
+      - name: Judge the night
+        run: |
+          if [ ! -s regression/night.jsonl ]; then
+            echo "nothing walked, so nothing to judge"
+            exit 0
+          fi
+          history=()
+          if [ -s "$RUNNER_TEMP/history.jsonl" ]; then
+            history=(--history "$RUNNER_TEMP/history.jsonl")
+          fi
+          status=0
+          "$RUNNER_TEMP/clickdoom-judge" native regress regression/night.jsonl "${history[@]}" \
+              || status=$?
+          case "$status" in
+            0) ;;
+            3) echo "::warning::a recorded line regressed; the lines above name it" ;;
+            *) exit "$status" ;;
+          esac
+      - name: Upload what the night found
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-regression
+          path: regression/
+          if-no-files-found: error
+
+  native-record:
+    # Writes the branch, and runs no repository code: it checks nothing out,
+    # and reads only the artifact native-regression uploaded.
+    needs: native-regression
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # appends to the regression-data branch
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Download what the night found
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-regression
+          path: regression
+      - name: Append the new lines to the data branch
+        run: |
+          if [ ! -s regression/night.jsonl ]; then
+            echo "nothing walked, so nothing to record"
+            exit 0
+          fi
+          file_sha=""
+          if gh api "repos/$REPO/branches/$REGRESSION_BRANCH" --silent 2>err; then
+            gh api -H "Accept: application/vnd.github.raw" \
+                "repos/$REPO/contents/$REGRESSION_PATH?ref=$REGRESSION_BRANCH" >history.jsonl
+            file_sha=$(gh api "repos/$REPO/contents/$REGRESSION_PATH?ref=$REGRESSION_BRANCH" --jq .sha)
+          elif grep -q "HTTP 404" err; then
+            : >history.jsonl
+          else
+            cat err >&2
+            exit 1
+          fi
+          # A commit the branch already holds is not written twice. The walk
+          # measures the last recorded commit again as the next one's parent.
+          jq -c -n --slurpfile old history.jsonl --slurpfile new regression/night.jsonl '
+              reduce $new[] as $line ({seen: ($old | map(.commit)), out: []};
+                  if (.seen | index($line.commit)) then . else
+                  .seen += [$line.commit] | .out += [$line] end) | .out[]' >fresh.jsonl
+          count=$(wc -l <fresh.jsonl)
+          if [ "$count" -eq 0 ]; then
+            echo "every line walked is already recorded"
+            exit 0
+          fi
+          cat history.jsonl fresh.jsonl >results.jsonl
+          message="regression: record $count commit(s) from run $RUN_ID"
+          if [ -n "$file_sha" ]; then
+            gh api -X PUT "repos/$REPO/contents/$REGRESSION_PATH" --silent \
+                -f message="$message" -f branch="$REGRESSION_BRANCH" -f sha="$file_sha" \
+                -f content="$(base64 -w0 results.jsonl)"
+          else
+            # The branch is an orphan: its one file and no history from main.
+            blob=$(gh api "repos/$REPO/git/blobs" -f encoding=base64 \
+                -f content="$(base64 -w0 results.jsonl)" --jq .sha)
+            tree=$(gh api "repos/$REPO/git/trees" -f "tree[][path]=$REGRESSION_PATH" \
+                -f "tree[][mode]=100644" -f "tree[][type]=blob" -f "tree[][sha]=$blob" --jq .sha)
+            commit=$(gh api "repos/$REPO/git/commits" -f message="$message" -f tree="$tree" --jq .sha)
+            gh api "repos/$REPO/git/refs" --silent \
+                -f ref="refs/heads/$REGRESSION_BRANCH" -f sha="$commit"
+          fi
+          echo "recorded $count line(s) on $REGRESSION_BRANCH"

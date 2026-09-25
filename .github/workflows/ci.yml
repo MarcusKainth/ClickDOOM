@@ -110,6 +110,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # The test binaries carry no debug info. A failing test still reports
+      # its panic message with the file and line; a backtrace names
+      # functions only. Set for the job so rust-cache keys on it.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

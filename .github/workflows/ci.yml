@@ -1,5 +1,5 @@
-# Throwaway measurement workflow: where the test archive build spends its
-# time and bytes. Not for merging.
+# Throwaway measurement workflow: the native crate's generated SQL under
+# opt-level 2 and 0 on a Linux runner. Not for merging.
 
 name: ci
 
@@ -9,86 +9,29 @@ on:
 permissions: {}
 
 jobs:
-  probe:
+  hash:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { variant: base,          key: base,    debug: "",  nativeopt: "",  scope: all,      level: 6 }
-          - { variant: nodebug,       key: nodebug, debug: "0", nativeopt: "",  scope: all,      level: 0 }
-          - { variant: nodebug-n0,    key: nodebug, debug: "0", nativeopt: "0", scope: all,      level: 0 }
-          - { variant: n0-native,     key: nodebug, debug: "0", nativeopt: "0", scope: native,   level: 0 }
-          - { variant: n0-rest,       key: nodebug, debug: "0", nativeopt: "0", scope: rest,     level: 0 }
-          - { variant: n0-rest-bare,  key: nodebug, debug: "0", nativeopt: "0", scope: restbare, level: 0 }
-    name: probe (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.key }}
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
-        with:
-          tool: cargo-nextest@0.9.140
-      - name: Archive
-        env:
-          DEBUG: ${{ matrix.debug }}
-          NATIVEOPT: ${{ matrix.nativeopt }}
-          SCOPE: ${{ matrix.scope }}
+          key: hash
+      - name: Hash at opt-level 2 and 0
         run: |
-          mkdir -p target/nextest
-          flags=()
-          if [ -n "$DEBUG" ]; then export CARGO_PROFILE_TEST_DEBUG="$DEBUG"; fi
-          if [ -n "$NATIVEOPT" ]; then flags+=(--config "profile.test.package.clickdoom-native.opt-level=$NATIVEOPT"); fi
-          case "$SCOPE" in
-            all) flags+=(--workspace) ;;
-            native) flags+=(-p clickdoom-native) ;;
-            rest) flags+=(--workspace --exclude clickdoom-native) ;;
-            restbare) flags+=(--workspace --exclude clickdoom-native --no-default-features) ;;
-          esac
-          start=$(date +%s)
-          cargo nextest archive --locked "${flags[@]}" --features clickhouse-tests --timings \
-              --archive-file target/nextest/tests.tar.zst
-          echo "archive_seconds=$(( $(date +%s) - start ))"
-          ls -l target/nextest
-          echo "largest binaries in the archive:"
-          tar -I zstd -tvf target/nextest/tests.tar.zst | sort -k3 -n | tail -25
-          echo "total uncompressed:"
-          tar -I zstd -tvf target/nextest/tests.tar.zst | awk '{s+=$3} END {print s}'
-          echo "by package prefix:"
-          tar -I zstd -tvf target/nextest/tests.tar.zst | awk '{n=$6; sub(/.*\//,"",n); sub(/-[0-9a-f]{16}$/,"",n); print $3, n}' | sort -k1 -n -r | head -100
-      - name: Upload the archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: archive-${{ matrix.variant }}
-          path: target/nextest/tests.tar.zst
-          compression-level: ${{ matrix.level }}
-          retention-days: 1
-      - name: Upload the timings
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: timings-${{ matrix.variant }}
-          path: target/cargo-timings/cargo-timing.html
-          retention-days: 3
-
-  download:
-    needs: probe
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [base, nodebug, n0-native, n0-rest]
-    name: download (${{ matrix.variant }})
-    steps:
-      - name: Download the archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: archive-${{ matrix.variant }}
-          path: target/nextest
-      - run: ls -l target/nextest
+          for level in 2 0; do
+            cargo test --locked -v --no-run -p clickdoom-native \
+                --config "profile.test.package.clickdoom-native.opt-level=$level" \
+                --test zz_statement_hash 2>&1 \
+              | grep -oE -- '--crate-name zz_statement_hash[^`]*' | grep -oE 'opt-level=[0-9]' || echo "no opt-level flag (0)"
+            cargo test --locked -q -p clickdoom-native \
+                --config "profile.test.package.clickdoom-native.opt-level=$level" \
+                --test zz_statement_hash -- --nocapture 2>&1 \
+              | grep -E '^\.?(stage|run |demo|load|parity)' | sed 's/^\.//' > "hash-$level.txt"
+            echo "opt-level $level: $(sha256sum < "hash-$level.txt")"
+            cut -c1-60 "hash-$level.txt"
+          done
+          diff hash-2.txt hash-0.txt && echo "identical at opt-level 2 and 0"

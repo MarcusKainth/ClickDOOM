@@ -1120,11 +1120,11 @@ mod reads {
             ("WHERE tic > 0".to_owned(), Use::Key),
             ("(tic) AS tic".to_owned(), Use::Key),
             (
-                "source = 0 AND tic <= length(demo_forwardmove)".to_owned(),
+                "identity(source = 0) AND identity(tic <= length(demo_forwardmove))".to_owned(),
                 Use::Demo,
             ),
             (
-                "source = 0 AND tic > length(demo_forwardmove)".to_owned(),
+                "identity(source = 0) AND identity(tic > length(demo_forwardmove))".to_owned(),
                 Use::Demo,
             ),
             (format!("if(tic = {MELT_TIC}, {MELT_DRAWS}, 0)"), Use::Melt),
@@ -1282,6 +1282,67 @@ mod expansion {
                     count[index]
                 );
             }
+        }
+    }
+}
+
+/// No comparison in a tic statement is an operand of `AND` or `OR` as it
+/// stands, on every path that builds one.
+#[cfg(test)]
+mod chain_operands {
+    use super::super::chains::chain_comparisons;
+    use super::*;
+
+    /// How many operands `sql` wraps. Panics on one left bare.
+    fn wrapped(which: &str, sql: &str) -> usize {
+        let bare = chain_comparisons(sql);
+        if let Some(&(start, end)) = bare.first() {
+            panic!(
+                "{which} holds {} comparisons as operands of AND or OR, the first {:?}",
+                bare.len(),
+                &sql[start..end.min(start + 120)]
+            );
+        }
+        sql.matches("identity(").count()
+    }
+
+    #[test]
+    fn no_comparison_is_an_operand_of_and_or() {
+        let (stage1, stage2) = resident_statements("nat");
+        // The scan finds fewer than the transform writes if it misses them.
+        let first = wrapped("the first resident statement", &stage1);
+        assert!(
+            first >= 1500,
+            "the first statement wraps only {first} operands"
+        );
+        let second = wrapped("the second resident statement", &stage2);
+        assert!(
+            second >= 200,
+            "the second statement wraps only {second} operands"
+        );
+        let rows = [Input::demo(1), Input::keys(2, 1, (3, -4))];
+        let runs = [run_statement("nat", &rows), demo_statement("nat", 1, 2)];
+        for (run, which) in runs.iter().zip(["run_statement", "demo_statement"]) {
+            assert_eq!(
+                wrapped(which, &run[0].sql),
+                first,
+                "{which}'s first statement"
+            );
+            assert_eq!(
+                wrapped(which, &run[1].sql),
+                second,
+                "{which}'s second statement"
+            );
+        }
+    }
+
+    #[cfg(feature = "clickhouse-tests")]
+    #[test]
+    fn no_cut_statement_holds_a_comparison_operand() {
+        for cut in bench::Cut::ALL {
+            let sql = bench::stage1("nat", Some(cut), &[Input::demo(1)]).sql;
+            let count = wrapped(&format!("cut {}", cut.name()), &sql);
+            assert!(count > 0, "cut {} wraps nothing", cut.name());
         }
     }
 }

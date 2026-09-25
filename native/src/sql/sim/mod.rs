@@ -5,6 +5,7 @@
 //! statements and issues them.
 
 pub mod attacks;
+mod chains;
 pub mod doors;
 pub mod enemy;
 pub mod floor;
@@ -509,6 +510,9 @@ fn insert_flat(db: &str, with: &[(String, String)], row: &[(&str, String)], from
 /// nobody wrote is a panic here rather than a wrong row in the table.
 /// `extra` names columns past the contract, in the order given, for a
 /// target table that carries more than `native_state` does.
+///
+/// Each comparison that is an operand of `AND` or `OR` comes out wrapped in
+/// `identity()`, which [`chains`] describes.
 fn insert(
     db: &str,
     table: &str,
@@ -541,12 +545,12 @@ fn insert(
             .iter()
             .map(|(name, expr)| format!("    ({expr}) AS {name}")),
     );
-    format!(
+    chains::wrap_chain_comparisons(&format!(
         "INSERT INTO {db}.{table}\n(\n{}\n)\nSELECT\n{}\nFROM\n(\n{}\n)",
         names.join(",\n"),
         select.join(",\n"),
         indent(&nest(&stages(with), from, &select.join(" "), carried)),
-    )
+    ))
 }
 
 /// How many bytes of the bindings it names a binding may copy before the

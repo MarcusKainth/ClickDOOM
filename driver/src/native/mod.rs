@@ -12,7 +12,8 @@
 //! run renders and what each one draws from. [`refusal`] reads back the
 //! tic a run stopped at, where `unresolved` or `unimplemented` said one
 //! could not be produced exactly. [`record`] writes what a differential
-//! run found as one JSON line. [`schema`] stands between a database an
+//! run found as one JSON line, and [`regress`] judges those lines against
+//! the ones before them. [`schema`] stands between a database an
 //! older binary loaded and one this binary's own statements can read: a
 //! load without `--fresh` refuses a column that moved, and
 //! [`Session::open`] refuses a database whose schema hash is not this
@@ -27,6 +28,7 @@ pub mod plan;
 pub mod probe;
 pub mod record;
 pub mod refusal;
+pub mod regress;
 pub mod schedule;
 pub mod schema;
 pub mod session;

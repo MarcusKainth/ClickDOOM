@@ -21,14 +21,11 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, ArmChecks, Arms};
 use support::db::Fixture;
 use support::door;
 use support::plat;
-use support::seed;
-
-/// The tic the seeded row stands at. The run starts after it, so the
-/// transform reads the press out of it the way it reads any other tic.
-const SEED_TIC: u32 = 900;
+use support::resident::Session;
 
 fn put(column: &'static str, value: String) -> (&'static str, String) {
     (
@@ -97,27 +94,27 @@ struct Switched {
     unresolved: u64,
 }
 
-/// A press of an SR special 62 line spawns the plat `EV_DoPlat` spawns for
-/// `downWaitUpStay`, changes the switch's own picture, and starts the
-/// button that puts it back. `T_PlatRaise` then runs the plat the same
-/// way `sim_plat_live.rs`'s own crossing test checks it.
-#[tokio::test]
-async fn a_press_of_a_switch_line_spawns_the_plat_and_flips_the_picture() {
-    let bytes = support::doom1();
-    let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_use_switch").await;
-    let db = fixture.database.clone();
+/// Where each press's seeded row lands.
+const SWITCH_AT: u32 = 900;
+const LOCKED_AT: u32 = 1000;
+const UNLOCKED_AT: u32 = 1100;
 
-    let mut plan = load::plan(&db, &wad);
-    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
-    plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
-    if let Err(error) = fixture.execute(&plan).await {
-        fixture.finish().await;
-        panic!("{error}");
+/// An arm seeded from tic 1 at `at` that holds the use key for `tics`
+/// tics.
+fn press(name: &'static str, at: u32, tics: u32, overrides: Vec<(&'static str, String)>) -> Arm {
+    Arm {
+        name,
+        from: 1,
+        overrides,
+        at,
+        inputs: (at + 1..=at + tics)
+            .map(|tic| Input::keys(tic, key::USE, (0, 0)))
+            .collect(),
     }
+}
 
-    let overrides = [
+fn switch() -> Arm {
+    let overrides = vec![
         put("m_x", format!("toInt32({SWITCH_X})")),
         put("m_y", format!("toInt32({SWITCH_Y})")),
         put("m_angle", format!("toUInt32({SWITCH_ANGLE})")),
@@ -133,90 +130,67 @@ async fn a_press_of_a_switch_line_spawns_the_plat_and_flips_the_picture() {
             ),
         ),
     ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + SWITCH_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
+    press("switch", SWITCH_AT, SWITCH_TICS, overrides)
+}
 
-    let side0: i32 = fixture
-        .scalar(&format!(
-            "SELECT toInt32(side0) FROM {db}.lv_lines WHERE id = 397"
-        ))
-        .await;
-    let rows: Vec<Switched> = fixture
-        .rows(&format!(
-            "SELECT tic, \
-             arrayFirstIndex((k, t) -> k = {PLAT} AND t = 1, s_kind, s_tag) AS slot, \
-             sec_floorheight[{sector}] AS floor, \
-             if(slot = 0, -1, s_status[slot]) AS status, \
-             if(slot = 0, -1, s_count[slot]) AS count, \
-             side_toptexture[{side1}] AS toptexture, \
-             if(length(btn_line) = 0, 0, btn_line[1]) AS btn_line, \
-             if(length(btn_timer) = 0, 0, btn_timer[1]) AS btn_timer, \
-             unresolved \
-             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
-            PLAT = sector_thinker_kind::PLAT,
-            sector = SWITCH_SECTOR + 1,
-            side1 = side0 + 1,
-        ))
-        .await;
-    fixture.finish().await;
-
-    assert_eq!(rows.len(), SWITCH_TICS as usize, "every tic ran");
-    for row in &rows {
-        assert_eq!(
+/// A press of an SR special 62 line spawns the plat `EV_DoPlat` spawns for
+/// `downWaitUpStay`, changes the switch's own picture, and starts the
+/// button that puts it back. `T_PlatRaise` then runs the plat the same
+/// way `sim_plat_live.rs`'s own crossing test checks it.
+fn a_press_of_a_switch_line_spawns_the_plat_and_flips_the_picture(
+    mut c: ArmChecks<'_>,
+    rows: &[Switched],
+) {
+    c.eq(rows.len(), SWITCH_TICS as usize, "every tic ran");
+    for row in rows {
+        c.eq(
             use_unresolved(row.unresolved),
             0,
-            "tic {} was carried through",
-            row.tic
+            format!("tic {} was carried through", row.tic),
         );
     }
-    let spawned = rows
-        .iter()
-        .find(|row| row.slot != 0)
-        .unwrap_or_else(|| panic!("no tic after the press spawns the plat"));
-    assert_eq!(
-        spawned.toptexture, SWITCH_TEX_ON,
-        "the spawn tic flips the picture to its pair"
+    let Some(spawned) = rows.iter().find(|row| row.slot != 0) else {
+        c.check(false, "no tic after the press spawns the plat");
+        return;
+    };
+    c.eq(
+        spawned.toptexture,
+        SWITCH_TEX_ON,
+        "the spawn tic flips the picture to its pair",
     );
-    assert_eq!(
-        spawned.btn_line, 398,
-        "the button names the line, one-based"
+    c.eq(
+        spawned.btn_line,
+        398,
+        "the button names the line, one-based",
     );
-    assert_eq!(
+    c.eq(
         spawned.btn_timer,
         35 - 1,
         "the spawn tic's own first count down, the way a fresh door or \
-         plat also takes its first move on the tic that makes it"
+         plat also takes its first move on the tic that makes it",
     );
 
     let mut want = plat::Plat::down_wait_up_stay(SWITCH_HIGH, SWITCH_LOW);
     let first = want.tic();
-    assert_eq!(
+    c.eq(
         (spawned.floor, spawned.status, spawned.count),
         (first.floorheight, first.status, first.count),
-        "the spawn tic's own first move"
+        "the spawn tic's own first move",
     );
     for row in rows.iter().filter(|row| row.tic > spawned.tic) {
         let step = want.tic();
-        assert_eq!(
+        c.eq(
             (row.floor, row.status, row.count),
             (step.floorheight, step.status, step.count),
-            "tic {}",
-            row.tic
+            format!("tic {}", row.tic),
         );
-        assert_eq!(
-            row.toptexture, SWITCH_TEX_ON,
-            "tic {}: the picture stays flipped while the button counts down",
-            row.tic
+        c.eq(
+            row.toptexture,
+            SWITCH_TEX_ON,
+            format!(
+                "tic {}: the picture stays flipped while the button counts down",
+                row.tic
+            ),
         );
     }
 }
@@ -241,6 +215,28 @@ const YELLOW_CARD: usize = 2;
 
 const LOCKED_TICS: u32 = 10;
 
+/// The player facing line 698, with the yellow card when `key` is set.
+fn locked(name: &'static str, at: u32, key: bool) -> Arm {
+    let mut overrides = vec![
+        put("m_x", format!("toInt32({LOCKED_X})")),
+        put("m_y", format!("toInt32({LOCKED_Y})")),
+        put("m_angle", format!("toUInt32({LOCKED_ANGLE})")),
+        put("m_z", format!("toInt32({LOCKED_FLOORZ})")),
+        put("m_floorz", format!("toInt32({LOCKED_FLOORZ})")),
+        put("m_ceilingz", format!("toInt32({LOCKED_CEILINGZ})")),
+    ];
+    if key {
+        overrides.push((
+            "p_cards",
+            format!(
+                "arrayMap((c, i) -> if(i = {YELLOW_CARD}, toUInt8(1), c), \
+                 p.p_cards, arrayEnumerate(p.p_cards))"
+            ),
+        ));
+    }
+    press(name, at, LOCKED_TICS, overrides)
+}
+
 #[derive(Row, Deserialize)]
 struct Locked {
     tic: u32,
@@ -257,76 +253,38 @@ struct Locked {
 /// (`hu_stuff.c`: `plr->message = NULL` right after the widget copies it),
 /// so the line that survives across tics is `hu_message`, the way
 /// `sim_tic_live.rs`'s own message test reads it.
-#[tokio::test]
-async fn a_press_of_a_locked_door_without_its_key_only_leaves_the_message() {
-    let bytes = support::doom1();
-    let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_use_locked").await;
-    let db = fixture.database.clone();
-
-    let mut plan = load::plan(&db, &wad);
-    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
-    plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
-    if let Err(error) = fixture.execute(&plan).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-
-    let overrides = [
-        put("m_x", format!("toInt32({LOCKED_X})")),
-        put("m_y", format!("toInt32({LOCKED_Y})")),
-        put("m_angle", format!("toUInt32({LOCKED_ANGLE})")),
-        put("m_z", format!("toInt32({LOCKED_FLOORZ})")),
-        put("m_floorz", format!("toInt32({LOCKED_FLOORZ})")),
-        put("m_ceilingz", format!("toInt32({LOCKED_CEILINGZ})")),
-    ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
-
-    let expect: u64 = fixture
-        .scalar("SELECT xxHash64('You need a yellow key to open this door')")
-        .await;
-    let rows: Vec<Locked> = fixture
-        .rows(&format!(
-            "SELECT tic, sec_specialdata[{sector}] AS specialdata, \
-             p_message, hu_message, \
-             unresolved FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
-            sector = LOCKED_SECTOR + 1,
-        ))
-        .await;
-    fixture.finish().await;
-
-    assert_eq!(rows.len(), LOCKED_TICS as usize, "every tic ran");
-    for row in &rows {
-        assert_eq!(
+fn a_press_of_a_locked_door_without_its_key_only_leaves_the_message(
+    mut c: ArmChecks<'_>,
+    rows: &[Locked],
+    expect: u64,
+) {
+    c.eq(rows.len(), LOCKED_TICS as usize, "every tic ran");
+    for row in rows {
+        c.eq(
             use_unresolved(row.unresolved),
             0,
-            "tic {} was carried through",
-            row.tic
+            format!("tic {} was carried through", row.tic),
         );
-        assert_eq!(row.specialdata, 0, "tic {}: no door spawns", row.tic);
-        assert_eq!(row.p_message, 0, "tic {}: the widget empties it", row.tic);
+        c.eq(
+            row.specialdata,
+            0,
+            format!("tic {}: no door spawns", row.tic),
+        );
+        c.eq(
+            row.p_message,
+            0,
+            format!("tic {}: the widget empties it", row.tic),
+        );
     }
-    let pressed = rows
-        .iter()
-        .find(|row| row.hu_message == expect)
-        .unwrap_or_else(|| panic!("no tic leaves the yellow key message"));
+    let Some(pressed) = rows.iter().find(|row| row.hu_message == expect) else {
+        c.check(false, "no tic leaves the yellow key message");
+        return;
+    };
     for row in rows.iter().filter(|row| row.tic >= pressed.tic) {
-        assert_eq!(
-            row.hu_message, expect,
-            "tic {}: the message stays up",
-            row.tic
+        c.eq(
+            row.hu_message,
+            expect,
+            format!("tic {}: the message stays up", row.tic),
         );
     }
 }
@@ -347,83 +305,134 @@ struct Opened {
 /// The same press, with the player carrying the yellow card: the check
 /// passes and `EV_VerticalDoor` opens sector 41 the way any other manual
 /// door does, checked against `native/tests/support/door.rs`.
+fn a_press_of_a_locked_door_with_its_key_opens_it(mut c: ArmChecks<'_>, rows: &[Opened]) {
+    c.eq(rows.len(), LOCKED_TICS as usize, "every tic ran");
+    for row in rows {
+        c.eq(
+            use_unresolved(row.unresolved),
+            0,
+            format!("tic {} was carried through", row.tic),
+        );
+    }
+    let Some(spawned) = rows.iter().find(|row| row.slot != 0) else {
+        c.check(false, "no tic after the press spawns the door");
+        return;
+    };
+    let mut want = door::Door::normal(LOCKED_START_CEILING, LOCKED_TOPHEIGHT, LOCKED_FLOORZ);
+    let first = want.tic();
+    c.eq(
+        (spawned.ceiling, spawned.direction, spawned.count),
+        (first.ceilingheight, first.direction, first.count),
+        "the spawn tic's own first move",
+    );
+}
+
+/// Every press, seeded from tic 1 and driven through one session.
 #[tokio::test]
-async fn a_press_of_a_locked_door_with_its_key_opens_it() {
+async fn a_press_of_a_use_line_runs_what_the_engine_runs_for_it() {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_use_unlocked").await;
+    let fixture = Fixture::create("sim_use").await;
     let db = fixture.database.clone();
 
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
 
-    let overrides = [
-        put("m_x", format!("toInt32({LOCKED_X})")),
-        put("m_y", format!("toInt32({LOCKED_Y})")),
-        put("m_angle", format!("toUInt32({LOCKED_ANGLE})")),
-        put("m_z", format!("toInt32({LOCKED_FLOORZ})")),
-        put("m_floorz", format!("toInt32({LOCKED_FLOORZ})")),
-        put("m_ceilingz", format!("toInt32({LOCKED_CEILINGZ})")),
-        (
-            "p_cards",
-            format!(
-                "arrayMap((c, i) -> if(i = {YELLOW_CARD}, toUInt8(1), c), \
-                 p.p_cards, arrayEnumerate(p.p_cards))"
-            ),
-        ),
-    ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + LOCKED_TICS)
-        .map(|tic| Input::keys(tic, key::USE, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
+    let arms = Arms::new(
+        vec![Input::demo(1)],
+        vec![
+            switch(),
+            locked("locked", LOCKED_AT, false),
+            locked("unlocked", UNLOCKED_AT, true),
+        ],
+    );
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let rows: Vec<Opened> = fixture
-        .rows(&format!(
-            "SELECT tic, \
-             arrayFirstIndex(k -> k = {DOOR}, s_kind) AS slot, \
-             sec_ceilingheight[{sector}] AS ceiling, \
-             if(slot = 0, -1, s_direction[slot]) AS direction, \
-             if(slot = 0, -1, s_count[slot]) AS count, \
-             unresolved \
-             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
-            DOOR = sector_thinker_kind::DOOR,
-            sector = LOCKED_SECTOR + 1,
+    let mut checks = arms.checks();
+    let side0: i32 = fixture
+        .scalar(&format!(
+            "SELECT toInt32(side0) FROM {db}.lv_lines WHERE id = 397"
         ))
         .await;
-    fixture.finish().await;
+    let arm = arms.arm("switch");
+    let rows: Vec<Switched> = arm
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, \
+                 arrayFirstIndex((k, t) -> k = {PLAT} AND t = 1, s_kind, s_tag) AS slot, \
+                 sec_floorheight[{sector}] AS floor, \
+                 if(slot = 0, -1, s_status[slot]) AS status, \
+                 if(slot = 0, -1, s_count[slot]) AS count, \
+                 side_toptexture[{side1}] AS toptexture, \
+                 if(length(btn_line) = 0, 0, btn_line[1]) AS btn_line, \
+                 if(length(btn_timer) = 0, 0, btn_timer[1]) AS btn_timer, \
+                 unresolved",
+                PLAT = sector_thinker_kind::PLAT,
+                sector = SWITCH_SECTOR + 1,
+                side1 = side0 + 1,
+            ),
+        )
+        .await
+        .into_iter()
+        .filter(|row: &Switched| row.tic > arm.at)
+        .collect();
+    a_press_of_a_switch_line_spawns_the_plat_and_flips_the_picture(checks.arm("switch"), &rows);
 
-    assert_eq!(rows.len(), LOCKED_TICS as usize, "every tic ran");
-    for row in &rows {
-        assert_eq!(
-            use_unresolved(row.unresolved),
-            0,
-            "tic {} was carried through",
-            row.tic
-        );
-    }
-    let spawned = rows
-        .iter()
-        .find(|row| row.slot != 0)
-        .unwrap_or_else(|| panic!("no tic after the press spawns the door"));
-    let mut want = door::Door::normal(LOCKED_START_CEILING, LOCKED_TOPHEIGHT, LOCKED_FLOORZ);
-    let first = want.tic();
-    assert_eq!(
-        (spawned.ceiling, spawned.direction, spawned.count),
-        (first.ceilingheight, first.direction, first.count),
-        "the spawn tic's own first move"
+    let expect: u64 = fixture
+        .scalar("SELECT xxHash64('You need a yellow key to open this door')")
+        .await;
+    let arm = arms.arm("locked");
+    let rows: Vec<Locked> = arm
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, sec_specialdata[{sector}] AS specialdata, \
+                 p_message, hu_message, unresolved",
+                sector = LOCKED_SECTOR + 1,
+            ),
+        )
+        .await
+        .into_iter()
+        .filter(|row: &Locked| row.tic > arm.at)
+        .collect();
+    a_press_of_a_locked_door_without_its_key_only_leaves_the_message(
+        checks.arm("locked"),
+        &rows,
+        expect,
     );
+
+    let arm = arms.arm("unlocked");
+    let rows: Vec<Opened> = arm
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, \
+                 arrayFirstIndex(k -> k = {DOOR}, s_kind) AS slot, \
+                 sec_ceilingheight[{sector}] AS ceiling, \
+                 if(slot = 0, -1, s_direction[slot]) AS direction, \
+                 if(slot = 0, -1, s_count[slot]) AS count, \
+                 unresolved",
+                DOOR = sector_thinker_kind::DOOR,
+                sector = LOCKED_SECTOR + 1,
+            ),
+        )
+        .await
+        .into_iter()
+        .filter(|row: &Opened| row.tic > arm.at)
+        .collect();
+    a_press_of_a_locked_door_with_its_key_opens_it(checks.arm("unlocked"), &rows);
+
+    fixture.finish().await;
+    checks.finish();
 }

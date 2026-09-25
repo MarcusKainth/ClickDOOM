@@ -11,7 +11,8 @@
 //! the screen wipe's schedule, and [`schedule`] reads back which frames a
 //! run renders and what each one draws from. [`refusal`] reads back the
 //! tic a run stopped at, where `unresolved` or `unimplemented` said one
-//! could not be produced exactly. [`schema`] stands between a database an
+//! could not be produced exactly. [`record`] writes what a differential
+//! run found as one JSON line. [`schema`] stands between a database an
 //! older binary loaded and one this binary's own statements can read: a
 //! load without `--fresh` refuses a column that moved, and
 //! [`Session::open`] refuses a database whose schema hash is not this
@@ -24,6 +25,7 @@ pub mod melt;
 pub mod pace;
 pub mod plan;
 pub mod probe;
+pub mod record;
 pub mod refusal;
 pub mod schedule;
 pub mod schema;

@@ -14,11 +14,16 @@ use serde::Deserialize;
 use crate::cli::{Exit, Failure, failed, gate};
 use crate::client::{ConnArgs, Db};
 use crate::native::session::STAGE_TABLE;
-use crate::native::{Session, plan, probe, refusal, schema};
+use crate::native::{Refusal, Session, plan, probe, record, refusal, schema};
 use crate::stats::{Clock, Monotonic};
 
 /// How often the progress line comes out.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long `--record` waits for the simulation statements' own rows to
+/// reach `system.query_log`, and how often it looks.
+const QUERY_LOG_TIMEOUT: Duration = Duration::from_secs(30);
+const QUERY_LOG_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Args)]
 #[command(
@@ -42,6 +47,12 @@ A tic native_state marks unresolved or unimplemented is checked before any
 field is, since a tic the statement could not produce exactly is not one
 to compare.
 
+--record appends one JSON line to PATH with what the run found: the first
+refused tic, the first field that differs, the last tic compared, what each
+simulation statement's analysis took, the tic time's median and 95th
+percentile, the commit, the server version and the CPU model. A run that
+fails writes nothing.
+
 Exit codes: 0 the two agree over TICS tics, 1 the run failed, 3 a tic
 refused or the two diverged."
 )]
@@ -57,6 +68,16 @@ pub struct DiffCmd {
     /// Also list every field that ever differs
     #[arg(long)]
     pub summary: bool,
+    /// Append what the run found to this file as one JSON line
+    #[arg(long, value_name = "PATH")]
+    pub record: Option<PathBuf>,
+}
+
+/// What the field comparison found.
+struct Compared {
+    /// Tics both sides hold, up to the last one the run fed.
+    tics: u64,
+    first: Option<Divergence>,
 }
 
 /// One row of `parity::first_divergence`.
@@ -108,25 +129,47 @@ pub(crate) async fn run(cmd: &DiffCmd) -> Result<Exit, Failure> {
     let session = Session::open(&cmd.conn, database, Some((&stage1, &stage2)), None)
         .await
         .map_err(|err| failed(format!("opening the simulation: {err}")))?;
+    let query_ids = [
+        session.sim_query_id().to_owned(),
+        session.sim2_query_id().to_owned(),
+    ];
     let ran = simulate(&session, cmd.tics).await;
     let closed = session.close().await;
-    match (ran, closed) {
-        (Ok(()), Ok(())) => {}
+    let elapsed = match (ran, closed) {
+        (Ok(elapsed), Ok(())) => elapsed,
         (_, Err(err)) => return Err(failed(format!("the simulation statement failed: {err}"))),
         (Err(failure), Ok(())) => return Err(failure),
-    }
+    };
 
     // A refused tic is checked before the fields are, because a tic the
     // statement itself could not produce is not one to compare field by
     // field against the probe.
-    if let Some(refusal) = refusal::first(&db, database, cmd.tics)
+    let refused = refusal::first(&db, database, cmd.tics)
         .await
-        .map_err(|err| failed(format!("reading whether a tic refused: {err}")))?
-    {
-        return Err(gate(refusal.to_string()));
+        .map_err(|err| failed(format!("reading whether a tic refused: {err}")))?;
+    let compared = match refused {
+        Some(_) => None,
+        None => Some(compare(cmd, &db).await?),
+    };
+
+    if let Some(path) = &cmd.record {
+        let found = found(
+            cmd,
+            &db,
+            &query_ids,
+            &elapsed,
+            refused.as_ref(),
+            compared.as_ref(),
+        )
+        .await?;
+        record::append(path, &found).map_err(|err| failed(err.to_string()))?;
     }
 
-    report(cmd, &db).await
+    match (refused, compared) {
+        (Some(refusal), _) => Err(gate(refusal.to_string())),
+        (None, Some(compared)) => report(compared),
+        (None, None) => unreachable!("a run that did not refuse is compared"),
+    }
 }
 
 /// Empties `native_state` and `native_stage` and writes the level's first
@@ -168,18 +211,21 @@ fn timeout(tic: u32) -> Duration {
     }
 }
 
-/// Runs tic 1 to `tics`, one row at a time, as an interactive run does.
-async fn simulate(session: &Session, tics: u32) -> Result<(), Failure> {
+/// Runs tic 1 to `tics`, one row at a time, as an interactive run does,
+/// and returns what each tic took.
+async fn simulate(session: &Session, tics: u32) -> Result<Vec<Duration>, Failure> {
     let clock = Monotonic::new();
     let mut last = Duration::ZERO;
+    let mut elapsed = Vec::with_capacity(tics as usize);
     for tic in 1..=tics {
         session
             .feed_sim(tic, tick::source::DEMO, 0, 0, 0)
             .map_err(|err| failed(format!("feeding tic {tic}: {err}")))?;
-        session
+        let ran = session
             .wait_sim(tic, timeout(tic))
             .await
             .map_err(|err| failed(err.to_string()))?;
+        elapsed.push(ran.elapsed);
         let now = clock.elapsed();
         if now.saturating_sub(last) >= PROGRESS_INTERVAL {
             last = now;
@@ -190,7 +236,7 @@ async fn simulate(session: &Session, tics: u32) -> Result<(), Failure> {
             );
         }
     }
-    Ok(())
+    Ok(elapsed)
 }
 
 /// How many tics the comparison actually covers: the ones the run produced
@@ -212,7 +258,7 @@ async fn compared(cmd: &DiffCmd, db: &Db) -> Result<u64, Failure> {
 }
 
 /// The comparison itself, which is one query per question.
-async fn report(cmd: &DiffCmd, db: &Db) -> Result<Exit, Failure> {
+async fn compare(cmd: &DiffCmd, db: &Db) -> Result<Compared, Failure> {
     let database = &cmd.conn.database;
     let compared = compared(cmd, db).await?;
     if compared == 0 {
@@ -240,14 +286,120 @@ async fn report(cmd: &DiffCmd, db: &Db) -> Result<Exit, Failure> {
         .fetch_all(&parity::first_divergence(database))
         .await
         .map_err(|err| failed(format!("reading the first divergence: {err}")))?;
-    let Some(first) = first.first() else {
-        println!("no divergence: every field agrees over the {compared} tics both sides hold");
+    Ok(Compared {
+        tics: compared,
+        first: first.into_iter().next(),
+    })
+}
+
+/// Prints what the comparison found and turns it into the exit code.
+fn report(compared: Compared) -> Result<Exit, Failure> {
+    let Some(first) = compared.first else {
+        println!(
+            "no divergence: every field agrees over the {} tics both sides hold",
+            compared.tics
+        );
         return Ok(Exit::Ok);
     };
     Err(gate(format!(
-        "tic {} {} slot {} {}: {} against the probe's {}",
-        first.tic, first.kind, first.slot, first.field, first.ours, first.theirs
+        "tic {} {}: {} against the probe's {}",
+        first.tic,
+        first.location(),
+        first.ours,
+        first.theirs
     )))
+}
+
+impl Divergence {
+    /// The row and the field, as `mobj slot 1 m_momx`.
+    fn location(&self) -> String {
+        format!("{} slot {} {}", self.kind, self.slot, self.field)
+    }
+}
+
+/// The line `--record` appends for this run.
+///
+/// The analysis times are read from `system.query_log` by the two
+/// simulation statements' own query ids, after the session has closed them.
+async fn found(
+    cmd: &DiffCmd,
+    db: &Db,
+    query_ids: &[String; 2],
+    elapsed: &[Duration],
+    refused: Option<&Refusal>,
+    compared: Option<&Compared>,
+) -> Result<record::Record, Failure> {
+    let clickhouse = db
+        .fetch_one::<String>("SELECT version()")
+        .await
+        .map_err(|err| failed(format!("reading the server version: {err}")))?;
+    let [stage1, stage2] = analysis(db, query_ids).await?;
+    let divergence = compared.and_then(|compared| compared.first.as_ref());
+    // The first tic pays for both statements' analysis, which is recorded
+    // on its own.
+    let mut warm: Vec<Duration> = elapsed.iter().skip(1).copied().collect();
+    warm.sort_unstable();
+    let tic_ms =
+        |fraction| (!warm.is_empty()).then(|| super::millis(super::percentile(&warm, fraction)));
+    Ok(record::Record {
+        commit: record::commit().unwrap_or_default(),
+        clickhouse: Some(clickhouse),
+        runner_cpu: record::cpu_model(),
+        first_refused_tic: refused.map(|refusal| refusal.tic),
+        first_refused_bits: refused.map(|refusal| refusal.reason.clone()),
+        first_divergent_tic: divergence.map(|first| first.tic),
+        first_divergent_field: divergence.map(Divergence::location),
+        compared_through: compared.map(|_| cmd.tics),
+        compared_tics: compared.map(|compared| compared.tics),
+        stage1_analysis_s: Some(stage1),
+        stage2_analysis_s: Some(stage2),
+        tic_ms_p50: tic_ms(0.50),
+        tic_ms_p95: tic_ms(0.95),
+        tics: Some(cmd.tics),
+        run_id: record::run_id(),
+        error: None,
+    })
+}
+
+/// `QueryAnalysisMicroseconds` of each of `query_ids`, in seconds.
+///
+/// The server logs a statement's finish after it has answered the close,
+/// so the log is flushed and read again until both rows are there or
+/// [`QUERY_LOG_TIMEOUT`] has passed.
+async fn analysis(db: &Db, query_ids: &[String; 2]) -> Result<[f64; 2], Failure> {
+    let sql = format!(
+        "SELECT query_id, toUInt64(ProfileEvents['QueryAnalysisMicroseconds']) \
+         FROM system.query_log \
+         WHERE type = 'QueryFinish' AND query_id IN ('{}', '{}')",
+        query_ids[0], query_ids[1]
+    );
+    let clock = Monotonic::new();
+    loop {
+        db.run("SYSTEM FLUSH LOGS")
+            .await
+            .map_err(|err| failed(format!("flushing system.query_log: {err}")))?;
+        let rows: Vec<(String, u64)> = db
+            .fetch_all(&sql)
+            .await
+            .map_err(|err| failed(format!("reading system.query_log: {err}")))?;
+        let seconds = |id: &String| {
+            rows.iter()
+                .find(|(query_id, _)| query_id == id)
+                .map(|(_, micros)| *micros as f64 / 1e6)
+        };
+        match (seconds(&query_ids[0]), seconds(&query_ids[1])) {
+            (Some(stage1), Some(stage2)) => return Ok([stage1, stage2]),
+            _ if clock.elapsed() >= QUERY_LOG_TIMEOUT => {
+                return Err(failed(format!(
+                    "system.query_log holds no finished row for the simulation \
+                     statements {} and {} after {QUERY_LOG_TIMEOUT:?}, so their \
+                     analysis time is unknown",
+                    query_ids[0], query_ids[1]
+                )));
+            }
+            _ => tokio::time::sleep(QUERY_LOG_POLL).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +426,9 @@ mod tests {
         assert_eq!(cmd.tics, 100);
         assert_eq!(cmd.probe, PathBuf::from("p.tsv"));
         assert!(!cmd.summary);
+        assert_eq!(cmd.record, None);
+        let cmd = parsed(&["100", "--probe", "p.tsv", "--record", "r.jsonl"]);
+        assert_eq!(cmd.record, Some(PathBuf::from("r.jsonl")));
     }
 
     /// The comparison needs a tic to compare, and running none of them and

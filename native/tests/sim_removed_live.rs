@@ -22,6 +22,7 @@ use serde::Deserialize;
 mod support;
 
 use support::db::Fixture;
+use support::resident::Session;
 use support::seed;
 
 /// The tic the run stops on before the seeded row, and the row's own tic.
@@ -74,7 +75,8 @@ async fn run() -> (Listed, Listed) {
         panic!("{error}");
     }
     let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let mut session = Session::open(&fixture, false).await;
+    session.feed(&walk).await;
 
     let put = |column: &'static str, at: usize, value: String| {
         (
@@ -111,11 +113,8 @@ async fn run() -> (Listed, Listed) {
         fixture.finish().await;
         panic!("{error}");
     }
-    let tic = sim::tick::demo_statement(&db, SEED_TIC + 1, SEED_TIC + 1);
-    if let Err(error) = fixture.execute(&tic).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    session.feed(&[Input::demo(SEED_TIC + 1)]).await;
+    session.close().await;
     let rows: Vec<Listed> = fixture
         .rows(&format!(
             "SELECT tic, toUInt64(length(m_x)) AS things, \

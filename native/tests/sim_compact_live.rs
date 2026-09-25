@@ -23,6 +23,7 @@ use serde::Deserialize;
 mod support;
 
 use support::db::Fixture;
+use support::resident::Session;
 use support::seed;
 
 /// The last tic run before the seeded row, and how far the run goes after
@@ -60,7 +61,8 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
         panic!("{error}");
     }
     let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let mut session = Session::open(&fixture, false).await;
+    session.feed(&walk).await;
 
     // Every thing points at itself and at the one after it, so whichever
     // thing the pickup takes, one pointer names it and the ones above it
@@ -101,14 +103,15 @@ async fn a_pointer_follows_the_thing_it_names_through_a_pickup() {
         panic!("{error}");
     }
     let run: Vec<Input> = (SEED_TIC + 1..=LAST).map(Input::demo).collect();
-    support::resident::run(&fixture, &run, false).await;
+    session.feed(&run).await;
+    session.close().await;
 
     let rows: Vec<Compacted> = fixture
         .rows(&format!(
             "SELECT tic, m_sprite AS sprite, m_target AS target, m_tracer AS tracer, \
              sec_soundtarget AS soundtarget, p_attacker AS attacker, setup_things, \
              unresolved \
-             FROM {db}.native_state WHERE tic >= {SEED_TIC} ORDER BY tic"
+             FROM {db}.native_state WHERE tic BETWEEN {SEED_TIC} AND {LAST} ORDER BY tic"
         ))
         .await;
     fixture.finish().await;

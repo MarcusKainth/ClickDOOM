@@ -19,6 +19,7 @@ use serde::Deserialize;
 mod support;
 
 use support::db::Fixture;
+use support::resident::Session;
 use support::ticker;
 
 /// How many tics the run covers. Long enough for the melt, the message
@@ -53,7 +54,8 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
         panic!("{error}");
     }
     let walk: Vec<Input> = (1..=TICS).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let mut session = Session::open(&fixture, false).await;
+    session.feed(&walk).await;
 
     let rows: Vec<Tic> = fixture
         .rows(&format!(
@@ -62,7 +64,7 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
              st_calc_oldhealth, p_attackdown, menu_skullanim, menu_whichskull, p_cmd_forwardmove, \
              p_cmd_sidemove, p_cmd_angleturn, p_cmd_buttons, demo_end, \
              texturetranslation, flattranslation, side_textureoffset \
-             FROM {db}.native_state ORDER BY tic"
+             FROM {db}.native_state WHERE tic BETWEEN 0 AND {TICS} ORDER BY tic"
         ))
         .await;
     assert_eq!(
@@ -78,7 +80,8 @@ async fn forty_tics_move_the_clocks_the_engine_moves() {
     the_scrolling_walls_move_one_unit_a_tic(&rows, &sides);
     let names = picture_names(&fixture).await;
     the_animated_pictures_cycle(&rows, &names);
-    the_message_widget_takes_what_the_player_holds(&fixture).await;
+    the_message_widget_takes_what_the_player_holds(&fixture, &mut session).await;
+    session.close().await;
 
     fixture.finish().await;
 }
@@ -95,7 +98,10 @@ struct Message {
 ///
 /// Nothing in the first forty tics gives the player a message, so the row
 /// this writes is what stands in for the pickup that will.
-async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
+async fn the_message_widget_takes_what_the_player_holds(
+    fixture: &Fixture,
+    session: &mut Session<'_>,
+) {
     let db = &fixture.database;
     let held = 0x0123_4567_89ab_cdefu64;
     fixture
@@ -112,10 +118,7 @@ async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
         async move { fixture.scalar::<Message>(&sql).await }
     };
 
-    fixture
-        .execute(&sim::tick::demo_statement(db, 101, 101))
-        .await
-        .unwrap();
+    session.feed(&[Input::demo(101)]).await;
     let taken = read(101).await;
     assert_eq!(taken.hu_message, held, "the widget shows what was held");
     assert_eq!(taken.hu_message_on, 1);
@@ -124,7 +127,7 @@ async fn the_message_widget_takes_what_the_player_holds(fixture: &Fixture) {
 
     // The counter runs down, and the widget goes off when it hits zero.
     let run: Vec<Input> = (102..=101 + MSGTIMEOUT as u32).map(Input::demo).collect();
-    support::resident::run(fixture, &run, false).await;
+    session.feed(&run).await;
     let running = read(102).await;
     assert_eq!(running.hu_message_counter, MSGTIMEOUT - 1);
     assert_eq!(running.hu_message_on, 1);

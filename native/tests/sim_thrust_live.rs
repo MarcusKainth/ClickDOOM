@@ -26,8 +26,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The tic every arm copies its row from. Gametic 40 is early enough that
 /// no monster has woken and the list still holds the level's own things.
@@ -104,13 +105,15 @@ const CROSSING: i64 = 8 * 65536 + 1;
 const MONSTER_UNHANDLED: i64 = 97;
 
 /// One arm per seeded row: its name and where the copy of `BEFORE` lands.
-/// The tics are far apart so the arms cannot read each other's rows.
 const ARMS: [(&str, u32); 4] = [
     ("split", 200),
     ("clamp", 300),
     ("plain", 400),
     ("crossed", 500),
 ];
+
+/// Where the crowd arm's copy of `BEFORE` lands.
+const CROWD_AT: u32 = 700;
 
 #[derive(Row, Deserialize)]
 struct Moved {
@@ -155,13 +158,86 @@ fn left(momx: i64, momy: i64) -> (i32, i32) {
 
 /// Where an arm puts the thing, how it sends it, and whether the lines it
 /// crosses carry a special.
-fn arm(name: &str) -> (i64, i64, i64, i64, bool) {
+fn thrust(name: &str) -> (i64, i64, i64, i64, bool) {
     match name {
         "split" => (OPEN.0, OPEN.1, SPLIT_MOMX, SPLIT_MOMY, false),
         "clamp" => (OPEN.0, OPEN.1, 0, OVER_MOMY, false),
         "plain" => (BELOW_A_LINE.0, BELOW_A_LINE.1, 0, CROSSING, false),
         _ => (BELOW_A_LINE.0, BELOW_A_LINE.1, 0, CROSSING, true),
     }
+}
+
+fn arms() -> Arms {
+    let put = |column: &'static str, value: String| {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {value}, v)), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    };
+    let arm = |name, at, overrides| Arm {
+        name,
+        from: BEFORE,
+        overrides,
+        at,
+        inputs: vec![Input::keys(at + 1, 0, (0, 0))],
+    };
+    let mut arms: Vec<Arm> = ARMS
+        .into_iter()
+        .map(|(name, at)| {
+            let (x, y, momx, momy, specials) = thrust(name);
+            let mut overrides = vec![
+                put("m_x", x.to_string()),
+                put("m_y", y.to_string()),
+                put("m_radius", NARROW.to_string()),
+                put("m_momx", momx.to_string()),
+                put("m_momy", momy.to_string()),
+            ];
+            if specials {
+                // Every line made to carry one, so what the move crosses is
+                // whatever it crosses and the arm does not depend on the map
+                // putting a special where the thrust happens to go.
+                overrides.push((
+                    "line_special",
+                    format!("arrayMap(v -> toInt16({MONSTER_UNHANDLED}), p.line_special)"),
+                ));
+            }
+            arm(name, at, overrides)
+        })
+        .collect();
+
+    // Two things standing close enough to fail the general movers' own
+    // reach test, thrust the same way along the axis neither stands apart
+    // on, so their real destinations never come closer than they started.
+    // `seed::row` takes the first override it finds for a column, so both
+    // slots' own values for one column have to sit in the one expression.
+    let put_both = |column: &'static str, one: String, two: String| {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {one}, if(k = {SLOT2}, {two}, v))), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    };
+    arms.push(arm(
+        "crowd",
+        CROWD_AT,
+        vec![
+            put_both(
+                "m_x",
+                OPEN.0.to_string(),
+                (OPEN.0 + CROWD_APART).to_string(),
+            ),
+            put_both("m_y", OPEN.1.to_string(), OPEN.1.to_string()),
+            put_both("m_radius", NARROW.to_string(), NARROW.to_string()),
+            put_both("m_momx", "0".to_owned(), "0".to_owned()),
+            put_both("m_momy", CROWD_MOMY.to_string(), CROWD_MOMY.to_string()),
+        ],
+    ));
+    Arms::new((1..=BEFORE).map(Input::demo).collect(), arms)
 }
 
 #[tokio::test]
@@ -178,103 +254,22 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let arms = arms();
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let put = |column: &'static str, value: String| {
-        (
-            column,
-            format!(
-                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {value}, v)), \
-                 p.{column}, arrayEnumerate(p.{column}))"
-            ),
-        )
-    };
-    let mut statements: Vec<sql::Statement> = Vec::new();
-    for (name, at) in ARMS {
-        let (x, y, momx, momy, specials) = arm(name);
-        let mut overrides = vec![
-            put("m_x", x.to_string()),
-            put("m_y", y.to_string()),
-            put("m_radius", NARROW.to_string()),
-            put("m_momx", momx.to_string()),
-            put("m_momy", momy.to_string()),
-        ];
-        if specials {
-            // Every line made to carry one, so what the move crosses is
-            // whatever it crosses and the arm does not depend on the map
-            // putting a special where the thrust happens to go.
-            overrides.push((
-                "line_special",
-                format!("arrayMap(v -> toInt16({MONSTER_UNHANDLED}), p.line_special)"),
-            ));
-        }
-        statements.extend(
-            seed::row(&db, at, BEFORE, &overrides)
-                .into_iter()
-                .map(sql::Statement::sql),
-        );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
-    }
-
-    // Two things standing close enough to fail the general movers' own
-    // reach test, thrust the same way along the axis neither stands apart
-    // on, so their real destinations never come closer than they started.
-    const CROWD_AT: u32 = 700;
-    // `seed::row` takes the first override it finds for a column, so both
-    // slots' own values for one column have to sit in the one expression.
-    let put_both = |column: &'static str, one: String, two: String| {
-        (
-            column,
-            format!(
-                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {one}, if(k = {SLOT2}, {two}, v))), \
-                 p.{column}, arrayEnumerate(p.{column}))"
-            ),
-        )
-    };
-    let crowd_overrides = [
-        put_both(
-            "m_x",
-            OPEN.0.to_string(),
-            (OPEN.0 + CROWD_APART).to_string(),
-        ),
-        put_both("m_y", OPEN.1.to_string(), OPEN.1.to_string()),
-        put_both("m_radius", NARROW.to_string(), NARROW.to_string()),
-        put_both("m_momx", "0".to_owned(), "0".to_owned()),
-        put_both("m_momy", CROWD_MOMY.to_string(), CROWD_MOMY.to_string()),
-    ];
-    statements.extend(
-        seed::row(&db, CROWD_AT, BEFORE, &crowd_overrides)
-            .into_iter()
-            .map(sql::Statement::sql),
+    let columns = format!(
+        "tic, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
+         m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, unresolved"
     );
-    statements.extend(sim::tick::run_statement(
-        &db,
-        &[Input::keys(CROWD_AT + 1, 0, (0, 0))],
-    ));
-
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
+    let mut ran: Vec<Vec<Moved>> = Vec::new();
+    for arm in arms.all() {
+        ran.push(arm.rows(&fixture, "native_state", &columns).await);
     }
-
-    let wanted: Vec<String> = ARMS
-        .iter()
-        .flat_map(|(_, at)| [at.to_string(), (at + 1).to_string()])
-        .collect();
-    let rows: Vec<Moved> = fixture
-        .rows(&format!(
-            "SELECT tic, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
-             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, unresolved \
-             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", ")
-        ))
-        .await;
     #[derive(Row, Deserialize)]
     struct Crowd {
+        tic: u32,
         unresolved: u64,
         x: i32,
         y: i32,
@@ -285,92 +280,105 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
         momx2: i32,
         momy2: i32,
     }
-    let crowd: Crowd = fixture
-        .rows(&format!(
-            "SELECT unresolved, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
-             m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, \
-             m_x[{SLOT2}] AS x2, m_y[{SLOT2}] AS y2, \
-             m_momx[{SLOT2}] AS momx2, m_momy[{SLOT2}] AS momy2 \
-             FROM {db}.native_state WHERE tic = {}",
-            CROWD_AT + 1
-        ))
-        .await
-        .into_iter()
-        .next()
-        .expect("the crowd arm's own tic ran");
+    let crowd: Vec<Crowd> = arms
+        .arm("crowd")
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, unresolved, m_x[{SLOT}] AS x, m_y[{SLOT}] AS y, \
+                 m_momx[{SLOT}] AS momx, m_momy[{SLOT}] AS momy, \
+                 m_x[{SLOT2}] AS x2, m_y[{SLOT2}] AS y2, \
+                 m_momx[{SLOT2}] AS momx2, m_momy[{SLOT2}] AS momy2"
+            ),
+        )
+        .await;
     fixture.finish().await;
-    assert_eq!(
-        rows.len(),
-        ARMS.len() * 2,
-        "a seeded row and a tic from it for every arm"
-    );
-    let at = |tic: u32| {
-        rows.iter()
-            .find(|row| row.tic == tic)
-            .unwrap_or_else(|| panic!("no row for tic {tic}"))
+
+    for (arm, rows) in arms.all().iter().zip(&ran) {
+        let tics: Vec<u32> = rows.iter().map(|row| row.tic).collect();
+        assert_eq!(
+            tics,
+            Vec::from_iter(arm.tics()),
+            "arm {} left its seeded row and the tic run from it",
+            arm.name
+        );
+    }
+    let crowd = crowd
+        .iter()
+        .find(|row| row.tic == CROWD_AT + 1)
+        .expect("the crowd arm's own tic ran");
+    let pair = |name: &str| {
+        let rows = &ran[arms.all().iter().position(|arm| arm.name == name).unwrap()];
+        (&rows[0], &rows[1])
     };
+    let mut checks = arms.checks();
 
     // The momentum over half of `MAXMOVE` is spent in two parts.
-    let (before, after) = (at(200), at(201));
-    assert_eq!(
+    let (before, after) = pair("split");
+    let mut arm = checks.arm("split");
+    arm.eq(
         (before.momx as i64, before.momy as i64),
         (SPLIT_MOMX, SPLIT_MOMY),
-        "the seeded row carries the momentum the arm asked for"
+        "the seeded row carries the momentum the arm asked for",
     );
     // The whole of the move has to land, or the wall and not the halving
     // is what this would be reading.
-    assert_eq!(
-        after.unresolved, 0,
-        "the split arm runs, so nothing the move met stopped it"
+    arm.eq(
+        after.unresolved,
+        0,
+        "the split arm runs, so nothing the move met stopped it",
     );
-    assert_eq!(
+    arm.eq(
         (after.x as i64, after.y as i64),
         (
             before.x as i64 + spent(SPLIT_MOMX),
-            before.y as i64 + spent(SPLIT_MOMY)
+            before.y as i64 + spent(SPLIT_MOMY),
         ),
-        "both parts of the move land"
+        "both parts of the move land",
     );
-    assert_eq!(
+    arm.eq(
         (after.momx, after.momy),
         left(SPLIT_MOMX, SPLIT_MOMY),
-        "friction takes what the move left"
+        "friction takes what the move left",
     );
     // The halving reaches both axes once either one triggers it, and the
     // two halves round in opposite directions, so an odd axis lands
     // differently depending on its sign. Reading the same value for both
     // would mean the split never happened.
-    assert_ne!(
-        spent(SPLIT_MOMY),
-        SPLIT_MOMY,
-        "the odd axis the split rides on loses a unit"
+    arm.check(
+        spent(SPLIT_MOMY) != SPLIT_MOMY,
+        "the odd axis the split rides on loses a unit",
     );
-    assert_eq!(
+    arm.eq(
         spent(SPLIT_MOMX),
         SPLIT_MOMX,
         "the odd negative axis lands whole, because the first half \
-         truncates towards zero where the second floors"
+         truncates towards zero where the second floors",
     );
 
     // The momentum over `MAXMOVE` is cut down to it.
-    let (before, after) = (at(300), at(301));
-    assert_eq!(
-        before.momy as i64, OVER_MOMY,
-        "the seeded row carries more than the clamp allows"
+    let (before, after) = pair("clamp");
+    let mut arm = checks.arm("clamp");
+    arm.eq(
+        before.momy as i64,
+        OVER_MOMY,
+        "the seeded row carries more than the clamp allows",
     );
-    assert_eq!(
-        after.unresolved, 0,
-        "the clamp arm runs, so nothing the move met stopped it"
+    arm.eq(
+        after.unresolved,
+        0,
+        "the clamp arm runs, so nothing the move met stopped it",
     );
-    assert_eq!(
+    arm.eq(
         after.y as i64 - before.y as i64,
         spent(MAXMOVE),
-        "the move is the clamp and not what was asked for"
+        "the move is the clamp and not what was asked for",
     );
-    assert_eq!(
+    arm.eq(
         (after.momx, after.momy),
         left(0, OVER_MOMY),
-        "friction reads the clamp too"
+        "friction reads the clamp too",
     );
 
     // `P_CrossSpecialLine` is what a move that landed owes the special
@@ -384,45 +392,51 @@ async fn a_thing_spends_the_momentum_the_engine_spends() {
     // The two arms are the test. They are the same thrust from the same
     // place and differ only in whether the lines carry a special, so a tic
     // unresolved for any other reason would leave both of them unresolved.
-    let (seeded, plain, crossed) = (at(400), at(401), at(501));
-    assert_eq!(
-        plain.unresolved, 0,
-        "the same thrust over lines with no special runs"
+    let (seeded, plain) = pair("plain");
+    let crossed = pair("crossed").1;
+    checks.arm("plain").eq(
+        plain.unresolved,
+        0,
+        "the same thrust over lines with no special runs",
     );
-    assert_ne!(
-        crossed.y, seeded.y,
-        "the thrust moved it, so the move landed"
+    let mut arm = checks.arm("crossed");
+    arm.check(
+        crossed.y != seeded.y,
+        "the thrust moved it, so the move landed",
     );
-    assert_eq!(crossed.y, plain.y, "and moved it to the same place");
-    assert_eq!(
+    arm.eq(crossed.y, plain.y, "and moved it to the same place");
+    arm.eq(
         crossed.unresolved,
         sim::unresolved::TX_CROSSED,
-        "the special line the move crossed is not run, so the tic says so"
+        "the special line the move crossed is not run, so the tic says so",
     );
 
     // Two things thrust the same way, close enough that the general
     // movers' own reach test alone would call them crowded, resolve: the
     // consulted set the fold builds sees neither destination came closer
     // to the other than it started.
-    assert_eq!(
-        crowd.unresolved, 0,
-        "two things thrust apart resolve, not just crowded"
+    let mut arm = checks.arm("crowd");
+    arm.eq(
+        crowd.unresolved,
+        0,
+        "two things thrust apart resolve, not just crowded",
     );
-    assert_eq!(
+    arm.eq(
         (crowd.y as i64, crowd.momy as i64),
         (OPEN.1 + spent(CROWD_MOMY), left(0, CROWD_MOMY).1 as i64),
-        "the first thing's own move lands"
+        "the first thing's own move lands",
     );
-    assert_eq!(
+    arm.eq(
         (crowd.y2 as i64, crowd.momy2 as i64),
         (OPEN.1 + spent(CROWD_MOMY), left(0, CROWD_MOMY).1 as i64),
-        "and so does the second thing's own move, the same way"
+        "and so does the second thing's own move, the same way",
     );
-    assert_eq!(
+    arm.eq(
         crowd.x2 - crowd.x,
         CROWD_APART as i32,
-        "moving the same way leaves the gap between them exactly as it was"
+        "moving the same way leaves the gap between them exactly as it was",
     );
-    assert_eq!(crowd.momx, 0, "no momentum on the axis they stand apart on");
-    assert_eq!(crowd.momx2, 0, "for the second thing either");
+    arm.eq(crowd.momx, 0, "no momentum on the axis they stand apart on");
+    arm.eq(crowd.momx2, 0, "for the second thing either");
+    checks.finish();
 }

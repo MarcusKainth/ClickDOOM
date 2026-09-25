@@ -19,8 +19,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The tic every arm copies its row from. Gametic 40 is early enough that
 /// no monster has woken and the list still holds the level's own things.
@@ -96,11 +97,8 @@ async fn a_claw_that_kills_a_zombieman_counts_it_and_drops_a_clip() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
-
     let at = BEFORE + 100;
-    let overrides = [
+    let overrides = vec![
         put(
             "m_x",
             ATTACKER,
@@ -121,31 +119,35 @@ async fn a_claw_that_kills_a_zombieman_counts_it_and_drops_a_clip() {
         put("m_health", TARGET, "2".to_owned(), "toInt32"),
         put("m_threshold", TARGET, "0".to_owned(), "toInt32"),
     ];
-    let mut statements: Vec<sql::Statement> = seed::row(&db, at, BEFORE, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    statements.extend(sim::tick::run_statement(
-        &db,
-        &[Input::keys(at + 1, 0, (0, 0))],
-    ));
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    let arms = Arms::new(
+        (1..=BEFORE).map(Input::demo).collect(),
+        vec![Arm {
+            name: "claw_kill",
+            from: BEFORE,
+            overrides,
+            at,
+            inputs: vec![Input::keys(at + 1, 0, (0, 0))],
+        }],
+    );
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let rows: Vec<Kill> = fixture
-        .rows(&format!(
-            "SELECT tic, m_health[{TARGET}] AS target_health, \
-             m_flags[{TARGET}] AS target_flags, m_x[{TARGET}] AS target_x, \
-             m_y[{TARGET}] AS target_y, m_z[{TARGET}] AS target_z, \
-             p_killcount AS killcount, unresolved, \
-             toUInt64(length(m_x)) AS things, m_type[length(m_type)] AS drop_type, \
-             m_flags[length(m_flags)] AS drop_flags, m_x[length(m_x)] AS drop_x, \
-             m_y[length(m_y)] AS drop_y, m_z[length(m_z)] AS drop_z \
-             FROM {db}.native_state WHERE tic IN ({at}, {}) ORDER BY tic",
-            at + 1
-        ))
+    let rows: Vec<Kill> = arms
+        .arm("claw_kill")
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, m_health[{TARGET}] AS target_health, \
+                 m_flags[{TARGET}] AS target_flags, m_x[{TARGET}] AS target_x, \
+                 m_y[{TARGET}] AS target_y, m_z[{TARGET}] AS target_z, \
+                 p_killcount AS killcount, unresolved, \
+                 toUInt64(length(m_x)) AS things, m_type[length(m_type)] AS drop_type, \
+                 m_flags[length(m_flags)] AS drop_flags, m_x[length(m_x)] AS drop_x, \
+                 m_y[length(m_y)] AS drop_y, m_z[length(m_z)] AS drop_z"
+            ),
+        )
         .await;
     fixture.finish().await;
     assert_eq!(rows.len(), 2, "the seeded row and the tic run from it");

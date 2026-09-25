@@ -52,3 +52,8 @@ codegen-units = 1
 # the tests would otherwise report as a wrong hash.
 [profile.test]
 opt-level = 2
+
+# The native crate builds SQL text and its suites wait on the server, so
+# they build unoptimised.
+[profile.test.package.clickdoom-native]
+opt-level = 0

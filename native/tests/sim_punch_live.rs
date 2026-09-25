@@ -20,9 +20,10 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::damage::point_to_angle;
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// `info.c`: the fist's own state cycle. `S_PUNCH1` carries no action and
 /// its `nextstate` is `S_PUNCH2`, where `A_Punch` runs.
@@ -68,7 +69,7 @@ struct Punched {
 
 /// One arm: its name, where the copy of tic 0 lands, whether the target is
 /// placed in range, and whether the punch is thrown with berserk strength.
-struct Arm {
+struct Punch {
     name: &'static str,
     at: u32,
     in_range: bool,
@@ -92,22 +93,22 @@ async fn a_punch_lands_only_where_the_engine_lands_it() {
         panic!("{error}");
     }
 
-    let arms = [
-        Arm {
+    let punches = [
+        Punch {
             name: "connects",
             at: 200,
             in_range: true,
             berserk: false,
             above_the_cone: false,
         },
-        Arm {
+        Punch {
             name: "connects_berserk",
             at: 300,
             in_range: true,
             berserk: true,
             above_the_cone: false,
         },
-        Arm {
+        Punch {
             name: "misses",
             at: 400,
             in_range: false,
@@ -117,7 +118,7 @@ async fn a_punch_lands_only_where_the_engine_lands_it() {
         // A target in range that the aim cannot take, which is what
         // separates `linetarget` from whatever the attack reached: the
         // aim answers nothing, so the player does not turn.
-        Arm {
+        Punch {
             name: "above_the_cone",
             at: 500,
             in_range: true,
@@ -125,8 +126,8 @@ async fn a_punch_lands_only_where_the_engine_lands_it() {
             above_the_cone: true,
         },
     ];
-    let mut statements: Vec<sql::Statement> = Vec::new();
-    for arm in &arms {
+    let mut seeded = Vec::new();
+    for arm in &punches {
         let target_x = if arm.in_range { TARGET_X } else { FAR_AWAY };
         let target_y = if arm.in_range { TARGET_Y } else { FAR_AWAY };
         let powers = if arm.berserk { 1 } else { 0 };
@@ -216,39 +217,40 @@ async fn a_punch_lands_only_where_the_engine_lands_it() {
                     .to_owned(),
             ),
         ];
-        statements.extend(
-            seed::row(&db, arm.at, 0, &overrides)
-                .into_iter()
-                .map(sql::Statement::sql),
-        );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(arm.at + 1, 0, (0, 0))],
-        ));
+        seeded.push(Arm {
+            name: arm.name,
+            from: 0,
+            overrides,
+            at: arm.at,
+            inputs: vec![Input::keys(arm.at + 1, 0, (0, 0))],
+        });
     }
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
+    let arms = Arms::new(Vec::new(), seeded);
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let wanted: Vec<String> = arms.iter().map(|arm| (arm.at + 1).to_string()).collect();
-    let rows: Vec<Punched> = fixture
-        .rows(&format!(
-            "SELECT tic, psp_state, m_angle, m_health, unresolved, p_mo \
-             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", ")
-        ))
-        .await;
+    let mut rows: Vec<Punched> = Vec::new();
+    for arm in arms.all() {
+        let ran: Vec<Punched> = arm
+            .rows(
+                &fixture,
+                "native_state",
+                "tic, psp_state, m_angle, m_health, unresolved, p_mo",
+            )
+            .await;
+        rows.extend(ran.into_iter().filter(|row| row.tic == arm.at + 1));
+    }
     fixture.finish().await;
 
-    assert_eq!(rows.len(), arms.len(), "every arm ran");
+    assert_eq!(rows.len(), arms.all().len(), "every arm ran");
     let p_mo = rows[0].p_mo as usize;
     // The target sits one slot after the player, wrapping the way the
     // seed's own overrides do.
     let target_slot = (p_mo % rows[0].m_health.len()) + 1;
 
     let at = |name: &str| {
-        let arm = arms.iter().find(|a| a.name == name).unwrap();
+        let arm = arms.arm(name);
         rows.iter().find(|row| row.tic == arm.at + 1).unwrap()
     };
 

@@ -25,9 +25,10 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
 use support::door;
-use support::seed;
+use support::resident::Session;
 
 /// The tic the seeded row stands at. The run starts after it, so the
 /// transform reads the crossing out of it the way it reads any other tic.
@@ -92,7 +93,6 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
@@ -107,7 +107,7 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
             ),
         )
     }
-    let overrides = [
+    let overrides = vec![
         put("m_x", format!("toInt32({CROSS_OLD_X})")),
         put("m_y", format!("toInt32({CROSS_OLD_Y})")),
         put("m_momx", format!("toInt32({CROSS_MOMX})")),
@@ -116,32 +116,40 @@ async fn a_crossing_of_the_tagged_line_spawns_the_door_ev_do_door_spawns() {
         put("m_floorz", format!("toInt32({CROSS_FLOORZ})")),
         put("m_ceilingz", format!("toInt32({CROSS_CEILINGZ})")),
     ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
+    let arm = Arm {
+        name: "cross",
+        from: 1,
+        overrides,
+        at: SEED_TIC,
+        inputs: (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
+            .map(|tic| Input::keys(tic, 0, (0, 0)))
+            .collect(),
+    };
+    let arms = Arms::new(vec![Input::demo(1)], vec![arm]);
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let rows: Vec<Crossed> = fixture
-        .rows(&format!(
-            "SELECT tic, \
-             arrayFirstIndex((k, t) -> k = {DOOR} AND t = {DOOR_TAG}, s_kind, s_tag) AS slot, \
-             sec_ceilingheight[{sector}] AS ceiling, \
-             if(slot = 0, -1, s_direction[slot]) AS direction, \
-             if(slot = 0, -1, s_count[slot]) AS count, \
-             unresolved \
-             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
-            DOOR = sector_thinker_kind::DOOR,
-            sector = 72 + 1,
-        ))
-        .await;
+    let rows: Vec<Crossed> = arms
+        .arm("cross")
+        .rows(
+            &fixture,
+            "native_state",
+            &format!(
+                "tic, \
+                 arrayFirstIndex((k, t) -> k = {DOOR} AND t = {DOOR_TAG}, s_kind, s_tag) AS slot, \
+                 sec_ceilingheight[{sector}] AS ceiling, \
+                 if(slot = 0, -1, s_direction[slot]) AS direction, \
+                 if(slot = 0, -1, s_count[slot]) AS count, \
+                 unresolved",
+                DOOR = sector_thinker_kind::DOOR,
+                sector = 72 + 1,
+            ),
+        )
+        .await
+        .into_iter()
+        .filter(|row: &Crossed| row.tic > SEED_TIC)
+        .collect();
     fixture.finish().await;
 
     assert_eq!(rows.len(), CROSS_TICS as usize, "every tic ran");

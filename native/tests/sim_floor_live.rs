@@ -24,13 +24,18 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, ArmChecks, Arms};
 use support::db::Fixture;
 use support::floor;
-use support::seed;
+use support::resident::Session;
 
-/// The tic the seeded row stands at. The run starts after it, so the
-/// transform reads the crossing out of it the way it reads any other tic.
-const SEED_TIC: u32 = 900;
+/// The tic each crossing's seeded row stands at, and how many tics run
+/// from it. The run starts after the seed, so the transform reads the
+/// crossing out of it the way it reads any other tic.
+const TURBO_AT: u32 = 900;
+const TURBO_TICS: u32 = 52;
+const RAISE_AT: u32 = 1000;
+const RAISE_TICS: u32 = 196;
 
 /// Sector 117, tagged 3: floor 248 map units, ceiling 320. Sector 116, its
 /// only two-sided neighbor (every one of its own lines borders it): floor
@@ -72,205 +77,189 @@ fn put(column: &'static str, value: String) -> (&'static str, String) {
 /// Sector 117 (0-based), the tagged sector both floors here drive.
 const FLOOR_SECTOR: usize = 117;
 
-async fn crossed_rows(fixture: &Fixture, db: &str, tag: i64) -> Vec<Crossed> {
-    fixture
-        .rows(&format!(
-            "SELECT tic, \
+/// The rows every tic run from `arm`'s seed left.
+async fn crossed_rows(fixture: &Fixture, arm: &Arm, tag: i64) -> Vec<Crossed> {
+    arm.rows(
+        fixture,
+        "native_state",
+        &format!(
+            "tic, \
              arrayFirstIndex((k, t) -> k = {FLOOR} AND t = {tag}, s_kind, s_tag) AS slot, \
              sec_floorheight[{sector}] AS floorheight, \
-             unresolved \
-             FROM {db}.native_state WHERE tic > {SEED_TIC} ORDER BY tic",
+             unresolved",
             FLOOR = sector_thinker_kind::FLOOR,
             sector = FLOOR_SECTOR + 1,
-        ))
-        .await
+        ),
+    )
+    .await
+    .into_iter()
+    .filter(|row: &Crossed| row.tic > arm.at)
+    .collect()
 }
 
 /// Line 187 (`lv_lines`), a WR special 98 tagged 3, and a point five map
 /// units to each side of its own diagonal run. `EV_DoFloor`'s turboLower
 /// lowers sector 117 to sector 116's own floor, 8 map units past it since
 /// that differs from sector 117's own, at `FLOORSPEED * 4`.
-#[tokio::test]
-async fn a_crossing_of_the_turbo_lower_line_spawns_the_floor_ev_do_floor_spawns() {
-    let bytes = support::doom1();
-    let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_floor_turbo").await;
-    let db = fixture.database.clone();
-
-    let mut plan = load::plan(&db, &wad);
-    plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
-    plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
-    if let Err(error) = fixture.execute(&plan).await {
-        fixture.finish().await;
-        panic!("{error}");
+fn turbo_lower() -> Arm {
+    Arm {
+        name: "turbo_lower",
+        from: 1,
+        overrides: vec![
+            put("m_x", "toInt32(-5144576)".to_owned()),
+            put("m_y", "toInt32(-135541555)".to_owned()),
+            put("m_momx", "toInt32(327680)".to_owned()),
+            put("m_momy", "toInt32(26214)".to_owned()),
+            put("m_z", format!("toInt32({NEIGHBOR_FLOOR})")),
+            put("m_floorz", format!("toInt32({NEIGHBOR_FLOOR})")),
+            put("m_ceilingz", format!("toInt32({NEIGHBOR_CEILING})")),
+        ],
+        at: TURBO_AT,
+        inputs: (TURBO_AT + 1..=TURBO_AT + TURBO_TICS)
+            .map(|tic| Input::keys(tic, 0, (0, 0)))
+            .collect(),
     }
-
-    let overrides = [
-        put("m_x", "toInt32(-5144576)".to_owned()),
-        put("m_y", "toInt32(-135541555)".to_owned()),
-        put("m_momx", "toInt32(327680)".to_owned()),
-        put("m_momy", "toInt32(26214)".to_owned()),
-        put("m_z", format!("toInt32({NEIGHBOR_FLOOR})")),
-        put("m_floorz", format!("toInt32({NEIGHBOR_FLOOR})")),
-        put("m_ceilingz", format!("toInt32({NEIGHBOR_CEILING})")),
-    ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    const CROSS_TICS: u32 = 52;
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
-
-    let rows = crossed_rows(&fixture, &db, FLOOR_TAG).await;
-    fixture.finish().await;
-
-    assert_eq!(rows.len(), CROSS_TICS as usize, "every tic ran");
-    for row in &rows {
-        assert_eq!(
-            crossing_unresolved(row.unresolved),
-            0,
-            "tic {} left a crossing unresolved",
-            row.tic
-        );
-    }
-    let spawned = rows
-        .iter()
-        .find(|row| row.slot != 0)
-        .unwrap_or_else(|| panic!("no tic after the crossing spawns the floor"));
-
-    let dest = NEIGHBOR_FLOOR + (8 << 16);
-    let mut want = floor::Floor::turbo_lower(FLOOR_SECTOR_HIGH, dest);
-    let first = want.tic();
-    assert_eq!(
-        spawned.floorheight, first.floorheight,
-        "the spawn tic's own first move"
-    );
-
-    let mut done_tic = None;
-    for row in rows.iter().filter(|row| row.tic > spawned.tic) {
-        if want.done {
-            assert_eq!(row.slot, 0, "tic {} keeps the floor off the list", row.tic);
-            assert_eq!(row.floorheight, dest, "tic {}", row.tic);
-            continue;
-        }
-        let step = want.tic();
-        if want.done {
-            done_tic = Some(row.tic);
-        } else {
-            assert_ne!(row.slot, 0, "tic {} still carries the floor", row.tic);
-        }
-        assert_eq!(row.floorheight, step.floorheight, "tic {}", row.tic);
-    }
-    assert!(
-        done_tic.is_some(),
-        "the run reaches the point the floor stops"
-    );
 }
+
+/// Sector 117's own floor for the raise, seeded already lowered the way
+/// `turboLower` leaves it, so `EV_DoFloor`'s raiseFloor has somewhere to
+/// climb back to.
+const SEEDED_FLOOR: i32 = NEIGHBOR_FLOOR + (8 << 16);
 
 /// One of lines 486-491 or 907 (`lv_lines`), each a WR special 91 tagged
 /// 3, and a point five map units to each side of line 486's own
-/// horizontal run. Sector 117's own floor is seeded already lowered, the
-/// way `turboLower` above leaves it, so `EV_DoFloor`'s raiseFloor has
-/// somewhere to climb back to: sector 116's own ceiling, clamped to
-/// sector 117's own (`FLOORSPEED`, no clamp needed here since it stands
+/// horizontal run. raiseFloor climbs to sector 116's own ceiling, clamped
+/// to sector 117's own (`FLOORSPEED`, no clamp needed here since it stands
 /// lower).
+fn raise_floor() -> Arm {
+    Arm {
+        name: "raise_floor",
+        from: 1,
+        overrides: vec![
+            put("m_x", "toInt32(-25165824)".to_owned()),
+            put("m_y", "toInt32(-131923968)".to_owned()),
+            put("m_momx", "toInt32(0)".to_owned()),
+            put("m_momy", "toInt32(655360)".to_owned()),
+            put("m_z", format!("toInt32({NEIGHBOR_FLOOR})")),
+            put("m_floorz", format!("toInt32({NEIGHBOR_FLOOR})")),
+            put("m_ceilingz", format!("toInt32({NEIGHBOR_CEILING})")),
+            (
+                "sec_floorheight",
+                format!(
+                    "arrayMap((v, i) -> if(i = {}, toInt32({SEEDED_FLOOR}), v), \
+                     p.sec_floorheight, arrayEnumerate(p.sec_floorheight))",
+                    FLOOR_SECTOR + 1
+                ),
+            ),
+        ],
+        at: RAISE_AT,
+        inputs: (RAISE_AT + 1..=RAISE_AT + RAISE_TICS)
+            .map(|tic| Input::keys(tic, 0, (0, 0)))
+            .collect(),
+    }
+}
+
+/// A crossing of either line spawns the floor `EV_DoFloor` spawns, and
+/// `T_MoveFloor` runs it to its destination and off the list.
 #[tokio::test]
-async fn a_crossing_of_the_raise_floor_line_spawns_the_floor_ev_do_floor_spawns() {
+async fn a_crossing_of_a_tagged_line_spawns_the_floor_ev_do_floor_spawns() {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create("sim_floor_raise").await;
+    let fixture = Fixture::create("sim_floor").await;
     let db = fixture.database.clone();
 
     let mut plan = load::plan(&db, &wad);
     plan.extend(sql::level_statements(&db, support::MAP, support::DEMO));
     plan.extend(sim::load_statements(&db));
-    plan.extend(sim::tick::demo_statement(&db, 1, 1));
     if let Err(error) = fixture.execute(&plan).await {
         fixture.finish().await;
         panic!("{error}");
     }
 
-    let seeded_floor = NEIGHBOR_FLOOR + (8 << 16);
-    let mut overrides = vec![
-        put("m_x", "toInt32(-25165824)".to_owned()),
-        put("m_y", "toInt32(-131923968)".to_owned()),
-        put("m_momx", "toInt32(0)".to_owned()),
-        put("m_momy", "toInt32(655360)".to_owned()),
-        put("m_z", format!("toInt32({NEIGHBOR_FLOOR})")),
-        put("m_floorz", format!("toInt32({NEIGHBOR_FLOOR})")),
-        put("m_ceilingz", format!("toInt32({NEIGHBOR_CEILING})")),
-    ];
-    overrides.push((
-        "sec_floorheight",
-        format!(
-            "arrayMap((v, i) -> if(i = {}, toInt32({seeded_floor}), v), \
-             p.sec_floorheight, arrayEnumerate(p.sec_floorheight))",
-            FLOOR_SECTOR + 1
-        ),
-    ));
-    let seeded: Vec<sql::Statement> = seed::row(&db, SEED_TIC, 1, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    const CROSS_TICS: u32 = 196;
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let inputs: Vec<Input> = (SEED_TIC + 1..=SEED_TIC + CROSS_TICS)
-        .map(|tic| Input::keys(tic, 0, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &inputs, false).await;
+    let arms = Arms::new(vec![Input::demo(1)], vec![turbo_lower(), raise_floor()]);
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let rows = crossed_rows(&fixture, &db, FLOOR_TAG).await;
+    let mut checks = arms.checks();
+    let rows = crossed_rows(&fixture, arms.arm("turbo_lower"), FLOOR_TAG).await;
+    let dest = NEIGHBOR_FLOOR + (8 << 16);
+    the_floor_runs(
+        checks.arm("turbo_lower"),
+        &rows,
+        TURBO_TICS,
+        floor::Floor::turbo_lower(FLOOR_SECTOR_HIGH, dest),
+        dest,
+    );
+    let rows = crossed_rows(&fixture, arms.arm("raise_floor"), FLOOR_TAG).await;
+    the_floor_runs(
+        checks.arm("raise_floor"),
+        &rows,
+        RAISE_TICS,
+        floor::Floor::raise(SEEDED_FLOOR, FLOOR_SECTOR_HIGH),
+        FLOOR_SECTOR_HIGH,
+    );
     fixture.finish().await;
+    checks.finish();
+}
 
-    assert_eq!(rows.len(), CROSS_TICS as usize, "every tic ran");
-    for row in &rows {
-        assert_eq!(
+/// Checks a crossing's rows against `want`, the reader's own floor, which
+/// stops at `dest`.
+fn the_floor_runs(
+    mut c: ArmChecks<'_>,
+    rows: &[Crossed],
+    tics: u32,
+    mut want: floor::Floor,
+    dest: i32,
+) {
+    c.eq(rows.len(), tics as usize, "every tic ran");
+    for row in rows {
+        c.eq(
             crossing_unresolved(row.unresolved),
             0,
-            "tic {} left a crossing unresolved",
-            row.tic
+            format!("tic {} left a crossing unresolved", row.tic),
         );
     }
-    let spawned = rows
-        .iter()
-        .find(|row| row.slot != 0)
-        .unwrap_or_else(|| panic!("no tic after the crossing spawns the floor"));
+    let Some(spawned) = rows.iter().find(|row| row.slot != 0) else {
+        c.check(false, "no tic after the crossing spawns the floor");
+        return;
+    };
 
-    let mut want = floor::Floor::raise(seeded_floor, FLOOR_SECTOR_HIGH);
     let first = want.tic();
-    assert_eq!(
-        spawned.floorheight, first.floorheight,
-        "the spawn tic's own first move"
+    c.eq(
+        spawned.floorheight,
+        first.floorheight,
+        "the spawn tic's own first move",
     );
 
     let mut done_tic = None;
     for row in rows.iter().filter(|row| row.tic > spawned.tic) {
         if want.done {
-            assert_eq!(row.slot, 0, "tic {} keeps the floor off the list", row.tic);
-            assert_eq!(row.floorheight, FLOOR_SECTOR_HIGH, "tic {}", row.tic);
+            c.eq(
+                row.slot,
+                0,
+                format!("tic {} keeps the floor off the list", row.tic),
+            );
+            c.eq(row.floorheight, dest, format!("tic {}", row.tic));
             continue;
         }
         let step = want.tic();
         if want.done {
             done_tic = Some(row.tic);
         } else {
-            assert_ne!(row.slot, 0, "tic {} still carries the floor", row.tic);
+            c.check(
+                row.slot != 0,
+                format!("tic {} still carries the floor", row.tic),
+            );
         }
-        assert_eq!(row.floorheight, step.floorheight, "tic {}", row.tic);
+        c.eq(
+            row.floorheight,
+            step.floorheight,
+            format!("tic {}", row.tic),
+        );
     }
-    assert!(
+    c.check(
         done_tic.is_some(),
-        "the run reaches the point the floor stops"
+        "the run reaches the point the floor stops",
     );
 }

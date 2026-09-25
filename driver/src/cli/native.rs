@@ -1,6 +1,6 @@
 //! The `native` namespace.
 //!
-//! Every subcommand here shares one connection and
+//! Every subcommand here that talks to a server shares one connection and
 //! [`ConnArgs`](crate::client::ConnArgs). A subcommand with more to it than
 //! its argument list lives in its own module beside this one.
 
@@ -8,6 +8,7 @@ pub mod demo;
 pub mod diff;
 pub mod load;
 pub mod play;
+pub mod regress;
 pub mod render;
 
 use std::time::{Duration, Instant}; // purity-ok: pacing and latency measurement in the driver, never a value a statement reads
@@ -48,6 +49,7 @@ pub enum Command {
     Diff(diff::DiffCmd),
     Load(load::LoadCmd),
     Play(play::PlayCmd),
+    Regress(regress::RegressCmd),
     Render(render::RenderCmd),
     SessionCheck(SessionCheckCmd),
 }
@@ -93,6 +95,7 @@ pub(super) async fn run(cmd: &NativeCmd) -> Result<Exit, Failure> {
         Command::Diff(cmd) => diff::run(cmd).await,
         Command::Load(cmd) => load::run(cmd).await,
         Command::Play(cmd) => play::run(cmd).await,
+        Command::Regress(cmd) => regress::run(cmd),
         Command::Render(cmd) => render::run(cmd).await,
         Command::SessionCheck(cmd) => session_check(cmd).await,
     }

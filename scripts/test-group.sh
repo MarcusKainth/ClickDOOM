@@ -15,7 +15,8 @@
 #   emulator       every suite outside the native crate and the driver's
 #                  native_* suites: the SQL CPU, the executor, the reference
 #                  emulator and the driver's emulation side, then the ROM
-#                  suites that need a release build
+#                  suites that need a release build. The driver's
+#                  connection and stream suites run here too
 #   native-sim-a   the compact, missile, missile-wall, player-frames and
 #                  refire suites
 #   native-sim-b   the door, missile-kill-drop, move and player-damage
@@ -32,8 +33,8 @@
 #   native-sim-f   the aim, damage, impact, noise, parity, plat,
 #                  removed and sight suites
 #   driver-native  the driver's native_* suites (load, render, demo, play,
-#                  diff, session and stream). The connection suite runs in
-#                  `emulator`, where nothing runs beside it
+#                  diff and session). The connection and stream suites run
+#                  in `emulator`, where nothing runs beside them
 #
 # Every group but `emulator` needs a reachable ClickHouse
 # (CLICKHOUSE_HOST/CLICKHOUSE_HTTP_PORT/CLICKHOUSE_PASSWORD); `emulator`
@@ -150,11 +151,13 @@ case "$group" in
     emulator)
         # One test at a time: the SQL CPU's suite and the executor's share
         # the server's compiled-expression cache, which a second run beside
-        # them would warm or cool, and the connection suite counts the
-        # server's connections, which a neighbour's session would move.
+        # them would warm or cool, the connection suite counts the server's
+        # connections, which a neighbour's session would move, and the
+        # stream suite asserts a send-to-visible latency, which a
+        # neighbour's analysis would slow on the same cores.
         # shellcheck disable=SC2086 # $live is a list of flags or nothing
         run_workspace $live --test-threads 1 \
-            -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live))'
+            -E 'not package(clickdoom-native) and (not binary(/^native_/) or binary(native_connections_live) or binary(native_stream_live))'
         # The ROM suites are the reference emulator's, so only it is built
         # in release.
         run_rom \
@@ -201,7 +204,7 @@ case "$group" in
         # at once as a simulation group.
         # shellcheck disable=SC2086
         run_workspace $live --test-threads "${TEST_THREADS:-4}" \
-            -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
+            -E 'package(clickdoom-driver) and binary(/^native_/) and not (binary(native_connections_live) | binary(native_stream_live))'
         ;;
     *)
         echo "usage: scripts/test-group.sh [--list] $(IFS='|'; echo "${groups[*]}") | --check" >&2

@@ -131,10 +131,20 @@ has to do. A lambda body that reads neither of its parameters is evaluated
 outside the lambda whatever the fold does, so such a body has to lead back to
 one of them.
 
-Analysis is paid once per session, and its cost is not a function of the
-statement's size. Where it comes from is not settled. One shape is measured
-on ClickHouse 26.7.5.10: writing a thirty-column compaction as
-`arrayFilter((v, a) -> a = 1, X, mt_kept)` costs 5.2 s more than writing it
+Analysis is paid once per session. On ClickHouse 26.8.2.7 the analyser's
+logical expression pass hashes the other side of every comparison with a
+constant that is a direct operand of `and`, and of every `equals` with a
+constant that is a direct operand of `or`. It hashes each one afresh, and the
+hash of a column walks the whole subquery the column comes from. The stages
+are nested subqueries, so each such hash walks most of the statement. The
+generator wraps every comparison that is an operand of `AND` or `OR` in
+`identity()`, which returns its argument and which the pass does not look
+inside (`native/src/sql/sim/chains.rs`). On a development machine the first
+statement analyses in about 1.4 s wrapped and 44 s unwrapped.
+
+One shape is measured on ClickHouse 26.7.5.10: writing a thirty-column
+compaction as `arrayFilter((v, a) -> a = 1, X, mt_kept)` costs 5.2 s more than
+writing it
 as the surviving places worked out once and each column read through them,
 and the same 5.2 s more than one `arrayZip` of every column filtered once.
 `arrayZip(a, b)` costs what `arrayFilter((v, k) -> …, a, b)` costs, so

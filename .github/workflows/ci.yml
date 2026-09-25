@@ -95,18 +95,33 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+        with:
+          tool: cargo-nextest@0.9.140
       - name: Build the reference emulator
         run: cargo build --locked --release -p refemu
+      - name: Archive the reference emulator's ROM suites
+        # In release, the build they need. The `emulator` group runs them.
+        run: |
+          mkdir -p target/nextest
+          cargo nextest archive --locked --release -p refemu --features rom-tests \
+              --archive-file target/nextest/rom-suites.tar.zst
       - name: Upload refemu artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: refemu
           path: target/release/refemu
+      - name: Upload the ROM suites archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rom-suites
+          path: target/nextest/rom-suites.tar.zst
 
   build-tests:
-    # Every test binary, compiled once into two nextest archives: the
-    # workspace with the live suites, and the reference emulator's release
-    # ROM suites. The test jobs run from the archives and compile nothing.
+    # The workspace's test binaries with the live suites, compiled once into
+    # two nextest archives, one per matrix entry: the native crate's suites,
+    # and every other crate's. The test jobs run from the archives and
+    # compile nothing.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,30 +130,44 @@ jobs:
       # its panic message with the file and line; a backtrace names
       # functions only. Set for the job so rust-cache keys on it.
       CARGO_PROFILE_TEST_DEBUG: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - archive: native
+            packages: -p clickdoom-native
+          - archive: workspace
+            packages: --workspace --exclude clickdoom-native
+    name: build-tests (${{ matrix.archive }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.archive }}
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: cargo-nextest@0.9.140
       - name: Archive the suites
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+          PACKAGES: ${{ matrix.packages }}
         run: |
           mkdir -p target/nextest
-          cargo nextest archive --locked --workspace --features clickhouse-tests \
-              --archive-file target/nextest/tests.tar.zst
-          cargo nextest archive --locked --release -p refemu --features rom-tests \
-              --archive-file target/nextest/rom-suites.tar.zst
-      - name: Upload the archives
+          # shellcheck disable=SC2086 # $PACKAGES is a list of flags
+          cargo nextest archive --locked $PACKAGES --features clickhouse-tests \
+              --archive-file "target/nextest/$ARCHIVE.tar.zst"
+      - name: Upload the archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-archives
-          path: target/nextest/*.tar.zst
+          name: ${{ matrix.archive }}-tests
+          path: target/nextest/${{ matrix.archive }}.tar.zst
 
   test:
     # Every suite, in the groups scripts/test-group.sh names, one runner per
-    # group with its own ClickHouse, run from the archives build-tests made.
+    # group with its own ClickHouse, run from the archives build-tests and
+    # build-refemu made.
     # Throwaway databases only; never `clickdoom`. `make test` runs the same
     # suites in one pass locally.
     needs: [build-tests, build-rom, build-refemu]
@@ -176,10 +205,25 @@ jobs:
           tool: cargo-nextest@0.9.140
       - name: Start the pinned ClickHouse
         run: make up
-      - name: Download the test archives
+      # Each group downloads the archives scripts/test-group.sh runs it
+      # from, and a group that lacks one fails on the missing file.
+      - name: Download the native crate's suites
+        if: matrix.group != 'emulator'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: test-archives
+          name: native-tests
+          path: target/nextest
+      - name: Download the other crates' suites
+        if: matrix.group == 'emulator' || matrix.group == 'native-rest'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: workspace-tests
+          path: target/nextest
+      - name: Download the ROM suites
+        if: matrix.group == 'emulator'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rom-suites
           path: target/nextest
       - name: Download ROM artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

@@ -188,18 +188,13 @@ jobs:
     runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
-    # A backstop against a job that hangs, not a budget. Packed over six
-    # groups every group's own tests schedule in 19.8 to 20.6 minutes on
-    # the median of five main runs, and a job runs 3.4 minutes longer than
-    # its tests at the median, 8.8 at the worst seen. That says nothing
-    # about the worst a runner produces: a test's own time moves 17% run to
-    # run at the median and 35% at the extreme, a slow runner has taken a
-    # whole group 30% past those medians, and the slowest group on record
-    # ran 41 minutes. So this sits above the observed worst rather than
-    # above the modelled one. A group that is merely slow has to finish and
-    # report; cancelling it reads as a timeout and says nothing about any
-    # test.
-    timeout-minutes: 45
+    # A backstop against a job that hangs. The slowest test job in the six
+    # main runs 36126756550 to 36132815983 took 7.1 minutes from its start
+    # to its end, and this is about twice that. It also sits above
+    # nextest's cutoff in .config/nextest.toml, 12 minutes, so a test that
+    # hangs is killed by nextest and reported by name before the job is
+    # cancelled.
+    timeout-minutes: 15
     env:
       TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:
@@ -258,13 +253,13 @@ jobs:
     permissions:
       contents: read
     # The same backstop as `test`.
-    timeout-minutes: 45
+    timeout-minutes: 15
     env:
       TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
     strategy:
       fail-fast: false
       matrix:
-        group: [native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f]
+        group: [native-sim-a, native-sim-b, native-sim-c, native-sim-d]
     name: test (${{ matrix.group }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -322,7 +317,7 @@ jobs:
     # against the hash the probe recorded beside that frame's row.
     #
     # The renderer's pixels are pinned by `native/tests/render_live.rs` in
-    # the native-sim-e group. This job checks the load and render path around
+    # the native-sim-d group. This job checks the load and render path around
     # them and the fixture's own metadata. No ROM is built: the target's
     # prerequisites are `up` and `build-clickdoom`.
     runs-on: ubuntu-latest

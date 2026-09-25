@@ -4,13 +4,12 @@
 # at once share nothing but the server.
 [profile.default]
 fail-fast = false
-# A live suite's first session analyses a statement that takes a few minutes
-# on a CI runner, so a test is slow only past this, and one that opens more
-# than one session runs well past it before it is cut off. The cutoff is
-# 2,400 s, about 1.8x the slowest test on record: sim_missile_live's own
-# single test, 1,234 s at the median of five main runs and 1,347 s at its
-# worst. A test's own time moves up to 35% run to run, so the margin is
-# sized against the worst rather than the median. A test past the cutoff is
-# killed, and the failure reads as a timeout rather than as anything about
-# the test, which is why this is not tight.
-slow-timeout = { period = "300s", terminate-after = 8 }
+# A test is reported slow every 120 s and killed at 720 s. The slowest test
+# in the six main runs 36126756550 to 36132815983 is sim_plat_live's
+# a_crossing_spawns_the_plat_ev_do_plat_spawns_for_it, 215 s at the median
+# and 227 s at its worst, so the cutoff is about 3x the worst. It sits above
+# FIRST_TIC_TIMEOUT (600 s, native/src/resident/stream.rs) plus a load, so
+# a first tic that never arrives fails with the session's own message
+# rather than with nextest's. A test killed here reads as a timeout and
+# says nothing about what the test checks.
+slow-timeout = { period = "120s", terminate-after = 6 }

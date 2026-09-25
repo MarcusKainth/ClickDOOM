@@ -117,11 +117,10 @@ jobs:
           name: rom-suites
           path: target/nextest/rom-suites.tar.zst
 
-  build-tests:
-    # The workspace's test binaries with the live suites, compiled once into
-    # two nextest archives, one per matrix entry: the native crate's suites,
-    # and every other crate's. The test jobs run from the archives and
-    # compile nothing.
+  build-native-tests:
+    # The native crate's test binaries with the live suites, compiled once
+    # into a nextest archive. The simulation groups run from it alone, so
+    # they start as soon as it exists.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -130,47 +129,59 @@ jobs:
       # its panic message with the file and line; a backtrace names
       # functions only. Set for the job so rust-cache keys on it.
       CARGO_PROFILE_TEST_DEBUG: "0"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - archive: native
-            packages: -p clickdoom-native
-          - archive: workspace
-            packages: --workspace --exclude clickdoom-native
-    name: build-tests (${{ matrix.archive }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: ${{ matrix.archive }}
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: cargo-nextest@0.9.140
       - name: Archive the suites
-        env:
-          ARCHIVE: ${{ matrix.archive }}
-          PACKAGES: ${{ matrix.packages }}
         run: |
           mkdir -p target/nextest
-          # shellcheck disable=SC2086 # $PACKAGES is a list of flags
-          cargo nextest archive --locked $PACKAGES --features clickhouse-tests \
-              --archive-file "target/nextest/$ARCHIVE.tar.zst"
+          cargo nextest archive --locked -p clickdoom-native --features clickhouse-tests \
+              --archive-file target/nextest/native.tar.zst
       - name: Upload the archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.archive }}-tests
-          path: target/nextest/${{ matrix.archive }}.tar.zst
+          name: native-tests
+          path: target/nextest/native.tar.zst
+
+  build-tests:
+    # Every other crate's test binaries with the live suites, compiled once
+    # into a nextest archive. Built as build-native-tests is.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+        with:
+          tool: cargo-nextest@0.9.140
+      - name: Archive the suites
+        run: |
+          mkdir -p target/nextest
+          cargo nextest archive --locked --workspace --exclude clickdoom-native \
+              --features clickhouse-tests --archive-file target/nextest/workspace.tar.zst
+      - name: Upload the archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-tests
+          path: target/nextest/workspace.tar.zst
 
   test:
     # Every suite, in the groups scripts/test-group.sh names, one runner per
-    # group with its own ClickHouse, run from the archives build-tests and
-    # build-refemu made.
+    # group with its own ClickHouse, run from the archives the build jobs
+    # made. The simulation groups are test-sim's; this job runs the rest.
     # Throwaway databases only; never `clickdoom`. `make test` runs the same
     # suites in one pass locally.
-    needs: [build-tests, build-rom, build-refemu]
+    needs: [build-native-tests, build-tests, build-rom, build-refemu]
     # The repository variables CLICKDOOM_TEST_RUNNER (a runs-on label) and
     # CLICKDOOM_TEST_THREADS (tests per simulation group at once) pick the
     # machine the groups run on; unset, a standard runner at four.
@@ -194,7 +205,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [emulator, native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f, native-rest]
+        group: [emulator, native-rest]
     name: test (${{ matrix.group }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,13 +219,12 @@ jobs:
       # Each group downloads the archives scripts/test-group.sh runs it
       # from, and a group that lacks one fails on the missing file.
       - name: Download the native crate's suites
-        if: matrix.group != 'emulator'
+        if: matrix.group == 'native-rest'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-tests
           path: target/nextest
       - name: Download the other crates' suites
-        if: matrix.group == 'emulator' || matrix.group == 'native-rest'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: workspace-tests
@@ -246,11 +256,50 @@ jobs:
           chmod +x target/release/refemu
           scripts/test-group.sh "$GROUP"
 
+  test-sim:
+    # The simulation groups, as `test` runs its groups, from the native
+    # crate's archive alone. They need no ROM and no reference emulator.
+    needs: [build-native-tests]
+    runs-on: ${{ vars.CLICKDOOM_TEST_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    # The same backstop as `test`.
+    timeout-minutes: 45
+    env:
+      TEST_THREADS: ${{ vars.CLICKDOOM_TEST_THREADS || '4' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [native-sim-a, native-sim-b, native-sim-c, native-sim-d, native-sim-e, native-sim-f]
+    name: test (${{ matrix.group }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+        with:
+          tool: cargo-nextest@0.9.140
+      - name: Start the pinned ClickHouse
+        run: make up
+      - name: Download the native crate's suites
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-tests
+          path: target/nextest
+      - name: The group's suites
+        env:
+          CLICKHOUSE_HOST: localhost
+          CLICKHOUSE_HTTP_PORT: "8123"
+          CLICKHOUSE_PASSWORD: clickdoom
+          GROUP: ${{ matrix.group }}
+          NEXTEST_ARCHIVE_DIR: target/nextest
+        run: scripts/test-group.sh "$GROUP"
+
   test-groups:
     # Every test in the archives is selected by exactly one group of the
     # test matrix, and every group selects at least one test. Lists the
     # tests and runs none, so it needs no ClickHouse.
-    needs: [build-tests, build-refemu]
+    needs: [build-native-tests, build-tests, build-refemu]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -345,11 +394,11 @@ jobs:
 
   ci-passed:
     # Succeeds only when every other job in this workflow succeeded. A job that
-    # failed, was skipped or was cancelled fails it. The test matrix reports one
-    # result, which is a failure if any group failed. A job added to this
-    # workflow goes in `needs`, or a branch rule that requires this check does
-    # not wait for it.
-    needs: [lint, build-rom, build-refemu, build-tests, test, test-groups, native-smoke, differential-smoke]
+    # failed, was skipped or was cancelled fails it. Each test matrix reports
+    # one result, which is a failure if any of its groups failed. A job added
+    # to this workflow goes in `needs`, or a branch rule that requires this
+    # check does not wait for it.
+    needs: [lint, build-rom, build-refemu, build-native-tests, build-tests, test, test-sim, test-groups, native-smoke, differential-smoke]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}

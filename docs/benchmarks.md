@@ -58,3 +58,9 @@ is reached without a multi-hour run.
 | [`native-vs-docker`](experiments/native-vs-docker.md) | Is native ClickHouse faster than Docker, and how do two releases compare? | Docker is 2.07x faster than native on 26.3.25.2. Native rejected. |
 | [`memcpy-memset-cost`](experiments/memcpy-memset-cost.md) | Are `memcpy` and `memset` byte-loop shims, and what do they cost? | They are newlib's and already word-wise, at 0.836 instructions per byte. Rejected. |
 | [`clickhouse-26-8`](experiments/clickhouse-26-8.md) | What do the two modes read on ClickHouse 26.8.2.7 against 26.7.5.10? | Emulation costs 0.88x on the gameplay window end to end. The resident simulation statement's analysis costs 3.07x less and its tic 1.24x less. |
+
+## Native mode
+
+| Record | Question it settles | What came out |
+|---|---|---|
+| [`tic-statement-analysis`](experiments/tic-statement-analysis.md) | Where does the first tic statement's analysis go, and can a setting or a statement shape remove it? | 87% is the logical expression pass hashing each comparison in an `AND` or `OR` chain, and no setting reaches it. Wrapping each such comparison in `identity()` takes the analysis from 44.6 s to 1.3 s with the same rows. |

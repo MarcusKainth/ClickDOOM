@@ -7,7 +7,9 @@
 //!   * the probe rows land in `probe_state` and not in `native_state`,
 //!     because the two are the sides of the comparison;
 //!   * a tic `native_state` marks unresolved stops the run there, before
-//!     any field is compared.
+//!     any field is compared;
+//!   * `--record` appends one line per run that says which of these the run
+//!     found, with the analysis and tic times it measured.
 //!
 //! Needs a reachable ClickHouse (`CLICKHOUSE_HOST`/`CLICKHOUSE_HTTP_PORT`/
 //! `CLICKHOUSE_PASSWORD`, defaulting to `localhost:8123`) and the committed
@@ -17,6 +19,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use clickdoom_driver::native::record::{self, Record};
 
 mod support;
 
@@ -72,10 +76,35 @@ async fn a_differential_run_reports_the_first_field_that_differs() {
 
     // Over the tics the fixture records and the simulation reproduces, the
     // two sides agree.
+    let recorded = record_path(&database);
+    let recorded_arg = recorded.to_str().expect("a path");
     let tics = FIRST_RECORDED_TIC.to_string();
-    let (code, printed) = clickdoom(&database, &["native", "diff", &tics, "--probe", probe]);
+    let (code, printed) = clickdoom(
+        &database,
+        &[
+            "native",
+            "diff",
+            &tics,
+            "--probe",
+            probe,
+            "--record",
+            recorded_arg,
+        ],
+    );
     assert_eq!(code, 0, "{printed}");
     assert!(printed.contains("no divergence"), "{printed}");
+    let lines = record::read(&recorded).expect("the record is written");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let agreed = &lines[0];
+    assert_measured(agreed, FIRST_RECORDED_TIC);
+    assert_eq!(
+        agreed.compared_through,
+        Some(FIRST_RECORDED_TIC),
+        "{agreed:?}"
+    );
+    assert!(agreed.compared_tics.is_some_and(|t| t > 0), "{agreed:?}");
+    assert_eq!(agreed.first_refused_tic, None, "{agreed:?}");
+    assert_eq!(agreed.first_divergent_tic, None, "{agreed:?}");
 
     // A probe that differs from the simulation on one field is reported on
     // the tic and the field, with exit 3. The fixture is copied with one
@@ -85,7 +114,15 @@ async fn a_differential_run_reports_the_first_field_that_differs() {
     let moved_probe = moved.to_str().expect("a path");
     let (code, printed) = clickdoom(
         &database,
-        &["native", "diff", &tics, "--probe", moved_probe],
+        &[
+            "native",
+            "diff",
+            &tics,
+            "--probe",
+            moved_probe,
+            "--record",
+            recorded_arg,
+        ],
     );
     assert_eq!(code, 3, "{printed}");
     assert!(
@@ -94,6 +131,23 @@ async fn a_differential_run_reports_the_first_field_that_differs() {
     );
     assert!(printed.contains("leveltime"), "{printed}");
     assert!(printed.contains("against the probe's"), "{printed}");
+    let lines = record::read(&recorded).expect("the record is written");
+    assert_eq!(lines.len(), 2, "one line per run: {lines:?}");
+    let diverged = &lines[1];
+    assert_measured(diverged, FIRST_RECORDED_TIC);
+    assert_eq!(
+        diverged.first_divergent_tic,
+        Some(FIRST_RECORDED_TIC),
+        "{diverged:?}"
+    );
+    assert!(
+        diverged
+            .first_divergent_field
+            .as_deref()
+            .is_some_and(|field| field.ends_with(" leveltime")),
+        "{diverged:?}"
+    );
+    std::fs::remove_file(&recorded).ok();
 
     // The two sides are two tables. A diff that copied the probe into
     // native_state would compare the run against itself and always agree.
@@ -143,8 +197,20 @@ async fn a_tic_that_refuses_stops_before_the_field_comparison() {
 
     let fixture = committed_fixture();
     let probe = fixture.to_str().expect("a path");
-    let tics = (FIRST_REFUSED_TIC + 8).to_string();
-    let (code, printed) = clickdoom(&database, &["native", "diff", &tics, "--probe", probe]);
+    let recorded = record_path(&database);
+    let tics = FIRST_REFUSED_TIC + 8;
+    let (code, printed) = clickdoom(
+        &database,
+        &[
+            "native",
+            "diff",
+            &tics.to_string(),
+            "--probe",
+            probe,
+            "--record",
+            recorded.to_str().expect("a path"),
+        ],
+    );
     assert_eq!(code, 3, "{printed}");
     assert!(
         printed.contains(&format!("tic {FIRST_REFUSED_TIC} unresolved")),
@@ -154,12 +220,56 @@ async fn a_tic_that_refuses_stops_before_the_field_comparison() {
         !printed.contains("no divergence") && !printed.contains("against the probe's"),
         "a refused tic is reported before any field is compared: {printed}"
     );
+    let lines = record::read(&recorded).expect("the record is written");
+    std::fs::remove_file(&recorded).ok();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let refused = &lines[0];
+    assert_measured(refused, tics);
+    assert_eq!(
+        refused.first_refused_tic,
+        Some(FIRST_REFUSED_TIC),
+        "{refused:?}"
+    );
+    assert!(
+        refused
+            .first_refused_bits
+            .as_deref()
+            .is_some_and(|bits| bits.starts_with("unresolved: ")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.compared_through, None,
+        "a refused run compares nothing: {refused:?}"
+    );
 
     conn_args("default")
         .connect()
         .run(&format!("DROP DATABASE IF EXISTS {database}"))
         .await
         .expect("the database is dropped");
+}
+
+/// Where a test's `--record` lines go, named after its database.
+fn record_path(database: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("{database}.jsonl"));
+    std::fs::remove_file(&path).ok();
+    path
+}
+
+/// The fields every recorded run carries, whatever it found.
+fn assert_measured(line: &Record, tics: u32) {
+    assert_eq!(line.commit.len(), 40, "{line:?}");
+    assert!(line.clickhouse.is_some(), "{line:?}");
+    assert!(line.runner_cpu.is_some(), "{line:?}");
+    assert_eq!(line.tics, Some(tics), "{line:?}");
+    for analysis in [line.stage1_analysis_s, line.stage2_analysis_s] {
+        assert!(analysis.is_some_and(|s| s > 0.0), "{line:?}");
+    }
+    let (Some(p50), Some(p95)) = (line.tic_ms_p50, line.tic_ms_p95) else {
+        panic!("the tic times are missing: {line:?}");
+    };
+    assert!(p50 > 0.0 && p95 >= p50, "{line:?}");
+    assert_eq!(line.error, None, "{line:?}");
 }
 
 /// A copy of `fixture` with `column` moved by one on every row of

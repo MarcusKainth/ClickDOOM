@@ -31,7 +31,7 @@ ROM build and the smoke diff.
 `lint` also runs `check-adr`, `actionlint` and `check-bare`, which have no CI
 job of their own.
 
-The benches, `fuzz`, the milestone targets and the nightly deep-diff sit outside
+The benches, `fuzz`, the milestone targets and the nightly jobs sit outside
 `gates`, by cost or by what they need. A timing run needs a quiet machine, and
 the deep-diff takes hours.
 
@@ -176,6 +176,32 @@ graphics driver at run time and needs no build-time packages.
 The melt's pass count per frame comes from the reference run and is loaded as
 data from `driver/melt/demo3.tsv`; its provenance is in that directory's
 README.
+
+### What the nightly records
+
+`nightly.yml`'s `native-regression` job runs `scripts/native-regression-walk.sh`
+over the main commits not yet recorded, oldest first, at most `max_commits` a
+night (default 8). Each commit is built in its own worktree and run with
+`native diff --record` against a probe trace generated from that commit's ROM
+and probe. A diff that stops at a refusal compares nothing, so the walk runs a
+second diff over the tics before the refused one and keeps its line with the
+first diff's refusal. `driver/src/native/record.rs` documents the line. A commit
+that does not build or run gets a line with `error`, and the walk goes on.
+
+`clickdoom native regress` judges the night's lines against the recorded ones,
+and its `--help` states the rules. Cost is judged only between a parent and a
+child measured one after the other in the same job, so the walk measures the
+last recorded commit again first.
+
+The `native-record` job appends the new lines to
+`native/bench/regression/results.jsonl` on the `regression-data` branch, which
+is never merged into main. It is the only job with write access, and it runs no
+repository code. With `max_commits` at 0 the walk measures only the last
+recorded commit.
+
+The walk runs locally against `make up`:
+`scripts/native-regression-walk.sh HISTORY OUT`, with `HISTORY` a copy of the
+branch's file.
 
 ## Benchmarks
 

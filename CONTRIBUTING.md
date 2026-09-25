@@ -48,7 +48,10 @@ what runs there. Expect upwards of ten minutes, most of it the ROM build and the
 differential smoke.
 
 It is necessary and not sufficient. The nightly deep-diff is the only run that
-compares memory, and no pull request makes it.
+compares memory, and no pull request makes it. The nightly also diffs native
+mode against the reference emulator on each new main commit, and names the
+commit whose first refusal or first divergence moved earlier, or whose tic
+statement got slower than its parent's.
 
 Check by exit code. A pipeline reports only its last command's status, so
 `make gates | tail` can hide a failure.

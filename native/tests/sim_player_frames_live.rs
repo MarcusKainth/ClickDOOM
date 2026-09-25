@@ -25,8 +25,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, ArmChecks, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The tic the arm copies its row from. Gametic 40 is early enough that no
 /// monster has woken and the list still holds the level's own things.
@@ -79,12 +80,40 @@ fn put(column: &'static str, value: String, cast: &str) -> (&'static str, String
     )
 }
 
-/// Seeds the player's mobj into `state` with one tic of wait left, walks
-/// `tics` tics from it and reads every row back.
-async fn walk(suffix: &str, at: u32, state: i32, tics: u32) -> Vec<Frame> {
+/// The player's mobj seeded into `state` with one tic of wait left, at
+/// `at`, and walked `tics` tics from it.
+///
+/// The player stands still, so nothing it does moves it out of the frame
+/// the seed put it in. The picture goes in with the state, because
+/// `P_SetMobjState` writes both and a row carrying one without the other
+/// is a row the engine could not have produced.
+fn frames(name: &'static str, at: u32, state: i32, tics: u32) -> Arm {
+    let (sprite, frame) = support::damage::picture(i64::from(state));
+    Arm {
+        name,
+        from: BEFORE,
+        overrides: vec![
+            put("m_state", state.to_string(), "toInt32"),
+            put("m_tics", "1".to_owned(), "toInt32"),
+            put("m_sprite", sprite.to_string(), "toInt32"),
+            put("m_frame", frame.to_string(), "toInt32"),
+            put("m_momx", "0".to_owned(), "toInt32"),
+            put("m_momy", "0".to_owned(), "toInt32"),
+        ],
+        at,
+        inputs: (1..=tics)
+            .map(|step| Input::keys(at + step, 0, (0, 0)))
+            .collect(),
+    }
+}
+
+/// Both chains, seeded from one walk to [`BEFORE`] and driven through one
+/// session.
+#[tokio::test]
+async fn the_player_walks_its_pain_and_death_frames() {
     let bytes = support::doom1();
     let wad = Wad::parse(&bytes).unwrap();
-    let fixture = Fixture::create(&format!("sim_player_frames_{suffix}")).await;
+    let fixture = Fixture::create("sim_player_frames").await;
     let db = fixture.database.clone();
 
     let mut plan = load::plan(&db, &wad);
@@ -94,51 +123,41 @@ async fn walk(suffix: &str, at: u32, state: i32, tics: u32) -> Vec<Frame> {
         fixture.finish().await;
         panic!("{error}");
     }
-    let start: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &start, false).await;
-
-    // The player stands still, so nothing it does moves it out of the
-    // frame the seed put it in. The picture goes in with the state,
-    // because `P_SetMobjState` writes both and a row carrying one without
-    // the other is a row the engine could not have produced.
-    let (sprite, frame) = support::damage::picture(i64::from(state));
-    let overrides = [
-        put("m_state", state.to_string(), "toInt32"),
-        put("m_tics", "1".to_owned(), "toInt32"),
-        put("m_sprite", sprite.to_string(), "toInt32"),
-        put("m_frame", frame.to_string(), "toInt32"),
-        put("m_momx", "0".to_owned(), "toInt32"),
-        put("m_momy", "0".to_owned(), "toInt32"),
-    ];
-    let seeded: Vec<sql::Statement> = seed::row(&db, at, BEFORE, &overrides)
-        .into_iter()
-        .map(sql::Statement::sql)
-        .collect();
-    if let Err(error) = fixture.execute(&seeded).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-    let steps: Vec<Input> = (1..=tics)
-        .map(|step| Input::keys(at + step, 0, (0, 0)))
-        .collect();
-    support::resident::run(&fixture, &steps, false).await;
-
-    let rows: Vec<Frame> = fixture
-        .rows(&format!(
-            "SELECT tic, m_state[p_mo] AS state, m_tics[p_mo] AS tics, \
-             m_sprite[p_mo] AS sprite, m_frame[p_mo] AS frame, \
-             m_flags[p_mo] AS flags, unresolved \
-             FROM {db}.native_state WHERE tic BETWEEN {at} AND {} ORDER BY tic",
-            at + tics
-        ))
-        .await;
-    fixture.finish().await;
-    assert_eq!(
-        rows.len(),
-        tics as usize + 1,
-        "the seeded row and every tic walked from it"
+    let arms = Arms::new(
+        (1..=BEFORE).map(Input::demo).collect(),
+        vec![
+            frames("pain", PAIN_AT, S_PLAY_PAIN, PAIN_TICS),
+            frames("death", DEATH_AT, S_PLAY_DIE1, DEATH_TICS),
+        ],
     );
-    rows
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
+
+    let mut checks = arms.checks();
+    for arm in arms.all() {
+        let rows: Vec<Frame> = arm
+            .rows(
+                &fixture,
+                "native_state",
+                "tic, m_state[p_mo] AS state, m_tics[p_mo] AS tics, \
+                 m_sprite[p_mo] AS sprite, m_frame[p_mo] AS frame, \
+                 m_flags[p_mo] AS flags, unresolved",
+            )
+            .await;
+        let mut c = checks.arm(arm.name);
+        c.eq(
+            rows.len(),
+            arm.inputs.len() + 1,
+            "the seeded row and every tic walked from it",
+        );
+        match arm.name {
+            "pain" => the_player_walks_its_pain_frames_back_to_standing(c, &rows),
+            _ => the_player_walks_its_death_frames_to_a_corpse(c, &rows),
+        }
+    }
+    fixture.finish().await;
+    checks.finish();
 }
 
 /// Every frame the walk stood in, in order, with the tic it first showed.
@@ -154,84 +173,93 @@ fn entered(rows: &[Frame]) -> Vec<(u32, i32)> {
 
 /// `A_Pain` makes a noise and nothing else, so the pain chain runs through
 /// and back into the frame the player stands in.
-#[tokio::test]
-async fn the_player_walks_its_pain_frames_back_to_standing() {
-    let rows = walk("pain", PAIN_AT, S_PLAY_PAIN, PAIN_TICS).await;
-    for row in &rows {
-        assert_eq!(
-            row.unresolved, 0,
-            "tic {} carries a routine this does not run",
-            row.tic
+fn the_player_walks_its_pain_frames_back_to_standing(mut c: ArmChecks<'_>, rows: &[Frame]) {
+    for row in rows {
+        c.eq(
+            row.unresolved,
+            0,
+            format!("tic {} carries a routine this does not run", row.tic),
         );
-        assert_eq!(
+        c.eq(
             (row.sprite, row.frame),
             {
                 let (sprite, frame) = support::damage::picture(i64::from(row.state));
                 (sprite as i32, frame as i32)
             },
-            "tic {}: the picture follows the frame",
-            row.tic
+            format!("tic {}: the picture follows the frame", row.tic),
         );
-        assert_eq!(
+        c.eq(
             row.flags & MF_SOLID,
             MF_SOLID,
-            "tic {}: nothing in the pain chain takes MF_SOLID off",
-            row.tic
+            format!(
+                "tic {}: nothing in the pain chain takes MF_SOLID off",
+                row.tic
+            ),
         );
     }
-    let states: Vec<i32> = entered(&rows).into_iter().map(|(_, state)| state).collect();
-    assert_eq!(
+    let states: Vec<i32> = entered(rows).into_iter().map(|(_, state)| state).collect();
+    c.eq(
         states,
         vec![S_PLAY_PAIN, S_PLAY_PAIN2, S_PLAY],
-        "the chain runs pain, pain two, standing"
+        "the chain runs pain, pain two, standing",
     );
-    let last = rows.last().expect("the walk wrote rows");
-    assert_eq!(last.state, S_PLAY);
-    assert_eq!(last.tics, -1, "standing waits forever");
+    let Some(last) = rows.last() else {
+        c.check(false, "the walk wrote rows");
+        return;
+    };
+    c.eq(last.state, S_PLAY, "the last frame");
+    c.eq(last.tics, -1, "standing waits forever");
 }
 
 /// `A_PlayerScream` makes a noise, `A_Fall` takes `MF_SOLID` off, and the
 /// chain stops on a frame that waits forever.
-#[tokio::test]
-async fn the_player_walks_its_death_frames_to_a_corpse() {
-    let rows = walk("death", DEATH_AT, S_PLAY_DIE1, DEATH_TICS).await;
-    for row in &rows {
-        assert_eq!(
-            row.unresolved, 0,
-            "tic {} carries a routine this does not run",
-            row.tic
+fn the_player_walks_its_death_frames_to_a_corpse(mut c: ArmChecks<'_>, rows: &[Frame]) {
+    for row in rows {
+        c.eq(
+            row.unresolved,
+            0,
+            format!("tic {} carries a routine this does not run", row.tic),
         );
-        assert_eq!(
+        c.eq(
             (row.sprite, row.frame),
             {
                 let (sprite, frame) = support::damage::picture(i64::from(row.state));
                 (sprite as i32, frame as i32)
             },
-            "tic {}: the picture follows the frame",
-            row.tic
+            format!("tic {}: the picture follows the frame", row.tic),
         );
     }
-    let entered = entered(&rows);
+    let entered = entered(rows);
     let states: Vec<i32> = entered.iter().map(|(_, state)| *state).collect();
-    assert_eq!(
+    c.eq(
         states,
         (S_PLAY_DIE1..=S_PLAY_DIE7).collect::<Vec<i32>>(),
-        "the chain runs every death frame in order"
+        "the chain runs every death frame in order",
     );
     // `A_Fall` runs on the way into S_PLAY_DIE3 and not before it.
-    let fell = entered
+    let Some(fell) = entered
         .iter()
         .find(|(_, state)| *state == S_PLAY_DIE3)
         .map(|(tic, _)| *tic)
-        .expect("the chain reaches the frame A_Fall sits on");
-    for row in &rows {
+    else {
+        c.check(false, "the chain reaches the frame A_Fall sits on");
+        return;
+    };
+    for row in rows {
         let solid = row.flags & MF_SOLID;
         match row.tic < fell {
-            true => assert_eq!(solid, MF_SOLID, "tic {}: still solid", row.tic),
-            false => assert_eq!(solid, 0, "tic {}: A_Fall has taken MF_SOLID off", row.tic),
+            true => c.eq(solid, MF_SOLID, format!("tic {}: still solid", row.tic)),
+            false => c.eq(
+                solid,
+                0,
+                format!("tic {}: A_Fall has taken MF_SOLID off", row.tic),
+            ),
         }
     }
-    let last = rows.last().expect("the walk wrote rows");
-    assert_eq!(last.state, S_PLAY_DIE7);
-    assert_eq!(last.tics, -1, "the last death frame waits forever");
+    let Some(last) = rows.last() else {
+        c.check(false, "the walk wrote rows");
+        return;
+    };
+    c.eq(last.state, S_PLAY_DIE7, "the last frame");
+    c.eq(last.tics, -1, "the last death frame waits forever");
 }

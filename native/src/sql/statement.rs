@@ -23,12 +23,14 @@ impl Statement {
         }
     }
 
-    /// The same statement, to be issued under `settings`.
+    /// The same statement, to be issued under `settings` as well as the
+    /// ones it already has.
     pub fn with(mut self, settings: &[(&str, &str)]) -> Statement {
-        self.settings = settings
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-            .collect();
+        self.settings.extend(
+            settings
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
         self
     }
 

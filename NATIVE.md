@@ -94,8 +94,9 @@ INTO ... ` and before `SELECT`. Settings travel as URL parameters:
 `max_insert_block_size = 1`, `min_insert_block_size_rows = 1`,
 `min_insert_block_size_bytes = 1`, `input_format_parallel_parsing = 0`,
 `max_block_size = 1`, `max_threads = 1`, `max_insert_threads = 1`,
-`async_insert = 0`, and `max_query_size` set to the statement's byte length
-plus 64. The server reads that many bytes before it parses, so the first row
+`async_insert = 0`, `optimize_and_compare_chain = 0`, and `max_query_size`
+set to the statement's byte length plus 64. The server reads that many bytes
+before it parses, so the first row
 after the statement is padding, `tic = 0`, at least 128 bytes, and is filtered
 out. A statement error surfaces on the response only after the body closes,
 so the driver reads the response concurrently and treats an early response as

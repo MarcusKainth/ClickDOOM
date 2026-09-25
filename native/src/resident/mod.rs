@@ -15,7 +15,7 @@ pub mod settings;
 pub mod stream;
 pub mod url;
 
-pub use settings::resident_settings;
+pub use settings::{ANALYSIS_SETTINGS, resident_settings};
 pub use stream::{
     CLOSE_TIMEOUT, Endpoint, FIRST_TIC_TIMEOUT, FORMAT_CLAUSE, Resident, ResidentError, TIC_TIMEOUT,
 };

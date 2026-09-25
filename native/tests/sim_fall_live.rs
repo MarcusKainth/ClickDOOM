@@ -27,8 +27,9 @@ use serde::Deserialize;
 
 mod support;
 
+use support::arms::{Arm, Arms};
 use support::db::Fixture;
-use support::seed;
+use support::resident::Session;
 
 /// The tic every arm copies its row from.
 const BEFORE: u32 = 40;
@@ -43,8 +44,7 @@ const SLOT: usize = 118;
 const GRAVITY: i64 = 1 << 16;
 
 /// One arm per seeded row: its name, where the copy of `BEFORE` lands, how
-/// far above its floor the thing starts and what height it carries. The
-/// tics are far apart so the arms cannot read each other's rows.
+/// far above its floor the thing starts and what height it carries.
 ///
 /// Sixteen units up and thirty-two units of fall goes through the floor
 /// rather than onto it. Eighty units of rise goes through a ceiling
@@ -67,6 +67,32 @@ struct Fell {
     unresolved: u64,
 }
 
+fn arms() -> Arms {
+    let put = |column: &'static str, value: String| {
+        (
+            column,
+            format!(
+                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {value}, v)), \
+                 p.{column}, arrayEnumerate(p.{column}))"
+            ),
+        )
+    };
+    let arms = ARMS
+        .into_iter()
+        .map(|(name, at, above, momz)| Arm {
+            name,
+            from: BEFORE,
+            overrides: vec![
+                put("m_z", format!("p.m_floorz[{SLOT}] + {above}")),
+                put("m_momz", momz.to_string()),
+            ],
+            at,
+            inputs: vec![Input::keys(at + 1, 0, (0, 0))],
+        })
+        .collect();
+    Arms::new((1..=BEFORE).map(Input::demo).collect(), arms)
+}
+
 #[tokio::test]
 async fn a_thing_falls_and_clips_the_way_the_engine_does() {
     let bytes = support::doom1();
@@ -81,97 +107,75 @@ async fn a_thing_falls_and_clips_the_way_the_engine_does() {
         fixture.finish().await;
         panic!("{error}");
     }
-    let walk: Vec<Input> = (1..=BEFORE).map(Input::demo).collect();
-    support::resident::run(&fixture, &walk, false).await;
+    let arms = arms();
+    let mut session = Session::open(&fixture, false).await;
+    arms.drive(&fixture, &mut session).await;
+    session.close().await;
 
-    let put = |column: &'static str, value: String| {
-        (
-            column,
-            format!(
-                "arrayMap((v, k) -> toInt32(if(k = {SLOT}, {value}, v)), \
-                 p.{column}, arrayEnumerate(p.{column}))"
-            ),
-        )
-    };
-    let mut statements: Vec<sql::Statement> = Vec::new();
-    for (_, at, above, momz) in ARMS {
-        let overrides = [
-            put("m_z", format!("p.m_floorz[{SLOT}] + {above}")),
-            put("m_momz", momz.to_string()),
-        ];
-        statements.extend(
-            seed::row(&db, at, BEFORE, &overrides)
-                .into_iter()
-                .map(sql::Statement::sql),
-        );
-        statements.extend(sim::tick::run_statement(
-            &db,
-            &[Input::keys(at + 1, 0, (0, 0))],
-        ));
-    }
-    if let Err(error) = fixture.execute(&statements).await {
-        fixture.finish().await;
-        panic!("{error}");
-    }
-
-    let wanted: Vec<String> = ARMS
-        .iter()
-        .flat_map(|(_, at, _, _)| [at.to_string(), (at + 1).to_string()])
-        .collect();
-    let rows: Vec<Fell> = fixture
-        .rows(&format!(
-            "SELECT tic, m_z[{SLOT}] AS z, m_momz[{SLOT}] AS momz, \
-             m_floorz[{SLOT}] AS floorz, m_ceilingz[{SLOT}] AS ceilingz, \
-             m_height[{SLOT}] AS height, unresolved \
-             FROM {db}.native_state WHERE tic IN ({}) ORDER BY tic",
-            wanted.join(", ")
-        ))
-        .await;
-    fixture.finish().await;
-    assert_eq!(
-        rows.len(),
-        ARMS.len() * 2,
-        "a seeded row and a tic from it for every arm"
+    let columns = format!(
+        "tic, m_z[{SLOT}] AS z, m_momz[{SLOT}] AS momz, \
+         m_floorz[{SLOT}] AS floorz, m_ceilingz[{SLOT}] AS ceilingz, \
+         m_height[{SLOT}] AS height, unresolved"
     );
-    let at = |tic: u32| {
-        rows.iter()
-            .find(|row| row.tic == tic)
-            .unwrap_or_else(|| panic!("no row for tic {tic}"))
+    let mut ran: Vec<Vec<Fell>> = Vec::new();
+    for arm in arms.all() {
+        ran.push(arm.rows(&fixture, "native_state", &columns).await);
+    }
+    fixture.finish().await;
+
+    for (arm, rows) in arms.all().iter().zip(&ran) {
+        let tics: Vec<u32> = rows.iter().map(|row| row.tic).collect();
+        assert_eq!(
+            tics,
+            Vec::from_iter(arm.tics()),
+            "arm {} left its seeded row and the tic run from it",
+            arm.name
+        );
+    }
+    let pair = |name: &str| {
+        let rows = &ran[arms.all().iter().position(|arm| arm.name == name).unwrap()];
+        (&rows[0], &rows[1])
     };
+    let mut checks = arms.checks();
 
     // A thing falling onto its floor lands on it.
-    let (before, after) = (at(200), at(201));
-    assert_ne!(
-        before.z, before.floorz,
-        "the seeded row stands off its floor, or nothing would fall"
+    let (before, after) = pair("floor");
+    let mut arm = checks.arm("floor");
+    arm.check(
+        before.z != before.floorz,
+        "the seeded row stands off its floor, or nothing would fall",
     );
-    assert_eq!(after.unresolved, 0, "the floor arm runs");
-    assert_eq!(after.z, after.floorz, "the floor takes it");
-    assert_eq!(after.momz, 0, "and stops it");
+    arm.eq(after.unresolved, 0, "the floor arm runs");
+    arm.eq(after.z, after.floorz, "the floor takes it");
+    arm.eq(after.momz, 0, "and stops it");
 
     // A thing rising into its ceiling is held under it.
-    let (before, after) = (at(300), at(301));
-    assert!(
+    let (before, after) = pair("ceiling");
+    let mut arm = checks.arm("ceiling");
+    arm.check(
         before.ceilingz - before.floorz < before.momz,
-        "the seeded momentum reaches past the ceiling, or nothing is clipped"
+        "the seeded momentum reaches past the ceiling, or nothing is clipped",
     );
-    assert_eq!(after.unresolved, 0, "the ceiling arm runs");
-    assert_eq!(
+    arm.eq(after.unresolved, 0, "the ceiling arm runs");
+    arm.eq(
         after.z,
         after.ceilingz - after.height,
-        "the ceiling holds it under itself"
+        "the ceiling holds it under itself",
     );
-    assert_eq!(after.momz, 0, "and takes what was carrying it up");
+    arm.eq(after.momz, 0, "and takes what was carrying it up");
 
     // `P_ZMovement` gives a thing whose momentum has reached zero twice the
     // pull, which is what makes the first tic of a drop move further than
     // the tics after it.
-    let (before, after) = (at(400), at(401));
-    assert_eq!(before.momz, 0);
-    assert_eq!(after.unresolved, 0, "the starting arm runs");
-    assert_eq!(after.momz as i64, -2 * GRAVITY, "the first pull is doubled");
-    assert_eq!(
-        after.z, before.z,
-        "and the height itself does not move until the tic after"
+    let (before, after) = pair("start");
+    let mut arm = checks.arm("start");
+    arm.eq(before.momz, 0, "the seeded row carries no momentum");
+    arm.eq(after.unresolved, 0, "the starting arm runs");
+    arm.eq(after.momz as i64, -2 * GRAVITY, "the first pull is doubled");
+    arm.eq(
+        after.z,
+        before.z,
+        "and the height itself does not move until the tic after",
     );
+    checks.finish();
 }

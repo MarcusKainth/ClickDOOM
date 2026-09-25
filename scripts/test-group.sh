@@ -3,6 +3,13 @@
 # Runs one group of the test suites, the way ci.yml runs them in parallel.
 #
 #   scripts/test-group.sh <group>
+#   scripts/test-group.sh --list <group>
+#   scripts/test-group.sh --check
+#
+# --list prints the tests a group selects, one `<binary-id> <test>` per
+# line, and runs nothing. --check lists every group and every test the
+# suites hold, and fails when a test is in no group or in two, or when a
+# group selects nothing.
 #
 # Groups, and what they hold:
 #   emulator       every suite outside the native crate and the driver's
@@ -35,7 +42,31 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+groups=(emulator native-sim-a native-sim-b native-sim-c native-sim-d native-sim-e native-sim-f native-rest)
+
+verb=run
+if [ "${1-}" = --list ]; then
+    verb=list
+    shift
+fi
 group="${1-}"
+
+# `cargo nextest run` with the arguments given, or under --list
+# `cargo nextest list` with the same selection.
+nextest() {
+    if [ "$verb" = run ]; then
+        cargo nextest run "$@"
+        return
+    fi
+    local selection=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --test-threads) shift 2 ;;
+            *) selection+=("$1"); shift ;;
+        esac
+    done
+    cargo nextest list --message-format oneline "${selection[@]}"
+}
 
 # With NEXTEST_ARCHIVE_DIR set, the suites come pre-built from
 # `cargo nextest archive` and nothing is compiled here: native.tar.zst holds
@@ -50,19 +81,19 @@ if [ -n "$archive" ]; then
     # at build time, which is the workspace's own target directory.
     extract=(--workspace-remap . --extract-to . --extract-overwrite)
     run_native() {
-        cargo nextest run --archive-file "$archive/native.tar.zst" "${extract[@]}" "$@"
+        nextest --archive-file "$archive/native.tar.zst" "${extract[@]}" "$@"
     }
     run_workspace() {
-        cargo nextest run --archive-file "$archive/workspace.tar.zst" "${extract[@]}" "$@"
+        nextest --archive-file "$archive/workspace.tar.zst" "${extract[@]}" "$@"
     }
     run_rom() {
-        cargo nextest run --archive-file "$archive/rom-suites.tar.zst" "${extract[@]}" "$@"
+        nextest --archive-file "$archive/rom-suites.tar.zst" "${extract[@]}" "$@"
     }
     live=""
 else
-    run_native() { cargo nextest run --locked "$@"; }
-    run_workspace() { cargo nextest run --locked "$@"; }
-    run_rom() { cargo nextest run --locked --release -p refemu --features rom-tests "$@"; }
+    run_native() { nextest --locked "$@"; }
+    run_workspace() { nextest --locked "$@"; }
+    run_rom() { nextest --locked --release -p refemu --features rom-tests "$@"; }
     live="--workspace --features clickhouse-tests"
 fi
 
@@ -89,6 +120,33 @@ sim_d='binary(sim_floor_live) | binary(sim_hearing_live) | binary(sim_justattack
 sim_f='binary(sim_aim_live) | binary(sim_damage_live) | binary(sim_impact_live) | binary(sim_noise_live) | binary(sim_parity_live) | binary(sim_plat_live) | binary(sim_removed_live) | binary(sim_sight_live)'
 
 case "$group" in
+    --check)
+        listed=$(mktemp -d)
+        trap 'rm -rf "$listed"' EXIT
+        verb=list
+        # shellcheck disable=SC2086
+        { run_native $live; run_workspace $live; run_rom; } | sort -u > "$listed/all"
+        failed=0
+        for g in "${groups[@]}"; do
+            "$0" --list "$g" | sort -u | sed "s|^|$g |" > "$listed/group-$g"
+            echo "$g: $(wc -l < "$listed/group-$g") tests"
+            if [ ! -s "$listed/group-$g" ]; then
+                echo "::error::$g selects no tests" >&2
+                failed=1
+            fi
+        done
+        cat "$listed"/group-* | cut -d' ' -f2- | sort > "$listed/selected"
+        echo "every test: $(wc -l < "$listed/all"); selected: $(wc -l < "$listed/selected")"
+        if uniq -d "$listed/selected" | grep .; then
+            echo "::error::the tests above are selected by more than one group" >&2
+            failed=1
+        fi
+        if comm -23 "$listed/all" <(sort -u "$listed/selected") | grep .; then
+            echo "::error::the tests above are selected by no group" >&2
+            failed=1
+        fi
+        exit "$failed"
+        ;;
     emulator)
         # One test at a time: the SQL CPU's suite and the executor's share
         # the server's compiled-expression cache, which a second run beside
@@ -147,7 +205,7 @@ case "$group" in
             -E 'package(clickdoom-driver) and binary(/^native_/) and not binary(native_connections_live)'
         ;;
     *)
-        echo "usage: scripts/test-group.sh emulator|native-sim-a|native-sim-b|native-sim-c|native-sim-d|native-sim-e|native-sim-f|native-rest" >&2
+        echo "usage: scripts/test-group.sh [--list] $(IFS='|'; echo "${groups[*]}") | --check" >&2
         exit 2
         ;;
 esac
